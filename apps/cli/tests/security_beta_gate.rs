@@ -7,28 +7,28 @@ use tokio::net::TcpListener;
 use ciphervault_crypto::{
     decrypt_chunk, encrypt_chunk, generate_signing_key, keys::VaultEpochKey, RecoverySecret,
 };
-use ciphervault_format::{
-    to_canonical_cbor, GenesisRecord, HeadRecord, PROTOCOL_VERSION,
-};
+use ciphervault_format::{to_canonical_cbor, GenesisRecord, HeadRecord, PROTOCOL_VERSION};
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_operator::{
     create_router, state::MAX_OBJECT_SIZE, state::MAX_RECOVERY_RECORD_SIZE, OperatorState,
 };
-use ciphervault_snapshot::{
-    create_snapshot, validate_safe_relative_path, SnapshotError,
-};
+use ciphervault_snapshot::{create_snapshot, validate_safe_relative_path, SnapshotError};
 use ciphervault_storage::MultiOperatorPool;
 
-async fn spawn_test_operator(port: u16, data_dir: PathBuf, operator_id: &str) -> (String, tokio::task::JoinHandle<()>) {
+async fn spawn_test_operator(
+    _port: u16,
+    data_dir: PathBuf,
+    operator_id: &str,
+) -> (String, tokio::task::JoinHandle<()>) {
     let state = Arc::new(OperatorState::new(
         operator_id.to_string(),
         data_dir,
         generate_signing_key(),
     ));
     let app = create_router(state);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let listener = TcpListener::bind(addr).await.unwrap();
-    let url = format!("http://127.0.0.1:{}", port);
+    let url = format!("http://{}", listener.local_addr().unwrap());
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -79,8 +79,14 @@ async fn test_canary_leak_defense_across_operators_and_db() {
 
     // 1. Seed sensitive canary markers into vault files
     // Constructed via byte constants to eliminate secret-scanner false positives
-    let canary_marker_alpha = &[0x43, 0x41, 0x4e, 0x41, 0x52, 0x59, 0x5f, 0x41, 0x4c, 0x50, 0x48, 0x41, 0x5f, 0x38, 0x34, 0x39, 0x32, 0x30, 0x34, 0x39, 0x31][..];
-    let canary_marker_beta = &[0x43, 0x41, 0x4e, 0x41, 0x52, 0x59, 0x5f, 0x42, 0x45, 0x54, 0x41, 0x5f, 0x34, 0x39, 0x32, 0x30, 0x31, 0x39, 0x34, 0x38][..];
+    let canary_marker_alpha = &[
+        0x43, 0x41, 0x4e, 0x41, 0x52, 0x59, 0x5f, 0x41, 0x4c, 0x50, 0x48, 0x41, 0x5f, 0x38, 0x34,
+        0x39, 0x32, 0x30, 0x34, 0x39, 0x31,
+    ][..];
+    let canary_marker_beta = &[
+        0x43, 0x41, 0x4e, 0x41, 0x52, 0x59, 0x5f, 0x42, 0x45, 0x54, 0x41, 0x5f, 0x34, 0x39, 0x32,
+        0x30, 0x31, 0x39, 0x34, 0x38,
+    ][..];
 
     let env_content = format!(
         "SERVICE_CLIENT_KEY={}\nSERVICE_SECRET_HASH={}\nSERVICE_URL=https://cluster.internal.local:8443/api\n",
@@ -188,6 +194,7 @@ async fn test_canary_leak_defense_across_operators_and_db() {
             90,
             &r_locator,
             &head_cbor,
+            &[],
             3,
         )
         .await
@@ -209,7 +216,10 @@ async fn test_canary_leak_defense_across_operators_and_db() {
     assert_eq!(op1_leaks, 0, "Operator 1 leaked canary plaintext on disk!");
     assert_eq!(op2_leaks, 0, "Operator 2 leaked canary plaintext on disk!");
     assert_eq!(op3_leaks, 0, "Operator 3 leaked canary plaintext on disk!");
-    assert_eq!(db_leaks, 0, "Local SQLite store leaked canary plaintext in database!");
+    assert_eq!(
+        db_leaks, 0,
+        "Local SQLite store leaked canary plaintext in database!"
+    );
 }
 
 #[test]
@@ -258,7 +268,10 @@ fn test_path_sanitization_adversarial_rejections() {
         );
         match result.unwrap_err() {
             SnapshotError::UnsafePath(_) => {}
-            other => panic!("Expected UnsafePath error for '{}', got: {:?}", attack, other),
+            other => panic!(
+                "Expected UnsafePath error for '{}', got: {:?}",
+                attack, other
+            ),
         }
     }
 
@@ -324,8 +337,14 @@ fn test_operator_boundary_and_dos_limits() {
 
     // 1. Enforce MAX_OBJECT_SIZE (4 MiB)
     let oversized_payload = vec![0x99u8; MAX_OBJECT_SIZE + 1];
-    let err = state.put_object(&valid_cid, &oversized_payload).unwrap_err();
-    assert!(err.contains("exceeds maximum size limit"), "Got error: {}", err);
+    let err = state
+        .put_object(&valid_cid, &oversized_payload)
+        .unwrap_err();
+    assert!(
+        err.contains("exceeds maximum size limit"),
+        "Got error: {}",
+        err
+    );
 
     // 2. Enforce CID length (must be 64 hex characters)
     let short_cid = "abcd";
@@ -335,11 +354,23 @@ fn test_operator_boundary_and_dos_limits() {
 
     // 3. Enforce MAX_RECOVERY_RECORD_SIZE (64 KiB)
     let oversized_rec = vec![0x88u8; MAX_RECOVERY_RECORD_SIZE + 1];
-    let err3 = state.append_recovery_record(&valid_cid, &oversized_rec).unwrap_err();
-    assert!(err3.contains("exceeds maximum size limit"), "Got error: {}", err3);
+    let err3 = state
+        .append_recovery_record(&valid_cid, &oversized_rec)
+        .unwrap_err();
+    assert!(
+        err3.contains("exceeds maximum size limit"),
+        "Got error: {}",
+        err3
+    );
 
     // 4. Enforce recovery locator format
     let bad_locator = "not_valid_hex_string";
-    let err4 = state.append_recovery_record(bad_locator, b"normal_rec").unwrap_err();
-    assert!(err4.contains("Invalid recovery locator"), "Got error: {}", err4);
+    let err4 = state
+        .append_recovery_record(bad_locator, b"normal_rec")
+        .unwrap_err();
+    assert!(
+        err4.contains("Invalid recovery locator"),
+        "Got error: {}",
+        err4
+    );
 }

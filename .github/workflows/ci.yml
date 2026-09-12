@@ -47,7 +47,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Workspace Unit & Integration Tests
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --locked --verbose
+
+      - name: Dashboard Syntax and Audit Regressions
+        run: |
+          node --check apps/ui/app.js
+          node apps/ui/audit.test.cjs
 
   contracts:
     name: Foundry Solidity Test Suite

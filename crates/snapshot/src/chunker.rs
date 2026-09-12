@@ -5,7 +5,7 @@ use rand::RngCore;
 use crate::error::SnapshotError;
 
 pub const CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB
-pub const MIN_PADDING_SIZE: usize = 4096;   // 4 KiB bucket for small files
+pub const MIN_PADDING_SIZE: usize = 4096; // 4 KiB bucket for small files
 pub const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB MVP limit
 
 pub struct ChunkedFile {

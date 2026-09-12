@@ -16,8 +16,11 @@ pub fn encrypt_with_nonce(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    let cipher = XChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| CryptoError::InvalidKeyLength { expected: KEY_SIZE, actual: key.len() })?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength {
+            expected: KEY_SIZE,
+            actual: key.len(),
+        })?;
 
     let xnonce = XNonce::from_slice(nonce);
     let payload = Payload {
@@ -60,8 +63,11 @@ pub fn decrypt_chunk(
     }
 
     let (nonce, ciphertext) = chunk_payload.split_at(NONCE_SIZE);
-    let cipher = XChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| CryptoError::InvalidKeyLength { expected: KEY_SIZE, actual: key.len() })?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength {
+            expected: KEY_SIZE,
+            actual: key.len(),
+        })?;
 
     let xnonce = XNonce::from_slice(nonce);
     let payload = Payload {
@@ -83,7 +89,8 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let key = [0x77u8; KEY_SIZE];
-        let secret_env = b"SERVICE_URL=https://cluster.internal.local/endpoint\nAUTH_KEY=token_mock_auth_12345";
+        let secret_env =
+            b"SERVICE_URL=https://cluster.internal.local/endpoint\nAUTH_KEY=token_mock_auth_12345";
         let aad = b"vault_id:001|chunk:0|total:1";
 
         let encrypted = encrypt_chunk(&key, secret_env, aad).unwrap();

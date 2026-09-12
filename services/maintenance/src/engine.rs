@@ -5,13 +5,11 @@ use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 
 use ciphervault_crypto::signatures::sign_with_domain;
-use ciphervault_format::{
-    compute_digest, PlacementUpdate, RecoveryClosure, PROTOCOL_VERSION,
-};
+use ciphervault_format::{compute_digest, PlacementUpdate, RecoveryClosure, PROTOCOL_VERSION};
 use ciphervault_storage::{LeaseReceipt, OperatorClient};
 
 /// Detailed replica presence for an individual ciphertext object.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ObjectReplicaStatus {
     pub cid: [u8; 32],
     pub present_on: Vec<String>,
@@ -19,7 +17,7 @@ pub struct ObjectReplicaStatus {
 }
 
 /// Comprehensive audit report for a vault recovery closure across all operators.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AuditReport {
     pub closure_digest: [u8; 32],
     pub total_objects: usize,
@@ -28,6 +26,16 @@ pub struct AuditReport {
     pub lost_count: usize,
     pub operator_counts: HashMap<String, usize>,
     pub degraded_objects: Vec<ObjectReplicaStatus>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecoveryAudit {
+    pub objects: AuditReport,
+    pub recoverable_operators: Vec<String>,
+    pub discovery_missing: Vec<String>,
+    pub required_replicas: usize,
+    pub healthy: bool,
+    pub checked_at_utc: i64,
 }
 
 /// Outcome of a self-repair sweep.
@@ -45,15 +53,58 @@ pub struct MaintenanceEngine {
 }
 
 impl MaintenanceEngine {
+    /// Verify both ciphertext objects and the exact public discovery records on each operator.
+    pub async fn audit_recovery_set(
+        &self,
+        set: &ciphervault_format::RecoverySet,
+        head: &[u8],
+        sessions: &HashMap<String, String>,
+    ) -> Result<RecoveryAudit> {
+        let objects = self.audit_closure(&set.closure, sessions).await?;
+        let mut recoverable_operators = Vec::new();
+        let mut discovery_missing = Vec::new();
+        let mut verified_keys = std::collections::HashSet::new();
+        for client in &self.clients {
+            let discovery_ok = match client.get_recovery_records(&set.locator).await {
+                Ok(records) => {
+                    records.iter().any(|r| r == head)
+                        && set.records.iter().all(|r| records.contains(r))
+                }
+                Err(_) => false,
+            };
+            if !discovery_ok {
+                discovery_missing.push(client.endpoint().to_string());
+            }
+            if discovery_ok
+                && objects.operator_counts.get(client.endpoint()) == Some(&objects.total_objects)
+            {
+                if let Ok(info) = client.get_info().await {
+                    if let Ok(key) = hex::decode(info.operator_signing_pk_hex) {
+                        if key.len() == 32 && verified_keys.insert(key) {
+                            recoverable_operators.push(client.endpoint().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        recoverable_operators.sort();
+        recoverable_operators.dedup();
+        let healthy = recoverable_operators.len() >= 3 && objects.lost_count == 0;
+        Ok(RecoveryAudit {
+            objects,
+            recoverable_operators,
+            discovery_missing,
+            required_replicas: 3,
+            healthy,
+            checked_at_utc: Utc::now().timestamp(),
+        })
+    }
     pub fn new(endpoints: Vec<String>) -> Self {
         let clients = endpoints
             .iter()
             .map(|e| OperatorClient::new(e.clone()))
             .collect();
-        Self {
-            endpoints,
-            clients,
-        }
+        Self { endpoints, clients }
     }
 
     pub fn endpoints(&self) -> &[String] {
@@ -114,6 +165,9 @@ impl MaintenanceEngine {
             }
         }
 
+        all_cids.sort();
+        all_cids.dedup();
+        anyhow::ensure!(!all_cids.is_empty(), "Empty recovery inventory");
         let total_objects = all_cids.len();
         let mut operator_counts: HashMap<String, usize> = HashMap::new();
         for ep in &self.endpoints {
@@ -150,7 +204,7 @@ impl MaintenanceEngine {
                 }
             }
 
-            if present_on.len() == self.clients.len() {
+            if !present_on.is_empty() && present_on.len() == self.clients.len() {
                 healthy_count += 1;
             } else if !present_on.is_empty() {
                 degraded_count += 1;
@@ -224,7 +278,12 @@ impl MaintenanceEngine {
             let bytes = match source_client.get_object(source_token, &item.cid).await {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("Failed to fetch {} from {}: {}", hex::encode(item.cid), source_ep, e);
+                    eprintln!(
+                        "Failed to fetch {} from {}: {}",
+                        hex::encode(item.cid),
+                        source_ep,
+                        e
+                    );
                     objects_failed += 1;
                     continue;
                 }
@@ -233,7 +292,10 @@ impl MaintenanceEngine {
             // Mandatory SHA-256 integrity verification
             let digest = compute_digest(&bytes);
             if digest != item.cid {
-                eprintln!("Integrity mismatch on fetched object {}. Aborting repair for this object.", hex::encode(item.cid));
+                eprintln!(
+                    "Integrity mismatch on fetched object {}. Aborting repair for this object.",
+                    hex::encode(item.cid)
+                );
                 objects_failed += 1;
                 continue;
             }
@@ -257,8 +319,16 @@ impl MaintenanceEngine {
                 };
 
                 // Upload verified ciphertext to target operator
-                if let Err(e) = target_client.put_object(target_token, &item.cid, bytes.clone()).await {
-                    eprintln!("Failed to upload {} to {}: {}", hex::encode(item.cid), target_ep, e);
+                if let Err(e) = target_client
+                    .put_object(target_token, &item.cid, bytes.clone())
+                    .await
+                {
+                    eprintln!(
+                        "Failed to upload {} to {}: {}",
+                        hex::encode(item.cid),
+                        target_ep,
+                        e
+                    );
                     repaired_all = false;
                     continue;
                 }
@@ -268,8 +338,15 @@ impl MaintenanceEngine {
                     Ok(readback) if compute_digest(&readback) == item.cid => {
                         // Issue signed PlacementUpdate
                         let now = Utc::now().timestamp() as u64;
-                        let msg = format!("{}:{}:{}:{}", hex::encode(audit.closure_digest), hex::encode(item.cid), target_ep, now);
-                        let sig = sign_with_domain(signing_key, b"placement_update", msg.as_bytes());
+                        let msg = format!(
+                            "{}:{}:{}:{}",
+                            hex::encode(audit.closure_digest),
+                            hex::encode(item.cid),
+                            target_ep,
+                            now
+                        );
+                        let sig =
+                            sign_with_domain(signing_key, b"placement_update", msg.as_bytes());
 
                         let update = PlacementUpdate {
                             version: PROTOCOL_VERSION,
@@ -322,7 +399,10 @@ impl MaintenanceEngine {
 
         for r in receipts {
             if let Some((client, token)) = op_map.get(&r.operator_id) {
-                if let Ok(new_receipt) = client.renew_lease(token, &r.lease_id, additional_days, r.bytes).await {
+                if let Ok(new_receipt) = client
+                    .renew_lease(token, &r.lease_id, additional_days, r.bytes)
+                    .await
+                {
                     renewed.push(new_receipt);
                 }
             }

@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use rusqlite::{params, Connection};
+use std::path::{Path, PathBuf};
 
 use ciphervault_crypto::VaultEpochKey;
 use ciphervault_format::{
@@ -87,6 +87,10 @@ impl LocalVaultStore {
                 certificate_id BLOB PRIMARY KEY,
                 cert_cbor BLOB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS recovery_sets (
+                head_cid BLOB PRIMARY KEY,
+                set_cbor BLOB NOT NULL
+            );
             "#,
         )?;
         Ok(())
@@ -128,7 +132,9 @@ impl LocalVaultStore {
 
     /// Retrieves the current vault ID.
     pub fn get_vault_id(&self) -> Result<[u8; 32], LocalStoreError> {
-        let mut stmt = self.conn.prepare("SELECT vault_id FROM vault_metadata WHERE id = 1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT vault_id FROM vault_metadata WHERE id = 1")?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
             let blob: Vec<u8> = row.get(0)?;
@@ -171,7 +177,9 @@ impl LocalVaultStore {
             "UPDATE vault_metadata SET device_counter = device_counter + 1 WHERE id = 1",
             [],
         )?;
-        let mut stmt = self.conn.prepare("SELECT device_counter FROM vault_metadata WHERE id = 1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT device_counter FROM vault_metadata WHERE id = 1")?;
         let counter: u64 = stmt.query_row([], |r| r.get(0))?;
         Ok(counter)
     }
@@ -187,7 +195,9 @@ impl LocalVaultStore {
 
     /// Retrieves an epoch key.
     pub fn get_epoch_key(&self, epoch: u64) -> Result<VaultEpochKey, LocalStoreError> {
-        let mut stmt = self.conn.prepare("SELECT epoch_key_bytes FROM epoch_keys WHERE epoch = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT epoch_key_bytes FROM epoch_keys WHERE epoch = ?1")?;
         let mut rows = stmt.query(params![epoch])?;
         if let Some(row) = rows.next()? {
             let blob: Vec<u8> = row.get(0)?;
@@ -195,14 +205,19 @@ impl LocalVaultStore {
             arr.copy_from_slice(&blob);
             Ok(VaultEpochKey::from_bytes(arr))
         } else {
-            Err(LocalStoreError::NotFound(format!("Epoch key for epoch {}", epoch)))
+            Err(LocalStoreError::NotFound(format!(
+                "Epoch key for epoch {}",
+                epoch
+            )))
         }
     }
 
     /// Adds or ensures tracking of a relative path, assigning a confidential random file_id.
     pub fn track_file(&self, rel_path: &str) -> Result<[u8; 32], LocalStoreError> {
         let normalized = rel_path.replace('\\', "/");
-        let mut stmt = self.conn.prepare("SELECT file_id FROM tracked_files WHERE relative_path = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_id FROM tracked_files WHERE relative_path = ?1")?;
         let mut rows = stmt.query(params![normalized])?;
         if let Some(row) = rows.next()? {
             let blob: Vec<u8> = row.get(0)?;
@@ -224,7 +239,9 @@ impl LocalVaultStore {
 
     /// Returns list of all tracked files: (relative_path, file_id).
     pub fn list_tracked_files(&self) -> Result<Vec<(PathBuf, [u8; 32])>, LocalStoreError> {
-        let mut stmt = self.conn.prepare("SELECT relative_path, file_id FROM tracked_files ORDER BY relative_path ASC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT relative_path, file_id FROM tracked_files ORDER BY relative_path ASC",
+        )?;
         let rows = stmt.query_map([], |row| {
             let path_str: String = row.get(0)?;
             let file_id_blob: Vec<u8> = row.get(1)?;
@@ -252,7 +269,7 @@ impl LocalVaultStore {
         let parents_str = record
             .parent_snapshot_ids
             .iter()
-            .map(|p| hex::encode(p))
+            .map(hex::encode)
             .collect::<Vec<_>>()
             .join(",");
 
@@ -307,9 +324,148 @@ impl LocalVaultStore {
     }
 
     /// Retrieves a snapshot record by snapshot_id.
-    pub fn get_snapshot(&self, snapshot_id: &[u8; 32]) -> Result<(SnapshotRecord, Vec<u8>), LocalStoreError> {
+    pub fn prepare_recovery_set(
+        &self,
+        record: &SnapshotRecord,
+        kit: &ciphervault_recovery::OfflineRecoveryKit,
+    ) -> anyhow::Result<ciphervault_format::RecoverySet> {
+        use anyhow::{ensure, Context};
+        use ciphervault_format::{
+            compute_digest, EpochEnvelope, RecoveryClosure, RecoverySet, SnapshotManifest,
+        };
+        let secret = kit.validate_and_extract_secret()?;
+        let recovery_pk = secret
+            .derive_recovery_signing_key()?
+            .verifying_key()
+            .to_bytes();
+        let (_, encryption_pk) = secret.derive_recovery_encryption_keys()?;
+        let locator = secret.derive_recovery_locator()?;
+        ensure!(
+            hex::decode(&kit.vault_id_hex)? == record.vault_id,
+            "Recovery kit belongs to another vault"
+        );
+        let (device_id, device_sk, _, _) = self.get_device_state()?;
+        let cert = self
+            .list_device_certificates()?
+            .into_iter()
+            .find(|c| {
+                c.vault_id == record.vault_id
+                    && c.device_signing_pk == device_sk.verifying_key().to_bytes()
+                    && c.authority_generation == record.authority_generation
+                    && c.permissions & 1 != 0
+                    && c.verify(&recovery_pk).is_ok()
+            })
+            .context(
+                "No trusted signing certificate for snapshot; cannot publish recoverable backup",
+            )?;
+        let epoch_key = self.get_epoch_key(record.epoch)?;
+        let (_, encrypted_manifest) = self.get_snapshot(&record.compute_record_cid()?)?;
+        let key = epoch_key.derive_manifest_key(record.epoch)?;
+        let aad = [
+            b"CipherVault-Manifest:".as_slice(),
+            &record.vault_id,
+            &record.epoch.to_le_bytes(),
+        ]
+        .concat();
+        let plaintext = ciphervault_crypto::decrypt_chunk(&key, &encrypted_manifest, &aad)?;
+        let manifest: SnapshotManifest = from_canonical_cbor(&plaintext)?;
+        let mut envelope = EpochEnvelope {
+            version: ciphervault_format::PROTOCOL_VERSION,
+            vault_id: record.vault_id.clone(),
+            epoch: record.epoch,
+            recipient_fingerprint: encryption_pk.as_bytes().to_vec(),
+            sealed_epoch_key: ciphervault_crypto::seal_box(&encryption_pk, epoch_key.as_bytes())?,
+            created_at_utc: record.advisory_timestamp_utc,
+            signer_device_id: device_id.to_vec(),
+            signature: Vec::new(),
+        };
+        envelope.sign(&device_sk)?;
+        let records = vec![to_canonical_cbor(&cert)?, to_canonical_cbor(&envelope)?];
+        let mut chunks: Vec<Vec<u8>> = manifest
+            .files
+            .iter()
+            .filter(|f| !f.is_deleted)
+            .flat_map(|f| f.chunk_cids.clone())
+            .collect();
+        chunks.sort();
+        chunks.dedup();
+        let set = RecoverySet {
+            closure: RecoveryClosure {
+                snapshot_id: record.snapshot_id.clone(),
+                snapshot_record_cid: record.compute_record_cid()?.to_vec(),
+                manifest_cid: record.encrypted_manifest_cid.clone(),
+                // This inventory includes all public bootstrap objects, including certificates.
+                envelope_ids: records.iter().map(|r| compute_digest(r).to_vec()).collect(),
+                chunk_cids: chunks,
+                total_bytes: manifest.files.iter().map(|f| f.raw_length).sum(),
+            },
+            locator,
+            records,
+        };
+        self.conn.execute(
+            "INSERT OR REPLACE INTO recovery_sets (head_cid, set_cbor) VALUES (?1, ?2)",
+            params![
+                record.compute_record_cid()?.as_slice(),
+                to_canonical_cbor(&set)?
+            ],
+        )?;
+        Ok(set)
+    }
+
+    pub fn get_recovery_set(
+        &self,
+        head_cid: &[u8; 32],
+    ) -> anyhow::Result<ciphervault_format::RecoverySet> {
+        let bytes: Vec<u8> = self.conn.query_row(
+            "SELECT set_cbor FROM recovery_sets WHERE head_cid = ?1",
+            params![head_cid.as_slice()],
+            |row| row.get(0),
+        )?;
+        Ok(from_canonical_cbor(&bytes)?)
+    }
+
+    pub fn recovery_objects(
+        &self,
+        set: &ciphervault_format::RecoverySet,
+    ) -> anyhow::Result<Vec<([u8; 32], Vec<u8>)>> {
+        use anyhow::{ensure, Context};
+        let head: [u8; 32] = set
+            .closure
+            .snapshot_record_cid
+            .as_slice()
+            .try_into()
+            .context("Invalid snapshot CID")?;
+        let (record, manifest) = self.get_snapshot(&head)?;
+        let mut objects = vec![
+            (head, to_canonical_cbor(&record)?),
+            (ciphervault_format::compute_digest(&manifest), manifest),
+        ];
+        let cids: Vec<[u8; 32]> = set
+            .closure
+            .chunk_cids
+            .iter()
+            .map(|c| c.as_slice().try_into().context("Invalid chunk CID"))
+            .collect::<anyhow::Result<_>>()?;
+        let chunks = self.get_chunks(&cids)?;
+        ensure!(
+            chunks.len() == cids.len(),
+            "Local recovery set is missing file chunks"
+        );
+        for chunk in chunks {
+            objects.push((chunk.compute_cid()?, to_canonical_cbor(&chunk)?));
+        }
+        for r in &set.records {
+            objects.push((ciphervault_format::compute_digest(r), r.clone()));
+        }
+        Ok(objects)
+    }
+
+    pub fn get_snapshot(
+        &self,
+        snapshot_id: &[u8; 32],
+    ) -> Result<(SnapshotRecord, Vec<u8>), LocalStoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT record_cbor, encrypted_manifest FROM snapshots WHERE snapshot_id = ?1"
+            "SELECT record_cbor, encrypted_manifest FROM snapshots WHERE snapshot_id = ?1",
         )?;
         let mut rows = stmt.query(params![snapshot_id.as_slice()])?;
         if let Some(row) = rows.next()? {
@@ -318,19 +474,27 @@ impl LocalVaultStore {
             let record: SnapshotRecord = from_canonical_cbor(&record_cbor)?;
             Ok((record, manifest))
         } else {
-            Err(LocalStoreError::NotFound(format!("Snapshot {}", hex::encode(snapshot_id))))
+            Err(LocalStoreError::NotFound(format!(
+                "Snapshot {}",
+                hex::encode(snapshot_id)
+            )))
         }
     }
 
     /// Retrieves all snapshots in chronological order.
     pub fn list_snapshots(&self) -> Result<Vec<SnapshotRecord>, LocalStoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT record_cbor FROM snapshots ORDER BY created_at_utc ASC"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT record_cbor FROM snapshots ORDER BY created_at_utc ASC")?;
         let rows = stmt.query_map([], |row| {
             let blob: Vec<u8> = row.get(0)?;
-            let rec: SnapshotRecord = from_canonical_cbor(&blob)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+            let rec: SnapshotRecord = from_canonical_cbor(&blob).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(e),
+                )
+            })?;
             Ok(rec)
         })?;
 
@@ -344,7 +508,9 @@ impl LocalVaultStore {
     /// Retrieves chunks for a list of chunk CIDs.
     pub fn get_chunks(&self, cids: &[[u8; 32]]) -> Result<Vec<ChunkWireObject>, LocalStoreError> {
         let mut chunks = Vec::new();
-        let mut stmt = self.conn.prepare("SELECT chunk_cbor FROM local_chunks WHERE chunk_cid = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT chunk_cbor FROM local_chunks WHERE chunk_cid = ?1")?;
         for cid in cids {
             let mut rows = stmt.query(params![cid.as_slice()])?;
             if let Some(row) = rows.next()? {
@@ -387,11 +553,18 @@ impl LocalVaultStore {
 
     /// Lists all saved device certificates.
     pub fn list_device_certificates(&self) -> Result<Vec<DeviceCertificate>, LocalStoreError> {
-        let mut stmt = self.conn.prepare("SELECT cert_cbor FROM device_certificates")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT cert_cbor FROM device_certificates")?;
         let rows = stmt.query_map([], |row| {
             let blob: Vec<u8> = row.get(0)?;
-            let cert: DeviceCertificate = from_canonical_cbor(&blob)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+            let cert: DeviceCertificate = from_canonical_cbor(&blob).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(e),
+                )
+            })?;
             Ok(cert)
         })?;
 
@@ -415,7 +588,9 @@ impl LocalVaultStore {
 
     /// Gets the current active head record.
     pub fn get_active_head(&self) -> Result<Option<HeadRecord>, LocalStoreError> {
-        let mut stmt = self.conn.prepare("SELECT head_cbor FROM heads WHERE is_active = 1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT head_cbor FROM heads WHERE is_active = 1")?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
             let cbor: Vec<u8> = row.get(0)?;
@@ -427,7 +602,10 @@ impl LocalVaultStore {
     }
 
     /// Stores verified on-chain checkpoint evidence.
-    pub fn save_checkpoint_evidence(&self, evidence: &CheckpointEvidence) -> Result<(), LocalStoreError> {
+    pub fn save_checkpoint_evidence(
+        &self,
+        evidence: &CheckpointEvidence,
+    ) -> Result<(), LocalStoreError> {
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO checkpoint_evidence (
@@ -450,7 +628,10 @@ impl LocalVaultStore {
     }
 
     /// Retrieves checkpoint evidence for a specific head record CID.
-    pub fn get_checkpoint_evidence(&self, head_record_cid: &[u8; 32]) -> Result<Option<CheckpointEvidence>, LocalStoreError> {
+    pub fn get_checkpoint_evidence(
+        &self,
+        head_record_cid: &[u8; 32],
+    ) -> Result<Option<CheckpointEvidence>, LocalStoreError> {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT commitment, salt, head_record_cid, chain_id,
@@ -558,7 +739,9 @@ mod tests {
         let dev_id = [0xBBu8; 32];
         let epoch_key = VaultEpochKey::generate();
 
-        store.init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key).unwrap();
+        store
+            .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key)
+            .unwrap();
 
         let fetched_id = store.get_vault_id().unwrap();
         assert_eq!(fetched_id, vault_id);
@@ -578,7 +761,9 @@ mod tests {
         let contract = [3u8; 20];
         let tx_hash = [4u8; 32];
 
-        let evidence = CheckpointEvidence::new(salt, head_cid, 42161, contract, tx_hash, 1234567, 1700000000);
+        let evidence = CheckpointEvidence::new(
+            salt, head_cid, 42161, contract, tx_hash, 1234567, 1700000000,
+        );
         store.save_checkpoint_evidence(&evidence).unwrap();
 
         let fetched = store.get_checkpoint_evidence(&head_cid).unwrap().unwrap();

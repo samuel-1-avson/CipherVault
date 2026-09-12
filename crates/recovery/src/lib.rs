@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod kit;
+pub mod trust;
 
 pub use error::RecoveryError;
 pub use kit::OfflineRecoveryKit;

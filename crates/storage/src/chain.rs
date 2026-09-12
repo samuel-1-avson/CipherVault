@@ -4,8 +4,8 @@ use serde_json::json;
 use sha3::{Digest, Keccak256};
 use std::time::Duration;
 
-use ciphervault_format::CheckpointEvidence;
 use crate::error::StorageError;
+use ciphervault_format::CheckpointEvidence;
 
 /// Status of an Arbitrum checkpoint anchoring.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -126,11 +126,12 @@ impl ArbitrumAnchorClient {
                 message: "Missing result in eth_blockNumber".into(),
             })?;
 
-        let block = u64::from_str_radix(hex_str.trim_start_matches("0x"), 16)
-            .map_err(|e| StorageError::ServerError {
+        let block = u64::from_str_radix(hex_str.trim_start_matches("0x"), 16).map_err(|e| {
+            StorageError::ServerError {
                 status: 500,
                 message: format!("Invalid hex block number: {}", e),
-            })?;
+            }
+        })?;
 
         Ok(block)
     }
@@ -168,8 +169,8 @@ impl ArbitrumAnchorClient {
             if trimmed.is_empty() || trimmed.chars().all(|c| c == '0') {
                 return Ok(None);
             }
-            let block = u64::from_str_radix(trimmed, 16)
-                .map_err(|e| StorageError::ServerError {
+            let block =
+                u64::from_str_radix(trimmed, 16).map_err(|e| StorageError::ServerError {
                     status: 500,
                     message: format!("Invalid hex block number from contract: {}", e),
                 })?;
@@ -211,8 +212,7 @@ impl ArbitrumAnchorClient {
 
         let result = &body["result"];
         let block_hex = result["blockNumber"].as_str().unwrap_or("0x0");
-        let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)
-            .unwrap_or(0);
+        let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
         let status_hex = result["status"].as_str().unwrap_or("0x0");
         let status = status_hex == "0x1" || status_hex == "0x01" || status_hex == "1";
@@ -235,10 +235,16 @@ impl ArbitrumAnchorClient {
             commitment_arr.copy_from_slice(&evidence.commitment);
         }
 
-        let current_block = self.get_block_number().await.unwrap_or(evidence.block_number);
+        let current_block = self
+            .get_block_number()
+            .await
+            .unwrap_or(evidence.block_number);
 
         // Query contract for existing registration
-        let contract_block = self.query_first_seen_block(&commitment_arr).await.unwrap_or(None);
+        let contract_block = self
+            .query_first_seen_block(&commitment_arr)
+            .await
+            .unwrap_or(None);
         let on_chain_confirmed = contract_block.is_some();
         let effective_block = contract_block.unwrap_or(evidence.block_number);
 
@@ -302,7 +308,8 @@ mod tests {
         let contract = [0x33u8; 20];
         let tx_hash = [0x44u8; 32];
 
-        let evidence = CheckpointEvidence::new(salt, head_cid, 42161, contract, tx_hash, 100, 1600000000);
+        let evidence =
+            CheckpointEvidence::new(salt, head_cid, 42161, contract, tx_hash, 100, 1600000000);
         assert!(evidence.verify_commitment());
 
         let mut tampered = evidence.clone();

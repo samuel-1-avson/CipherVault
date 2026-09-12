@@ -15,11 +15,11 @@ pub fn derive_subkey(
     ctx: &[u8; 8],
 ) -> Result<[u8; 32], CryptoError> {
     let mut hasher = Blake2b512::new();
-    
+
     // Domain separation prefix
     hasher.update(b"CipherVault-KDF-v1");
     hasher.update(ctx);
-    hasher.update(&subkey_id.to_le_bytes());
+    hasher.update(subkey_id.to_le_bytes());
     hasher.update(master_key);
 
     let result = hasher.finalize();

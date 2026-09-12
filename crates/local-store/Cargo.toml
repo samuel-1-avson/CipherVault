@@ -13,3 +13,6 @@ thiserror.workspace = true
 hex.workspace = true
 rand.workspace = true
 ed25519-dalek.workspace = true
+anyhow.workspace = true
+ciphervault-recovery.workspace = true
+x25519-dalek.workspace = true

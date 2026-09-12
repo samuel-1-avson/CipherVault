@@ -1,14 +1,14 @@
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
 
 use ciphervault_crypto::{decrypt_chunk, encrypt_chunk, VaultEpochKey};
 use ciphervault_format::{
-    compute_digest, from_canonical_cbor, to_canonical_cbor, ChunkWireObject,
-    ManifestFileEntry, RecoveryClosure, SnapshotManifest, SnapshotRecord, PROTOCOL_VERSION,
+    compute_digest, from_canonical_cbor, to_canonical_cbor, ChunkWireObject, ManifestFileEntry,
+    RecoveryClosure, SnapshotManifest, SnapshotRecord, PROTOCOL_VERSION,
 };
 
 use crate::chunker::chunk_and_encrypt_file;
@@ -23,6 +23,10 @@ pub struct SnapshotOutput {
 }
 
 /// Captures and encrypts a complete snapshot from tracked files on the local filesystem.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep explicit protocol bindings in the existing public API"
+)]
 pub fn create_snapshot(
     vault_root: &Path,
     tracked_files: &[(PathBuf, [u8; 32])], // (relative_path, confidential_file_id)
@@ -111,7 +115,12 @@ pub fn create_snapshot(
 
     let manifest_bytes = to_canonical_cbor(&manifest)?;
     let manifest_key = epoch_key.derive_manifest_key(epoch)?;
-    let aad = [b"CipherVault-Manifest:", vault_id.as_slice(), &epoch.to_le_bytes()].concat();
+    let aad = [
+        b"CipherVault-Manifest:",
+        vault_id.as_slice(),
+        &epoch.to_le_bytes(),
+    ]
+    .concat();
     let encrypted_manifest = encrypt_chunk(&manifest_key, &manifest_bytes, &aad)?;
     let manifest_cid = compute_digest(&encrypted_manifest);
 
@@ -164,7 +173,16 @@ pub fn validate_safe_relative_path(path_str: &str) -> Result<(), SnapshotError> 
 
     // Reject null bytes, control characters, or Windows forbidden stream characters
     for ch in path_str.chars() {
-        if ch < ' ' || ch == '\0' || ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '|' || ch == '?' || ch == '*' {
+        if ch < ' '
+            || ch == '\0'
+            || ch == '<'
+            || ch == '>'
+            || ch == ':'
+            || ch == '"'
+            || ch == '|'
+            || ch == '?'
+            || ch == '*'
+        {
             return Err(SnapshotError::UnsafePath(format!(
                 "Path contains illegal character '{}': {}",
                 ch, path_str
@@ -191,9 +209,9 @@ pub fn validate_safe_relative_path(path_str: &str) -> Result<(), SnapshotError> 
                 // Check Windows reserved DOS device names (case-insensitive, with or without extension)
                 let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
                 match stem.as_str() {
-                    "CON" | "PRN" | "AUX" | "NUL"
-                    | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-                    | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9" => {
+                    "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
+                    | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
+                    | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9" => {
                         return Err(SnapshotError::UnsafePath(format!(
                             "Windows reserved device name rejected: {}",
                             path_str
@@ -224,7 +242,12 @@ pub fn restore_snapshot(
     chunks: &[ChunkWireObject],
 ) -> Result<Vec<PathBuf>, SnapshotError> {
     let manifest_key = epoch_key.derive_manifest_key(epoch)?;
-    let aad = [b"CipherVault-Manifest:", vault_id.as_slice(), &epoch.to_le_bytes()].concat();
+    let aad = [
+        b"CipherVault-Manifest:",
+        vault_id.as_slice(),
+        &epoch.to_le_bytes(),
+    ]
+    .concat();
     let manifest_bytes = decrypt_chunk(&manifest_key, encrypted_manifest, &aad)?;
     let manifest: SnapshotManifest = from_canonical_cbor(&manifest_bytes)?;
 
@@ -245,7 +268,7 @@ pub fn restore_snapshot(
 
         let mut assembled_padded = Vec::with_capacity(entry.padded_length as usize);
 
-        for (_idx, expected_cid) in entry.chunk_cids.iter().enumerate() {
+        for expected_cid in entry.chunk_cids.iter() {
             let chunk_opt = chunks.iter().find(|c| {
                 if let Ok(cid) = c.compute_cid() {
                     cid.as_slice() == expected_cid.as_slice()
@@ -341,4 +364,3 @@ pub fn restore_snapshot(
 
     Ok(restored_paths)
 }
-

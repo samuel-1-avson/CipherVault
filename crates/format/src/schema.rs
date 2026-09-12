@@ -42,7 +42,9 @@ impl GenesisRecord {
 
     pub fn verify(&self) -> Result<(), FormatError> {
         if self.recovery_signing_pk.len() != 32 || self.signature.len() != 64 {
-            return Err(FormatError::MalformedRecord("Invalid key or signature length in genesis".into()));
+            return Err(FormatError::MalformedRecord(
+                "Invalid key or signature length in genesis".into(),
+            ));
         }
         let unsigned = self.unsigned_bytes()?;
         let mut pk = [0u8; 32];
@@ -50,7 +52,7 @@ impl GenesisRecord {
         pk.copy_from_slice(&self.recovery_signing_pk);
         sig.copy_from_slice(&self.signature);
         verify_with_domain(&pk, b"genesis_record", &unsigned, &sig)
-            .map_err(|e| FormatError::CryptoError(e))
+            .map_err(FormatError::CryptoError)
     }
 }
 
@@ -87,13 +89,15 @@ impl DeviceCertificate {
 
     pub fn verify(&self, recovery_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
         if self.signature.len() != 64 {
-            return Err(FormatError::MalformedRecord("Invalid signature length in device cert".into()));
+            return Err(FormatError::MalformedRecord(
+                "Invalid signature length in device cert".into(),
+            ));
         }
         let unsigned = self.unsigned_bytes()?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
         verify_with_domain(recovery_pk_bytes, b"device_certificate", &unsigned, &sig)
-            .map_err(|e| FormatError::CryptoError(e))
+            .map_err(FormatError::CryptoError)
     }
 }
 
@@ -131,13 +135,15 @@ impl EpochEnvelope {
 
     pub fn verify(&self, device_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
         if self.signature.len() != 64 {
-            return Err(FormatError::MalformedRecord("Invalid signature length in epoch envelope".into()));
+            return Err(FormatError::MalformedRecord(
+                "Invalid signature length in epoch envelope".into(),
+            ));
         }
         let unsigned = self.unsigned_bytes()?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
         verify_with_domain(device_pk_bytes, b"epoch_envelope", &unsigned, &sig)
-            .map_err(|e| FormatError::CryptoError(e))
+            .map_err(FormatError::CryptoError)
     }
 }
 
@@ -247,13 +253,15 @@ impl SnapshotRecord {
 
     pub fn verify(&self, device_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
         if self.signature.len() != 64 {
-            return Err(FormatError::MalformedRecord("Invalid signature length in snapshot record".into()));
+            return Err(FormatError::MalformedRecord(
+                "Invalid signature length in snapshot record".into(),
+            ));
         }
         let unsigned = self.unsigned_bytes()?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
         verify_with_domain(device_pk_bytes, b"snapshot_record", &unsigned, &sig)
-            .map_err(|e| FormatError::CryptoError(e))
+            .map_err(FormatError::CryptoError)
     }
 
     pub fn compute_record_cid(&self) -> Result<[u8; 32], FormatError> {
@@ -281,6 +289,14 @@ impl RecoveryClosure {
         let bytes = to_canonical_cbor(self)?;
         Ok(compute_digest(&bytes))
     }
+}
+
+/// Persisted inventory of the exact objects and discovery records needed to recover a snapshot.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RecoverySet {
+    pub closure: RecoveryClosure,
+    pub locator: [u8; 32],
+    pub records: Vec<Vec<u8>>,
 }
 
 /// Head record representing the latest signed snapshot branch pointer.
@@ -317,13 +333,15 @@ impl HeadRecord {
 
     pub fn verify(&self, device_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
         if self.signature.len() != 64 {
-            return Err(FormatError::MalformedRecord("Invalid signature length in head record".into()));
+            return Err(FormatError::MalformedRecord(
+                "Invalid signature length in head record".into(),
+            ));
         }
         let unsigned = self.unsigned_bytes()?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
         verify_with_domain(device_pk_bytes, b"head_record", &unsigned, &sig)
-            .map_err(|e| FormatError::CryptoError(e))
+            .map_err(FormatError::CryptoError)
     }
 }
 
@@ -380,7 +398,8 @@ impl CheckpointEvidence {
     }
 
     pub fn verify_commitment(&self) -> bool {
-        if self.salt.len() != 32 || self.head_record_cid.len() != 32 || self.commitment.len() != 32 {
+        if self.salt.len() != 32 || self.head_record_cid.len() != 32 || self.commitment.len() != 32
+        {
             return false;
         }
         let mut salt_arr = [0u8; 32];
@@ -407,4 +426,3 @@ pub struct PlacementUpdate {
     #[serde(with = "serde_bytes")]
     pub signature: Vec<u8>,
 }
-

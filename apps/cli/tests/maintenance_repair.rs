@@ -4,21 +4,26 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
-use ciphervault_format::{
-    to_canonical_cbor, GenesisRecord, HeadRecord, PROTOCOL_VERSION,
-};
+use ciphervault_format::{to_canonical_cbor, GenesisRecord, HeadRecord, PROTOCOL_VERSION};
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_maintenance::MaintenanceEngine;
 use ciphervault_operator::{create_router, OperatorState};
 use ciphervault_snapshot::create_snapshot;
 use ciphervault_storage::MultiOperatorPool;
 
-async fn spawn_operator(port: u16, data_dir: std::path::PathBuf) -> (String, tokio::task::JoinHandle<()>) {
-    let state = Arc::new(OperatorState::new(format!("op_{}", port), data_dir, generate_signing_key()));
+async fn spawn_operator(
+    port: u16,
+    data_dir: std::path::PathBuf,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let state = Arc::new(OperatorState::new(
+        format!("op_{}", port),
+        data_dir,
+        generate_signing_key(),
+    ));
     let app = create_router(state);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let listener = TcpListener::bind(addr).await.unwrap();
-    let url = format!("http://127.0.0.1:{}", port);
+    let url = format!("http://{}", listener.local_addr().unwrap());
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -29,7 +34,13 @@ async fn spawn_operator(port: u16, data_dir: std::path::PathBuf) -> (String, tok
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_maintenance_audit_and_self_repair() {
-    let test_dir = std::env::temp_dir().join(format!("cv_maint_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_maint_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     fs::create_dir_all(&test_dir).unwrap();
 
     // 1. Spawn 3 operator instances
@@ -71,10 +82,16 @@ async fn test_maintenance_audit_and_self_repair() {
 
     let db_path = vault_dir.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();
-    store.init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key).unwrap();
+    store
+        .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key)
+        .unwrap();
 
     let test_file = vault_dir.join("secrets.txt");
-    fs::write(&test_file, "CONFIDENTIAL_PAYLOAD=marker_payload_data_9999\n").unwrap();
+    fs::write(
+        &test_file,
+        "CONFIDENTIAL_PAYLOAD=marker_payload_data_9999\n",
+    )
+    .unwrap();
     store.track_file("secrets.txt").unwrap();
 
     let tracked = store.list_tracked_files().unwrap();
@@ -89,9 +106,16 @@ async fn test_maintenance_audit_and_self_repair() {
         1,
         1,
         &dev_sk,
-    ).unwrap();
+    )
+    .unwrap();
 
-    store.save_snapshot(&snap_out.record, &snap_out.encrypted_manifest, &snap_out.chunks).unwrap();
+    store
+        .save_snapshot(
+            &snap_out.record,
+            &snap_out.encrypted_manifest,
+            &snap_out.chunks,
+        )
+        .unwrap();
 
     let record_cid = snap_out.record.compute_record_cid().unwrap();
     let mut head = HeadRecord {
@@ -99,7 +123,11 @@ async fn test_maintenance_audit_and_self_repair() {
         vault_id: vault_id.to_vec(),
         snapshot_id: record_cid.to_vec(),
         parent_snapshot_ids: Vec::new(),
-        closure_digest: snap_out.closure.compute_base_closure_digest().unwrap().to_vec(),
+        closure_digest: snap_out
+            .closure
+            .compute_base_closure_digest()
+            .unwrap()
+            .to_vec(),
         device_id: dev_id.to_vec(),
         device_counter: 1,
         signature: Vec::new(),
@@ -122,26 +150,37 @@ async fn test_maintenance_audit_and_self_repair() {
     let head_cbor = to_canonical_cbor(&head).unwrap();
     let locator = [0x99u8; 32];
 
-    let receipts = pool.replicate_and_verify(
-        &vault_id,
-        &dev_sk,
-        &wire_objects,
-        &closure_digest,
-        snap_out.closure.total_bytes,
-        90,
-        &locator,
-        &head_cbor,
-        3,
-    ).await.unwrap();
+    let receipts = pool
+        .replicate_and_verify(
+            &vault_id,
+            &dev_sk,
+            &wire_objects,
+            &closure_digest,
+            snap_out.closure.total_bytes,
+            90,
+            &locator,
+            &head_cbor,
+            &[],
+            3,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(receipts.len(), 3, "All 3 operators should have verified replicas");
+    assert_eq!(
+        receipts.len(),
+        3,
+        "All 3 operators should have verified replicas"
+    );
 
     // 4. Test MaintenanceEngine Audit on healthy state
     let engine = MaintenanceEngine::new(operators.clone());
     let sessions = engine.authenticate_all(&vault_id, &dev_sk).await;
     assert_eq!(sessions.len(), 3);
 
-    let initial_audit = engine.audit_closure(&snap_out.closure, &sessions).await.unwrap();
+    let initial_audit = engine
+        .audit_closure(&snap_out.closure, &sessions)
+        .await
+        .unwrap();
     assert_eq!(initial_audit.healthy_count, initial_audit.total_objects);
     assert_eq!(initial_audit.degraded_count, 0);
     assert_eq!(initial_audit.lost_count, 0);
@@ -149,28 +188,52 @@ async fn test_maintenance_audit_and_self_repair() {
     // 5. Fault Injection: Delete a chunk object from Operator 1's disk
     let chunk_cid = snap_out.chunks[0].compute_cid().unwrap();
     let op1_chunk_path = op1_dir.join("objects").join(hex::encode(chunk_cid));
-    assert!(op1_chunk_path.exists(), "Chunk should exist on Operator 1 disk");
+    assert!(
+        op1_chunk_path.exists(),
+        "Chunk should exist on Operator 1 disk"
+    );
     fs::remove_file(&op1_chunk_path).unwrap();
 
     // 6. Audit again: should detect Operator 1 is degraded
-    let degraded_audit = engine.audit_closure(&snap_out.closure, &sessions).await.unwrap();
-    assert_eq!(degraded_audit.degraded_count, 1, "Should detect 1 degraded object");
+    let degraded_audit = engine
+        .audit_closure(&snap_out.closure, &sessions)
+        .await
+        .unwrap();
+    assert_eq!(
+        degraded_audit.degraded_count, 1,
+        "Should detect 1 degraded object"
+    );
     assert_eq!(degraded_audit.degraded_objects[0].cid, chunk_cid);
-    assert!(degraded_audit.degraded_objects[0].missing_on.contains(&url1));
-    assert!(degraded_audit.degraded_objects[0].present_on.contains(&url2));
-    assert!(degraded_audit.degraded_objects[0].present_on.contains(&url3));
+    assert!(degraded_audit.degraded_objects[0]
+        .missing_on
+        .contains(&url1));
+    assert!(degraded_audit.degraded_objects[0]
+        .present_on
+        .contains(&url2));
+    assert!(degraded_audit.degraded_objects[0]
+        .present_on
+        .contains(&url3));
 
     // 7. Execute Autonomous Self-Repair
-    let repair_res = engine.repair_closure(&degraded_audit, &sessions, &dev_sk).await.unwrap();
+    let repair_res = engine
+        .repair_closure(&degraded_audit, &sessions, &dev_sk)
+        .await
+        .unwrap();
     assert_eq!(repair_res.objects_repaired, 1);
     assert_eq!(repair_res.objects_failed, 0);
     assert_eq!(repair_res.placement_updates.len(), 1);
 
     // Verify chunk object restored on Operator 1 disk
-    assert!(op1_chunk_path.exists(), "Chunk should have been restored onto Operator 1 disk");
+    assert!(
+        op1_chunk_path.exists(),
+        "Chunk should have been restored onto Operator 1 disk"
+    );
 
     // 8. Re-audit: should be 100% HEALTHY again!
-    let healed_audit = engine.audit_closure(&snap_out.closure, &sessions).await.unwrap();
+    let healed_audit = engine
+        .audit_closure(&snap_out.closure, &sessions)
+        .await
+        .unwrap();
     assert_eq!(healed_audit.healthy_count, healed_audit.total_objects);
     assert_eq!(healed_audit.degraded_count, 0);
     assert_eq!(healed_audit.lost_count, 0);
@@ -179,7 +242,13 @@ async fn test_maintenance_audit_and_self_repair() {
     let renewed_receipts = engine.renew_leases(&receipts, &sessions, 30).await;
     assert_eq!(renewed_receipts.len(), 3, "All 3 leases should be renewed");
     for r in &renewed_receipts {
-        assert_eq!(r.term_days, 30);
+        assert_eq!(r.term_days, 120);
+        let original = receipts
+            .iter()
+            .find(|old| old.lease_id == r.lease_id)
+            .unwrap();
+        assert_eq!(r.closure_digest_hex, original.closure_digest_hex);
+        assert_eq!(r.expires_at_utc, original.expires_at_utc + 30 * 86400);
     }
 
     let _ = fs::remove_dir_all(test_dir);

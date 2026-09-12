@@ -13,7 +13,11 @@ use ciphervault_agent::{VaultWatcher, WatcherConfig};
 #[command(version = "0.1.0")]
 #[command(about = "CipherVault Background File Watcher & Automated Sync Agent")]
 struct Cli {
-    #[arg(short, long, help = "Path to vault working directory (defaults to current directory)")]
+    #[arg(
+        short,
+        long,
+        help = "Path to vault working directory (defaults to current directory)"
+    )]
     dir: Option<PathBuf>,
 
     #[arg(short, long, help = "Path to agent configuration file")]
@@ -22,7 +26,11 @@ struct Cli {
     #[arg(short, long, default_value = "5", help = "Debounce window in seconds")]
     debounce_secs: u64,
 
-    #[arg(short, long, help = "Enable automatic remote replication to operators on snapshot")]
+    #[arg(
+        short,
+        long,
+        help = "Enable automatic remote replication to operators on snapshot"
+    )]
     sync: bool,
 }
 
@@ -74,7 +82,8 @@ async fn main() -> Result<()> {
         (None, None, None)
     };
 
-    let root_dir = cli.dir
+    let root_dir = cli
+        .dir
         .or(config_dir)
         .unwrap_or_else(|| std::env::current_dir().unwrap());
     let debounce_secs = if cli.debounce_secs != 5 {
@@ -100,12 +109,28 @@ async fn main() -> Result<()> {
         Vec::new()
     };
 
-    println!("{}", "=======================================================".cyan());
-    println!("{}", "  CipherVault Background Watcher Agent".bold().green());
-    println!("{}", "=======================================================".cyan());
+    println!(
+        "{}",
+        "=======================================================".cyan()
+    );
+    println!(
+        "{}",
+        "  CipherVault Background Watcher Agent".bold().green()
+    );
+    println!(
+        "{}",
+        "=======================================================".cyan()
+    );
     println!("  Vault Root:    {}", root_dir.display());
     println!("  Debounce:      {} seconds", debounce_secs);
-    println!("  Auto-sync:     {}", if sync { "Enabled".green() } else { "Disabled (local only)".yellow() });
+    println!(
+        "  Auto-sync:     {}",
+        if sync {
+            "Enabled".green()
+        } else {
+            "Disabled (local only)".yellow()
+        }
+    );
     if sync {
         println!("  Operators:     {}", operators.join(", ").dimmed());
     }

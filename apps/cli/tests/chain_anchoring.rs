@@ -5,7 +5,13 @@ use std::fs;
 
 #[tokio::test]
 async fn test_arbitrum_anchoring_commitment_and_evidence() {
-    let test_dir = std::env::temp_dir().join(format!("cv_anchor_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_anchor_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     fs::create_dir_all(&test_dir).unwrap();
     let db_path = test_dir.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();
@@ -57,7 +63,7 @@ async fn test_arbitrum_anchoring_commitment_and_evidence() {
     assert!(fetched.verify_commitment());
 
     // 6. Test ArbitrumAnchorClient calldata and verification
-    let client = ArbitrumAnchorClient::new("https://mock-rpc.arbitrum.io".into(), chain_id, contract_address);
+    let client = ArbitrumAnchorClient::new("http://127.0.0.1:1".into(), chain_id, contract_address);
 
     let pub_calldata = ArbitrumAnchorClient::encode_publish_calldata(&commitment);
     assert_eq!(pub_calldata.len(), 36);

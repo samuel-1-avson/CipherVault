@@ -1,0 +1,31 @@
+{
+    "$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schema.json",
+    "version": "0.1.0-beta.2",
+    "description": "Decentralized, encrypted version control for confidential files with multi-operator storage and Arbitrum checkpoint anchoring.",
+    "homepage": "https://github.com/samuel-1-avson/CipherVault",
+    "license": "MIT OR Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/samuel-1-avson/CipherVault/releases/download/v0.1.0-beta.2/ciphervault-v0.1.0-beta.2-x86_64-pc-windows-msvc.zip",
+            "bin": [
+                "bin/ciphervault.exe",
+                "bin/ciphervault-operator.exe",
+                "bin/ciphervault-agent.exe",
+                "bin/ciphervault-maintenance.exe"
+            ]
+        }
+    },
+    "notes": [
+        "To initialize a vault in your repository: ciphervault init",
+        "To track confidential files: ciphervault track .env credentials.json",
+        "To launch the web dashboard: ciphervault ui"
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/samuel-1-avson/CipherVault/releases/download/v$version/ciphervault-v$version-x86_64-pc-windows-msvc.zip"
+            }
+        }
+    }
+}

@@ -32,24 +32,31 @@ fn derive_box_seal_key_and_nonce(
 /// Seals a payload to an X25519 recipient public key using an ephemeral sender keypair.
 /// The sender does NOT need a persistent private key.
 /// Output: `[ephemeral_public_key (32 bytes) || ciphertext + tag]`.
-pub fn seal_box(
-    recipient_pk: &X25519PublicKey,
-    plaintext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+pub fn seal_box(recipient_pk: &X25519PublicKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut ephemeral_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut ephemeral_bytes);
     let ephemeral_sk = X25519StaticSecret::from(ephemeral_bytes);
     let ephemeral_pk = X25519PublicKey::from(&ephemeral_sk);
 
     let shared_point = ephemeral_sk.diffie_hellman(recipient_pk);
-    let (key, nonce) = derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
+    let (key, nonce) =
+        derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| CryptoError::InvalidKeyLength { expected: 32, actual: 32 })?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| CryptoError::InvalidKeyLength {
+            expected: 32,
+            actual: 32,
+        })?;
     let xnonce = XNonce::from_slice(&nonce);
 
     let ciphertext = cipher
-        .encrypt(xnonce, Payload { msg: plaintext, aad: b"CipherVault-SealedBox" })
+        .encrypt(
+            xnonce,
+            Payload {
+                msg: plaintext,
+                aad: b"CipherVault-SealedBox",
+            },
+        )
         .map_err(|_| CryptoError::AuthTagVerificationFailed)?;
 
     let mut out = Vec::with_capacity(32 + ciphertext.len());
@@ -65,7 +72,9 @@ pub fn open_sealed_box(
     sealed_box: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
     if sealed_box.len() < SEALED_BOX_OVERHEAD {
-        return Err(CryptoError::SealedBoxPayloadTooShort { min_len: SEALED_BOX_OVERHEAD });
+        return Err(CryptoError::SealedBoxPayloadTooShort {
+            min_len: SEALED_BOX_OVERHEAD,
+        });
     }
 
     let (ephemeral_pk_bytes, ciphertext) = sealed_box.split_at(32);
@@ -74,14 +83,24 @@ pub fn open_sealed_box(
     let ephemeral_pk = X25519PublicKey::from(epk_arr);
 
     let shared_point = recipient_sk.diffie_hellman(&ephemeral_pk);
-    let (key, nonce) = derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
+    let (key, nonce) =
+        derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
 
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| CryptoError::InvalidKeyLength { expected: 32, actual: 32 })?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| CryptoError::InvalidKeyLength {
+            expected: 32,
+            actual: 32,
+        })?;
     let xnonce = XNonce::from_slice(&nonce);
 
     let plaintext = cipher
-        .decrypt(xnonce, Payload { msg: ciphertext, aad: b"CipherVault-SealedBox" })
+        .decrypt(
+            xnonce,
+            Payload {
+                msg: ciphertext,
+                aad: b"CipherVault-SealedBox",
+            },
+        )
         .map_err(|_| CryptoError::AuthTagVerificationFailed)?;
 
     Ok(plaintext)

@@ -15,7 +15,11 @@ pub enum SnapshotError {
     FileTooLarge { path: String, size: u64 },
 
     #[error("Plaintext SHA-256 mismatch for {path}: expected {expected}, actual {actual}")]
-    IntegrityMismatch { path: String, expected: String, actual: String },
+    IntegrityMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
 
     #[error("Missing chunk {chunk_cid} for file {path}")]
     MissingChunk { path: String, chunk_cid: String },

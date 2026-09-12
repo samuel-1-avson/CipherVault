@@ -1,5 +1,5 @@
-use sha2::{Digest, Sha256};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::error::FormatError;
 
@@ -10,7 +10,7 @@ pub fn to_canonical_cbor<T: Serialize>(value: &T) -> Result<Vec<u8>, FormatError
     let mut buf = Vec::new();
     ciborium::into_writer(value, &mut buf)
         .map_err(|e| FormatError::SerializationError(e.to_string()))?;
-    
+
     if buf.len() > MAX_RECORD_SIZE {
         return Err(FormatError::SizeLimitExceeded {
             limit: MAX_RECORD_SIZE,
@@ -30,8 +30,7 @@ pub fn from_canonical_cbor<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Resu
         });
     }
 
-    ciborium::from_reader(bytes)
-        .map_err(|e| FormatError::DeserializationError(e.to_string()))
+    ciborium::from_reader(bytes).map_err(|e| FormatError::DeserializationError(e.to_string()))
 }
 
 /// Computes SHA-256 digest of wire bytes.

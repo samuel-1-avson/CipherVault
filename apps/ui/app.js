@@ -2,6 +2,8 @@
 
 const state = {
   vault: null,
+  audit: null,
+  fetching: false,
   operators: [],
   snapshots: [],
   anchors: [],
@@ -28,6 +30,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // -------------------------------------------------------------
 
 async function fetchAllData() {
+  if (state.fetching) return;
+  state.fetching = true;
   const refreshIcon = document.getElementById('icon-refresh');
   if (refreshIcon) refreshIcon.classList.add('rotating');
 
@@ -37,10 +41,12 @@ async function fetchAllData() {
       fetchOperators(),
       fetchSnapshots(),
       fetchAnchors(),
+      fetchAudit(),
     ]);
   } catch (err) {
     console.error("Data synchronization error:", err);
   } finally {
+    state.fetching = false;
     if (refreshIcon) {
       setTimeout(() => refreshIcon.classList.remove('rotating'), 600);
     }
@@ -119,40 +125,13 @@ async function fetchOperators() {
     const totalCount = data.length || 3;
     const statusText = document.getElementById('cluster-status-text');
     const pulseDot = document.getElementById('pulse-dot');
-    const durabilityRatio = document.getElementById('durability-ratio');
-    const barDurability = document.getElementById('bar-durability');
     const badgeTabOp = document.getElementById('badge-tab-operators');
 
-    const badgeDurabilityState = document.getElementById('badge-durability-state');
-    const subDurability = document.getElementById('sub-metric-durability');
 
     if (badgeTabOp) badgeTabOp.textContent = totalCount;
 
     if (statusText) {
       statusText.textContent = `${onlineCount}/${totalCount} Operators Online`;
-    }
-
-    if (durabilityRatio) {
-      durabilityRatio.textContent = `${onlineCount}/${totalCount}`;
-      durabilityRatio.style.color = onlineCount === totalCount ? 'var(--accent-emerald)' : (onlineCount > 0 ? 'var(--accent-amber)' : 'var(--accent-rose)');
-    }
-
-    if (badgeDurabilityState) {
-      badgeDurabilityState.textContent = onlineCount === totalCount ? 'Optimal' : (onlineCount > 0 ? 'Degraded' : 'Offline');
-      badgeDurabilityState.style.borderColor = onlineCount === totalCount ? 'var(--accent-emerald)' : (onlineCount > 0 ? 'var(--accent-amber)' : 'var(--accent-rose)');
-      badgeDurabilityState.style.color = onlineCount === totalCount ? 'var(--accent-emerald)' : (onlineCount > 0 ? 'var(--accent-amber)' : 'var(--accent-rose)');
-    }
-
-    if (subDurability) {
-      subDurability.textContent = onlineCount === totalCount 
-        ? 'Full Quorum Verified' 
-        : (onlineCount > 0 ? 'Degraded Quorum (Repair Recommended)' : 'Zero Operators Reachable');
-    }
-
-    if (barDurability) {
-      const pct = Math.round((onlineCount / totalCount) * 100);
-      barDurability.style.width = `${pct}%`;
-      barDurability.style.background = onlineCount === totalCount ? 'var(--accent-emerald)' : (onlineCount > 0 ? 'var(--accent-amber)' : 'var(--accent-rose)');
     }
 
     if (pulseDot) {
@@ -178,6 +157,32 @@ async function fetchOperators() {
   } catch (e) {
     console.warn("fetchOperators error:", e);
   }
+}
+
+async function fetchAudit() {
+  state.audit = null;
+  renderAudit(null);
+  try {
+    const response = await fetch('/api/audit');
+    if (!response.ok) throw new Error('Audit unavailable');
+    const data = await response.json();
+    state.audit = data.report || null;
+  } catch (error) { console.warn('Recovery audit unavailable', error); }
+  renderAudit(state.audit);
+}
+
+function renderAudit(audit) {
+  const count = audit ? audit.recoverable_operators.length : 0;
+  const label = audit ? (audit.healthy ? 'Verified' : 'Degraded') : 'Unverified';
+  const color = audit && audit.healthy ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+  const badge = document.getElementById('badge-durability-state');
+  if (badge) { badge.textContent = label; badge.style.color = color; }
+  const ratio = document.getElementById('durability-ratio');
+  if (ratio) ratio.textContent = audit ? `${count}/3` : '--/3';
+  const detail = document.getElementById('sub-metric-durability');
+  if (detail) detail.textContent = audit ? `Last checked snapshot: ${count} complete recovery sets; ${audit.objects.lost_count} lost objects` : 'No completed recovery verification';
+  const bar = document.getElementById('bar-durability');
+  if (bar) { bar.style.width = `${Math.min(count / 3 * 100, 100)}%`; bar.style.background = color; }
 }
 
 async function fetchSnapshots() {
@@ -373,15 +378,7 @@ function renderTrackedFiles(files) {
     const sizeStr = file.size_bytes !== undefined ? formatBytes(file.size_bytes) : "Unknown";
     const chunks = file.chunks_count || 1;
 
-    const opCount = (state.operators || []).length;
-    const onlineCount = (state.operators || []).filter(op => op.status === 'online').length;
-    const replicaBadge = opCount > 0
-      ? (onlineCount === opCount
-          ? `<span class="badge-online">Replicas Verified (${onlineCount}/${opCount})</span>`
-          : (onlineCount > 0
-              ? `<span class="badge-status-subtle" style="color: var(--accent-amber); border-color: var(--accent-amber);">Degraded (${onlineCount}/${opCount})</span>`
-              : `<span class="badge-offline">Offline (0/${opCount})</span>`))
-      : `<span class="badge-online">Tracked Local</span>`;
+    const replicaBadge = '<span class="badge-status-subtle">See latest snapshot audit</span>';
 
     return `
       <tr>
@@ -765,7 +762,9 @@ function initQuickActions() {
           showToast("✓ Replica audit passed: All chunks durable (3/3)");
           await fetchOperators();
         } else {
-          showToast(`Audit warning: ${result.error || 'Check degraded'}`);
+          state.audit = result.report || null;
+          renderAudit(state.audit);
+          showToast(`Audit warning: ${result.error || result.message || 'Unverified'}`);
         }
       } catch (e) {
         showToast("Network error running replica audit");

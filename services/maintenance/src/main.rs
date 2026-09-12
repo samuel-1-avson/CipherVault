@@ -1,8 +1,8 @@
-use std::time::Duration;
 use anyhow::Result;
+use ciphervault_storage::client::OperatorClient;
 use clap::Parser;
 use colored::*;
-use ciphervault_storage::client::OperatorClient;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "ciphervault-maintenance")]
@@ -20,15 +20,27 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    println!("{}", "=======================================================".cyan());
-    println!("{}", "  CipherVault Autonomous Maintenance Daemon".bold().green());
-    println!("{}", "=======================================================".cyan());
+    println!(
+        "{}",
+        "=======================================================".cyan()
+    );
+    println!(
+        "{}",
+        "  CipherVault Autonomous Maintenance Daemon".bold().green()
+    );
+    println!(
+        "{}",
+        "=======================================================".cyan()
+    );
     println!("  Monitored Operators: {}", cli.operators.len());
     for op in &cli.operators {
         println!("  - {}", op);
     }
     println!("  Audit Interval:      {} seconds", cli.interval_secs);
-    println!("{}", "\nDaemon running. Press Ctrl+C to terminate.\n".dimmed());
+    println!(
+        "{}",
+        "\nDaemon running. Press Ctrl+C to terminate.\n".dimmed()
+    );
 
     let clients: Vec<OperatorClient> = cli
         .operators

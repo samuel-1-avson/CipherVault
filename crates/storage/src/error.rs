@@ -9,7 +9,11 @@ pub enum StorageError {
     ServerError { status: u16, message: String },
 
     #[error("Digest mismatch for object {cid}: expected {expected}, got {actual}")]
-    DigestMismatch { cid: String, expected: String, actual: String },
+    DigestMismatch {
+        cid: String,
+        expected: String,
+        actual: String,
+    },
 
     #[error("Invalid signature on operator receipt")]
     InvalidReceiptSignature,

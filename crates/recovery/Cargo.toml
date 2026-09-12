@@ -15,4 +15,7 @@ thiserror.workspace = true
 chrono.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
+anyhow.workspace = true
 
+[dev-dependencies]
+ed25519-dalek.workspace = true

@@ -156,7 +156,11 @@ Configured Operators:
             if line.starts_with("Vault ID:") {
                 vault_id_hex = line.trim_start_matches("Vault ID:").trim().to_string();
             } else if line.starts_with("Creation Date (UTC):") {
-                created_at_utc = line.trim_start_matches("Creation Date (UTC):").trim().parse().unwrap_or(0);
+                created_at_utc = line
+                    .trim_start_matches("Creation Date (UTC):")
+                    .trim()
+                    .parse()
+                    .unwrap_or(0);
             } else if line.starts_with("MASTER RECOVERY SECRET R:") {
                 if i + 1 < lines.len() {
                     recovery_secret_hex = lines[i + 1].trim().to_string();
@@ -167,11 +171,20 @@ Configured Operators:
                 let clean_hex = val_str.trim_start_matches("0x");
                 checksum = u32::from_str_radix(clean_hex, 16).unwrap_or(0);
             } else if line.starts_with("Recovery Signing PK:") {
-                recovery_signing_pk_hex = line.trim_start_matches("Recovery Signing PK:").trim().to_string();
+                recovery_signing_pk_hex = line
+                    .trim_start_matches("Recovery Signing PK:")
+                    .trim()
+                    .to_string();
             } else if line.starts_with("Recovery Encrypt PK:") {
-                recovery_encryption_pk_hex = line.trim_start_matches("Recovery Encrypt PK:").trim().to_string();
+                recovery_encryption_pk_hex = line
+                    .trim_start_matches("Recovery Encrypt PK:")
+                    .trim()
+                    .to_string();
             } else if line.starts_with("Recovery Locator:") {
-                recovery_locator_hex = line.trim_start_matches("Recovery Locator:").trim().to_string();
+                recovery_locator_hex = line
+                    .trim_start_matches("Recovery Locator:")
+                    .trim()
+                    .to_string();
             } else if line.starts_with("- http://") || line.starts_with("- https://") {
                 operator_endpoints.push(line.trim_start_matches("- ").trim().to_string());
             }
@@ -179,7 +192,9 @@ Configured Operators:
         }
 
         if recovery_secret_hex.is_empty() || vault_id_hex.is_empty() {
-            return Err(RecoveryError::InvalidKitFormat("Missing Vault ID or Recovery Secret in text".into()));
+            return Err(RecoveryError::InvalidKitFormat(
+                "Missing Vault ID or Recovery Secret in text".into(),
+            ));
         }
 
         let kit = Self {
@@ -209,7 +224,9 @@ mod tests {
     fn test_recovery_kit_roundtrip_and_checksum() {
         let vault_id = [0x55u8; 32];
         let secret = RecoverySecret::generate();
-        let kit = OfflineRecoveryKit::create(&vault_id, &secret, vec!["https://op1.example.com".into()]).unwrap();
+        let kit =
+            OfflineRecoveryKit::create(&vault_id, &secret, vec!["https://op1.example.com".into()])
+                .unwrap();
 
         let extracted = kit.validate_and_extract_secret().unwrap();
         assert_eq!(extracted.as_bytes(), secret.as_bytes());

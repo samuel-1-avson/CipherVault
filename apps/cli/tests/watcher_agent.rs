@@ -7,7 +7,13 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn test_watcher_agent_and_coherent_capture() {
-    let test_dir = std::env::temp_dir().join(format!("cv_watcher_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_watcher_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let root_dir = test_dir.clone();
     let vault_dir = root_dir.join(".ciphervault");
     fs::create_dir_all(&vault_dir).unwrap();
@@ -36,15 +42,42 @@ async fn test_watcher_agent_and_coherent_capture() {
 
     let db_path = vault_dir.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();
-    store.init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key).unwrap();
+    store
+        .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key)
+        .unwrap();
+
+    let kit = ciphervault_recovery::OfflineRecoveryKit::create(&vault_id, &r, Vec::new()).unwrap();
+    fs::write(
+        vault_dir.join("recovery_kit_backup.txt"),
+        kit.format_printable(),
+    )
+    .unwrap();
+    let mut cert = ciphervault_format::DeviceCertificate {
+        version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_vec(),
+        certificate_id: vec![1; 32],
+        device_signing_pk: dev_sk.verifying_key().to_bytes().to_vec(),
+        permissions: 1,
+        authority_generation: 1,
+        issued_at_utc: 1000,
+        signature: Vec::new(),
+    };
+    cert.sign(&r_sk).unwrap();
+    store.save_device_certificate(&cert).unwrap();
 
     // 2. Track a file
     let secret_path = root_dir.join(".env");
-    fs::write(&secret_path, "SERVICE_ENDPOINT=https://cluster.internal.local/db\nAUTH_KEY=token_cluster_auth_12345\n").unwrap();
+    fs::write(
+        &secret_path,
+        "SERVICE_ENDPOINT=https://cluster.internal.local/db\nAUTH_KEY=token_cluster_auth_12345\n",
+    )
+    .unwrap();
     store.track_file(".env").unwrap();
 
     // 3. Test coherent read
-    let data = VaultWatcher::read_file_coherently(&secret_path).unwrap().unwrap();
+    let data = VaultWatcher::read_file_coherently(&secret_path)
+        .unwrap()
+        .unwrap();
     assert!(data.starts_with(b"SERVICE_ENDPOINT="));
 
     // 4. Test change detection
@@ -59,7 +92,10 @@ async fn test_watcher_agent_and_coherent_capture() {
     assert!(watcher.check_for_changes().unwrap()); // First check detects untracked initial content
 
     // 5. Test automated capture
-    let snap_cid = watcher.capture_and_sync(Some("Agent test capture".into())).await.unwrap();
+    let snap_cid = watcher
+        .capture_and_sync(Some("Agent test capture".into()))
+        .await
+        .unwrap();
     assert_ne!(snap_cid, [0u8; 32]);
 
     // Verify snapshot stored in local database
@@ -71,11 +107,18 @@ async fn test_watcher_agent_and_coherent_capture() {
     assert!(!watcher.check_for_changes().unwrap());
 
     // 6. Modify tracked file and check detection
-    fs::write(&secret_path, "SERVICE_ENDPOINT=https://cluster.internal.local/db_v2\n").unwrap();
+    fs::write(
+        &secret_path,
+        "SERVICE_ENDPOINT=https://cluster.internal.local/db_v2\n",
+    )
+    .unwrap();
     assert!(watcher.check_for_changes().unwrap());
 
     // Trigger second snapshot
-    let snap_cid_2 = watcher.capture_and_sync(Some("Updated secrets".into())).await.unwrap();
+    let snap_cid_2 = watcher
+        .capture_and_sync(Some("Updated secrets".into()))
+        .await
+        .unwrap();
     assert_ne!(snap_cid_2, snap_cid);
 
     let active_head_2 = store.get_active_head().unwrap().unwrap();

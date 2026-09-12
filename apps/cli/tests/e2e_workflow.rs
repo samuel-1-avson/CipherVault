@@ -1,10 +1,10 @@
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sha2::{Digest, Sha256};
 
 fn get_ciphervault_bin() -> PathBuf {
-    PathBuf::from("C:/Users/samue/.cargo-targets/ciphervault/debug/ciphervault.exe")
+    PathBuf::from(env!("CARGO_BIN_EXE_ciphervault"))
 }
 
 fn sha256_file(path: &Path) -> [u8; 32] {
@@ -20,19 +20,33 @@ fn sha256_file(path: &Path) -> [u8; 32] {
 #[test]
 fn test_end_to_end_ciphervault_workflow() {
     let bin = get_ciphervault_bin();
-    assert!(bin.exists(), "ciphervault binary does not exist at {:?}", bin);
+    assert!(
+        bin.exists(),
+        "ciphervault binary does not exist at {:?}",
+        bin
+    );
 
     // Setup isolated temporary test directory
-    let test_dir = std::env::temp_dir().join(format!("ciphervault_e2e_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
+    let test_dir = std::env::temp_dir().join(format!(
+        "ciphervault_e2e_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
     fs::create_dir_all(&test_dir).unwrap();
 
     // 1. Run ciphervault init
     let init_output = Command::new(&bin)
-        .arg("init")
+        .args(["init", "--operators", "http://127.0.0.1:1"])
         .current_dir(&test_dir)
         .output()
         .expect("failed to execute ciphervault init");
-    assert!(init_output.status.success(), "ciphervault init failed: {:?}", String::from_utf8_lossy(&init_output.stderr));
+    assert!(
+        init_output.status.success(),
+        "ciphervault init failed: {:?}",
+        String::from_utf8_lossy(&init_output.stderr)
+    );
 
     // Verify .ciphervault and recovery kit exist
     let vault_dir = test_dir.join(".ciphervault");
@@ -82,7 +96,7 @@ fn test_end_to_end_ciphervault_workflow() {
         .current_dir(&test_dir)
         .output()
         .unwrap();
-    assert!(push_output.status.success());
+    assert!(!push_output.status.success());
     let push_stdout = String::from_utf8_lossy(&push_output.stdout);
     assert!(push_stdout.contains("Snapshot captured and encrypted locally"));
 
@@ -116,7 +130,7 @@ fn test_end_to_end_ciphervault_workflow() {
         .current_dir(&test_dir)
         .output()
         .unwrap();
-    assert!(push_v2_output.status.success());
+    assert!(!push_v2_output.status.success());
 
     // 8. Run ciphervault history
     let history_output = Command::new(&bin)

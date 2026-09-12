@@ -1,11 +1,11 @@
+use chrono::Utc;
+use ed25519_dalek::SigningKey;
+use rand::RngCore;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use chrono::Utc;
-use ed25519_dalek::SigningKey;
-use rand::RngCore;
 
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::compute_digest;
@@ -18,6 +18,7 @@ pub struct OperatorState {
     pub operator_id: String,
     pub signing_key: SigningKey,
     pub data_dir: PathBuf,
+    io_lock: Mutex<()>,
     // Active challenges: challenge_id -> (nonce_hex, expires_at_utc)
     pub challenges: Mutex<HashMap<String, (String, u64)>>,
     // Active sessions: token -> expires_at_utc
@@ -34,6 +35,7 @@ impl OperatorState {
             operator_id,
             signing_key,
             data_dir,
+            io_lock: Mutex::new(()),
             challenges: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
         }
@@ -92,7 +94,9 @@ impl OperatorState {
             b"operator_challenge",
             &nonce_bytes,
             &sig_arr,
-        ).is_err() {
+        )
+        .is_err()
+        {
             return None;
         }
 
@@ -138,7 +142,10 @@ impl OperatorState {
 
     pub fn put_object(&self, cid_hex: &str, bytes: &[u8]) -> Result<(), String> {
         if bytes.len() > MAX_OBJECT_SIZE {
-            return Err(format!("Object exceeds maximum size limit of {} bytes", MAX_OBJECT_SIZE));
+            return Err(format!(
+                "Object exceeds maximum size limit of {} bytes",
+                MAX_OBJECT_SIZE
+            ));
         }
         if cid_hex.len() != 64 {
             return Err("Invalid CID length (must be 64 hex characters)".into());
@@ -153,9 +160,10 @@ impl OperatorState {
             return Err("Digest mismatch".into());
         }
 
+        let _guard = self.io_lock.lock().map_err(|e| e.to_string())?;
         let obj_path = self.data_dir.join("objects").join(cid_hex);
-        if !obj_path.exists() {
-            fs::write(obj_path, bytes).map_err(|e| e.to_string())?;
+        if fs::read(&obj_path).ok().as_deref() != Some(bytes) {
+            self.persist_atomic(&obj_path, bytes)?;
         }
         Ok(())
     }
@@ -168,41 +176,66 @@ impl OperatorState {
         fs::read(obj_path).ok()
     }
 
+    fn persist_atomic(&self, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+        let temp = path.with_extension(format!("{}.tmp", rand::random::<u128>()));
+        let result = (|| -> std::io::Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, path)?;
+            #[cfg(unix)]
+            std::fs::File::open(path.parent().unwrap())?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result.map_err(|e| e.to_string())
+    }
+
+    fn persist_lease(&self, mut receipt: LeaseReceipt) -> Result<LeaseReceipt, String> {
+        receipt.signature_hex = hex::encode(sign_with_domain(
+            &self.signing_key,
+            b"operator_lease",
+            &receipt.signing_bytes(),
+        ));
+        let path = self
+            .data_dir
+            .join("leases")
+            .join(format!("{}.json", receipt.lease_id));
+        let serialized = serde_json::to_vec(&receipt).map_err(|e| e.to_string())?;
+        self.persist_atomic(&path, &serialized)?;
+        Ok(receipt)
+    }
+
     pub fn create_lease(
         &self,
         closure_digest_hex: &str,
         bytes: u64,
         term_days: u32,
-    ) -> LeaseReceipt {
-        let mut lease_id_bytes = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut lease_id_bytes);
-        let lease_id = hex::encode(lease_id_bytes);
-
+    ) -> Result<LeaseReceipt, String> {
+        if closure_digest_hex.len() != 64
+            || hex::decode(closure_digest_hex).is_err()
+            || term_days == 0
+        {
+            return Err("Invalid closure digest or retention term".into());
+        }
+        let _guard = self.io_lock.lock().map_err(|e| e.to_string())?;
         let now = Utc::now().timestamp() as u64;
-        let expires = now + (term_days as u64 * 86400);
-
-        // Sign the lease promise: operator_id || lease_id || closure_digest || expires
-        let msg = format!("{}:{}:{}:{}", self.operator_id, lease_id, closure_digest_hex, expires);
-        let sig = sign_with_domain(&self.signing_key, b"operator_lease", msg.as_bytes());
-
-        let receipt = LeaseReceipt {
-            lease_id: lease_id.clone(),
+        self.persist_lease(LeaseReceipt {
+            lease_id: hex::encode(rand::random::<[u8; 16]>()),
             operator_id: self.operator_id.clone(),
-            closure_digest_hex: closure_digest_hex.to_string(),
+            closure_digest_hex: closure_digest_hex.into(),
             term_days,
             bytes,
             issued_at_utc: now,
-            expires_at_utc: expires,
-            signature_hex: hex::encode(sig),
-        };
-
-        // Persist lease to disk
-        let lease_path = self.data_dir.join("leases").join(format!("{}.json", lease_id));
-        if let Ok(serialized) = serde_json::to_string_pretty(&receipt) {
-            let _ = fs::write(lease_path, serialized);
-        }
-
-        receipt
+            expires_at_utc: now + u64::from(term_days) * 86400,
+            signature_hex: String::new(),
+        })
     }
 
     pub fn renew_lease(
@@ -210,31 +243,34 @@ impl OperatorState {
         lease_id: &str,
         additional_days: u32,
         bytes: u64,
-    ) -> LeaseReceipt {
-        let now = Utc::now().timestamp() as u64;
-        let expires = now + (additional_days as u64 * 86400);
-
-        let msg = format!("{}:{}:{}:{}", self.operator_id, lease_id, "renewed", expires);
-        let sig = sign_with_domain(&self.signing_key, b"operator_lease", msg.as_bytes());
-
-        let receipt = LeaseReceipt {
-            lease_id: lease_id.to_string(),
-            operator_id: self.operator_id.clone(),
-            closure_digest_hex: "renewed".to_string(),
-            term_days: additional_days,
-            bytes,
-            issued_at_utc: now,
-            expires_at_utc: expires,
-            signature_hex: hex::encode(sig),
-        };
-
-        // Persist renewed lease to disk
-        let lease_path = self.data_dir.join("leases").join(format!("{}.json", lease_id));
-        if let Ok(serialized) = serde_json::to_string_pretty(&receipt) {
-            let _ = fs::write(lease_path, serialized);
+    ) -> Result<LeaseReceipt, String> {
+        if lease_id.len() != 32 || hex::decode(lease_id).is_err() || additional_days == 0 {
+            return Err("Invalid lease ID or retention term".into());
         }
-
+        let _guard = self.io_lock.lock().map_err(|e| e.to_string())?;
+        let path = self
+            .data_dir
+            .join("leases")
+            .join(format!("{}.json", lease_id));
+        let mut receipt: LeaseReceipt =
+            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
         receipt
+            .verify(&self.signing_key.verifying_key().to_bytes())
+            .map_err(|e| e.to_string())?;
+        if receipt.bytes != bytes {
+            return Err("Lease byte count mismatch".into());
+        }
+        receipt.term_days = receipt
+            .term_days
+            .checked_add(additional_days)
+            .ok_or("Retention overflow")?;
+        receipt.expires_at_utc = receipt
+            .expires_at_utc
+            .max(Utc::now().timestamp() as u64)
+            .checked_add(u64::from(additional_days) * 86400)
+            .ok_or("Expiry overflow")?;
+        self.persist_lease(receipt)
     }
 
     pub fn append_recovery_record(&self, locator_hex: &str, record: &[u8]) -> Result<u64, String> {
@@ -247,7 +283,11 @@ impl OperatorState {
                 MAX_RECOVERY_RECORD_SIZE
             ));
         }
-        let log_path = self.data_dir.join("recovery").join(format!("{}.log", locator_hex));
+        let _guard = self.io_lock.lock().unwrap();
+        let log_path = self
+            .data_dir
+            .join("recovery")
+            .join(format!("{}.log", locator_hex));
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -256,9 +296,16 @@ impl OperatorState {
 
         // Format: [4 bytes length prefix in big endian][record bytes]
         let len = (record.len() as u32).to_be_bytes();
-        file.write_all(&len).map_err(|e| e.to_string())?;
-        file.write_all(record).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
+        let original_len = file.metadata().map_err(|e| e.to_string())?.len();
+        if let Err(e) = file
+            .write_all(&len)
+            .and_then(|_| file.write_all(record))
+            .and_then(|_| file.sync_all())
+        {
+            let _ = file.set_len(original_len);
+            let _ = file.sync_all();
+            return Err(e.to_string());
+        }
 
         Ok(1)
     }
@@ -267,7 +314,11 @@ impl OperatorState {
         if locator_hex.len() != 64 || hex::decode(locator_hex).is_err() {
             return Vec::new();
         }
-        let log_path = self.data_dir.join("recovery").join(format!("{}.log", locator_hex));
+        let _guard = self.io_lock.lock().unwrap();
+        let log_path = self
+            .data_dir
+            .join("recovery")
+            .join(format!("{}.log", locator_hex));
         if !log_path.exists() {
             return Vec::new();
         }
@@ -295,5 +346,50 @@ impl OperatorState {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_persistence_renewal_and_signed_fields() {
+        let root = std::env::temp_dir().join(format!("cv-lease-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        let state = OperatorState::new("test".into(), root.clone(), key.clone());
+        let receipt = state.create_lease(&"a".repeat(64), 100, 90).unwrap();
+        let pk = key.verifying_key().to_bytes();
+        receipt.verify(&pk).unwrap();
+        let mut tampered = receipt.clone();
+        tampered.bytes += 1;
+        assert!(tampered.verify(&pk).is_err());
+        drop(state);
+        let restarted = OperatorState::new("test".into(), root.clone(), key);
+        let renewed = restarted.renew_lease(&receipt.lease_id, 30, 100).unwrap();
+        assert_eq!(renewed.closure_digest_hex, receipt.closure_digest_hex);
+        assert_eq!(renewed.expires_at_utc, receipt.expires_at_utc + 30 * 86400);
+        assert!(restarted.renew_lease("../escape", 30, 100).is_err());
+        assert!(restarted.renew_lease(&"0".repeat(32), 30, 100).is_err());
+        assert!(restarted.renew_lease(&receipt.lease_id, 30, 999).is_err());
+        drop(restarted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_failed_persistence_and_anonymous_writes() {
+        let root = std::env::temp_dir().join(format!("cv-write-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        assert!(state.validate_read_session("recovery_anonymous"));
+        assert!(!state.validate_write_session("recovery_anonymous"));
+        fs::remove_dir(root.join("leases")).unwrap();
+        fs::write(root.join("leases"), b"block writes").unwrap();
+        assert!(state.create_lease(&"a".repeat(64), 100, 90).is_err());
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
     }
 }

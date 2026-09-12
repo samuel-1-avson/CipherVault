@@ -6,9 +6,9 @@
 pub mod handlers;
 pub mod state;
 
-use std::sync::Arc;
 use axum::routing::{get, post, put};
 use axum::Router;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 pub use state::OperatorState;
@@ -19,7 +19,10 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/info", get(handlers::get_info))
         .route("/v1/challenges", post(handlers::post_challenge))
         .route("/v1/sessions", post(handlers::post_session))
-        .route("/v1/objects/:cid", put(handlers::put_object).get(handlers::get_object))
+        .route(
+            "/v1/objects/:cid",
+            put(handlers::put_object).get(handlers::get_object),
+        )
         .route("/v1/leases", post(handlers::post_lease))
         .route("/v1/leases/:id/renew", post(handlers::post_renew_lease))
         .route(

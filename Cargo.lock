@@ -428,13 +428,16 @@ dependencies = [
 name = "ciphervault-local-store"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ciphervault-crypto",
  "ciphervault-format",
+ "ciphervault-recovery",
  "ed25519-dalek",
  "hex",
  "rand 0.8.8",
  "rusqlite",
  "thiserror",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -484,10 +487,12 @@ dependencies = [
 name = "ciphervault-recovery"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "ciphervault-crypto",
  "ciphervault-format",
  "crc32fast",
+ "ed25519-dalek",
  "hex",
  "serde",
  "thiserror",

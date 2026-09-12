@@ -193,7 +193,9 @@ mod tests {
         let domain = b"CIPHERVAULT-TEST-HSM";
         let message = [0x42u8; 32];
 
-        let sig_bytes = hsm.sign_digest(HsmSlot::DigitalSignature, domain, &message).unwrap();
+        let sig_bytes = hsm
+            .sign_digest(HsmSlot::DigitalSignature, domain, &message)
+            .unwrap();
 
         // Verify with standard verifying key
         assert!(verify_with_domain(&pk_arr, domain, &message, &sig_bytes).is_ok());
@@ -218,10 +220,14 @@ mod tests {
         pk2.copy_from_slice(&pk2_bytes);
 
         // DH agreement 1 -> 2
-        let secret1 = hsm1.ecdh_key_agreement(HsmSlot::KeyManagement, &pk2).unwrap();
+        let secret1 = hsm1
+            .ecdh_key_agreement(HsmSlot::KeyManagement, &pk2)
+            .unwrap();
 
         // DH agreement 2 -> 1
-        let secret2 = hsm2.ecdh_key_agreement(HsmSlot::KeyManagement, &pk1).unwrap();
+        let secret2 = hsm2
+            .ecdh_key_agreement(HsmSlot::KeyManagement, &pk1)
+            .unwrap();
 
         // Symmetric shared secrets must be identical
         assert_eq!(secret1, secret2);

@@ -11,12 +11,9 @@ pub fn generate_signing_key() -> SigningKey {
 }
 
 /// Signs a message with a mandatory domain separation prefix.
-pub fn sign_with_domain(
-    signing_key: &SigningKey,
-    context: &[u8],
-    message: &[u8],
-) -> [u8; 64] {
-    let mut payload = Vec::with_capacity(SIGNATURE_DOMAIN_PREFIX.len() + context.len() + 1 + message.len());
+pub fn sign_with_domain(signing_key: &SigningKey, context: &[u8], message: &[u8]) -> [u8; 64] {
+    let mut payload =
+        Vec::with_capacity(SIGNATURE_DOMAIN_PREFIX.len() + context.len() + 1 + message.len());
     payload.extend_from_slice(SIGNATURE_DOMAIN_PREFIX);
     payload.extend_from_slice(context);
     payload.push(b':');
@@ -38,7 +35,8 @@ pub fn verify_with_domain(
 
     let signature = Signature::from_bytes(signature_bytes);
 
-    let mut payload = Vec::with_capacity(SIGNATURE_DOMAIN_PREFIX.len() + context.len() + 1 + message.len());
+    let mut payload =
+        Vec::with_capacity(SIGNATURE_DOMAIN_PREFIX.len() + context.len() + 1 + message.len());
     payload.extend_from_slice(SIGNATURE_DOMAIN_PREFIX);
     payload.extend_from_slice(context);
     payload.push(b':');
@@ -67,7 +65,9 @@ mod tests {
         assert!(verify_with_domain(verifying_key.as_bytes(), context, message, &sig).is_ok());
 
         // Wrong context fails
-        assert!(verify_with_domain(verifying_key.as_bytes(), b"device_cert", message, &sig).is_err());
+        assert!(
+            verify_with_domain(verifying_key.as_bytes(), b"device_cert", message, &sig).is_err()
+        );
 
         // Tampered message fails
         assert!(verify_with_domain(verifying_key.as_bytes(), context, b"tampered", &sig).is_err());

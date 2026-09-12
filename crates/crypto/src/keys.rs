@@ -41,7 +41,9 @@ impl RecoverySecret {
     }
 
     /// Derives the recovery X25519 encryption keypair.
-    pub fn derive_recovery_encryption_keys(&self) -> Result<(X25519StaticSecret, X25519PublicKey), CryptoError> {
+    pub fn derive_recovery_encryption_keys(
+        &self,
+    ) -> Result<(X25519StaticSecret, X25519PublicKey), CryptoError> {
         let mut seed = derive_subkey(&self.0, 1, CTX_RECOVERY_ENCRYPT)?;
         let sk = X25519StaticSecret::from(seed);
         let pk = X25519PublicKey::from(&sk);
@@ -137,4 +139,3 @@ mod tests {
         assert_eq!(file_key.as_bytes(), &[0u8; 32]);
     }
 }
-

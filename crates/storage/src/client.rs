@@ -1,6 +1,6 @@
-use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use reqwest::{header, Client};
+use std::time::Duration;
 
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::compute_digest;
@@ -73,8 +73,11 @@ impl OperatorClient {
         let challenge = c_resp.json::<ChallengeResponse>().await?;
 
         // 2. Sign challenge nonce
-        let nonce_bytes = hex::decode(&challenge.nonce_hex)
-            .map_err(|e| StorageError::ServerError { status: 500, message: e.to_string() })?;
+        let nonce_bytes =
+            hex::decode(&challenge.nonce_hex).map_err(|e| StorageError::ServerError {
+                status: 500,
+                message: e.to_string(),
+            })?;
         let sig = sign_with_domain(signing_key, b"operator_challenge", &nonce_bytes);
         let sig_hex = hex::encode(sig);
 
@@ -261,8 +264,10 @@ impl OperatorClient {
         let body = resp.json::<RecoveryRecordsResponse>().await?;
         let mut out = Vec::new();
         for r_hex in body.records_hex {
-            let b = hex::decode(r_hex)
-                .map_err(|e| StorageError::ServerError { status: 500, message: e.to_string() })?;
+            let b = hex::decode(r_hex).map_err(|e| StorageError::ServerError {
+                status: 500,
+                message: e.to_string(),
+            })?;
             out.push(b);
         }
         Ok(out)

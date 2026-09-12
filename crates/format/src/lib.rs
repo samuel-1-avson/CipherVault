@@ -12,6 +12,6 @@ pub use canonical::{compute_digest, from_canonical_cbor, to_canonical_cbor, MAX_
 pub use error::FormatError;
 pub use schema::{
     CheckpointEvidence, ChunkWireObject, DeviceCertificate, EpochEnvelope, GenesisRecord,
-    HeadRecord, ManifestFileEntry, PlacementUpdate, RecoveryClosure, SnapshotManifest,
+    HeadRecord, ManifestFileEntry, PlacementUpdate, RecoveryClosure, RecoverySet, SnapshotManifest,
     SnapshotRecord, PROTOCOL_VERSION,
 };
