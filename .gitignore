@@ -18,7 +18,7 @@ guardian_sheets/
 
 # Operator runtime data
 data/
-operator-data/
+operator-data*/
 
 # Node.js
 node_modules/

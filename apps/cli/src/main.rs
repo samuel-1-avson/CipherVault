@@ -754,7 +754,7 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_push(message: Option<String>, touch: bool) -> Result<()> {
+pub async fn cmd_push(message: Option<String>, touch: bool) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (device_id, device_sk, counter, epoch) = store.get_device_state()?;
@@ -1446,7 +1446,7 @@ async fn cmd_recovery_split(
     clippy::too_many_arguments,
     reason = "Command line parameter forwarding"
 )]
-async fn cmd_anchor(
+pub async fn cmd_anchor(
     head_hex_opt: Option<String>,
     rpc_opt: Option<String>,
     contract_opt: Option<String>,

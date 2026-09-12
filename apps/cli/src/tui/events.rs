@@ -187,26 +187,26 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
 }
 
 async fn execute_quick_push() -> anyhow::Result<String> {
-    // Execute a quick snapshot commit without blocking the UI thread
-    tokio::task::spawn_blocking(|| {
-        let store = crate::get_vault_store()?;
-        let files = store.list_tracked_files()?;
-        if files.is_empty() {
-            anyhow::bail!("No files are currently tracked in the vault. Press [t] to track files.");
-        }
-        Ok("✓ Encrypted snapshot created and confirmed across operator quorum.".into())
-    })
-    .await?
+    crate::cmd_push(Some("TUI Snapshot commit".into()), false).await?;
+    Ok("✓ Encrypted snapshot created and confirmed across operator quorum.".into())
 }
 
 async fn execute_quick_anchor() -> anyhow::Result<String> {
-    tokio::task::spawn_blocking(|| {
-        let store = crate::get_vault_store()?;
-        let head = store.get_active_head()?;
-        if head.is_none() {
-            anyhow::bail!("Vault has no snapshots committed yet. Create a snapshot before anchoring.");
+    let store = crate::get_vault_store()?;
+    let head = store.get_active_head()?;
+    let head_record = match head {
+        Some(h) => h,
+        None => {
+            anyhow::bail!("Vault has no snapshots committed yet. Press [p] to create a snapshot first.");
         }
-        Ok("✓ Checkpoint registered with Arbitrum L2 relayer (QueuedForRelay).".into())
-    })
-    .await?
+    };
+    let head_hex = hex::encode(&head_record.snapshot_id);
+    let relayer_url = crate::get_configured_operators().first().cloned();
+
+    match crate::cmd_anchor(Some(head_hex), None, None, None, None, None, true, relayer_url).await {
+        Ok(_) => Ok("✓ Checkpoint registered with Arbitrum L2 relayer (QueuedForRelay).".into()),
+        Err(e) => {
+            anyhow::bail!("{e}");
+        }
+    }
 }
