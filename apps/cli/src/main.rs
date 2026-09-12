@@ -2754,6 +2754,17 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
     let nodes = db.list_operator_nodes().unwrap_or_default();
     let history = db.get_recent_audits(20).unwrap_or_default();
 
+    let avg_latency = {
+        let healthy_nodes: Vec<_> = nodes.iter().filter(|n| n.is_healthy).collect();
+        if !healthy_nodes.is_empty() {
+            healthy_nodes.iter().map(|n| n.latency_ms).sum::<u64>() / healthy_nodes.len() as u64
+        } else if !nodes.is_empty() {
+            nodes.iter().map(|n| n.latency_ms).sum::<u64>() / nodes.len() as u64
+        } else {
+            0
+        }
+    };
+
     let fleet_summary = serde_json::json!({
         "total_tracked_vaults": summary.total_tracked_vaults,
         "healthy_vaults": summary.healthy_vaults,
@@ -2763,7 +2774,7 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
         "online_operators": summary.online_operators,
         "active_operators": summary.online_operators,
         "total_operators": summary.total_operators,
-        "avg_latency_ms": 14,
+        "avg_latency_ms": avg_latency,
     });
 
     axum::Json(serde_json::json!({

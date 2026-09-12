@@ -72,7 +72,7 @@ Benchmarked on Windows x86_64:
 
 | Binary | Size | SHA-256 Checksum |
 |---|---|---|
-| `ciphervault.exe` | 9.26 MB | `ca21386a8c00f158f48937a1980b3066e3575ab43bf7e4faf88493a5d910e27f` |
+| `ciphervault.exe` | 9.26 MB | `fa1fb30bac4d19d37b1ca12e7838236af2cfe65f64f6e519f7427b909c147572` |
 | `ciphervault-operator.exe` | 2.74 MB | `1fa441f2b72c69f580c52d6c4a5411c0940e09cd741af80a6aa610cc9e8585b4` |
 | `ciphervault-agent.exe` | 6.58 MB | `c0769ee8dd10bbc012856035252b064a0e0eaafb1f1be68b10c4c0f3a7f91aee` |
 | `ciphervault-maintenance.exe` | 5.66 MB | `efac827767c88bf73e4e783d470d7b8fa553aeedda0c2c743f70683e9b5c6e9e` |
