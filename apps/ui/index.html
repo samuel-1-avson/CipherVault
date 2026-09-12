@@ -503,6 +503,10 @@
               <option value="9">9</option>
             </select>
           </div>
+          <div class="threshold-input-group">
+            <label for="input-split-recovery-secret">Master Secret (R):</label>
+            <input type="password" id="input-split-recovery-secret" class="form-input select-compact" style="width: 220px;" placeholder="64-char hex secret (R)" title="Enter master secret R from offline paper kit to perform authentic split">
+          </div>
           <button class="btn-action primary small" id="btn-generate-guardians" title="Partition master recovery kit into M-of-N threshold shares">
             <span>Split Recovery Secret</span>
           </button>
@@ -766,11 +770,16 @@
       <!-- FastCDC Workload Input & Configuration Bar -->
       <div class="fastcdc-control-card">
         <div class="fastcdc-presets-row">
-          <span class="control-label">Sample Workload Presets:</span>
-          <button class="btn-preset" id="preset-logs">Synthetic Cloud Logs (~64 KiB)</button>
-          <button class="btn-preset" id="preset-configs">Kubernetes Microservice YAML/JSON</button>
-          <button class="btn-preset" id="preset-code">Rust Source Code</button>
-          <button class="btn-preset secondary" id="preset-clear">Clear Input</button>
+          <span class="control-label">Inspect Active Vault Files:</span>
+          <select id="select-vault-file" class="select-compact" style="min-width: 240px;" aria-label="Select Tracked Vault File">
+            <option value="">-- Select Tracked Confidential File --</option>
+          </select>
+          <button class="btn-preset" id="btn-inspect-vault-file">Inspect Selected File</button>
+          <label for="input-upload-file" class="btn-preset secondary" style="cursor: pointer; display: inline-flex; align-items: center; margin: 0;">
+            <span>Upload Real File</span>
+            <input type="file" id="input-upload-file" style="display: none;">
+          </label>
+          <button class="btn-preset secondary" id="preset-clear">Clear</button>
         </div>
 
         <div class="fastcdc-input-wrap">

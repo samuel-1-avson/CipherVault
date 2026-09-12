@@ -19,11 +19,11 @@ INTERNAL_API_ENDPOINT=https://internal-api.cluster.local:8443
 CACHE_HOST_URL=rediss://cache.cluster.local:6380
 EOF
 
-    cat << 'EOF' > secrets/credentials.json
+    cat << EOF > secrets/credentials.json
 {
   "service": "ciphervault-cluster",
-  "cluster_identifier": "mock-cluster-node-east",
-  "region": "us-east-1"
+  "cluster_identifier": "${NODE_NAME:-$(hostname 2>/dev/null || echo ciphervault-primary-node)}",
+  "region": "${REGION:-us-east-1}"
 }
 EOF
 
@@ -32,7 +32,7 @@ EOF
     echo "Pushing initial encrypted snapshot across operators with FastCDC & PoS readback..."
     ciphervault push -m "Cluster deployment initial configuration" --pos || true
 
-    echo "Anchoring initial snapshot head commitment to Arbitrum L2 relayer (simulation)..."
+    echo "Anchoring initial snapshot head commitment to Arbitrum L2 relayer..."
     ciphervault anchor --auto-relay --relayer-url "http://operator-1:8201" || true
 fi
 

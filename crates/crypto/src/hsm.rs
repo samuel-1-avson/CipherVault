@@ -193,55 +193,54 @@ impl HardwareSecurityModule for SoftwareHsmSimulator {
 
 pub use crate::piv::{list_pcsc_readers, PcscHardwareToken};
 
-/// Unified Hardware Security Module Device (Physical Smartcard or Isolated Software Simulator)
-pub enum HsmDevice {
-    Physical(PcscHardwareToken),
-    Virtual(Box<SoftwareHsmSimulator>),
+/// Physical Hardware Security Module Device (Native PIV ISO 7816-4 Smartcard via PC/SC).
+///
+/// Communicates directly with physical hardware tokens (e.g. YubiKey 5 Series).
+/// All private keys remain locked in hardware secure elements and never touch host RAM or disk.
+pub struct HsmDevice {
+    inner: PcscHardwareToken,
 }
 
 impl HsmDevice {
     /// Attempts to probe and connect to an attached physical hardware token.
     pub fn probe() -> Result<Option<Self>, CryptoError> {
         if let Some(token) = PcscHardwareToken::probe()? {
-            Ok(Some(HsmDevice::Physical(token)))
+            Ok(Some(HsmDevice { inner: token }))
         } else {
             Ok(None)
         }
     }
 
-    /// Auto-detects physical token, or generates an isolated virtual simulator if none attached.
-    pub fn probe_or_virtual() -> Self {
-        match Self::probe() {
-            Ok(Some(device)) => device,
-            _ => HsmDevice::Virtual(Box::new(SoftwareHsmSimulator::generate())),
+    /// Connects to a physical hardware token, strictly failing closed if absent.
+    pub fn connect() -> Result<Self, CryptoError> {
+        match Self::probe()? {
+            Some(dev) => Ok(dev),
+            None => Err(CryptoError::HsmError(
+                "No physical PIV hardware token (e.g. YubiKey 5 Series) detected in PC/SC card readers. Insert a physical token to proceed.".to_string(),
+            )),
         }
     }
 
     pub fn is_physical(&self) -> bool {
-        matches!(self, HsmDevice::Physical(_))
+        true
+    }
+
+    pub fn inner(&self) -> &PcscHardwareToken {
+        &self.inner
     }
 }
 
 impl HardwareSecurityModule for HsmDevice {
     fn is_connected(&self) -> bool {
-        match self {
-            HsmDevice::Physical(p) => p.is_connected(),
-            HsmDevice::Virtual(v) => v.is_connected(),
-        }
+        self.inner.is_connected()
     }
 
     fn get_public_key(&self, slot: HsmSlot) -> Result<Vec<u8>, CryptoError> {
-        match self {
-            HsmDevice::Physical(p) => p.get_public_key(slot),
-            HsmDevice::Virtual(v) => v.get_public_key(slot),
-        }
+        self.inner.get_public_key(slot)
     }
 
     fn get_slot_info(&self, slot: HsmSlot) -> Result<HsmSlotInfo, CryptoError> {
-        match self {
-            HsmDevice::Physical(p) => p.get_slot_info(slot),
-            HsmDevice::Virtual(v) => v.get_slot_info(slot),
-        }
+        self.inner.get_slot_info(slot)
     }
 
     fn sign_digest(
@@ -250,10 +249,7 @@ impl HardwareSecurityModule for HsmDevice {
         domain: &[u8],
         digest: &[u8; 32],
     ) -> Result<[u8; 64], CryptoError> {
-        match self {
-            HsmDevice::Physical(p) => p.sign_digest(slot, domain, digest),
-            HsmDevice::Virtual(v) => v.sign_digest(slot, domain, digest),
-        }
+        self.inner.sign_digest(slot, domain, digest)
     }
 
     fn sign_message(
@@ -262,10 +258,7 @@ impl HardwareSecurityModule for HsmDevice {
         domain: &[u8],
         message: &[u8],
     ) -> Result<[u8; 64], CryptoError> {
-        match self {
-            HsmDevice::Physical(p) => p.sign_message(slot, domain, message),
-            HsmDevice::Virtual(v) => v.sign_message(slot, domain, message),
-        }
+        self.inner.sign_message(slot, domain, message)
     }
 
     fn ecdh_key_agreement(
@@ -273,10 +266,7 @@ impl HardwareSecurityModule for HsmDevice {
         slot: HsmSlot,
         peer_public_key: &[u8; 32],
     ) -> Result<[u8; 32], CryptoError> {
-        match self {
-            HsmDevice::Physical(p) => p.ecdh_key_agreement(slot, peer_public_key),
-            HsmDevice::Virtual(v) => v.ecdh_key_agreement(slot, peer_public_key),
-        }
+        self.inner.ecdh_key_agreement(slot, peer_public_key)
     }
 }
 

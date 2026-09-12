@@ -50,6 +50,13 @@
   - JSON-RPC transaction broadcast (`eth_sendRawTransaction`) and sequencer receipt polling (`wait_for_receipt`) via `ciphervault anchor --raw-tx`.
   - Cross-platform zero-dependency deployment and verification runner: `node scripts/deploy-registry.cjs` (`--simulate-devnet` or live testnet).
 
+* **Elimination of Mock Systems & Real Data Pipeline Migration**:
+  - **Physical Token Enforcement**: Virtual software HSM fallback removed from production token path (`HsmDevice`); strictly fails closed unless genuine PC/SC hardware (YubiKey PIV) is physically detected.
+  - **Live EVM Settlement Deployer**: Replaced in-memory mock JSON-RPC devnet simulation in `deploy-registry.cjs` with live RPC pipelines targeting Arbitrum Sepolia (`421614`), Arbitrum One (`42161`), or local EVM nodes.
+  - **Real Vault File FastCDC Pipeline**: Removed synthetic mock strings (`SAMPLE_LOGS`, `SAMPLE_CONFIGS`, `SAMPLE_CODE`) and backend generators; introduced `/api/fastcdc/vault-files` and dynamic inspection of real tracked confidential files and user uploads.
+  - **Authentic Guardian Ceremony**: Replaced preview-only drill splitting with authentic cryptographic splitting requiring the master recovery secret $R$, verified against the active vault's registered recovery public key.
+  - **Dynamic Container Infrastructure**: Replaced static container mock identifiers (`mock-cluster-node-east`) with dynamic host and node discovery.
+
 * **WCAG 2.1 AA Dashboard Accessibility**:
   - Keyboard skip navigation link, landmark semantics, accessible modal focus traps, Escape key dismissal, and Arrow/Home/End keyboard navigation on tabs.
   - ARIA live status regions (`role="status" aria-live="polite"`) for real-time SSE cluster telemetry.
@@ -72,10 +79,10 @@ Benchmarked on Windows x86_64:
 
 | Binary | Size | SHA-256 Checksum |
 |---|---|---|
-| `ciphervault.exe` | 9.26 MB | `fa1fb30bac4d19d37b1ca12e7838236af2cfe65f64f6e519f7427b909c147572` |
-| `ciphervault-operator.exe` | 2.74 MB | `1fa441f2b72c69f580c52d6c4a5411c0940e09cd741af80a6aa610cc9e8585b4` |
-| `ciphervault-agent.exe` | 6.58 MB | `c0769ee8dd10bbc012856035252b064a0e0eaafb1f1be68b10c4c0f3a7f91aee` |
-| `ciphervault-maintenance.exe` | 5.66 MB | `efac827767c88bf73e4e783d470d7b8fa553aeedda0c2c743f70683e9b5c6e9e` |
+| `ciphervault.exe` | 9.27 MB | `4ee44a060e5b993d6e2a956125397af37dbc83cd2391eda735050a523b287759` |
+| `ciphervault-operator.exe` | 2.74 MB | `7dcf22f9cae9e987f8aad9fd1bf6d602cda6fedf71d1c10571770d5e7f6df210` |
+| `ciphervault-agent.exe` | 6.58 MB | `3f659c2c567e9afb98f65031f412691c88ff24773f6d4d264e256a9b658d5dba` |
+| `ciphervault-maintenance.exe` | 5.66 MB | `95f0bce0030dff747da0c72b457b990b2c9f27793b8c719aac893d1b65f01ee5` |
 
 *(Checksums match `dist/SHA256SUMS.txt`)*
 

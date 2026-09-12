@@ -1295,12 +1295,18 @@ function initGuardianActions() {
     btnGenerate.addEventListener('click', async () => {
       const selectM = document.getElementById('select-threshold-m');
       const selectN = document.getElementById('select-total-n');
+      const secretInput = document.getElementById('input-split-recovery-secret');
       const m = selectM ? parseInt(selectM.value, 10) : 3;
       const n = selectN ? parseInt(selectN.value, 10) : 5;
+      const recoverySecretHex = secretInput ? secretInput.value.trim() : "";
 
       if (m > n) {
         showToast("Threshold (M) cannot exceed Total Guardians (N)", "error");
         return;
+      }
+
+      if (!recoverySecretHex) {
+        showToast("Authentic ceremony: enter 64-char master recovery secret (R).", "warning");
       }
 
       showToast(`Partitioning recovery secret into ${m}-of-${n} threshold shares...`);
@@ -1308,20 +1314,25 @@ function initGuardianActions() {
         const res = await fetch('/api/guardians/split', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ threshold: m, total_shares: n })
+          body: JSON.stringify({
+            threshold: m,
+            total_shares: n,
+            recovery_secret_hex: recoverySecretHex || null
+          })
         });
         const result = await res.json();
         if (result.status === 'ok' || result.success) {
           state.guardians = result;
           renderGuardians(result);
-          const demoTag = result.is_drill_demo ? " [DRILL PREVIEW]" : "";
-          showToast(`✓ Generated ${result.sheets.length} guardian shares (${m}-of-${n})${demoTag}`);
+          showToast(`✓ Generated ${result.sheets.length} authentic guardian shares (${m}-of-${n})`);
+        } else if (result.status === 'requires_secret') {
+          showToast(`Authentic ceremony: ${result.message}`, "warning");
         } else {
-          showToast(`Error: ${result.error || 'Failed to split secret'}`);
+          showToast(`Error: ${result.error || result.message || 'Failed to split secret'}`, "error");
         }
 
       } catch (err) {
-        showToast("Network error generating guardian shares");
+        showToast("Network error generating guardian shares", "error");
       }
     });
   }
@@ -1603,78 +1614,57 @@ function handleTelemetryPacket(data) {
 }
 
 // -------------------------------------------------------------
-// Visual FastCDC Inspector & Deduplication Simulator
+// Visual FastCDC Inspector & Real Data Deduplication Pipeline
 // -------------------------------------------------------------
 
-const SAMPLE_LOGS = `{"timestamp":"2026-09-12T12:00:00Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
-{"timestamp":"2026-09-12T12:00:01Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
-{"timestamp":"2026-09-12T12:00:02Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
-{"timestamp":"2026-09-12T12:00:03Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
-{"timestamp":"2026-09-12T12:00:04Z","level":"WARN","service":"rate-limiter","client_ip":"198.51.100.44","message":"Quota threshold at 85% for tenant_enterprise_99","limit":10000}
-`.repeat(25);
+async function loadVaultFilesForFastCdc() {
+  const selectElem = document.getElementById('select-vault-file');
+  if (!selectElem) return;
 
-const SAMPLE_CONFIGS = `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ciphervault-operator-cluster
-  namespace: production-security
-  labels:
-    app.kubernetes.io/name: ciphervault-operator
-    app.kubernetes.io/part-of: ciphervault-security-mesh
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: ciphervault-operator
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: ciphervault-operator
-    spec:
-      containers:
-      - name: operator
-        image: ghcr.io/ciphervault/ciphervault-operator:v0.1.0
-        ports:
-        - containerPort: 8201
-          name: http-cluster
-        env:
-        - name: CIPHERVAULT_STORAGE_QUOTA_BYTES
-          value: "107374182400"
-        - name: CIPHERVAULT_RETENTION_TERMS
-          value: "90-Day Immutable Replica Leases"
-        resources:
-          limits:
-            cpu: "2000m"
-            memory: "4Gi"
-          requests:
-            cpu: "500m"
-            memory: "1Gi"
----
-`.repeat(15);
+  try {
+    const res = await fetch('/api/fastcdc/vault-files');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.success && Array.isArray(data.files)) {
+      selectElem.innerHTML = '';
+      if (data.files.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No tracked files in vault (use CLI track or upload)';
+        selectElem.appendChild(opt);
+      } else {
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = `-- Select Tracked Vault File (${data.files.length} active) --`;
+        selectElem.appendChild(defaultOpt);
 
-const SAMPLE_CODE = `use ciphervault_crypto::{HardwareSecurityModule, RecoverySecret, VaultEpochKey};
-use ciphervault_format::{from_canonical_cbor, to_canonical_cbor, ChunkWireObject};
-use ciphervault_snapshot::fastcdc::{fastcdc_chunk, FastCdcConfig};
+        data.files.forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f.path;
+          opt.textContent = `${f.path} (${formatBytes(f.size_bytes)})`;
+          selectElem.appendChild(opt);
+        });
 
-pub fn process_chunk_stream(buffer: &[u8], config: &FastCdcConfig) -> Result<Vec<[u8; 32]>, String> {
-    let slices = fastcdc_chunk(buffer, config);
-    let mut cids = Vec::with_capacity(slices.len());
-    for slice in slices {
-        let digest = ciphervault_format::compute_digest(slice);
-        cids.push(digest);
+        // Automatically select the first real tracked file and auto-inspect it
+        if (data.files.length > 0) {
+          selectElem.selectedIndex = 1;
+          runFastCdcInspection({ file_path: data.files[0].path });
+        }
+      }
     }
-    Ok(cids)
+  } catch (err) {
+    console.warn("Failed to load vault files for FastCDC:", err);
+  }
 }
-`.repeat(20);
 
 function initFastCdcInspector() {
   const contentInput = document.getElementById('fastcdc-content-input');
   const byteCounter = document.getElementById('fastcdc-byte-counter');
   const btnRun = document.getElementById('btn-run-fastcdc');
   const btnShift = document.getElementById('btn-simulate-shift');
-  const btnPresetLogs = document.getElementById('preset-logs');
-  const btnPresetConfigs = document.getElementById('preset-configs');
-  const btnPresetCode = document.getElementById('preset-code');
+  const selectVaultFile = document.getElementById('select-vault-file');
+  const btnInspectVault = document.getElementById('btn-inspect-vault-file');
+  const inputUpload = document.getElementById('input-upload-file');
   const btnPresetClear = document.getElementById('preset-clear');
   const btnCopyCid = document.getElementById('btn-copy-chunk-cid');
 
@@ -1688,27 +1678,39 @@ function initFastCdcInspector() {
 
   contentInput.addEventListener('input', updateByteCount);
 
-  if (btnPresetLogs) {
-    btnPresetLogs.addEventListener('click', () => {
-      contentInput.value = SAMPLE_LOGS;
-      updateByteCount();
-      runFastCdcInspection(SAMPLE_LOGS);
+  if (selectVaultFile) {
+    selectVaultFile.addEventListener('change', () => {
+      if (selectVaultFile.value) {
+        runFastCdcInspection({ file_path: selectVaultFile.value });
+      }
     });
   }
 
-  if (btnPresetConfigs) {
-    btnPresetConfigs.addEventListener('click', () => {
-      contentInput.value = SAMPLE_CONFIGS;
-      updateByteCount();
-      runFastCdcInspection(SAMPLE_CONFIGS);
+  if (btnInspectVault) {
+    btnInspectVault.addEventListener('click', () => {
+      const path = selectVaultFile ? selectVaultFile.value : "";
+      if (path) {
+        runFastCdcInspection({ file_path: path });
+      } else {
+        showToast("Please select a tracked vault file first.", "warning");
+      }
     });
   }
 
-  if (btnPresetCode) {
-    btnPresetCode.addEventListener('click', () => {
-      contentInput.value = SAMPLE_CODE;
-      updateByteCount();
-      runFastCdcInspection(SAMPLE_CODE);
+  if (inputUpload) {
+    inputUpload.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const text = evt.target?.result || "";
+          contentInput.value = text;
+          updateByteCount();
+          showToast(`Loaded '${file.name}' (${formatBytes(file.size)})`);
+          runFastCdcInspection({ content: text });
+        };
+        reader.readAsText(file);
+      }
     });
   }
 
@@ -1718,7 +1720,7 @@ function initFastCdcInspector() {
       updateByteCount();
       const container = document.getElementById('chunk-blocks-container');
       if (container) {
-        container.innerHTML = `<div class="chunk-placeholder-text">Input cleared. Type text or select a preset workload.</div>`;
+        container.innerHTML = `<div class="chunk-placeholder-text">Input cleared. Select a real vault file, upload a file, or type text.</div>`;
       }
       const detailCard = document.getElementById('chunk-detail-card');
       if (detailCard) detailCard.style.display = 'none';
@@ -1727,17 +1729,27 @@ function initFastCdcInspector() {
   }
 
   btnRun.addEventListener('click', () => {
-    runFastCdcInspection(contentInput.value);
+    if (contentInput.value.trim()) {
+      runFastCdcInspection({ content: contentInput.value });
+    } else if (selectVaultFile && selectVaultFile.value) {
+      runFastCdcInspection({ file_path: selectVaultFile.value });
+    } else {
+      showToast("Select a vault file, upload a file, or enter content to inspect.", "warning");
+    }
   });
 
   if (btnShift) {
     btnShift.addEventListener('click', () => {
-      const current = contentInput.value || SAMPLE_LOGS;
+      const current = contentInput.value;
+      if (!current) {
+        showToast("Load or type content before simulating boundary shift.", "warning");
+        return;
+      }
       const shifted = `# PREPENDED 19 BYTES FOR BOUNDARY SHIFT TEST\n` + current;
       contentInput.value = shifted;
       updateByteCount();
       showToast("Injected 46-byte prefix to demonstrate FastCDC boundary realignment");
-      runFastCdcInspection(shifted);
+      runFastCdcInspection({ content: shifted });
     });
   }
 
@@ -1751,10 +1763,8 @@ function initFastCdcInspector() {
     });
   }
 
-  if (!contentInput.value) {
-    contentInput.value = SAMPLE_LOGS;
-    updateByteCount();
-  }
+  // Load real tracked files from active vault pipeline
+  loadVaultFilesForFastCdc();
 }
 
 function resetFastCdcMetrics() {
@@ -1768,10 +1778,20 @@ function resetFastCdcMetrics() {
   });
 }
 
-async function runFastCdcInspection(content) {
+async function runFastCdcInspection(opts) {
   const minSize = parseInt(document.getElementById('fastcdc-min-size')?.value || "4096", 10);
   const avgSize = parseInt(document.getElementById('fastcdc-avg-size')?.value || "16384", 10);
   const maxSize = parseInt(document.getElementById('fastcdc-max-size')?.value || "65536", 10);
+
+  const payload = typeof opts === 'string'
+    ? { content: opts, min_size: minSize, avg_size: avgSize, max_size: maxSize }
+    : {
+        file_path: opts?.file_path || null,
+        content: opts?.content || null,
+        min_size: minSize,
+        avg_size: avgSize,
+        max_size: maxSize
+      };
 
   const btnRun = document.getElementById('btn-run-fastcdc');
   if (btnRun) btnRun.disabled = true;
@@ -1780,25 +1800,27 @@ async function runFastCdcInspection(content) {
     const res = await fetch('/api/fastcdc/inspect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: content || null,
-        min_size: minSize,
-        avg_size: avgSize,
-        max_size: maxSize,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
-      showToast(`FastCDC inspection failed (${res.status})`);
+      showToast(`FastCDC inspection failed (${res.status})`, "error");
       return;
     }
 
     const data = await res.json();
+    if (!data.success) {
+      showToast(`FastCDC error: ${data.error || 'Inspection failed'}`, "error");
+      return;
+    }
     state.fastCdcResult = data;
     renderFastCdcResults(data);
+    if (data.source) {
+      showToast(`Analyzed ${data.source} (${data.metrics?.total_chunks || 0} chunks)`);
+    }
   } catch (err) {
     console.error("FastCDC inspection error:", err);
-    showToast(`Network error: ${err.message}`);
+    showToast(`Network error: ${err.message}`, "error");
   } finally {
     if (btnRun) btnRun.disabled = false;
   }

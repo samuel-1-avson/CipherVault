@@ -2198,6 +2198,10 @@ async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
         .route(
             "/api/fastcdc/inspect",
             axum::routing::post(api_fastcdc_inspect_handler),
+        )
+        .route(
+            "/api/fastcdc/vault-files",
+            get(api_fastcdc_vault_files_handler),
         );
 
     let host_ip: std::net::IpAddr = host
@@ -2493,6 +2497,7 @@ async fn api_guardians_handler() -> impl axum::response::IntoResponse {
 struct SplitGuardiansRequest {
     threshold: Option<u8>,
     total_shares: Option<u8>,
+    recovery_secret_hex: Option<String>,
 }
 
 async fn api_guardians_split_handler(
@@ -2503,6 +2508,7 @@ async fn api_guardians_split_handler(
 
     if threshold < 2 || threshold > total_shares || total_shares > 10 {
         return axum::Json(serde_json::json!({
+            "status": "error",
             "success": false,
             "error": "Threshold parameters must satisfy: 2 <= threshold <= total_shares <= 10"
         }));
@@ -2510,19 +2516,70 @@ async fn api_guardians_split_handler(
 
     let store_res = get_vault_store();
     let (vault_id, operators) = match store_res {
-        Ok(s) => {
+        Ok(ref s) => {
             let vid = s.get_vault_id().unwrap_or([0u8; 32]);
             (vid, get_configured_operators())
         }
-        Err(_) => ([1u8; 32], vec!["http://127.0.0.1:8081".to_string()]),
+        Err(_) => {
+            return axum::Json(serde_json::json!({
+                "status": "error",
+                "success": false,
+                "error": "No initialized CipherVault found in workspace. Run 'ciphervault init' first."
+            }));
+        }
     };
 
-    // Generate a drill demonstration secret for previewing guardian sheets
-    let mut drill_secret_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut drill_secret_bytes);
-    let drill_secret = RecoverySecret::from_bytes(drill_secret_bytes);
+    let secret_str = payload.recovery_secret_hex.as_deref().unwrap_or("").trim();
+    if secret_str.is_empty() {
+        return axum::Json(serde_json::json!({
+            "status": "requires_secret",
+            "success": false,
+            "requires_secret": true,
+            "error": "Master Recovery Secret (R) is required to perform an authentic guardian split ceremony for this active vault."
+        }));
+    }
 
-    match OfflineRecoveryKit::create(&vault_id, &drill_secret, operators) {
+    let clean_secret = secret_str.trim_start_matches("0x");
+    let mut secret_bytes = match hex::decode(clean_secret) {
+        Ok(b) if b.len() == 32 => b,
+        _ => {
+            return axum::Json(serde_json::json!({
+                "status": "error",
+                "success": false,
+                "error": "Master recovery secret must be exactly 32 bytes (64 hex characters)."
+            }));
+        }
+    };
+
+    let mut secret_arr = [0u8; 32];
+    secret_arr.copy_from_slice(&secret_bytes);
+    secret_bytes.zeroize();
+    let real_secret = RecoverySecret::from_bytes(secret_arr);
+
+    // Cryptographically verify secret against registered vault public recovery key
+    if let Ok(ref store) = store_res {
+        if let Ok((registered_sig_pk, _, _)) = store.get_recovery_descriptors() {
+            let derived_sig = match real_secret.derive_recovery_signing_key() {
+                Ok(k) => k,
+                Err(e) => {
+                    return axum::Json(serde_json::json!({
+                        "status": "error",
+                        "success": false,
+                        "error": format!("Failed to derive keys from secret: {}", e)
+                    }));
+                }
+            };
+            if derived_sig.verifying_key().as_bytes() != &registered_sig_pk {
+                return axum::Json(serde_json::json!({
+                    "status": "error",
+                    "success": false,
+                    "error": "Provided master secret does not match this active vault's registered recovery public key."
+                }));
+            }
+        }
+    }
+
+    match OfflineRecoveryKit::create(&vault_id, &real_secret, operators) {
         Ok(kit) => match ThresholdRecoveryKit::split_kit(&kit, threshold, total_shares) {
             Ok(shares) => {
                 let sheets_json: Vec<_> = shares
@@ -2549,14 +2606,14 @@ async fn api_guardians_split_handler(
                 axum::Json(serde_json::json!({
                     "status": "ok",
                     "success": true,
-                    "is_drill_demo": true,
+                    "is_drill_demo": false,
                     "active_threshold": threshold,
                     "total_guardians": total_shares,
                     "threshold": threshold,
                     "total_shares": total_shares,
                     "shares_count": sheets_json.len(),
                     "sheets": sheets_json,
-                    "notice": "DEMO / DRILL PREVIEW: Generated using ephemeral synthetic demonstration key. Master recovery secret is never stored on disk."
+                    "notice": "AUTHENTIC ACTIVE VAULT GUARDIAN SHARES: Derived from genuine recovery secret R. Store each sheet securely with an independent trusted guardian."
                 }))
             }
             Err(e) => axum::Json(serde_json::json!({
@@ -2900,6 +2957,7 @@ async fn api_stream_handler() -> Sse<impl Stream<Item = Result<Event, std::conve
 #[derive(serde::Deserialize)]
 struct FastCdcInspectRequest {
     content: Option<String>,
+    file_path: Option<String>,
     min_size: Option<usize>,
     avg_size: Option<usize>,
     max_size: Option<usize>,
@@ -2951,22 +3009,36 @@ fn format_preview(data: &[u8]) -> String {
     }
 }
 
-fn generate_sample_workload() -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(65536);
-    let sample_block = b"{\"timestamp\":\"2026-09-12T12:00:00Z\",\"level\":\"INFO\",\"service\":\"auth-gateway\",\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"span_id\":\"00f067aa0ba902b7\",\"message\":\"Authentication ticket validated for user_session_49182\",\"status\":200,\"latency_ms\":14.2}\n";
-    for i in 0..320 {
-        buffer.extend_from_slice(sample_block);
-        if i % 10 == 0 {
-            buffer.extend_from_slice(
-                format!(
-                    "{{\"event\":\"rotation_epoch_pulse\",\"epoch\":{},\"status\":\"verified\"}}\n",
-                    i
-                )
-                .as_bytes(),
-            );
-        }
-    }
-    buffer
+async fn api_fastcdc_vault_files_handler() -> impl axum::response::IntoResponse {
+    let files = match get_vault_store() {
+        Ok(store) => match store.list_tracked_files() {
+            Ok(list) => list
+                .into_iter()
+                .map(|(p, file_id)| {
+                    let path_str = p.to_string_lossy().replace('\\', "/");
+                    let exists = p.exists();
+                    let size = if exists {
+                        fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    serde_json::json!({
+                        "path": path_str,
+                        "exists": exists,
+                        "size_bytes": size,
+                        "file_id": hex::encode(&file_id[0..4]),
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    };
+
+    axum::Json(serde_json::json!({
+        "success": true,
+        "files": files,
+    }))
 }
 
 async fn api_fastcdc_inspect_handler(
@@ -2984,14 +3056,58 @@ async fn api_fastcdc_inspect_handler(
         FastCdcConfig::default()
     };
 
-    let raw_data = if let Some(ref txt) = payload.content {
-        if txt.trim().is_empty() {
-            generate_sample_workload()
+    let (raw_data, source_label) = if let Some(ref rel_path) = payload.file_path {
+        let clean_path = rel_path.trim().replace('\\', "/");
+        if clean_path.contains("..") || clean_path.starts_with('/') {
+            return axum::Json(serde_json::json!({
+                "success": false,
+                "error": "Invalid file path: path traversal is not permitted."
+            }));
+        }
+        let target = PathBuf::from(&clean_path);
+        match fs::read(&target) {
+            Ok(bytes) => (bytes, format!("Vault File: {}", clean_path)),
+            Err(e) => {
+                return axum::Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("Failed to read vault file '{}': {}", clean_path, e)
+                }));
+            }
+        }
+    } else if let Some(ref txt) = payload.content {
+        if !txt.trim().is_empty() {
+            (txt.as_bytes().to_vec(), "Direct Text Input".to_string())
         } else {
-            txt.as_bytes().to_vec()
+            return axum::Json(serde_json::json!({
+                "success": false,
+                "error": "Provided input is empty. Select a tracked vault file or enter content."
+            }));
         }
     } else {
-        generate_sample_workload()
+        // Default to reading the first tracked file in the vault
+        let default_vault_file = get_vault_store()
+            .ok()
+            .and_then(|s| s.list_tracked_files().ok())
+            .and_then(|files| {
+                for (p, _) in files {
+                    if p.exists() {
+                        if let Ok(bytes) = fs::read(&p) {
+                            return Some((bytes, p.to_string_lossy().replace('\\', "/")));
+                        }
+                    }
+                }
+                None
+            });
+
+        match default_vault_file {
+            Some((bytes, name)) => (bytes, format!("Vault File: {}", name)),
+            None => {
+                return axum::Json(serde_json::json!({
+                    "success": false,
+                    "error": "No tracked files found in vault and no input provided. Track a file with 'ciphervault track <path>' or upload content."
+                }));
+            }
+        }
     };
 
     let chunks = fastcdc_chunk(&raw_data, &config);
@@ -3041,6 +3157,7 @@ async fn api_fastcdc_inspect_handler(
 
     axum::Json(serde_json::json!({
         "success": true,
+        "source": source_label,
         "config": {
             "min_size": config.min_size,
             "avg_size": config.avg_size,

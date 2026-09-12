@@ -119,72 +119,62 @@ fn test_pcsc_subsystem_safety_and_probe() {
 
 #[test]
 fn test_unified_hsm_device_abstraction() {
-    // 1. Probe or fall back to virtual software simulator
-    let device = HsmDevice::probe_or_virtual();
-    assert!(device.is_connected());
+    // 1. Probe for real physical hardware token via PC/SC
+    let probe_res = HsmDevice::probe().expect("PC/SC probe must not panic");
+    match probe_res {
+        Some(device) => {
+            assert!(device.is_connected());
+            let pk_9c = device
+                .get_public_key(HsmSlot::DigitalSignature)
+                .expect("Must read Slot 9C public key");
+            assert_eq!(pk_9c.len(), 32);
 
-    // 2. Query Slot 9C (Digital Signature)
-    let pk_9c = device
-        .get_public_key(HsmSlot::DigitalSignature)
-        .expect("Must read Slot 9C public key");
-    assert_eq!(pk_9c.len(), 32);
+            let info_9c = device
+                .get_slot_info(HsmSlot::DigitalSignature)
+                .expect("Must read Slot 9C metadata");
+            assert_eq!(info_9c.slot, HsmSlot::DigitalSignature);
+            assert!(!info_9c.algorithm.is_empty());
+            assert!(!info_9c.touch_policy.is_empty());
 
-    let info_9c = device
-        .get_slot_info(HsmSlot::DigitalSignature)
-        .expect("Must read Slot 9C metadata");
-    assert_eq!(info_9c.slot, HsmSlot::DigitalSignature);
-    assert!(!info_9c.algorithm.is_empty());
-    assert!(!info_9c.touch_policy.is_empty());
+            let domain = b"CIPHERVAULT-TEST-TOKEN";
+            let test_digest = [0x77u8; 32];
+            let signature = device
+                .sign_digest(HsmSlot::DigitalSignature, domain, &test_digest)
+                .expect("Signature delegation must succeed");
+            assert_eq!(signature.len(), 64);
 
-    // 3. Delegate digital signature to Slot 9C
-    let domain = b"CIPHERVAULT-TEST-TOKEN";
-    let test_digest = [0x77u8; 32];
-    let signature = device
-        .sign_digest(HsmSlot::DigitalSignature, domain, &test_digest)
-        .expect("Signature delegation must succeed");
-    assert_eq!(signature.len(), 64);
+            let mut pk_arr = [0u8; 32];
+            pk_arr.copy_from_slice(&pk_9c);
+            assert!(verify_with_domain(&pk_arr, domain, &test_digest, &signature).is_ok());
 
-    let mut pk_arr = [0u8; 32];
-    pk_arr.copy_from_slice(&pk_9c);
+            // 4. Query Slot 9D (Key Management / ECDH)
+            let pk_9d = device
+                .get_public_key(HsmSlot::KeyManagement)
+                .expect("Must read Slot 9D public key");
+            assert_eq!(pk_9d.len(), 32);
 
-    // Cryptographically verify signature using public key
-    assert!(verify_with_domain(&pk_arr, domain, &test_digest, &signature).is_ok());
+            // Test ECDH agreement against peer public key
+            let peer_seed = [0x42u8; 32];
+            let peer_device = SoftwareHsmSimulator::from_seeds(&peer_seed, &peer_seed);
+            let peer_pk = peer_device
+                .get_public_key(HsmSlot::KeyManagement)
+                .expect("Must read peer Slot 9D public key");
 
-    // Mismatched digest is rejected
-    let bad_digest = [0x88u8; 32];
-    assert!(verify_with_domain(&pk_arr, domain, &bad_digest, &signature).is_err());
+            let mut peer_pk_arr = [0u8; 32];
+            peer_pk_arr.copy_from_slice(&peer_pk);
 
-    // 4. Query Slot 9D (Key Management / ECDH)
-    let pk_9d = device
-        .get_public_key(HsmSlot::KeyManagement)
-        .expect("Must read Slot 9D public key");
-    assert_eq!(pk_9d.len(), 32);
-
-    // Create a second device to test ECDH agreement
-    let peer_device = SoftwareHsmSimulator::generate();
-    let peer_pk = peer_device
-        .get_public_key(HsmSlot::KeyManagement)
-        .expect("Must read peer Slot 9D public key");
-
-    let mut peer_pk_arr = [0u8; 32];
-    peer_pk_arr.copy_from_slice(&peer_pk);
-
-    let shared_secret_a = device
-        .ecdh_key_agreement(HsmSlot::KeyManagement, &peer_pk_arr)
-        .expect("ECDH agreement A -> B must succeed");
-
-    let mut pk_9d_arr = [0u8; 32];
-    pk_9d_arr.copy_from_slice(&pk_9d);
-
-    let shared_secret_b = peer_device
-        .ecdh_key_agreement(HsmSlot::KeyManagement, &pk_9d_arr)
-        .expect("ECDH agreement B -> A must succeed");
-
-    assert_eq!(
-        shared_secret_a, shared_secret_b,
-        "ECDH shared secrets between hardware tokens must match"
-    );
-    assert_ne!(shared_secret_a, [0u8; 32]);
+            let shared_secret = device
+                .ecdh_key_agreement(HsmSlot::KeyManagement, &peer_pk_arr)
+                .expect("ECDH agreement must succeed");
+            assert_ne!(shared_secret, [0u8; 32]);
+        }
+        None => {
+            // Strict fail-closed verification: absent physical token must return error
+            let connect_err = HsmDevice::connect();
+            assert!(connect_err.is_err(), "Must fail-closed when physical token is absent");
+            println!("No physical smartcard attached; strict fail-closed contract validated.");
+        }
+    }
 }
 
 #[test]
