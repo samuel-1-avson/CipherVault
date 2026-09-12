@@ -1,0 +1,15 @@
+# CipherVault Background Watcher Agent Configuration
+
+[agent]
+# Debounce duration in seconds before capturing snapshot after file change
+debounce_seconds = 5
+
+# Synchronize automatically with configured remote storage operators
+sync_enabled = true
+
+# Vault database path (relative to vault root or absolute)
+db_path = "./vault.db"
+
+[logging]
+level = "info"
+format = "json"

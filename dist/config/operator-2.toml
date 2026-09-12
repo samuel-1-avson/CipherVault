@@ -1,0 +1,16 @@
+# CipherVault Operator 2 Configuration (Port 8202)
+
+operator_id = "op_8202"
+port = 8202
+bind_address = "127.0.0.1"
+data_dir = "./data/operator-8202"
+
+[retention]
+min_retention_days = 90
+terms_notice = "90-day immutable retention minimum"
+
+[security]
+max_object_bytes = 4194304        # 4 MiB max per chunk or manifest
+max_recovery_record_bytes = 65536  # 64 KiB max per recovery envelope record
+challenge_ttl_seconds = 300       # 5 minutes
+session_ttl_seconds = 3600        # 1 hour

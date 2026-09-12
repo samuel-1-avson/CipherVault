@@ -1,0 +1,51 @@
+# ==============================================================================
+# Build Stage
+# ==============================================================================
+FROM rust:1-slim-bookworm AS builder
+
+WORKDIR /workspace
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace source files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY services ./services
+COPY apps ./apps
+
+# Build production CLI binary (which includes embedded UI assets)
+RUN cargo build --release --bin ciphervault
+
+# ==============================================================================
+# Runtime Stage
+# ==============================================================================
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for principle of least privilege
+RUN groupadd -g 10001 ciphervault && \
+    useradd -u 10001 -g ciphervault -s /bin/bash -m ciphervault
+
+# Prepare persistent data directory
+RUN mkdir -p /var/lib/ciphervault-ui && \
+    chown -R ciphervault:ciphervault /var/lib/ciphervault-ui
+
+COPY --from=builder /workspace/target/release/ciphervault /usr/local/bin/ciphervault
+COPY deploy/docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh
+
+USER ciphervault
+WORKDIR /var/lib/ciphervault-ui
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

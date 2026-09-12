@@ -1,0 +1,22 @@
+[package]
+name = "ciphervault-maintenance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ciphervault-crypto = { path = "../../crates/crypto" }
+ciphervault-format = { path = "../../crates/format" }
+ciphervault-storage = { path = "../../crates/storage" }
+
+tokio.workspace = true
+clap.workspace = true
+colored.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true

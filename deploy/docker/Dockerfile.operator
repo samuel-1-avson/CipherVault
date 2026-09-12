@@ -1,0 +1,51 @@
+# ==============================================================================
+# Build Stage
+# ==============================================================================
+FROM rust:1-slim-bookworm AS builder
+
+
+WORKDIR /workspace
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace source files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY services ./services
+COPY apps ./apps
+
+# Build production operator binary
+RUN cargo build --release --bin ciphervault-operator
+
+# ==============================================================================
+# Runtime Stage
+# ==============================================================================
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for principle of least privilege
+RUN groupadd -g 10001 ciphervault && \
+    useradd -u 10001 -g ciphervault -s /bin/false -m ciphervault
+
+# Prepare persistent data directory
+RUN mkdir -p /var/lib/ciphervault && \
+    chown -R ciphervault:ciphervault /var/lib/ciphervault
+
+COPY --from=builder /workspace/target/release/ciphervault-operator /usr/local/bin/ciphervault-operator
+
+USER ciphervault
+WORKDIR /var/lib/ciphervault
+
+EXPOSE 8201
+
+ENTRYPOINT ["ciphervault-operator"]
+CMD ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "operator-1"]

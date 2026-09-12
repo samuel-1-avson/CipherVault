@@ -1,0 +1,22 @@
+# CipherVault Self-Repair & Lease Maintenance Configuration
+
+[maintenance]
+# Frequency of full closure health audits across all operators
+audit_interval_seconds = 3600
+
+# Minimum lease retention term guaranteed by operators
+min_retention_days = 90
+
+# Trigger lease renewal when remaining term drops below this runway
+renewal_threshold_days = 30
+
+# Lease extension duration when renewing
+renewal_extension_days = 90
+
+# Maximum concurrent chunk repairs
+max_repair_concurrency = 4
+
+[notifications]
+# Enable health status logging and alert hooks
+log_level = "info"
+alert_on_degraded = true

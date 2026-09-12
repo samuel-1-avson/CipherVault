@@ -1,0 +1,23 @@
+# CipherVault Client Configuration (v0.1.0)
+
+[vault]
+# The vault ID is initialized automatically via `ciphervault init`
+# Or can be set explicitly as a 64-character hex string.
+debounce_seconds = 5
+
+[operators]
+# Three independent storage operator endpoints for multi-operator replication
+endpoints = [
+    "http://127.0.0.1:8201",
+    "http://127.0.0.1:8202",
+    "http://127.0.0.1:8203"
+]
+
+[chain]
+# Arbitrum Checkpoint Anchoring Configuration
+network = "arbitrum-one"
+chain_id = 42161
+rpc_url = "https://arb1.arbitrum.io/rpc"
+# Deployed CipherVaultRegistry contract address (20-byte hex)
+registry_contract = "0x0000000000000000000000000000000000000000"
+timeout_seconds = 15

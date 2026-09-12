@@ -1,0 +1,93 @@
+# ==============================================================================
+# CipherVault Production Caddy Ingress Configuration
+# ==============================================================================
+# Automatic ACME TLS (Let's Encrypt / ZeroSSL) termination for CipherVault Operators.
+
+{
+    admin off
+    auto_https disable_redirects
+    email {$ACME_EMAIL:admin@example.com}
+    servers {
+        max_header_size 64KB
+    }
+}
+
+# Operator 1 Public Ingress
+{$OPERATOR_DOMAIN_1:op1.ciphervault.internal} {
+    # TLS Configuration
+    tls {$TLS_MODE:internal}
+
+    # Security Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Server "CipherVault-Gateway"
+    }
+
+    # Restrict Maximum Request Body (4 MiB object limit + headers)
+    request_body {
+        max_size 4MB
+    }
+
+    # Reverse proxy to operator daemon
+    reverse_proxy {$OPERATOR_UPSTREAM_1:operator-1:8201} {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Keepalive upstream pool
+        transport http {
+            keepalive 30s
+            keepalive_idle_conns 100
+        }
+    }
+}
+
+# Operator 2 Public Ingress
+{$OPERATOR_DOMAIN_2:op2.ciphervault.internal} {
+    tls {$TLS_MODE:internal}
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Server "CipherVault-Gateway"
+    }
+
+    request_body {
+        max_size 4MB
+    }
+
+    reverse_proxy {$OPERATOR_UPSTREAM_2:operator-2:8202} {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+
+# Operator 3 Public Ingress
+{$OPERATOR_DOMAIN_3:op3.ciphervault.internal} {
+    tls {$TLS_MODE:internal}
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Server "CipherVault-Gateway"
+    }
+
+    request_body {
+        max_size 4MB
+    }
+
+    reverse_proxy {$OPERATOR_UPSTREAM_3:operator-3:8203} {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

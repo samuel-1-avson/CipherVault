@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="CipherVault — Zero-Knowledge Secret Backup, Disaster Recovery & Multi-Operator Replication Inspector">
+  <meta name="author" content="CipherVault Contributors">
+  <title>CipherVault — Vault Inspector & Health Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300f0ff'><path d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 6c1.66 0 3 1.34 3 3 0 .78-.3 1.49-.8 2.02l1.3 2.98h-7l1.3-2.98c-.5-.53-.8-1.24-.8-2.02 0-1.66 1.34-3 3-3z'/></svg>">
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- Top Application Header -->
+    <header class="app-header" id="app-header">
+      <div class="header-left">
+        <div class="brand-section">
+          <div class="brand-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+          </div>
+          <div>
+            <div class="brand-title-wrap">
+              <h1 class="brand-title">CipherVault</h1>
+              <span class="brand-badge">Zero-Knowledge</span>
+            </div>
+            <p class="brand-subtitle">Decentralized Secret Backup & Disaster Recovery Inspector</p>
+          </div>
+        </div>
+
+        <div class="vault-identity-pill" id="vault-identity-pill" title="Click to copy full Vault ID">
+          <span class="pill-label">VAULT</span>
+          <span class="vault-id-text" id="vault-id-display">Loading...</span>
+          <button class="btn-copy" id="btn-copy-vault-id" title="Copy Vault ID" aria-label="Copy Vault ID">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Cluster Status Indicator -->
+        <div class="cluster-status-indicator" id="cluster-status-indicator">
+          <span class="pulse-dot" id="pulse-dot"></span>
+          <span id="cluster-status-text">Probing Cluster...</span>
+        </div>
+
+        <!-- Quick Action Buttons Toolbar -->
+        <div class="header-actions">
+          <button class="btn-action primary" id="btn-open-create-snapshot" title="Capture and replicate an encrypted snapshot">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+              <circle cx="12" cy="13" r="4"></circle>
+            </svg>
+            <span>Push Snapshot</span>
+          </button>
+
+          <button class="btn-action secondary" id="btn-trigger-anchor" title="Anchor current head commitment to Arbitrum One">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+            <span>Anchor Head</span>
+          </button>
+
+          <button class="btn-action secondary" id="btn-trigger-audit" title="Audit replica health across all 3 operators">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <path d="M9 12l2 2 4-4"></path>
+            </svg>
+            <span>Audit</span>
+          </button>
+
+          <button class="btn-icon-refresh" id="btn-manual-refresh" title="Refresh Live State" aria-label="Refresh Live State">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" id="icon-refresh">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Key Metrics Ribbon -->
+    <section class="metrics-ribbon" aria-label="Vault Overview Metrics">
+      
+      <!-- Metric 1: Cluster Durability -->
+      <article class="metric-card" id="card-metric-durability">
+        <div class="metric-header-row">
+          <div class="metric-label">Cluster Durability</div>
+          <span class="badge-status-subtle" id="badge-durability-state">Active</span>
+        </div>
+        <div class="metric-value" id="val-metric-durability">
+          <span id="durability-ratio" style="color: var(--accent-emerald);">3/3</span>
+          <span class="metric-unit">Replicas</span>
+        </div>
+        <div class="metric-subtext" id="sub-metric-durability">RemoteDurable Verified</div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" id="bar-durability" style="width: 100%; background: var(--accent-emerald);"></div>
+        </div>
+      </article>
+
+      <!-- Metric 2: Storage Runway -->
+      <article class="metric-card" id="card-metric-runway">
+        <div class="metric-header-row">
+          <div class="metric-label">Retention Runway</div>
+          <span class="badge-status-subtle">Immutable</span>
+        </div>
+        <div class="metric-value" id="val-metric-runway">
+          <span style="color: var(--accent-cyan);">90</span>
+          <span class="metric-unit">Days Min</span>
+        </div>
+        <div class="metric-subtext" id="sub-metric-runway">Automated Lease Self-Repair Active</div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" style="width: 100%; background: var(--accent-cyan);"></div>
+        </div>
+      </article>
+
+      <!-- Metric 3: Arbitrum L2 Checkpoint -->
+      <article class="metric-card" id="card-metric-anchor">
+        <div class="metric-header-row">
+          <div class="metric-label">Arbitrum Checkpoint</div>
+          <span class="badge-status-subtle" id="badge-anchor-stage">L2 Inclusion</span>
+        </div>
+        <div class="metric-value" id="val-metric-anchor">
+          <span id="val-anchor-block" style="color: var(--accent-purple); font-size: 1.25rem; font-family: var(--font-mono);">#--</span>
+        </div>
+        <div class="metric-subtext" id="sub-metric-anchor">Sequencer Confirmed</div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" id="bar-anchor" style="width: 100%; background: var(--accent-purple);"></div>
+        </div>
+      </article>
+
+      <!-- Metric 4: Secret Inventory -->
+      <article class="metric-card" id="card-metric-inventory">
+        <div class="metric-header-row">
+          <div class="metric-label">Protected Secrets</div>
+          <span class="badge-status-subtle">Encrypted</span>
+        </div>
+        <div class="metric-value" id="val-metric-inventory">
+          <span id="val-files-count">--</span>
+          <span class="metric-unit">Files</span>
+        </div>
+        <div class="metric-subtext" id="sub-metric-inventory">-- chunks encrypted</div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" id="bar-files" style="width: 100%; background: var(--accent-cyan);"></div>
+        </div>
+      </article>
+
+    </section>
+
+    <!-- Main Tab Navigation -->
+    <nav class="tabs-nav" aria-label="Dashboard Navigation">
+      <button class="tab-btn active" id="tab-btn-operators" data-target="tab-operators">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          <line x1="6" y1="6" x2="6.01" y2="6"></line>
+          <line x1="6" y1="18" x2="6.01" y2="18"></line>
+        </svg>
+        Storage Operators
+        <span class="tab-badge" id="badge-tab-operators">3</span>
+      </button>
+
+      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="18" r="3"></circle>
+          <circle cx="6" cy="6" r="3"></circle>
+          <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+          <line x1="6" y1="9" x2="6" y2="21"></line>
+        </svg>
+        Snapshot DAG
+        <span class="tab-badge" id="badge-tab-snapshots">--</span>
+      </button>
+
+      <button class="tab-btn" id="tab-btn-files" data-target="tab-files">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+        </svg>
+        Tracked Secrets
+        <span class="tab-badge" id="badge-tab-files">--</span>
+      </button>
+
+      <button class="tab-btn" id="tab-btn-anchor" data-target="tab-anchor">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+        Arbitrum Anchor
+      </button>
+
+      <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+        </svg>
+        Emergency Kit
+      </button>
+    </nav>
+
+    <!-- Tab 1: Storage Operators Grid -->
+    <section class="tab-content active" id="tab-operators" aria-labelledby="tab-btn-operators">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Independent Storage Operators</h2>
+          <p class="section-subheading">Three-way Byzantine replica topology with signed challenge-response authentication and immutable leases.</p>
+        </div>
+        <div class="latency-summary-pill" id="latency-summary-pill">
+          <span>Avg Cluster Latency:</span>
+          <strong id="avg-latency-display" style="color: var(--accent-emerald);">-- ms</strong>
+        </div>
+      </div>
+
+      <div class="operators-grid" id="operators-grid">
+        <!-- Dynamic operator cards populated by app.js -->
+        <div class="loading-placeholder">Probing operator nodes...</div>
+      </div>
+
+      <!-- Operator Ping Latency Visualizer -->
+      <div class="latency-visualizer-card" id="latency-visualizer-card">
+        <h3 class="card-subheading">Real-Time Operator Roundtrip Latency (RTT)</h3>
+        <div class="latency-bars-container" id="latency-bars-container">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Snapshot DAG Explorer -->
+    <section class="tab-content" id="tab-dag" aria-labelledby="tab-btn-dag">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Snapshot DAG & History Timeline</h2>
+          <p class="section-subheading">Cryptographically chained snapshots signed by device keys with encrypted manifest Merkle CIDs.</p>
+        </div>
+        <div class="search-bar-wrap">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="input-search-dag" class="search-input" placeholder="Filter snapshots by CID or message...">
+        </div>
+      </div>
+
+      <div class="dag-container">
+        <div class="dag-list" id="dag-list">
+          <!-- Dynamically populated by app.js -->
+          <div class="loading-placeholder">Loading snapshot DAG...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Tracked Secrets Explorer -->
+    <section class="tab-content" id="tab-files" aria-labelledby="tab-btn-files">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Protected Confidential Inventory</h2>
+          <p class="section-subheading">Tracked secret files chunked into 1 MiB blocks with PKCS#7 zero-leak padding and XChaCha20-Poly1305 AEAD.</p>
+        </div>
+        <div class="search-bar-wrap">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="input-search-files" class="search-input" placeholder="Search tracked files...">
+        </div>
+      </div>
+
+      <div class="table-card">
+        <table class="data-table" id="table-tracked-files">
+          <thead>
+            <tr>
+              <th>Relative Path</th>
+              <th>File ID (SHA-256)</th>
+              <th>Plaintext Size</th>
+              <th>Chunking & Padding</th>
+              <th>Replication State</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="table-files-body">
+            <!-- Dynamically populated by app.js -->
+            <tr><td colspan="6" class="loading-placeholder">Loading tracked secrets...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- CLI Guide Banner -->
+      <div class="cli-guide-banner">
+        <div class="cli-guide-text">
+          <strong>Need to track more secrets?</strong>
+          <span>Add confidential files to vault tracking using the CLI:</span>
+        </div>
+        <div class="cli-code-pill">
+          <code>ciphervault track &lt;path/to/file&gt;</code>
+          <button class="btn-copy-code" data-code="ciphervault track .env" title="Copy CLI Command">Copy</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 4: Arbitrum Checkpoint Inspector -->
+    <section class="tab-content" id="tab-anchor" aria-labelledby="tab-btn-anchor">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Arbitrum One Checkpoint Verification</h2>
+          <p class="section-subheading">Opaque on-chain commitments anchoring snapshot heads without leaking secret plaintexts or tree structures.</p>
+        </div>
+        <button class="btn-action primary" id="btn-anchor-from-tab">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <span>Anchor Latest Head Now</span>
+        </button>
+      </div>
+
+      <div class="anchor-card" id="anchor-card-container">
+        <!-- Dynamic content or fallback -->
+        <div class="formula-box">
+          commitment = SHA-256("CIPHERVAULT-ANCHOR-V1" || salt || head_record_cid)
+        </div>
+
+        <div class="anchor-grid-2col" id="anchor-details-grid">
+          <div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Contract Address</span>
+              <span class="op-meta-val" id="anchor-contract-addr" style="color: var(--accent-cyan);">--</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Target Chain</span>
+              <span class="op-meta-val" id="anchor-chain-id">Arbitrum One (Chain ID 42161)</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Inclusion Block</span>
+              <span class="op-meta-val" id="anchor-block-num" style="color: var(--accent-purple); font-weight: 600;">--</span>
+            </div>
+          </div>
+
+          <div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Finality Status</span>
+              <span class="op-meta-val" id="anchor-finality-status" style="color: var(--accent-emerald); font-weight: 600;">SequencerConfirmed</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Salt Preimage (Hex)</span>
+              <span class="op-meta-val" id="anchor-salt-preimage">--</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Opaque Commitment</span>
+              <span class="op-meta-val" id="anchor-commitment-val" style="color: var(--accent-cyan);">--</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="op-meta-row" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-subtle);">
+          <span class="op-meta-label">Transaction Hash</span>
+          <span class="op-meta-val" id="anchor-tx-hash-wrap">
+            <span id="anchor-tx-hash" style="font-family: var(--font-mono); color: var(--accent-purple);">--</span>
+            <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </span>
+        </div>
+
+        <!-- Interactive Cryptographic Verifier Box -->
+        <div class="math-verifier-box" id="math-verifier-box">
+          <div class="math-verifier-header">
+            <h4>Live Cryptographic Proof Verifier</h4>
+            <button class="btn-action secondary small" id="btn-run-math-verify">Run Browser SHA-256 Proof</button>
+          </div>
+          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
+            Verify client-side in WebCrypto that the local salt preimage and head record CID independently compute the exact 32-byte Arbitrum commitment without relying on external trust.
+          </p>
+          <div class="verify-result-output" id="verify-result-output" style="display: none;">
+            <!-- Output calculated dynamically -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 5: Emergency Recovery Card -->
+    <section class="tab-content" id="tab-recovery" aria-labelledby="tab-btn-recovery">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Offline Disaster Recovery Kit</h2>
+          <p class="section-subheading">Print two physical copies for secure offline storage. Never commit or upload this document.</p>
+        </div>
+        <button class="btn-action secondary" id="btn-print-kit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 6 2 18 2 18 9"></polyline>
+            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+            <rect x="6" y="14" width="12" height="8"></rect>
+          </svg>
+          <span>Print Physical Kit</span>
+        </button>
+      </div>
+
+      <div class="recovery-sheet-card" id="printable-recovery-kit">
+        <div class="warning-banner">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+          <div>
+            <strong>CRITICAL SECURITY INVARIANT:</strong>
+            <span> Store this document in TWO physically separate, secure locations. Loss of this secret means permanent, unrecoverable loss of your encrypted vault.</span>
+          </div>
+        </div>
+
+        <div class="recovery-metadata-grid">
+          <div class="op-meta-row">
+            <span class="op-meta-label">Vault ID</span>
+            <span class="op-meta-val" id="rec-vault-id" style="font-family: var(--font-mono); color: var(--text-primary);">--</span>
+          </div>
+          <div class="op-meta-row">
+            <span class="op-meta-label">Checksum Verification</span>
+            <span class="op-meta-val" id="rec-crc32" style="color: var(--accent-emerald); font-weight: 600;">CRC32: -- (PASSED)</span>
+          </div>
+          <div class="op-meta-row">
+            <span class="op-meta-label">Recovery Signing PK</span>
+            <span class="op-meta-val" id="rec-signing-pk" style="font-family: var(--font-mono); font-size: 0.8rem;">--</span>
+          </div>
+          <div class="op-meta-row">
+            <span class="op-meta-label">Recovery Encrypt PK</span>
+            <span class="op-meta-val" id="rec-encrypt-pk" style="font-family: var(--font-mono); font-size: 0.8rem;">--</span>
+          </div>
+          <div class="op-meta-row">
+            <span class="op-meta-label">Recovery Locator</span>
+            <span class="op-meta-val" id="rec-locator" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent-cyan);">--</span>
+          </div>
+        </div>
+
+        <div class="secret-reveal-box">
+          <div style="flex: 1;">
+            <div class="secret-box-label">Master Recovery Secret R (Confidential)</div>
+            <div id="secret-display" class="secret-key-masked">•••• •••• •••• •••• •••• •••• •••• ••••</div>
+          </div>
+          <div class="secret-box-actions">
+            <button id="btn-toggle-secret" class="btn-toggle-secret">Reveal Secret</button>
+            <button id="btn-copy-secret" class="btn-copy-secret" title="Copy Secret Key" style="display: none;">Copy Key</button>
+          </div>
+        </div>
+
+        <!-- Clean-machine recovery instructions -->
+        <div class="recovery-drill-guide">
+          <h4 style="font-size: 0.95rem; margin-bottom: 8px; color: var(--text-primary);">Disaster Recovery Procedure on a Clean Machine:</h4>
+          <ol style="padding-left: 20px; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.8;">
+            <li>Install or copy the standalone <code>ciphervault.exe</code> binary to your clean machine.</li>
+            <li>Execute the clean recovery command with your paper recovery secret:</li>
+          </ol>
+          <div class="cli-code-pill" style="margin-top: 10px;">
+            <code id="rec-cli-command">ciphervault recover --kit recovery_kit.txt</code>
+            <button class="btn-copy-code" data-code="ciphervault recover --kit recovery_kit.txt">Copy</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Modal: Create Snapshot -->
+  <div class="modal-backdrop" id="modal-create-snapshot" role="dialog" aria-modal="true" aria-labelledby="modal-snapshot-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-snapshot-title" class="modal-title">Capture & Replicate Snapshot</h3>
+        <button class="btn-modal-close" id="btn-close-modal-snapshot" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+          All tracked confidential files will be coherently read, padded to 1 MiB chunks, encrypted under ephemeral session keys, and verified across all 3 independent storage operators.
+        </p>
+        <div class="form-group">
+          <label for="input-snapshot-message" class="form-label">Commit Message (Optional)</label>
+          <input type="text" id="input-snapshot-message" class="form-input" placeholder="e.g. Rotating database credentials and Redis token" maxlength="120">
+        </div>
+        <div class="modal-files-summary" id="modal-files-summary">
+          <span class="summary-label">Files included in snapshot:</span>
+          <div id="modal-files-list" class="modal-files-tags">
+            <!-- Populated by app.js -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-snapshot">Cancel</button>
+        <button class="btn-action primary" id="btn-submit-snapshot">
+          <span id="btn-submit-text">Capture & Push</span>
+          <span id="btn-submit-spinner" class="spinner" style="display: none;"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Snapshot Inspector Details -->
+  <div class="modal-backdrop" id="modal-snapshot-inspector" role="dialog" aria-modal="true" aria-labelledby="modal-inspector-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-inspector-title" class="modal-title">Snapshot Node Details</h3>
+        <button class="btn-modal-close" id="btn-close-modal-inspector" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-inspector-body">
+        <!-- Populated dynamically -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-close-inspector-footer">Close</button>
+        <button class="btn-action primary" id="btn-copy-restore-cmd">Copy Restore CLI Command</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

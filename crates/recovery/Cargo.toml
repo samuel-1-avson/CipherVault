@@ -1,0 +1,18 @@
+[package]
+name = "ciphervault-recovery"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ciphervault-crypto = { path = "../crypto" }
+ciphervault-format = { path = "../format" }
+crc32fast.workspace = true
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+

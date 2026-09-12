@@ -1,0 +1,10 @@
+target/
+.cargo/
+.cargo-targets/
+data/
+operator-data/
+dist/
+node_modules/
+.git/
+*.db
+*.log

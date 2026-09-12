@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crypto",
+    "crates/format",
+    "crates/snapshot",
+    "crates/local-store",
+    "crates/recovery",
+    "crates/storage",
+    "services/operator",
+    "services/maintenance",
+    "apps/agent",
+    "apps/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["CipherVault Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+zeroize = { version = "1.8", features = ["derive"] }
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+blake2 = "0.10"
+sha2 = "0.10"
+hkdf = "0.12"
+argon2 = "0.5"
+rand = "0.8"
+subtle = "2.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_bytes = "0.11"
+ciborium = "0.2"
+thiserror = "2.0"
+anyhow = "1.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+clap = { version = "4.5", features = ["derive", "cargo"] }
+colored = "3.0"
+hex = "0.4"
+crc32fast = "1.4"
+rpassword = "7.3"
+walkdir = "2.5"
+chrono = "0.4"
+tokio = { version = "1.40", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+sha3 = "0.10"
+notify = "6.1"
+
+# Internal workspace crates
+ciphervault-crypto = { path = "crates/crypto" }
+ciphervault-format = { path = "crates/format" }
+ciphervault-snapshot = { path = "crates/snapshot" }
+ciphervault-local-store = { path = "crates/local-store" }
+ciphervault-recovery = { path = "crates/recovery" }
+ciphervault-storage = { path = "crates/storage" }
+ciphervault-operator = { path = "services/operator" }
+ciphervault-maintenance = { path = "services/maintenance" }
+ciphervault-agent = { path = "apps/agent" }
