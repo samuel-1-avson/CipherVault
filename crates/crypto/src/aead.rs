@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let key = [0x77u8; KEY_SIZE];
-        let secret_env = b"DATABASE_URL=postgres://user:pass@localhost/db\nAPI_KEY=sk_live_12345";
+        let secret_env = b"SERVICE_URL=https://cluster.internal.local/endpoint\nAUTH_KEY=token_mock_auth_12345";
         let aad = b"vault_id:001|chunk:0|total:1";
 
         let encrypted = encrypt_chunk(&key, secret_env, aad).unwrap();
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_tampered_ciphertext_fails() {
         let key = [0x77u8; KEY_SIZE];
-        let secret_env = b"DATABASE_URL=postgres://user:pass@localhost/db";
+        let secret_env = b"SERVICE_URL=https://cluster.internal.local/endpoint";
         let aad = b"vault_id:001";
 
         let mut encrypted = encrypt_chunk(&key, secret_env, aad).unwrap();

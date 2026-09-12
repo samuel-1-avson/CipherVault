@@ -12,15 +12,15 @@ if [ ! -d ".ciphervault" ]; then
 
     mkdir -p secrets
     cat << 'EOF' > secrets/.env.production
-DATABASE_URL=postgres://cluster_admin:secr3t_pass@prod-db.internal:5432/app
-STRIPE_SECRET_KEY=sk_live_51M0cluster_token_demo_key
-CACHE_REDIS_URL=redis://default:token_cluster@redis.internal:6379
+APP_ENVIRONMENT=production
+INTERNAL_API_ENDPOINT=https://internal-api.cluster.local:8443
+CACHE_HOST_URL=rediss://cache.cluster.local:6380
 EOF
 
     cat << 'EOF' > secrets/credentials.json
 {
   "service": "ciphervault-cluster",
-  "key_id": "AKIAIOSFODNN7CLUSTER",
+  "cluster_identifier": "mock-cluster-node-east",
   "region": "us-east-1"
 }
 EOF

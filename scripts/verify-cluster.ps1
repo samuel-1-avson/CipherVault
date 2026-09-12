@@ -53,7 +53,7 @@ Write-Host "`nInitializing test vault in $TestVault..." -ForegroundColor Cyan
 $KitFile = Join-Path $TestVault ".ciphervault\recovery_kit_backup.txt"
 
 # Create synthetic secrets
-Set-Content -Path ".env" -Value "DATABASE_URL=postgres://cluster_admin:secr3t_pass@db.internal:5432/main`nJWT_SECRET=cluster_jwt_token_9999"
+Set-Content -Path ".env" -Value "DATABASE_URL=https://db.internal.cluster.local:5432/main`nCLUSTER_AUTH_TOKEN=cluster_test_token_9999"
 Set-Content -Path "prod_api.key" -Value "CV-CLUSTER-KEY-4815162342-OMEGA"
 
 & $CliBin track .env

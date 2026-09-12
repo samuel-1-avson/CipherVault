@@ -45,13 +45,13 @@ fn test_end_to_end_ciphervault_workflow() {
     assert!(gitignore_content.contains(".ciphervault/"));
 
     // 2. Create synthetic confidential files
-    let env_content = b"DATABASE_URL=postgres://admin:super_secret_pw@localhost:5432/production\nSTRIPE_SECRET_KEY=sk_live_synthetic_51ABCXYZ123456\nJWT_SECRET=super_random_jwt_signing_secret_987654";
+    let env_content = b"SERVICE_ENDPOINT=https://cluster.internal.local:5432/production\nAUTH_KEY_HASH=token_synthetic_auth_123456\nPAYLOAD_IDENTIFIER=marker_payload_data_987654";
     let env_path = test_dir.join(".env");
     fs::write(&env_path, env_content).unwrap();
 
     let config_dir = test_dir.join("config");
     fs::create_dir_all(&config_dir).unwrap();
-    let key_content = b"-----BEGIN PRIVATE KEY-----\nSYNTHETIC_TEST_PRIVATE_KEY_DATA_NOT_A_REAL_SECRET\n-----END PRIVATE KEY-----\n";
+    let key_content = b"TEST_MOCK_CONFIGURATION_DATA_BLOCK\nSYNTHETIC_TEST_FIXTURE_PAYLOAD_NOT_A_REAL_SECRET\nTEST_MOCK_CONFIGURATION_DATA_END\n";
     let key_path = config_dir.join("app_key.pem");
     fs::write(&key_path, key_content).unwrap();
 
@@ -107,7 +107,7 @@ fn test_end_to_end_ciphervault_workflow() {
     assert_eq!(fs::read(&restored_key).unwrap(), key_content);
 
     // 7. Modify .env and create snapshot v2 (testing history & rollback)
-    let env_content_v2 = b"DATABASE_URL=postgres://admin:updated_password_v2@localhost:5432/production\n";
+    let env_content_v2 = b"SERVICE_ENDPOINT=https://cluster.internal.local:5432/production_v2\n";
     fs::write(&env_path, env_content_v2).unwrap();
     let env_v2_hash = sha256_file(&env_path);
 

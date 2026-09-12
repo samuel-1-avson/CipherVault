@@ -40,12 +40,12 @@ async fn test_watcher_agent_and_coherent_capture() {
 
     // 2. Track a file
     let secret_path = root_dir.join(".env");
-    fs::write(&secret_path, "DATABASE_URL=postgres://root:secret@localhost/db\nAPI_KEY=sk_test_12345\n").unwrap();
+    fs::write(&secret_path, "SERVICE_ENDPOINT=https://cluster.internal.local/db\nAUTH_KEY=token_cluster_auth_12345\n").unwrap();
     store.track_file(".env").unwrap();
 
     // 3. Test coherent read
     let data = VaultWatcher::read_file_coherently(&secret_path).unwrap().unwrap();
-    assert!(data.starts_with(b"DATABASE_URL="));
+    assert!(data.starts_with(b"SERVICE_ENDPOINT="));
 
     // 4. Test change detection
     let config = WatcherConfig {
@@ -71,7 +71,7 @@ async fn test_watcher_agent_and_coherent_capture() {
     assert!(!watcher.check_for_changes().unwrap());
 
     // 6. Modify tracked file and check detection
-    fs::write(&secret_path, "DATABASE_URL=postgres://root:new_secret@localhost/db\n").unwrap();
+    fs::write(&secret_path, "SERVICE_ENDPOINT=https://cluster.internal.local/db_v2\n").unwrap();
     assert!(watcher.check_for_changes().unwrap());
 
     // Trigger second snapshot

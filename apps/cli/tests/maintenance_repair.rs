@@ -74,7 +74,7 @@ async fn test_maintenance_audit_and_self_repair() {
     store.init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key).unwrap();
 
     let test_file = vault_dir.join("secrets.txt");
-    fs::write(&test_file, "SECRET_TOKEN=super_secret_payload_9999\n").unwrap();
+    fs::write(&test_file, "CONFIDENTIAL_PAYLOAD=marker_payload_data_9999\n").unwrap();
     store.track_file("secrets.txt").unwrap();
 
     let tracked = store.list_tracked_files().unwrap();

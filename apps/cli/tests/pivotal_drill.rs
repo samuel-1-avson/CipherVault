@@ -82,13 +82,13 @@ async fn test_pivotal_acceptance_drill() {
     fs::copy(&kit_backup_path, &safe_offline_kit).unwrap();
 
     // 3. Create confidential files on client
-    let env_bytes = b"DATABASE_URL=postgres://samuel:super_secret_pw@localhost:5432/main_db\nAPI_KEY=sk_live_synthetic_9876543210\n";
+    let env_bytes = b"SERVICE_ENDPOINT=https://samuel.cluster.local:5432/main\nAUTH_HASH_TOKEN=mock_synthetic_token_9876543210\n";
     let env_path = client_laptop.join(".env");
     fs::write(&env_path, env_bytes).unwrap();
 
     let keys_dir = client_laptop.join("keys");
     fs::create_dir_all(&keys_dir).unwrap();
-    let dev_key_bytes = b"-----BEGIN PRIVATE KEY-----\nSYNTHETIC_DEVELOPMENT_SECRET_KEY_NEVER_IN_GIT\n-----END PRIVATE KEY-----\n";
+    let dev_key_bytes = b"TEST_MOCK_CERTIFICATE_PAYLOAD_BLOCK\nSYNTHETIC_DEVELOPMENT_TEST_DATA_NEVER_IN_GIT\nTEST_MOCK_CERTIFICATE_PAYLOAD_END\n";
     let dev_key_path = keys_dir.join("dev.key");
     fs::write(&dev_key_path, dev_key_bytes).unwrap();
 
