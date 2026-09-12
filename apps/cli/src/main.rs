@@ -28,6 +28,8 @@ use ciphervault_snapshot::{
 };
 use ciphervault_storage::{MultiOperatorPool, OperatorClient};
 
+pub mod tui;
+
 const VAULT_DIR: &str = ".ciphervault";
 const DB_FILE: &str = "vault.db";
 const RECOVERY_FILE: &str = "recovery_kit_backup.txt";
@@ -231,6 +233,16 @@ enum Commands {
         no_browser: bool,
     },
 
+    /// Launch interactive terminal user interface (TUI)
+    Tui {
+        #[arg(
+            long,
+            default_value = "3000",
+            help = "Operator telemetry polling interval in milliseconds"
+        )]
+        poll_ms: u64,
+    },
+
     /// Manage physical hardware security tokens (YubiKey PIV / PC/SC)
     Token {
         #[command(subcommand)]
@@ -382,10 +394,11 @@ async fn run(cli: Cli) -> Result<()> {
             port,
             no_browser,
         } => cmd_ui(host, port, no_browser).await,
+        Commands::Tui { poll_ms } => tui::run_tui(poll_ms).await,
     }
 }
 
-fn get_vault_store() -> Result<LocalVaultStore> {
+pub fn get_vault_store() -> Result<LocalVaultStore> {
     let path = Path::new(VAULT_DIR).join(DB_FILE);
     if !path.exists() {
         bail!(

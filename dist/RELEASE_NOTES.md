@@ -57,6 +57,23 @@
   - **Authentic Guardian Ceremony**: Replaced preview-only drill splitting with authentic cryptographic splitting requiring the master recovery secret $R$, verified against the active vault's registered recovery public key.
   - **Dynamic Container Infrastructure**: Replaced static container mock identifiers (`mock-cluster-node-east`) with dynamic host and node discovery.
 
+* **Interactive Terminal User Interface (TUI)**:
+  - Added full terminal dashboard via `ciphervault tui [--poll-ms <MS>]` powered by `ratatui` and `crossterm`.
+  - **Six Dedicated Viewport Tabs**:
+    1. `[1] Overview`: Real-time vault health, active epoch, head snapshot CID, recovery locator, security posture, and operator fleet gauges.
+    2. `[2] Files`: Tracked confidential file inspector with on-disk state, size, file IDs, and interactive track modal (`[t]`).
+    3. `[3] History`: Snapshot DAG history log showing commit timestamps, parent CIDs, epoch generation, and manifests.
+    4. `[4] Operators`: Real-time operator telemetry polling latency (ms), HTTP health status, and quorum consensus indicator.
+    5. `[5] FastCDC`: Interactive Content-Defined Chunking visualizer analyzing target files with gear rolling-hash boundaries.
+    6. `[6] Token`: Physical PC/SC smartcard / YubiKey hardware token status, card reader presence, and PIV slot inspection.
+  - **Quick Action Hotkeys**:
+    - `[p]`: Trigger push snapshot ceremony directly from TUI.
+    - `[a]`: Anchor head commitment to Arbitrum L2 relayer.
+    - `[r]`: Refresh telemetry and vault database status.
+    - `[t]`: Open interactive modal to track new files.
+    - `[?]`: Toggle keyboard shortcut help overlay.
+    - `[q]` or `[Esc]`: Clean terminal teardown restoring raw mode.
+
 * **WCAG 2.1 AA Dashboard Accessibility**:
   - Keyboard skip navigation link, landmark semantics, accessible modal focus traps, Escape key dismissal, and Arrow/Home/End keyboard navigation on tabs.
   - ARIA live status regions (`role="status" aria-live="polite"`) for real-time SSE cluster telemetry.
@@ -79,7 +96,7 @@ Benchmarked on Windows x86_64:
 
 | Binary | Size | SHA-256 Checksum |
 |---|---|---|
-| `ciphervault.exe` | 9.27 MB | `4ee44a060e5b993d6e2a956125397af37dbc83cd2391eda735050a523b287759` |
+| `ciphervault.exe` | 9.81 MB | `7d39eb023605d0de6ada257ee43c5bba48b78f9fa6f544a53fd78b5953c645aa` |
 | `ciphervault-operator.exe` | 2.74 MB | `7dcf22f9cae9e987f8aad9fd1bf6d602cda6fedf71d1c10571770d5e7f6df210` |
 | `ciphervault-agent.exe` | 6.58 MB | `3f659c2c567e9afb98f65031f412691c88ff24773f6d4d264e256a9b658d5dba` |
 | `ciphervault-maintenance.exe` | 5.66 MB | `95f0bce0030dff747da0c72b457b990b2c9f27793b8c719aac893d1b65f01ee5` |

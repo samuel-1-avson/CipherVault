@@ -31,6 +31,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 axum.workspace = true
 futures-util.workspace = true
+reqwest = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }
