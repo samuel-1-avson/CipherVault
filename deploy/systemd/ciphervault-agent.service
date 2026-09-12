@@ -1,0 +1,35 @@
+[Unit]
+Description=CipherVault Agent - Continuous File Watcher and Coherent Snapshot Daemon
+Documentation=https://github.com/ciphervault/ciphervault
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ciphervault
+Group=ciphervault
+WorkingDirectory=/etc/ciphervault
+ExecStart=/usr/local/bin/ciphervault-agent --config /etc/ciphervault/agent.toml
+Restart=always
+RestartSec=5s
+
+# Security Sandboxing & Hardening
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ciphervault /tmp
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Graceful termination
+KillSignal=SIGINT
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

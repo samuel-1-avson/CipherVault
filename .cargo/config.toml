@@ -1,0 +1,3 @@
+[build]
+target-dir = "C:/Users/samue/.cargo-targets/ciphervault"
+incremental = false

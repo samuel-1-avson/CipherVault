@@ -1,0 +1,16 @@
+[package]
+name = "ciphervault-format"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_bytes.workspace = true
+ciborium.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+ed25519-dalek.workspace = true
+ciphervault-crypto = { path = "../crypto" }

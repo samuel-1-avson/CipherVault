@@ -1,0 +1,30 @@
+[package]
+name = "ciphervault-operator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ciphervault-operator"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_bytes.workspace = true
+ciborium.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+rand.workspace = true
+chrono.workspace = true
+clap.workspace = true
+colored.workspace = true
+ed25519-dalek.workspace = true
+ciphervault-crypto = { path = "../../crates/crypto" }
+ciphervault-format = { path = "../../crates/format" }
+ciphervault-storage = { path = "../../crates/storage" }

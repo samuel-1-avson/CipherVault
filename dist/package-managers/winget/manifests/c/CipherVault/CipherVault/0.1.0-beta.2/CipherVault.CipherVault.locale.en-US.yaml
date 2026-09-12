@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: CipherVault.CipherVault
+PackageVersion: 0.1.0-beta.2
+PackageLocale: en-US
+Publisher: CipherVault Team
+PublisherUrl: https://github.com/samuel-1-avson/CipherVault
+PublisherSupportUrl: https://github.com/samuel-1-avson/CipherVault/issues
+PackageName: CipherVault
+PackageUrl: https://github.com/samuel-1-avson/CipherVault
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/samuel-1-avson/CipherVault/blob/master/LICENSE
+ShortDescription: Decentralized, encrypted version control for confidential files
+Description: |
+  CipherVault provides decentralized, authenticated, and encrypted version control
+  for confidential files (.env, credentials, TLS certificates, secrets).
+  Featuring libsodium XChaCha20-Poly1305 AEAD encryption, Argon2id key derivation,
+  multi-operator redundant ciphertext replication with readback verification,
+  automated self-repair, offline emergency recovery kits, and Arbitrum One
+  checkpoint anchoring.
+Moniker: ciphervault
+Tags:
+  - encryption
+  - security
+  - secret-management
+  - devops
+  - blockchain
+  - arbitrum
+  - privacy
+  - backups
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

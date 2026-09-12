@@ -1,0 +1,16 @@
+[package]
+name = "ciphervault-snapshot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ciphervault-crypto = { path = "../crypto" }
+ciphervault-format = { path = "../format" }
+sha2.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+rand.workspace = true
+hex.workspace = true
+ed25519-dalek.workspace = true

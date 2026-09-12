@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: CipherVault.CipherVault
+PackageVersion: 0.1.0-beta.2
+Platform:
+  - Windows.Desktop
+InstallModes:
+  - silent
+  - interactive
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: bin\ciphervault.exe
+        PortableCommandAlias: ciphervault
+      - RelativeFilePath: bin\ciphervault-operator.exe
+        PortableCommandAlias: ciphervault-operator
+      - RelativeFilePath: bin\ciphervault-agent.exe
+        PortableCommandAlias: ciphervault-agent
+      - RelativeFilePath: bin\ciphervault-maintenance.exe
+        PortableCommandAlias: ciphervault-maintenance
+    InstallerUrl: https://github.com/samuel-1-avson/CipherVault/releases/download/v0.1.0-beta.2/ciphervault-v0.1.0-beta.2-x86_64-pc-windows-msvc.zip
+    InstallerSha256: 7df69b44e5681f80fcfc3fd0e7369bc01e1aade785a53d38dd40282ca846881a
+ManifestType: installer
+ManifestVersion: 1.6.0

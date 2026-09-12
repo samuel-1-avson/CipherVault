@@ -1,0 +1,18 @@
+[package]
+name = "ciphervault-local-store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+ciphervault-crypto = { path = "../crypto" }
+ciphervault-format = { path = "../format" }
+thiserror.workspace = true
+hex.workspace = true
+rand.workspace = true
+ed25519-dalek.workspace = true
+anyhow.workspace = true
+ciphervault-recovery.workspace = true
+x25519-dalek.workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "ciphervault-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ciphervault-crypto = { path = "../crypto" }
+ciphervault-format = { path = "../format" }
+reqwest.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_bytes.workspace = true
+ciborium.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+rand.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+sha3.workspace = true

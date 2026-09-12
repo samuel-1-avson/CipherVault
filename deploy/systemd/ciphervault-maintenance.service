@@ -1,0 +1,30 @@
+[Unit]
+Description=CipherVault Maintenance - Self-Repair & Lease Maintenance Engine
+Documentation=https://github.com/ciphervault/ciphervault
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ciphervault
+Group=ciphervault
+WorkingDirectory=/etc/ciphervault
+ExecStart=/usr/local/bin/ciphervault-maintenance --operators "http://127.0.0.1:8201" "http://127.0.0.1:8202" "http://127.0.0.1:8203" --interval-secs 30
+Restart=always
+RestartSec=10s
+
+# Security Sandboxing & Hardening
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

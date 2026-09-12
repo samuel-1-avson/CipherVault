@@ -1,0 +1,41 @@
+# ==============================================================================
+# Build Stage
+# ==============================================================================
+FROM rust:1-slim-bookworm AS builder
+
+
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY services ./services
+COPY apps ./apps
+
+RUN cargo build --release --bin ciphervault-maintenance
+
+# ==============================================================================
+# Runtime Stage
+# ==============================================================================
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 10001 ciphervault && \
+    useradd -u 10001 -g ciphervault -s /bin/false -m ciphervault
+
+COPY --from=builder /workspace/target/release/ciphervault-maintenance /usr/local/bin/ciphervault-maintenance
+
+USER ciphervault
+WORKDIR /home/ciphervault
+
+ENTRYPOINT ["ciphervault-maintenance"]
+CMD ["--operators", "http://operator-1:8201", "http://operator-2:8202", "http://operator-3:8203", "--interval-secs", "30"]
