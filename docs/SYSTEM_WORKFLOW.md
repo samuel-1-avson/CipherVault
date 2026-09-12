@@ -1,0 +1,387 @@
+# CipherVault: Comprehensive System Architecture & Operational Workflows
+
+**Version:** `v0.1.0-prod.1`  
+**Classification:** Technical Architecture & Workflow Specification  
+**Status:** Hardened Production Ready  
+
+---
+
+## 1. Executive System Overview
+
+**CipherVault** is a zero-knowledge, developer-first secret backup and disaster recovery platform engineered in Rust and Solidity. It guarantees that confidential application configurations (e.g. `.env`, TLS private keys, database credentials, API tokens) can be reliably recovered on a clean replacement machine using only an offline paper recovery kit or distributed threshold guardian shares, without trusting or relying upon centralized coordinators, SaaS databases, or blockchain wallets.
+
+### Fundamental Security Axioms
+1. **Zero Plaintext at Rest**: Local database secrets (device signing keys, active epoch encryption keys) are protected using OS-native credential storage (Windows DPAPI or machine-entropy AEAD).
+2. **Zero Plaintext Leakage to Operators**: Storage operators store opaque ciphertexts addressed by content digests (CIDs). Chunks, manifests, and head records are encrypted client-side using ChaCha20-Poly1305 with domain-separated derivation contexts.
+3. **RAM Zeroization & Zero-Disk Recovery Kit**: The master recovery secret $R$ is never persisted unencrypted to disk. During vault initialization, $R$ is printed exclusively to the terminal and immediately scrubbed from volatile memory using compiler-fence memory zeroization (`Zeroize` / `ZeroizeOnDrop`).
+4. **Autonomous Durability**: Replication requires proof-of-storage readback, while an autonomous maintenance fleet monitors replica durability and triggers self-repair across independent nodes.
+5. **Trustless L2 Settlement**: Vault head state commitments can be anchored on Arbitrum L2, providing immutable sequencing and tamper-evident audit trails.
+
+```mermaid
+flowchart TB
+    subgraph Client ["Client Workstation (CLI / Agent / Dashboard)"]
+        FS[("Target Files\n.env, certs, keys")]
+        CDC["FastCDC Dual-Mask\nChunk Chunker"]
+        KDF["Cryptographic Engine\nArgon2id + HKDF + BLAKE2b"]
+        DB[("Local SQLite WAL\n(DPAPI Encrypted)")]
+        HSM["Hardware Token / YubiKey\n(PIV Slot 9C/9D)"]
+        UI["Web Dashboard & SSE Telemetry\n(127.0.0.1:8080)"]
+    end
+
+    subgraph Operators ["Storage Operator Cluster (Quorum)"]
+        OP1["Operator 1\n(:8201)"]
+        OP2["Operator 2\n(:8202)"]
+        OP3["Operator 3\n(:8203)"]
+    end
+
+    subgraph Maintenance ["Durability & Fleet Daemon"]
+        FLT["Maintenance Scheduler\n(:8200 / SQLite WAL)"]
+    end
+
+    subgraph Settlement ["Arbitrum L2 Rollup"]
+        ARB["CipherVaultRegistry.sol\nSequencer Anchoring"]
+    end
+
+    FS --> CDC
+    CDC --> KDF
+    KDF --> DB
+    KDF -.->|Touch Sign| HSM
+    KDF ==>|Encrypted Chunks & PoS| Operators
+    FLT -.->|Heartbeats & Self-Repair| Operators
+    Client -.->|Anchor Commitment| ARB
+    DB <--> UI
+```
+
+---
+
+## 2. Distributed System Components
+
+| Component | Technology | Primary Responsibilities | Network / Process Boundary |
+|---|---|---|---|
+| **CipherVault CLI** (`apps/cli`) | Rust, Tokio, Clap, Axum | Command-line interface for init, tracking, snapshots, anchoring, guardian ceremonies, and web dashboard hosting. | Local Client Workstation |
+| **CipherVault Agent** (`apps/agent`) | Rust, Notify, Crossbeam | Background file-watcher service detecting secret file modifications and triggering debounced automated snapshots. | Local Daemon Service |
+| **Local Store** (`crates/local-store`) | SQLite WAL, DPAPI, Rusqlite | Transactional persistence of tracked file manifests, snapshot history DAG, device certificates, and durable upload queues. | `.ciphervault/vault.db` |
+| **Crypto Core** (`crates/crypto`) | ChaCha20-Poly1305, Ed25519, X25519, BLAKE2b, Shamir $\text{GF}(2^8)$ | Key hierarchy derivation, authenticated encryption, threshold secret sharing, and PIV APDU smartcard driver. | In-memory zeroized structures |
+| **Snapshot Engine** (`crates/snapshot`) | Pure-Rust FastCDC, Gear Hash | Content-defined chunking, deduplication detection, snapshot serialization (canonical CBOR), and atomic restore. | In-memory stream processing |
+| **Storage Operator** (`services/operator`) | Rust, Axum, RocksDB/Disk | Untrusted federated storage nodes holding encrypted chunks, serving PoS challenges, and storing recovery envelopes. | HTTP REST (`:8201-8203`) |
+| **Maintenance Daemon** (`services/maintenance`) | Rust, Reqwest, Rusqlite | Continuous heartbeat probing, replica quorum auditing, PoS integrity verification, and autonomous self-repair. | HTTP REST (`:8200`) |
+| **Arbitrum Registry** (`contracts/CipherVaultRegistry.sol`) | Solidity (0.8.28), Foundry | On-chain registration of state commitments (`setCommitment`), salt binding, and sequencer receipt validation. | Arbitrum One / Sepolia L2 |
+
+---
+
+## 3. Cryptographic Key Hierarchy
+
+The CipherVault security model branches from a single 256-bit high-entropy Master Recovery Secret ($R$). All operational keys are derived deterministically via domain-separated HKDF-BLAKE2b trees:
+
+```mermaid
+graph TD
+    R["Master Recovery Secret (R)\n[32 Bytes High Entropy]"]
+    
+    subgraph RecoveryIdentities ["Recovery Identities (Public & Unwrapped)"]
+        R_SK["Recovery Signing Private Key\nEd25519"]
+        R_PK["Recovery Signing Public Key\n(Registered in Certificates)"]
+        E_SK["Recovery Encryption Private Key\nX25519"]
+        E_PK["Recovery Encryption Public Key\n(Target for Envelopes)"]
+        LOC["Public Recovery Locator (L)\nBLAKE2b(R, 'locator')"]
+    end
+
+    subgraph EpochKeys ["Epoch Key Hierarchy"]
+        EPOCH["Vault Epoch Key (EpochKey_v1)\nChaCha20-Poly1305 [32 Bytes]"]
+        ENV["Epoch Key Recovery Envelope\nX25519 Box Sealed with E_PK"]
+        FVK["File Version Key\nHKDF(EpochKey, VaultID, ContentDigest)"]
+        NONCE["Deterministic Chunk Nonce\nHKDF(FVK, ChunkIdx, Plaintext)"]
+    end
+
+    subgraph DeviceIdentity ["Local Workstation Device Identity"]
+        DEV_SK["Device Signing Private Key\n(Ed25519 / DPAPI Protected / YubiKey Slot 9C)"]
+        DEV_PK["Device Public Key\n(Certified by R_SK in DeviceCertificate)"]
+    end
+
+    R -->|HKDF b'sign'| R_SK --> R_PK
+    R -->|HKDF b'encrypt'| E_SK --> E_PK
+    R -->|BLAKE2b b'locator'| LOC
+    R -->|HKDF b'epoch_1'| EPOCH
+    EPOCH --> ENV
+    EPOCH --> FVK --> NONCE
+    R_SK ==>|Signs Certificate| DEV_PK
+    DEV_SK -.-> DEV_PK
+```
+
+---
+
+## 4. End-to-End Operational Workflows
+
+### Workflow 1: Vault Initialization (`ciphervault init`)
+
+Initialization bootstraps a zero-knowledge confidential environment on the developer's machine without transmitting keys across any network:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / Admin
+    participant CLI as CipherVault CLI
+    participant KDF as Crypto KDF Engine
+    participant DPAPI as OS Keyring (DPAPI)
+    participant Store as Local SQLite (vault.db)
+    participant Term as Terminal Stdout
+
+    Dev->>CLI: ciphervault init [--operators ...]
+    CLI->>KDF: Generate 32-byte Master Secret R (OsRng)
+    KDF->>KDF: Derive Recovery Signing Keypair (Ed25519)
+    KDF->>KDF: Derive Recovery Encryption Keypair (X25519)
+    KDF->>KDF: Derive Public Locator L = BLAKE2b(R, "locator")
+    KDF->>KDF: Derive Epoch 1 Key = HKDF(R, "epoch_1")
+    KDF->>KDF: Generate Device Keypair (or probe YubiKey Slot 9C)
+    KDF->>KDF: Sign DeviceCertificate with Recovery Signing Key
+    
+    CLI->>DPAPI: Encrypt Device Signing Key & Epoch Key
+    DPAPI-->>CLI: DPAPI Ciphertext Blobs
+    CLI->>Store: Persist encrypted keys, certificates & operator list (WAL Mode)
+    
+    CLI->>Term: Print Emergency Paper Recovery Kit (R, L, Checksums)
+    CLI->>Dev: Prompt interactive confirmation: "Have you secured this kit?"
+    Dev-->>CLI: Confirmed ("yes")
+    CLI->>KDF: Zeroize master secret R from volatile process memory
+    CLI->>Dev: Vault ready (.ciphervault/ initialized)
+```
+
+**Security Invariants Enforced:**
+* The paper kit contains the ONLY instance of $R$ in the universe.
+* If the workstation is decommissioned, zero readable keys exist in `.ciphervault/vault.db` without Windows user logon credentials.
+* `git status` automatically ignores `.ciphervault/` to prevent repository leaks.
+
+---
+
+### Workflow 2: File Tracking & Snapshot Creation (`ciphervault push`)
+
+When a developer changes secret files, `ciphervault push` executes content-defined chunking, deduplication checks, and encrypted replication:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / Watcher Agent
+    participant CLI as CLI Snapshot Engine
+    participant CDC as FastCDC Engine
+    participant AEAD as ChaCha20-Poly1305 Engine
+    participant HSM as YubiKey PIV (Slot 9C)
+    participant Pool as Multi-Operator Pool
+    participant Ops as Storage Operators (1..N)
+    participant Store as Local SQLite Store
+
+    Dev->>CLI: ciphervault push -m "Rotate DB credentials" [--pos] [--touch]
+    CLI->>Store: Read tracked files (.env, credentials.json)
+    
+    loop For each tracked confidential file
+        CLI->>CDC: Slicing into chunks (min=4KB, avg=16KB, max=64KB)
+        CDC-->>CLI: Yield chunk byte slices
+        loop For each chunk
+            CLI->>AEAD: Derive deterministic FileVersionKey & ChunkNonce
+            AEAD->>AEAD: Encrypt chunk with ChaCha20-Poly1305 (AAD = CID)
+            AEAD-->>CLI: Ciphertext chunk & Content Identifier (CID)
+            
+            alt Smart Deduplication / Proof-of-Storage Readback
+                CLI->>Pool: POST /v1/objects/:cid/challenge (32-byte nonce)
+                Pool->>Ops: Forward PoS Challenge
+                alt Operator holds valid chunk
+                    Ops-->>Pool: Signed PoS Receipt (429 bytes)
+                    Pool-->>CLI: PoS Valid (Upload skipped! 99.96% bandwidth saved)
+                else Chunk missing on operator
+                    Pool-->>CLI: HTTP 404 Not Found
+                    CLI->>Ops: PUT /v1/objects/:cid (Upload encrypted chunk)
+                    Ops-->>CLI: HTTP 201 Created
+                end
+            end
+        end
+    end
+
+    CLI->>CLI: Construct SnapshotRecord & Manifest (Canonical CBOR)
+    
+    alt Hardware Touch Signing Required (--touch)
+        CLI->>HSM: Send APDU dynamic auth hash to Slot 9C
+        HSM-->>Dev: Flashing LED / Wait for physical capacitive touch
+        Dev->>HSM: Physical Touch on Hardware Token
+        HSM-->>CLI: Hardware-backed Ed25519 Signature
+    else Software Key Signing
+        CLI->>AEAD: Sign SnapshotRecord with Device Signing Key
+    end
+
+    CLI->>Ops: Replicate SnapshotRecord to Quorum
+    CLI->>Store: Update Local Head, commit SQLite WAL transaction
+    CLI-->>Dev: ✓ Snapshot confirmed across 3/3 operators
+```
+
+**Key Performance & Efficiency Gains:**
+* **FastCDC Boundary Realignment**: Modifying a line in a file only changes 1 chunk; all other chunks retain identical CIDs.
+* **Deterministic Version Keying**: Chunks are deduplicated across snapshots for the same vault, while remaining cryptographically isolated across different vaults.
+* **PoS Readback Challenge**: Replaced 1–4 MB full chunk readbacks with a 461-byte cryptographic handshake.
+
+---
+
+### Workflow 3: On-Chain Settlement on Arbitrum L2 (`ciphervault anchor`)
+
+For tamper-evident sequencing and regulatory compliance, state commitments can be anchored on Arbitrum L2:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Administrator
+    participant CLI as CLI Anchoring Engine
+    participant Store as Local Vault Store
+    participant Relayer as Automated L2 Relayer / RPC
+    participant Seq as Arbitrum L2 Sequencer
+    participant SC as CipherVaultRegistry.sol
+
+    Dev->>CLI: ciphervault anchor --auto-relay
+    CLI->>Store: Read active snapshot Head CID & Vault ID
+    CLI->>CLI: Compute Commitment = BLAKE2b(VaultID || HeadCID || Salt)
+    CLI->>CLI: Construct EIP-712 Checkpoint Evidence Payload
+    
+    CLI->>Relayer: POST /v1/relayer/checkpoint (Evidence)
+    Relayer->>Relayer: Validate evidence signature against DeviceCertificate
+    Relayer-->>CLI: HTTP 202 Accepted ("QueuedForRelay", block_number = 0)
+    
+    Relayer->>Seq: eth_sendRawTransaction(setCommitment(vaultId, commitment, salt))
+    Seq->>SC: Execute state update on Arbitrum L2
+    SC-->>Seq: StateCommitmentAnchored Event emitted
+    
+    loop Sequencer Receipt Polling
+        CLI->>Relayer: GET /v1/relayer/checkpoint/:commitment/status
+        alt Transaction Mined by Sequencer
+            Relayer-->>CLI: "SequencerConfirmed", Block #308,231,027, TxHash: 0x...
+        else Transaction Still in Sequencer Mempool
+            Relayer-->>CLI: "QueuedForRelay"
+        end
+    end
+    
+    CLI->>Store: Record verified on-chain block receipt & explorer URL
+    CLI-->>Dev: ✓ Checkpoint SequencerConfirmed on Arbitrum L2
+```
+
+---
+
+### Workflow 4: Autonomous Fleet Durability & Self-Repair (`ciphervault-maintenance`)
+
+The maintenance daemon runs as a continuous system service to ensure 3-of-3 replica durability across untrusted operator nodes:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Daemon as Maintenance Daemon (:8200)
+    participant M_DB as Fleet SQLite DB (fleet.db)
+    participant Ops as Storage Operators (1..3)
+    participant UI as Web Dashboard SSE Stream
+
+    loop Every 15 Seconds (Configurable Interval)
+        Daemon->>Ops: GET /v1/info (Heartbeat probe & latency test)
+        Ops-->>Daemon: HTTP 200 OK (Latency: 12ms, 18ms, 999ms [Offline])
+        
+        Daemon->>Ops: Audit object closure via PoS challenge matrix
+        alt Quorum intact (3/3 operators responsive)
+            Daemon->>M_DB: Record Healthy Audit (0 lost, 0 degraded)
+        else Degraded replica detected (Operator 1 dropped)
+            Daemon->>M_DB: Record Degraded Audit (Operator 1 uncontactable)
+            Daemon->>Daemon: Trigger Autonomous Self-Repair Protocol
+            Daemon->>Ops: Read surviving chunks from Operator 2 & 3
+            Ops-->>Daemon: Encrypted chunk streams
+            Daemon->>Ops: Re-replicate missing chunks to replacement Operator 4
+            Ops-->>Daemon: Replication ACK
+            Daemon->>M_DB: Record Repaired State (3/3 replicas restored)
+        end
+        
+        Daemon->>UI: Emit Live SSE Telemetry Event {"operators": [...], "durability": "100%"}
+    end
+```
+
+---
+
+### Workflow 5: Catastrophic Workstation Loss & Clean-Machine Disaster Recovery (`ciphervault recover`)
+
+When the original development machine is destroyed, stolen, or lost, recovery proceeds onto a blank machine using **zero cached disk credentials**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer on Virgin Laptop
+    participant CLI as ciphervault recover
+    participant Term as Terminal / Paper Shares
+    participant Ops as Storage Operator Federation
+    participant Restore as Atomic Staging Directory (.ciphervault_staging_*)
+    participant Target as Working Workspace
+
+    Dev->>CLI: ciphervault recover --shares share1.txt share2.txt share3.txt
+    CLI->>Term: Read M printable guardian shares (or single master secret R)
+    CLI->>CLI: Verify CRC32 checksums on individual shares
+    CLI->>CLI: Perform Shamir Lagrange Interpolation over GF(2^8) in RAM
+    CLI->>CLI: Reconstruct Master Recovery Secret R
+    CLI->>CLI: Derive Public Locator L = BLAKE2b(R, "locator")
+    CLI->>CLI: Derive Recovery Encryption Keypair (E_SK, E_PK)
+    
+    CLI->>Ops: GET /v1/recovery/:locator/records
+    Ops-->>CLI: Return signed RecoveryRecord with Epoch Key Envelope
+    CLI->>CLI: Authenticate record signature against R_PK
+    CLI->>CLI: Open sealed box using E_SK -> Yield VaultEpochKey
+    
+    CLI->>Ops: GET /v1/objects/:head_cid -> Fetch Head Record
+    CLI->>CLI: Authenticate Head signature and decrypt Manifest
+    
+    CLI->>Restore: Create isolated staging directory (.ciphervault_staging_*)
+    loop For each file declared in manifest
+        loop For each chunk CID
+            CLI->>Ops: GET /v1/objects/:cid
+            Ops-->>CLI: Encrypted chunk ciphertext
+            CLI->>CLI: Decrypt chunk with FileVersionKey & ChunkNonce
+            CLI->>Restore: Append decrypted slice to staging file
+        end
+        CLI->>CLI: Verify reconstructed file SHA-256 matches manifest digest
+    end
+    
+    CLI->>Target: Atomic Move / Rename (Replace destination files atomically)
+    CLI->>Restore: Clean up temporary staging directory
+    CLI->>CLI: Zeroize all recovery keys, R, and Epoch keys from RAM
+    CLI-->>Dev: ✓ Disaster Recovery Complete: All secrets restored bit-for-bit
+```
+
+**Clean-Machine Guarantees:**
+* **Zero Host Plaintext Dependency**: No passwords or cached keys required from the destroyed machine.
+* **Atomic All-or-Nothing Integrity**: If a single chunk is corrupted or truncated, staging files are deleted; target files are NEVER left in a partial state.
+* **100% Bit-for-Bit Fidelity**: Restored `.env` and cryptographic keys have zero byte discrepancy against original files.
+
+---
+
+## 6. Security Invariants Matrix
+
+| Attack / Failure Vector | Mitigating Subsystem | Cryptographic / Architectural Guarantee |
+|---|---|---|
+| **Workstation Theft / Disk Forensic Dump** | OS Keyring Encrypted Store | Local SQLite database keys are DPAPI-encrypted; master secret $R$ is zeroized from disk and RAM. |
+| **Storage Operator Compromise / Rogue Host** | AEAD Client-Side Encryption | Operators only store encrypted chunks ($CID = \text{BLAKE2b}(C)$); zero plaintext or file paths are ever sent. |
+| **Malicious Operator Record Injection** | Cryptographic Authorization Boundary | `POST /v1/recovery/:locator/records` verifies Ed25519 signatures against $R_{PK}$ or valid `DeviceCertificate`. |
+| **Man-in-the-Middle Checkpoint Spoofing** | Live Arbitrum L2 Settlement | Checkpoints include EIP-712 structured evidence and sequencer receipt verification against `CipherVaultRegistry.sol`. |
+| **Single Operator Outage / Data Center Fire** | Multi-Operator Quorum & Maintenance | 3-node replication with autonomous fleet repair reconstitutes degraded chunks onto healthy operators. |
+| **Key Extraction via Debugger / Memory Dump** | `ZeroizeOnDrop` Hygiene | `RecoverySecret`, `VaultEpochKey`, and `FileVersionKey` wipe stack and heap buffers immediately upon falling out of scope. |
+| **Corrupted Download During Restore** | Atomic Staging Directory | Chunks are assembled in `.ciphervault_staging_*` and validated against declared SHA-256 digests before touching working directories. |
+| **Unauthorized Snapshot Commit** | Hardware Token (YubiKey PIV) | Enforces physical capacitive touch confirmation (`Slot 9C`) before signing snapshot head records. |
+
+---
+
+## 7. Verification Commands & Diagnostics
+
+To verify the operational workflow on any environment:
+
+```powershell
+# 1. Run Complete Rust Workspace Test Suite
+cargo test --workspace --locked --offline
+
+# 2. Run Hardware Smartcard APDU Ceremony Tests
+cargo test --test hardware_token --locked --offline
+
+# 3. Run End-to-End Multi-Operator Chaos & Disaster Drill
+powershell -ExecutionPolicy Bypass -File deploy/chaos_drill.ps1
+
+# 4. Verify Live Arbitrum Settlement Deployer
+node scripts/deploy-registry.cjs --network arbitrum_sepolia
+
+# 5. Launch Full Production Multi-Container Cluster
+docker compose up -d
+docker compose ps
+curl http://127.0.0.1:8080/api/vault
+```
