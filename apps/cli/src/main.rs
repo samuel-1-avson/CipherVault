@@ -243,6 +243,24 @@ enum Commands {
         poll_ms: u64,
     },
 
+    /// Watch tracked confidential files and automatically create snapshots on save
+    Watch {
+        #[arg(
+            short,
+            long,
+            default_value = "2",
+            help = "Debounce window in seconds before capturing snapshot"
+        )]
+        debounce: u64,
+
+        #[arg(
+            short,
+            long,
+            help = "Enable automatic remote replication to operators on snapshot"
+        )]
+        sync: bool,
+    },
+
     /// Manage physical hardware security tokens (YubiKey PIV / PC/SC)
     Token {
         #[command(subcommand)]
@@ -395,6 +413,7 @@ async fn run(cli: Cli) -> Result<()> {
             no_browser,
         } => cmd_ui(host, port, no_browser).await,
         Commands::Tui { poll_ms } => tui::run_tui(poll_ms).await,
+        Commands::Watch { debounce, sync } => cmd_watch(debounce, sync).await,
     }
 }
 
@@ -423,6 +442,65 @@ fn ensure_gitignore() -> Result<()> {
         fs::write(gitignore_path, entry.trim_start())?;
     }
     Ok(())
+}
+
+async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
+    let root_dir = std::env::current_dir()?;
+    let vault_db = root_dir.join(VAULT_DIR).join(DB_FILE);
+    if !vault_db.exists() {
+        bail!(
+            "No CipherVault found in current directory ({}). Run '{}' first.",
+            root_dir.display(),
+            "ciphervault init".cyan()
+        );
+    }
+
+    let operators = if sync {
+        get_configured_operators()
+    } else {
+        Vec::new()
+    };
+
+    println!("{}", "================================================================================".cyan());
+    println!("{}", "        CIPHERVAULT AUTONOMOUS FILE WATCHER DAEMON (EVENT-DRIVEN)".bold().green());
+    println!("{}", "================================================================================".cyan());
+    println!("  Vault Root:    {}", root_dir.display().to_string().yellow());
+    println!("  Debounce:      {} second(s)", debounce_secs.to_string().cyan());
+    println!(
+        "  Remote Sync:   {}",
+        if sync {
+            format!("Enabled ({} operators)", operators.len()).green().bold()
+        } else {
+            "Disabled (local snapshots only; use --sync to push)".yellow()
+        }
+    );
+    if sync {
+        for op in &operators {
+            println!("    - {}", op.dimmed());
+        }
+    }
+    println!();
+    println!("{}", "Listening for save events on tracked confidential files... (Press Ctrl+C to stop)".dimmed());
+    println!();
+
+    let config = ciphervault_agent::WatcherConfig {
+        root_dir,
+        debounce: std::time::Duration::from_secs(debounce_secs),
+        replicate_remote: sync,
+        operators,
+    };
+
+    let watcher = ciphervault_agent::VaultWatcher::new(config)?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            println!("\n{}", "Received interrupt signal (Ctrl+C). Shutting down watcher...".yellow());
+            let _ = shutdown_tx.send(());
+        }
+    });
+
+    watcher.run_loop(shutdown_rx).await
 }
 
 fn get_configured_operators() -> Vec<String> {

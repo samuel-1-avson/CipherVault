@@ -36,6 +36,7 @@ CipherVault requires **zero trust in centralized SaaS databases, cloud coordinat
 6. **Hardware-Bound Identity (YubiKey PIV)**: Native ISO 7816-4 APDU driver over PC/SC (`winscard.dll`) binds device signing to Slot 9C with capacitive physical touch presence (`--touch`).
 7. **Automated L2 Checkpoint Relayer**: Submits salted EIP-712 state commitments directly to Arbitrum One relayer nodes, persisting immutable sequencer receipts locally.
 8. **Interactive Terminal User Interface (TUI)**: Full-featured terminal dashboard powered by Ratatui & Crossterm with 6 views, real-time telemetry polling, and instant hotkey workflows (`ciphervault tui`).
+9. **Autonomous Event-Driven File Watcher**: Cross-platform OS event hook (`notify`) watching tracked secret files with intelligent debouncing, coherent reads, and automatic snapshot/push replication (`ciphervault watch`).
 
 ---
 
@@ -162,6 +163,15 @@ launch-tui.bat
 ```
 Features 6 full-screen terminal views (`[1] Overview`, `[2] Files`, `[3] History`, `[4] Operators`, `[5] FastCDC`, `[6] Token`) with real-time operator health polling, hotkey snapshot commits (`[p]`), and L2 settlement (`[a]`).
 
+### 9. Autonomous File Watcher Daemon (Auto-Snapshot on Save)
+
+```sh
+ciphervault watch --debounce 2 --sync
+# or run the one-click launcher:
+start-watcher.bat
+```
+Listens to native OS filesystem save events on tracked secret files. Any time you edit and save `.env` in your editor, CipherVault debounces for 2 seconds, creates a FastCDC snapshot, and replicates to 3/3 operators in the background.
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
@@ -235,6 +245,7 @@ The device signing private key never leaves the secure element of the physical c
 | `ciphervault token probe` | *None* | Emits machine-readable JSON telemetry for hardware token driver. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser]` | Launches embedded self-contained Web Dashboard and API server. |
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive Terminal User Interface (TUI) dashboard with live operator polling and hotkeys. |
+| `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync]` | Listens to native OS filesystem save events on tracked secret files; auto-snapshots and pushes to operators on save. |
 
 ---
 

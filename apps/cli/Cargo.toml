@@ -34,8 +34,8 @@ futures-util.workspace = true
 reqwest = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+ciphervault-agent = { path = "../agent" }
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }
-ciphervault-agent = { path = "../agent" }
 

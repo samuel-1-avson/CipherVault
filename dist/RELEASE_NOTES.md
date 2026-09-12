@@ -78,6 +78,14 @@
   - Keyboard skip navigation link, landmark semantics, accessible modal focus traps, Escape key dismissal, and Arrow/Home/End keyboard navigation on tabs.
   - ARIA live status regions (`role="status" aria-live="polite"`) for real-time SSE cluster telemetry.
 
+* **Autonomous File Watcher Daemon (`ciphervault watch`)**:
+  - Direct CLI and background agent integration powered by cross-platform OS filesystem hooks (`notify`).
+  - Subscribes to native kernel event notifications (`ReadDirectoryChangesW` on Windows, `inotify` on Linux, `FSEvents` on macOS).
+  - Strictly monitors registered confidential files while ignoring `.git/`, `.ciphervault/`, and compiler artifacts.
+  - Coherent read validation and sliding debounce window (default 2s) collapsing rapid editor multi-saves.
+  - Automatic FastCDC chunk snapshot creation and background replication across 3/3 storage operators (`--sync`).
+  - One-click launcher: `start-watcher.bat`.
+
 ---
 
 ## 2. Benchmark & Performance Metrics
@@ -172,5 +180,13 @@ Launch the interactive terminal console to inspect real-time operator cluster he
 dist/bin/ciphervault.exe tui
 # or use the one-click Windows launcher:
 .\launch-tui.bat
+```
+
+### Step 10: Launch Autonomous File Watcher Daemon
+Automatically capture coherent FastCDC snapshots and push to operators whenever secrets are saved in your editor:
+```powershell
+dist/bin/ciphervault.exe watch --debounce 2 --sync
+# or use the one-click Windows launcher:
+.\start-watcher.bat
 ```
 

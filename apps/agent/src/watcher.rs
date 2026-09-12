@@ -11,6 +11,7 @@ use ciphervault_format::{to_canonical_cbor, HeadRecord, PROTOCOL_VERSION};
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_snapshot::create_snapshot;
 use ciphervault_storage::MultiOperatorPool;
+use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 /// Configuration for the background watcher agent.
 #[derive(Clone, Debug)]
@@ -290,47 +291,167 @@ impl VaultWatcher {
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
         println!(
-            "{}",
-            "Agent watcher loop started (polling with debounce)."
-                .bold()
-                .green()
+            "{} {}",
+            "[WATCH]".bold().cyan(),
+            format!(
+                "Autonomous watcher active on '{}' (debounce: {}s, sync: {})",
+                self.config.root_dir.display(),
+                self.config.debounce.as_secs(),
+                if self.config.replicate_remote {
+                    "3/3 operators"
+                } else {
+                    "local-only"
+                }
+            )
+            .green()
         );
-        let mut last_change = None;
+
+        let tracked = self.store.list_tracked_files()?;
+        println!(
+            "{} Monitoring {} tracked confidential file(s):",
+            "[WATCH]".bold().cyan(),
+            tracked.len()
+        );
+        for (f, _) in &tracked {
+            println!("  - {}", f.display().to_string().yellow());
+        }
+
+        // Initialize file hash cache on startup
+        let _ = self.check_for_changes();
+
+        // Setup notify OS event watcher
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<notify::Result<Event>>();
+        let mut watcher = RecommendedWatcher::new(
+            move |res| {
+                let _ = event_tx.send(res);
+            },
+            Config::default(),
+        )?;
+
+        if let Err(e) = watcher.watch(&self.config.root_dir, RecursiveMode::Recursive) {
+            eprintln!(
+                "{} Could not attach recursive OS event hook ({}); falling back to interval polling.",
+                "[WARN]".bold().yellow(),
+                e
+            );
+        } else {
+            println!(
+                "{} Native OS filesystem event hook active (ReadDirectoryChangesW/inotify).",
+                "[WATCH]".bold().cyan()
+            );
+        }
+
+        let mut last_change: Option<(Instant, String)> = None;
+        let mut last_poll = Instant::now();
 
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    println!("Agent received shutdown signal. Terminating gracefully.");
+                    println!("\n{} Shutdown signal received. Terminating watcher cleanly.", "[WATCH]".bold().cyan());
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                    match self.check_for_changes() {
-                        Ok(true) => {
-                            last_change = Some(Instant::now());
-                            println!("Agent: Detected change in tracked file. Debouncing...");
+
+                Some(event_res) = event_rx.recv() => {
+                    if let Ok(event) = event_res {
+                        let tracked_now = self.store.list_tracked_files().unwrap_or_default();
+                        let mut matched = None;
+                        for p in &event.paths {
+                            if is_ignored_path(p) {
+                                continue;
+                            }
+                            for (rel, _) in &tracked_now {
+                                if is_path_matching_tracked(p, rel, &self.config.root_dir) {
+                                    matched = Some(rel.to_string_lossy().to_string());
+                                    break;
+                                }
+                            }
+                            if matched.is_some() {
+                                break;
+                            }
                         }
-                        Ok(false) => {
-                            if let Some(t) = last_change {
-                                if t.elapsed() >= self.config.debounce {
-                                    println!("Agent: Debounce window expired. Capturing coherent snapshot...");
-                                    match self.capture_and_sync(Some("Automated agent capture".into())).await {
-                                        Ok(_) => {
-                                            last_change = None;
+
+                        if let Some(filename) = matched {
+                            last_change = Some((Instant::now(), filename.clone()));
+                            println!(
+                                "{} [{}] Detected save event on '{}'. Debouncing ({:.1}s)...",
+                                "[WATCH]".bold().cyan(),
+                                chrono::Local::now().format("%H:%M:%S").to_string().dimmed(),
+                                filename.yellow(),
+                                self.config.debounce.as_secs_f32()
+                            );
+                        }
+                    }
+                }
+
+                _ = tokio::time::sleep(Duration::from_millis(150)) => {
+                    // 1. Check if debounce window has expired
+                    if let Some((t, ref changed_file)) = last_change {
+                        if t.elapsed() >= self.config.debounce {
+                            let target_name = changed_file.clone();
+                            last_change = None;
+
+                            println!(
+                                "{} [{}] Debounce window expired. Verifying coherent digest for '{}'...",
+                                "[WATCH]".bold().cyan(),
+                                chrono::Local::now().format("%H:%M:%S").to_string().dimmed(),
+                                target_name.yellow()
+                            );
+
+                            match self.check_for_changes() {
+                                Ok(true) => {
+                                    println!(
+                                        "{} Content changed. Creating encrypted FastCDC snapshot...",
+                                        "[SNAPSHOT]".bold().green()
+                                    );
+                                    let commit_msg = format!("Auto-snapshot: updated {}", target_name);
+                                    match self.capture_and_sync(Some(commit_msg)).await {
+                                        Ok(cid) => {
+                                            let cid_short = hex::encode(&cid[..8]);
+                                            println!(
+                                                "{} [{}] Snapshot commit {} created & verified!",
+                                                "[SNAPSHOT]".bold().green(),
+                                                chrono::Local::now().format("%H:%M:%S").to_string().dimmed(),
+                                                cid_short.yellow()
+                                            );
                                         }
                                         Err(e) => {
-                                            eprintln!("{} Failed to capture/replicate snapshot: {}", "Agent Error:".red(), e);
-                                            // Keep last_change set to retry on next tick
-                                            last_change = Some(Instant::now());
+                                            eprintln!(
+                                                "{} Snapshot capture failed: {}",
+                                                "[ERROR]".bold().red(),
+                                                e
+                                            );
                                         }
                                     }
                                 }
-                            } else {
-                                // Periodically drain pending upload retries
-                                let _ = self.retry_pending_uploads().await;
+                                Ok(false) => {
+                                    println!(
+                                        "{} File touch detected but content identical. Skipped redundant snapshot.",
+                                        "[WATCH]".bold().dimmed()
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("{} Hash check error: {}", "[ERROR]".bold().red(), e);
+                                }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("{} Error checking changes: {}", "Agent Error:".red(), e);
+                    }
+
+                    // 2. Periodic background check & retry (every 3 seconds)
+                    if last_change.is_none() && last_poll.elapsed() >= Duration::from_secs(3) {
+                        last_poll = Instant::now();
+
+                        // Retry any previously failed uploads
+                        let _ = self.retry_pending_uploads().await;
+
+                        // Fallback check in case an OS event was dropped by the kernel
+                        if let Ok(true) = self.check_for_changes() {
+                            println!(
+                                "{} [{}] Detected un-snapshotted change via fallback check. Debouncing...",
+                                "[WATCH]".bold().cyan(),
+                                chrono::Local::now().format("%H:%M:%S").to_string().dimmed()
+                            );
+                            last_change = Some((Instant::now(), "tracked files".into()));
                         }
                     }
                 }
@@ -338,5 +459,54 @@ impl VaultWatcher {
         }
 
         Ok(())
+    }
+}
+
+fn is_path_matching_tracked(event_path: &Path, rel_path: &Path, root_dir: &Path) -> bool {
+    let target = root_dir.join(rel_path);
+    if event_path == target {
+        return true;
+    }
+    if let (Ok(c1), Ok(c2)) = (event_path.canonicalize(), target.canonicalize()) {
+        if c1 == c2 {
+            return true;
+        }
+    }
+    let event_str = event_path.to_string_lossy().replace('\\', "/");
+    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+    event_str.ends_with(&rel_str)
+}
+
+fn is_ignored_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains(".git") || s.contains(".ciphervault") || s.contains("target")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_path_matching_tracked() {
+        let root = Path::new("/workspace");
+        let tracked = Path::new(".env");
+        let event = Path::new("/workspace/.env");
+        assert!(is_path_matching_tracked(event, tracked, root));
+
+        let sub_tracked = Path::new("config/secrets.json");
+        let sub_event = Path::new("/workspace/config/secrets.json");
+        assert!(is_path_matching_tracked(sub_event, sub_tracked, root));
+
+        let other = Path::new("/workspace/src/main.rs");
+        assert!(!is_path_matching_tracked(other, tracked, root));
+    }
+
+    #[test]
+    fn test_is_ignored_path() {
+        assert!(is_ignored_path(Path::new("/workspace/.git/HEAD")));
+        assert!(is_ignored_path(Path::new("/workspace/.ciphervault/vault.db")));
+        assert!(is_ignored_path(Path::new("/workspace/target/debug/app")));
+        assert!(!is_ignored_path(Path::new("/workspace/.env")));
+        assert!(!is_ignored_path(Path::new("/workspace/config/key.pem")));
     }
 }

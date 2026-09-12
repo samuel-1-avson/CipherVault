@@ -433,4 +433,9 @@ curl http://127.0.0.1:8080/api/vault
 ciphervault tui
 # or run the one-click Windows launcher:
 .\launch-tui.bat
+
+# 7. Launch Autonomous File Watcher Daemon
+ciphervault watch --debounce 2 --sync
+# or run the one-click Windows launcher:
+.\start-watcher.bat
 ```
