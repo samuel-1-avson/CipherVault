@@ -1,6 +1,6 @@
 # CipherVault: Comprehensive System Architecture & Operational Workflows
 
-**Version:** `v0.1.0-prod.1`  
+**Version:** `v1.0.0`  
 **Classification:** Technical Architecture & Workflow Specification  
 **Status:** Hardened Production Ready  
 
@@ -26,13 +26,13 @@
 
 ```mermaid
 flowchart TB
-    subgraph Client ["Client Workstation (CLI / Agent / Dashboard)"]
+    subgraph Client ["Client Workstation (CLI / TUI / Agent / Dashboard)"]
         FS[("Target Files\n.env, certs, keys")]
         CDC["FastCDC Dual-Mask\nChunk Chunker"]
         KDF["Cryptographic Engine\nArgon2id + HKDF + BLAKE2b"]
         DB[("Local SQLite WAL\n(DPAPI Encrypted)")]
         HSM["Hardware Token / YubiKey\n(PIV Slot 9C/9D)"]
-        UI["Web Dashboard & SSE Telemetry\n(127.0.0.1:8080)"]
+        UI["TUI & Web Dashboard\n(ratatui / 127.0.0.1:8080)"]
     end
 
     subgraph Operators ["Storage Operator Cluster (Quorum)"]
@@ -428,4 +428,9 @@ node scripts/deploy-registry.cjs --network arbitrum_sepolia
 docker compose up -d
 docker compose ps
 curl http://127.0.0.1:8080/api/vault
+
+# 6. Launch Interactive Terminal Operations Console (TUI)
+ciphervault tui
+# or run the one-click Windows launcher:
+.\launch-tui.bat
 ```

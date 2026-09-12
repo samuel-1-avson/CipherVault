@@ -1,4 +1,4 @@
-# CipherVault v0.1.0-prod.1 (Hardened Production Release)
+# CipherVault v1.0.0 (Hardened Production Release)
 
 **CipherVault** is a zero-knowledge, developer-first secret backup and disaster recovery system written in Rust and Solidity. It guarantees that secrets (such as `.env`, API keys, TLS certificates, and database credentials) can be reliably recovered on a clean replacement machine using only an offline paper recovery kit or distributed threshold shares and direct storage operators, without depending on centralized coordinators, SaaS databases, or blockchain wallets.
 
@@ -165,4 +165,12 @@ This automated drill:
 8. Spawns replacement Operator 4 and triggers `ciphervault repair` to heal replica quorum.
 9. Simulates complete client loss (erases client machine and emergency recovery kit).
 10. Reconstructs all secrets onto a virgin laptop using only Guardian Shares 1 & 3 (omitting Share 2), verifying 100% bit-for-bit SHA-256 identity.
+
+### Step 9: Launch Real-Time Terminal Operations UI (TUI)
+Launch the interactive terminal console to inspect real-time operator cluster health, view snapshots, and trigger operations:
+```powershell
+dist/bin/ciphervault.exe tui
+# or use the one-click Windows launcher:
+.\launch-tui.bat
+```
 

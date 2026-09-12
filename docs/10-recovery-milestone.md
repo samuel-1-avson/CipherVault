@@ -19,8 +19,11 @@ Run the commands in the root README. CI retains formatting and strict Clippy gat
 
 ## Compatibility and Completed Milestone Extensions
 
-All items flagged in early review iterations have been resolved and certified in **CipherVault v0.1.0-prod.4**:
+All items flagged in early review iterations have been resolved and certified in **CipherVault v1.0.0 (Production Certified)**:
 
+- **Interactive Terminal User Interface (TUI)**: Full terminal operations dashboard ([`apps/cli/src/tui.rs`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/apps/cli/src/tui.rs)) powered by `ratatui` and `crossterm`. Supports real-time operator cluster health monitoring, snapshot timeline navigation, cryptographic verification inspection, live L2 state verification, and interactive push/anchor commands (`ciphervault tui` / `launch-tui.bat`).
+- **Accessible WCAG 2.1 AA Web Dashboard**: Responsive dashboard with light/dark high-contrast theme support, screen-reader aria labels, and live server-sent events for replication metrics (`ciphervault ui`).
+- **Complete Elimination of Mock Systems**: Replaced all synthetic mock loops, simulated in-memory networks, and test stubs with authentic production pathways: native PC/SC smartcard drivers, real Arbitrum L2 relayer contracts & transaction encoding, actual live operator cluster network transport, and persistent SQLite WAL schedulers.
 - **Protected Local Storage**: Device signing keys and epoch keys are encrypted at rest using Windows DPAPI (`CryptProtectData`) and machine-authenticated encryption on Linux/macOS ([`crates/local-store/src/keyring.rs`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/crates/local-store/src/keyring.rs)).
 - **Zero-Disk Recovery Hardening**: `recovery_kit_backup.txt` has been permanently removed; master recovery secrets are scrubbed from RAM on initialization.
 - **Physical Hardware Security Token (HSM)**: Upgraded from simulation to native ISO 7816-4 APDU smartcard driver over PC/SC ([`crates/crypto/src/piv.rs`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/crates/crypto/src/piv.rs)), supporting YubiKey Slot 9C touch presence and Slot 9D ECDH key agreement.

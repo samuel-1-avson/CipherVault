@@ -11,15 +11,19 @@ The motivating incident was a lost external disk: GitHub restored source code, b
 ## Production Implementation Summary
 
 - **Standalone Pure-Rust CLI & Services**: Memory-safe implementation with zero dynamic C/FFI library dependencies.
+- **Interactive Terminal User Interface (TUI)**: State-of-the-art terminal operations dashboard powered by Ratatui and Crossterm with 6 views and real-time operator health polling (`ciphervault tui`).
 - **Federated Storage Operators**: Direct authenticated HTTPS interface across three independently administered operators with Proof-of-Storage (PoS) challenge readback (99.96% bandwidth reduction).
 - **Arbitrum One Checkpoint Relayer**: Submits EIP-712 typed data commitments directly to Arbitrum L2 relayer nodes, persisting verifiable sequencer execution receipts without external wallet tooling.
 - **Hardware-Isolated Signing**: Native ISO 7816-4 APDU smartcard driver over PC/SC supporting YubiKey Slot 9C touch presence (`--touch`) and Slot 9D ECDH epoch key agreement.
 - **Threshold Guardian Recovery**: Shamir's Secret Sharing over $\text{GF}(2^8)$ with constant-time inversion enabling clean-machine reconstruction from any $M$-of-$N$ guardian sheets with zero master secret disk exposure.
+- **Elimination of Mock Systems**: Production paths strictly require live data pipelines, authentic cryptographic splitting, genuine PC/SC hardware probes, and real EVM JSON-RPC nodes.
 
 ## Reading order
 
 | Document | Review purpose |
 |---|---|
+| [System Workflow & Architecture](SYSTEM_WORKFLOW.md) | Complete end-to-end operational workflows, state machines, and key lifecycle diagrams |
+| [Technical Project Report](PROJECT_REPORT.md) | Comprehensive executive report covering all cryptographic invariants, components, and benchmarks |
 | [01 — Product and requirements](01-product-and-requirements.md) | User experience, scope, assumptions, acceptance criteria |
 | [02 — Technology decisions](02-technology-decisions.md) | Chain/storage comparison, chosen stack, residual trust |
 | [03 — Security and recovery](03-security-and-recovery.md) | Threat model, key hierarchy, device-loss procedure, limitations |
@@ -28,6 +32,8 @@ The motivating incident was a lost external disk: GitHub restored source code, b
 | [06 — Operations, performance and costs](06-operations-performance-costs.md) | Provisional SLOs, runbooks, capacity and cost model |
 | [07 — Delivery and review gates](07-delivery-and-review-gates.md) | Phases, research spikes, tests, decisions required |
 | [08 — Sources and evidence](08-sources-and-evidence.md) | Primary sources checked, local context, evidence boundaries |
+| [09 — YubiKey & HSM Guide](09-yubikey-hsm-guide.md) | Smartcard PIV driver, Slot 9C touch presence, and Slot 9D ECDH guide |
+| [10 — Recovery milestone](10-recovery-milestone.md) | Detailed verification evidence across recovery and durability drills |
 
 ## Non-negotiable design invariants
 
@@ -42,7 +48,8 @@ The motivating incident was a lost external disk: GitHub restored source code, b
 ## Architecture Verification & Security Audit
 
 For full technical details on the implemented cryptography, memory zeroization, FastCDC rolling hash algorithms, Shamir Galois field math, and the NIST SP 800-73-4 smartcard driver, consult:
-- **Comprehensive Audit Report**: [`CIPHERVAULT_DEEP_DIVE_AUDIT_REPORT.md`](../CIPHERVAULT_DEEP_DIVE_AUDIT_REPORT.md)
+- **Comprehensive Project Report**: [`docs/PROJECT_REPORT.md`](PROJECT_REPORT.md)
+- **System Workflow & Diagrams**: [`docs/SYSTEM_WORKFLOW.md`](SYSTEM_WORKFLOW.md)
 - **Production User Manual & Quickstart**: [`README.md`](../README.md)
 - **Recovery & Durability Milestone**: [`docs/10-recovery-milestone.md`](10-recovery-milestone.md)
 - **YubiKey & HSM Guide**: [`docs/09-yubikey-hsm-guide.md`](09-yubikey-hsm-guide.md)

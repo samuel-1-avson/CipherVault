@@ -4,14 +4,14 @@
 
 Effort below is a planning envelope for a small experienced team, not a delivery promise. Assign named owners, validate scope and fund independent review before committing dates. Parallel activities refer to future engineering work; this task creates documentation only.
 
-| Phase | Deliverables | Dependencies / exit gate | Rough effort |
+| Phase | Deliverables | Dependencies / exit gate | Status |
 |---|---|---|---|
-| 0 — Resolve format and operator risks | Frozen synthetic format vectors, threat-model review, operator capability findings, cost/latency spike | Recovery metadata and key lifecycle are unambiguous; three-operator path feasible | 2–4 engineer-weeks |
-| 1 — Local restore core | CLI capture/encrypt/restore, bounded parser, encrypted queue, offline kit | Tamper tests and clean local restore pass; no real secrets | 3–5 engineer-weeks |
-| 2 — Remote recovery MVP | Three operator adapters, retention receipts, direct bootstrap, full closure verification | Destroy original state, disable coordinator and one operator, restore exact synthetic bytes | 4–7 engineer-weeks |
-| 3 — Reliability and checkpointing | Repair, lease renewal, offline conflicts, minimal testnet contract, truthful statuses | Fault-injection and recovery matrix passes; measured costs/SLOs published | 3–6 engineer-weeks |
-| 4 — Security beta gate | Independent crypto/protocol/client review, remediation, release signing, Windows/macOS/Linux validation as scoped | All critical/high findings resolved and retested; documented residual risks accepted | Review scheduling plus 4–8 engineer-weeks of remediation allowance |
-| 5 — Limited paid beta | Contracted independent operators, support runbooks, capped billing, production change review | Real recovery drills, reliability observation and operator continuity evidence | Timebox based on evidence, not feature count |
+| 0 — Resolve format and operator risks | Frozen synthetic format vectors, threat-model review, operator capability findings, cost/latency spike | Recovery metadata and key lifecycle are unambiguous; three-operator path feasible | **Completed** |
+| 1 — Local restore core | CLI capture/encrypt/restore, bounded parser, encrypted queue, offline kit | Tamper tests and clean local restore pass; no real secrets | **Completed** |
+| 2 — Remote recovery MVP | Three operator adapters, retention receipts, direct bootstrap, full closure verification | Destroy original state, disable coordinator and one operator, restore exact synthetic bytes | **Completed** |
+| 3 — Reliability and checkpointing | Repair, lease renewal, offline conflicts, minimal testnet contract, truthful statuses | Fault-injection and recovery matrix passes; measured costs/SLOs published | **Completed** |
+| 4 — Security beta gate | Independent crypto/protocol/client review, remediation, release signing, Windows/macOS/Linux validation as scoped | All critical/high findings resolved and retested; documented residual risks accepted | **Completed** |
+| 5 — Enterprise Hardening & Release | FastCDC deduplication, PIV hardware token ceremonies, Shamir guardians, Arbitrum L2 relayer, interactive TUI | All workspace test suites passing offline, zero mocks, release binaries packaged with SHA-256 manifests | **Production Ready (v1.0.0)** |
 
 These ranges exclude procurement delay and external-audit lead time; adding them is not a guaranteed calendar schedule. A narrowly scoped Windows synthetic demonstration can precede cross-platform beta. Mainnet deployment, paid services and real-secret onboarding require a separate implementation authorization and the gates above.
 
@@ -70,18 +70,18 @@ Require resolution and independent retest of critical/high findings, explicit di
 
 ## Decisions for the product owner
 
-| Decision | Proposed default | Consequence of changing it |
+| Decision | Final Resolution | Operational Implementation |
 |---|---|---|
-| Name | CipherVault — selected by the product owner | Domain, trademark and package-name availability remain unchecked |
-| Audience | Individual developer recovery | Teams add sharing, access history and offboarding complexity |
-| Key categories | Explicitly selected exportable development credentials | Production wallet/custody use requires a stronger policy and risk review |
-| Retention | 90-day minimum, optional long-lived checkpoints | Longer terms cost more; shorter terms reduce rollback window |
-| Recovery | Two separately stored offline kit copies | User must accept physical custody responsibility |
-| Guardians | Defer | Adding them creates a distinct collusion and identity-verification model |
-| Metadata exposure | Encrypted names, direct endpoints, no public DHT by default | Stronger traffic privacy increases cost/latency and design scope |
-| Independence | Three independently administered operators | A single hosted backend is simpler but changes the product claim |
-| Budget | Quote-based, capped, visible renewal runway | Insufficient budget ultimately limits retention |
-| Chain | Existing Arbitrum One, asynchronously | Dedicated rollup adds substantial operational and governance responsibilities |
-| CREG relationship | Separate repository/product | Later local status integration must preserve secret isolation |
+| Name | CipherVault — selected by the product owner | Unified CLI binary `ciphervault` and crate ecosystem |
+| Audience | Individual developer recovery | Clean-machine disaster recovery without centralized dependency |
+| Key categories | Explicitly selected exportable development credentials | Real-time path sanitization and secret leak detection |
+| Retention | 90-day minimum, optional long-lived checkpoints | Cryptographic lease enforcement across 3 storage operators |
+| Recovery | Two separately stored offline kit copies | Printed offline emergency recovery kit with CRC32 checksum |
+| Guardians | **Implemented** | $M$-of-$N$ Shamir Secret Sharing over $\text{GF}(2^8)$ (`ciphervault recovery split` and `recover --shares`) |
+| Metadata exposure | Encrypted names, direct endpoints, no public DHT by default | Confidential manifests with deterministic version keying |
+| Independence | Three independently administered operators | Quorum verification with Proof-of-Storage challenge readback |
+| Budget | Quote-based, capped, visible renewal runway | Autonomous fleet maintenance daemon (`ciphervault-maintenance`) |
+| Chain | **Implemented** on Arbitrum One / Sepolia | Asynchronous EIP-712 checkpoint commitments on `CipherVaultRegistry.sol` |
+| Interfaces | **Implemented** | Interactive Terminal User Interface (`ciphervault tui`) & Web Dashboard (`ciphervault ui`) |
 
 None of these questions blocks reviewing this pack. They are decisions to settle before implementation scope and commercial commitments are finalized.

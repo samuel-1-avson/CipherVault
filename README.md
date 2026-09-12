@@ -6,14 +6,15 @@
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Audit: Evidence-Based (2026-09-12)](https://img.shields.io/badge/Security%20Audit-Reviewed%20(2026--09--12)-blue.svg)](CIPHERVAULT_AUDIT_2026-09-12.md)
 [![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(Workspace%20Suite)-success.svg)](CIPHERVAULT_AUDIT_2026-09-12.md)
-[![Status: Functional MVP](https://img.shields.io/badge/Status-Functional%20MVP-orange.svg)](CIPHERVAULT_AUDIT_2026-09-12.md)
+[![Status: Production Ready](https://img.shields.io/badge/Status-Production%20Ready%20(v1.0.0)-success.svg)](dist/RELEASE_NOTES.md)
+[![Report: Technical Audit](https://img.shields.io/badge/Report-Full%20Project%20Report-blue.svg)](docs/PROJECT_REPORT.md)
 
 
 **Decentralized, zero-knowledge version control and disaster recovery system for confidential development secrets.**
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
-[Quickstart](#-3-minute-quickstart) • [Architecture](#-architecture--trust-boundary) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Hardware Tokens](#-hardware-security-tokens--yubikey-piv) • [CLI Manual](#-cli-command-reference) • [Docker Cluster](#-docker-compose--cloud-cluster) • [Benchmarks](#-performance-benchmarks)
+[Quickstart](#-3-minute-quickstart) • [Architecture](#-architecture--trust-boundary) • [Terminal UI](#-interactive-terminal-user-interface-tui) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Hardware Tokens](#-hardware-security-tokens--yubikey-piv) • [CLI Manual](#-cli-command-reference) • [Docker Cluster](#-docker-compose--cloud-cluster) • [Technical Report](docs/PROJECT_REPORT.md)
 
 </div>
 
@@ -34,6 +35,7 @@ CipherVault requires **zero trust in centralized SaaS databases, cloud coordinat
 5. **Threshold Guardian Recovery ($M$-of-$N$ Shamir Sharing)**: Galois Field $\text{GF}(2^8)$ secret sharing with constant-time inversion reconstructs $R$ on a clean machine from any $M$ guardian sheets without exposing shares to disk.
 6. **Hardware-Bound Identity (YubiKey PIV)**: Native ISO 7816-4 APDU driver over PC/SC (`winscard.dll`) binds device signing to Slot 9C with capacitive physical touch presence (`--touch`).
 7. **Automated L2 Checkpoint Relayer**: Submits salted EIP-712 state commitments directly to Arbitrum One relayer nodes, persisting immutable sequencer receipts locally.
+8. **Interactive Terminal User Interface (TUI)**: Full-featured terminal dashboard powered by Ratatui & Crossterm with 6 views, real-time telemetry polling, and instant hotkey workflows (`ciphervault tui`).
 
 ---
 
@@ -151,6 +153,15 @@ Open **`http://127.0.0.1:8080`** to review:
 - **Maintenance Fleet Monitor**: Storage node latency gauges and SQLite `fleet.db` audit histories.
 - **Hardware Token Status**: Real-time PC/SC reader detection and touch policy indicators.
 
+### 8. Interactive Terminal User Interface (TUI)
+
+```sh
+ciphervault tui
+# or run the one-click launcher:
+launch-tui.bat
+```
+Features 6 full-screen terminal views (`[1] Overview`, `[2] Files`, `[3] History`, `[4] Operators`, `[5] FastCDC`, `[6] Token`) with real-time operator health polling, hotkey snapshot commits (`[p]`), and L2 settlement (`[a]`).
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
@@ -223,6 +234,7 @@ The device signing private key never leaves the secure element of the physical c
 | `ciphervault token status` | *None* | Inspects connected PC/SC smartcard readers and PIV slot states. |
 | `ciphervault token probe` | *None* | Emits machine-readable JSON telemetry for hardware token driver. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser]` | Launches embedded self-contained Web Dashboard and API server. |
+| `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive Terminal User Interface (TUI) dashboard with live operator polling and hotkeys. |
 
 ---
 

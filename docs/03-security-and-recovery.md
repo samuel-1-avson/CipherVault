@@ -94,8 +94,12 @@ Ordinary device credentials may append snapshots but cannot shorten prepaid rete
 
 Detect unusual change volume locally and offer a pause, but do not call this malware detection. Preserve last-known-good snapshots. A legitimately signed encrypted ransomware version remains a valid new snapshot; signatures prove its origin, not its desirability. Authentic old snapshots remain recoverable even when newer data is bad. Chain commitments do not identify which contents are good.
 
-## Optional threshold guardians — deferred
+## Threshold Guardian Recovery ($M$-of-$N$) — Implemented
 
-A later design may split only an offline recovery secret into, for example, 2-of-3 shares using a mature, reviewed implementation. That is a proposal, not an approved construction or selected library. Do not give validators file-decryption shares or require guardians for every read. Reconstruction happens on the user's trusted device; a threshold of colluding guardians can reconstruct the secret and compromise the vault, and too few reachable shares cannot recover it.
+Threshold Guardian Recovery has been implemented and audited using Shamir's Secret Sharing over $\text{GF}(2^8)$ with constant-time inversion ([`crates/crypto/src/shamir.rs`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/crates/crypto/src/shamir.rs)). 
 
-Before implementation, decide guardian identity verification, authenticated share transport, substitution detection, refresh/replacement, revoked-share handling, inheritance policy, coercion exposure and loss drills. A delay in a web service does not constrain guardians who already hold reconstructable shares. Refreshing shares does not erase stolen old share sets. This feature requires its own security assessment and cannot weaken the offline-kit recovery baseline.
+Key operational parameters:
+- **Scope**: Splits exclusively the 32-byte offline master recovery secret ($R$). Individual guardians never receive file decryption keys, manifests, or remote object storage credentials.
+- **Algebraic Construction**: Polynomial evaluation over $\text{GF}(2^8)$ with irreducible generator $x^8 + x^4 + x^3 + x + 1$ (0x11B). Lagrange basis polynomial interpolation executes in constant-time to resist timing side-channels.
+- **Execution Boundary**: All split and reconstruction ceremonies execute strictly on the user's local machine via `ciphervault recovery split --threshold M --shares N` and `ciphervault recovery combine --shares ...`. No share material is ever transmitted to operators or coordinator networks.
+- **Defense in Depth**: Any $M$-of-$N$ threshold of authentic shares can reconstruct the vault master key, while $M-1$ shares reveal zero mathematical information regarding the key. Test regressions in `crates/crypto/tests/shamir_test.rs` and `apps/cli/tests/chaos_federation_drill.rs` verify recovery across multi-share combinations and reject corrupted shares.

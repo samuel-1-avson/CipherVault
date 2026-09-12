@@ -85,7 +85,7 @@ The operator wrapper proposed here is **new product engineering**, not an existi
 | Smart contract | Minimal Solidity contract; Foundry tests | Opaque checkpoint sequencing only; no custom crypto verification of file contents |
 | Telemetry | OpenTelemetry metrics and structured redacted events | No paths, file contents, CIDs, key material or recovery locators in default telemetry |
 | Distribution | Signed platform packages, SBOM, reproducible-build effort | Clean-machine users must authenticate the restore tool |
-| GUI | Defer; later Tauri using the same core | Prevent duplicate crypto/protocol implementations |
+| GUI & TUI | Production Terminal UI (ratatui/crossterm) & WCAG 2.1 AA Web Dashboard | Prevent duplicate crypto/protocol implementations by driving the same CLI/library core |
 
 The crypto choices follow libsodium's [AEAD guidance](https://doc.libsodium.org/secret-key_cryptography/aead/chacha20-poly1305) and [key derivation API](https://doc.libsodium.org/key_derivation). CBOR serialization follows a constrained deterministic profile of [RFC 8949](https://datatracker.ietf.org/doc/html/rfc8949). Tool names above are selections, not claims of audit coverage for our integration.
 
@@ -97,6 +97,6 @@ The crypto choices follow libsodium's [AEAD guidance](https://doc.libsodium.org/
 | A02 | No global deduplication or plaintext addressing | Never silently relax; any change requires privacy and cryptographic review |
 | A03 | Explicit immutable snapshots, no secret text merge | Teams become a concrete requirement |
 | A04 | Immutable versioned checkpoint contract | Migration protocol is proven; never introduce an upgrade proxy casually |
-| A05 | Offline recovery mandatory; guardians deferred | Recovery UX evidence supports a separate audited guardian design |
+| A05 | Offline recovery mandatory; Shamir guardians implemented | Threshold guardian splitting/combining ($M$-of-$N$) over $\text{GF}(2^8)$ implemented with constant-time inversion |
 | A06 | Coordinator replaceable, operator admission initially curated | Independent operators and portable records are proven in real drills |
 | A07 | Public DHT announcement optional and off by default | Users accept linkability and implementation confirms operator configuration |

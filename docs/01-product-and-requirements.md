@@ -57,7 +57,7 @@ The recovery kit contains secret material and public/bootstrap information. Prov
 
 ## Everyday workflow
 
-`init`, `track`, `status`, `push`, `history`, `restore`, and `verify` should feel familiar. The planned executable is `ciphervault`, matching the selected CipherVault project name. A local config maps tracked paths to random internal file IDs. That mapping is confidential. An optional non-secret example config may be committed only after explicit review.
+`init`, `track`, `untrack`, `status`, `push`, `history`, `restore`, `recover`, `recovery split`, `anchor`, `verify-anchor`, `audit`, `repair`, `token`, `ui`, and interactive `tui` provide a complete operational toolchain. The binary executable is `ciphervault`. A local SQLite database protected via Windows DPAPI / OS Keyring maps tracked paths to random internal file IDs. That mapping is confidential. An optional non-secret example config may be committed only after explicit review.
 
 The default `push` waits for all three required replicas to accept and read back the complete recovery closure, or returns a clear pending/degraded result. `push --background` returns after a durable local queue write and explicitly says it is not yet remotely protected. A Git hook can warn on unbacked changes but does not upload silently or block Git indefinitely. The CLI should never imply that a source-code push included ignored files.
 
