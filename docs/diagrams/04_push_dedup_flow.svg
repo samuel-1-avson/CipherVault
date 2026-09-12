@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="100%" height="100%" style="background:#0b0f19; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <linearGradient id="pGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+
+    <marker id="mArr" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+    </marker>
+    <marker id="mArrGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="mArrAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b" />
+    </marker>
+    <marker id="mArrPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#a78bfa" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="480" y="32" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700">Workflow 2: FastCDC Deduplication &amp; Hardware Push Ceremony</text>
+  <text x="480" y="50" text-anchor="middle" fill="#94a3b8" font-size="11">Content-Defined Chunking, Proof-of-Storage Readback (PoS), YubiKey Touch &amp; Quorum Replication</text>
+
+  <!-- Lifelines -->
+  <!-- 1: Dev -->
+  <rect x="25" y="70" width="105" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="77" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Developer</text>
+  <line x1="77" y1="106" x2="77" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 2: CLI Snapshot -->
+  <rect x="155" y="70" width="125" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="217" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">CLI Snapshot</text>
+  <line x1="217" y1="106" x2="217" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 3: FastCDC -->
+  <rect x="305" y="70" width="115" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="362" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">FastCDC</text>
+  <line x1="362" y1="106" x2="362" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 4: AEAD Encrypt -->
+  <rect x="445" y="70" width="120" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="505" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">AEAD Encrypt</text>
+  <line x1="505" y1="106" x2="505" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 5: YubiKey PIV -->
+  <rect x="590" y="70" width="125" height="36" rx="6" fill="url(#pGrad)" stroke="#f59e0b" stroke-width="1.2" />
+  <text x="652" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">YubiKey (9C)</text>
+  <line x1="652" y1="106" x2="652" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 6: Multi-Op Pool -->
+  <rect x="740" y="70" width="105" height="36" rx="6" fill="url(#pGrad)" stroke="#34d399" stroke-width="1.2" />
+  <text x="792" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Pool Client</text>
+  <line x1="792" y1="106" x2="792" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 7: Operators -->
+  <rect x="865" y="70" width="85" height="36" rx="6" fill="url(#pGrad)" stroke="#34d399" stroke-width="1.2" />
+  <text x="907" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Operators</text>
+  <line x1="907" y1="106" x2="907" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- Step 1 -->
+  <line x1="77" y1="125" x2="213" y2="125" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="145" y="118" text-anchor="middle" fill="#f8fafc" font-size="10">ciphervault push -m "Config" --pos --touch</text>
+
+  <!-- Step 2 -->
+  <line x1="217" y1="150" x2="358" y2="150" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="290" y="143" text-anchor="middle" fill="#38bdf8" font-size="10">fastcdc_chunk(file_bytes)</text>
+
+  <!-- Step 3 -->
+  <line x1="362" y1="170" x2="221" y2="170" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#mArr)" />
+  <text x="290" y="163" text-anchor="middle" fill="#94a3b8" font-size="9">Yield chunk byte slices</text>
+
+  <!-- Step 4 -->
+  <line x1="217" y1="195" x2="501" y2="195" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="360" y="188" text-anchor="middle" fill="#38bdf8" font-size="10">Derive FVK &amp; Nonce, Encrypt with ChaCha20</text>
+
+  <!-- Step 5 -->
+  <line x1="505" y1="215" x2="221" y2="215" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#mArr)" />
+  <text x="360" y="208" text-anchor="middle" fill="#94a3b8" font-size="9">Yield Ciphertext Chunk &amp; CID</text>
+
+  <!-- Step 6: PoS Challenge Box -->
+  <rect x="210" y="235" width="705" height="85" rx="6" fill="#0f172a" stroke="#059669" stroke-width="1" stroke-dasharray="4,3" />
+  <text x="220" y="250" fill="#34d399" font-size="10" font-weight="700">PoS DEDUPLICATION PRE-FLIGHT CHECK</text>
+
+  <line x1="217" y1="265" x2="788" y2="265" stroke="#34d399" stroke-width="1.5" marker-end="url(#mArrGreen)" />
+  <text x="500" y="260" text-anchor="middle" fill="#34d399" font-size="10">challenge_object_pos(CID, 32B nonce)</text>
+
+  <line x1="792" y1="280" x2="903" y2="280" stroke="#34d399" stroke-width="1.5" marker-end="url(#mArrGreen)" />
+  <text x="850" y="275" text-anchor="middle" fill="#94a3b8" font-size="9">POST /v1/objects/:cid/challenge</text>
+
+  <line x1="907" y1="305" x2="221" y2="305" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mArrGreen)" />
+  <text x="560" y="300" text-anchor="middle" fill="#34d399" font-size="10">✓ Valid PoS Receipt (429B): Chunk already present! UPLOAD SKIPPED (99.96% Saved)</text>
+
+  <!-- Step 7: Touch Signing -->
+  <rect x="70" y="335" width="590" height="75" rx="6" fill="#0f172a" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" />
+  <text x="80" y="350" fill="#f59e0b" font-size="10" font-weight="700">HARDWARE TOUCH CONFIRMATION CEREMONY</text>
+
+  <line x1="217" y1="365" x2="648" y2="365" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#mArrAmber)" />
+  <text x="430" y="360" text-anchor="middle" fill="#f59e0b" font-size="10">APDU: Dynamic Auth Hash (Slot 9C)</text>
+
+  <line x1="652" y1="380" x2="81" y2="380" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#mArrAmber)" />
+  <text x="360" y="375" text-anchor="middle" fill="#fbbf24" font-size="10">Flashing LED: Touch YubiKey to authorize snapshot commit</text>
+
+  <line x1="77" y1="400" x2="648" y2="400" stroke="#34d399" stroke-width="1.5" marker-end="url(#mArrGreen)" />
+  <text x="360" y="395" text-anchor="middle" fill="#34d399" font-size="10">Physical Capacitive Touch Confirmed</text>
+
+  <!-- Step 8: Return Signature -->
+  <line x1="652" y1="425" x2="221" y2="425" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mArrAmber)" />
+  <text x="430" y="420" text-anchor="middle" fill="#f59e0b" font-size="10">Return Hardware-Backed Ed25519 Signature</text>
+
+  <!-- Step 9: Replicate to Quorum -->
+  <line x1="217" y1="455" x2="903" y2="455" stroke="#34d399" stroke-width="2" marker-end="url(#mArrGreen)" />
+  <text x="560" y="450" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600">Replicate SnapshotRecord &amp; Head to 3/3 Storage Operators</text>
+
+  <!-- Step 10: Confirmation -->
+  <line x1="217" y1="485" x2="81" y2="485" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mArrGreen)" />
+  <text x="145" y="480" text-anchor="middle" fill="#34d399" font-size="10">✓ Snapshot Created &amp; Confirmed across Quorum</text>
+
+</svg>

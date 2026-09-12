@@ -17,6 +17,13 @@
 4. **Autonomous Durability**: Replication requires proof-of-storage readback, while an autonomous maintenance fleet monitors replica durability and triggers self-repair across independent nodes.
 5. **Trustless L2 Settlement**: Vault head state commitments can be anchored on Arbitrum L2, providing immutable sequencing and tamper-evident audit trails.
 
+### System Architecture Map
+
+![CipherVault System Architecture](./diagrams/01_system_architecture.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
+
 ```mermaid
 flowchart TB
     subgraph Client ["Client Workstation (CLI / Agent / Dashboard)"]
@@ -51,6 +58,7 @@ flowchart TB
     Client -.->|Anchor Commitment| ARB
     DB <--> UI
 ```
+</details>
 
 ---
 
@@ -72,6 +80,11 @@ flowchart TB
 ## 3. Cryptographic Key Hierarchy
 
 The CipherVault security model branches from a single 256-bit high-entropy Master Recovery Secret ($R$). All operational keys are derived deterministically via domain-separated HKDF-BLAKE2b trees:
+
+![Cryptographic Key Derivation Hierarchy](./diagrams/02_key_hierarchy.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
 
 ```mermaid
 graph TD
@@ -106,6 +119,7 @@ graph TD
     R_SK ==>|Signs Certificate| DEV_PK
     DEV_SK -.-> DEV_PK
 ```
+</details>
 
 ---
 
@@ -114,6 +128,11 @@ graph TD
 ### Workflow 1: Vault Initialization (`ciphervault init`)
 
 Initialization bootstraps a zero-knowledge confidential environment on the developer's machine without transmitting keys across any network:
+
+![Workflow 1: Vault Initialization](./diagrams/03_vault_init_flow.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -144,6 +163,7 @@ sequenceDiagram
     CLI->>KDF: Zeroize master secret R from volatile process memory
     CLI->>Dev: Vault ready (.ciphervault/ initialized)
 ```
+</details>
 
 **Security Invariants Enforced:**
 * The paper kit contains the ONLY instance of $R$ in the universe.
@@ -155,6 +175,11 @@ sequenceDiagram
 ### Workflow 2: File Tracking & Snapshot Creation (`ciphervault push`)
 
 When a developer changes secret files, `ciphervault push` executes content-defined chunking, deduplication checks, and encrypted replication:
+
+![Workflow 2: FastCDC Deduplication & Hardware Push](./diagrams/04_push_dedup_flow.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -209,6 +234,7 @@ sequenceDiagram
     CLI->>Store: Update Local Head, commit SQLite WAL transaction
     CLI-->>Dev: ✓ Snapshot confirmed across 3/3 operators
 ```
+</details>
 
 **Key Performance & Efficiency Gains:**
 * **FastCDC Boundary Realignment**: Modifying a line in a file only changes 1 chunk; all other chunks retain identical CIDs.
@@ -220,6 +246,11 @@ sequenceDiagram
 ### Workflow 3: On-Chain Settlement on Arbitrum L2 (`ciphervault anchor`)
 
 For tamper-evident sequencing and regulatory compliance, state commitments can be anchored on Arbitrum L2:
+
+![Workflow 3: Arbitrum L2 Settlement](./diagrams/05_l2_settlement_flow.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -256,12 +287,18 @@ sequenceDiagram
     CLI->>Store: Record verified on-chain block receipt & explorer URL
     CLI-->>Dev: ✓ Checkpoint SequencerConfirmed on Arbitrum L2
 ```
+</details>
 
 ---
 
 ### Workflow 4: Autonomous Fleet Durability & Self-Repair (`ciphervault-maintenance`)
 
 The maintenance daemon runs as a continuous system service to ensure 3-of-3 replica durability across untrusted operator nodes:
+
+![Workflow 4: Autonomous Fleet Durability & Self-Repair](./diagrams/06_maintenance_self_repair.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -291,12 +328,18 @@ sequenceDiagram
         Daemon->>UI: Emit Live SSE Telemetry Event {"operators": [...], "durability": "100%"}
     end
 ```
+</details>
 
 ---
 
 ### Workflow 5: Catastrophic Workstation Loss & Clean-Machine Disaster Recovery (`ciphervault recover`)
 
 When the original development machine is destroyed, stolen, or lost, recovery proceeds onto a blank machine using **zero cached disk credentials**:
+
+![Workflow 5: Clean-Machine Disaster Recovery](./diagrams/07_disaster_recovery_flow.svg)
+
+<details>
+<summary><b>View Mermaid Source Code</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -340,6 +383,7 @@ sequenceDiagram
     CLI->>CLI: Zeroize all recovery keys, R, and Epoch keys from RAM
     CLI-->>Dev: ✓ Disaster Recovery Complete: All secrets restored bit-for-bit
 ```
+</details>
 
 **Clean-Machine Guarantees:**
 * **Zero Host Plaintext Dependency**: No passwords or cached keys required from the destroyed machine.

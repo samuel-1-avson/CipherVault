@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="100%" height="100%" style="background:#0b0f19; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <linearGradient id="clientGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#0369a1" stop-opacity="0.05" />
+    </linearGradient>
+    <linearGradient id="opsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#047857" stop-opacity="0.05" />
+    </linearGradient>
+    <linearGradient id="arbGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#6d28d9" stop-opacity="0.05" />
+    </linearGradient>
+
+    <!-- Markers -->
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#a78bfa" />
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#fbbf24" />
+    </marker>
+
+    <!-- Shadow filter -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- Title & Subtitle -->
+  <text x="480" y="38" text-anchor="middle" fill="#f8fafc" font-size="20" font-weight="700" letter-spacing="0.5">CipherVault Distributed System Architecture</text>
+  <text x="480" y="58" text-anchor="middle" fill="#94a3b8" font-size="12">End-to-End Cryptographic Secret Backup, Deduplication, Quorum Storage &amp; Settlement</text>
+
+  <!-- ==================== SUBGRAPH 1: CLIENT WORKSTATION ==================== -->
+  <rect x="30" y="85" width="460" height="505" rx="12" fill="url(#clientGrad)" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="6,4" />
+  <rect x="45" y="73" width="220" height="24" rx="6" fill="#0369a1" />
+  <text x="155" y="89" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.5">CLIENT WORKSTATION (LOCAL)</text>
+
+  <!-- Node: Target Files -->
+  <g filter="url(#shadow)">
+    <rect x="55" y="115" width="180" height="60" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="145" y="140" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">Target Files</text>
+    <text x="145" y="158" text-anchor="middle" fill="#94a3b8" font-size="11">.env, dev.key, certs</text>
+  </g>
+
+  <!-- Node: FastCDC Chunker -->
+  <g filter="url(#shadow)">
+    <rect x="285" y="115" width="180" height="60" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="375" y="140" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">FastCDC Chunker</text>
+    <text x="375" y="158" text-anchor="middle" fill="#38bdf8" font-size="11">4KB - 16KB - 64KB Gear</text>
+  </g>
+
+  <!-- Node: Crypto Engine -->
+  <g filter="url(#shadow)">
+    <rect x="170" y="225" width="210" height="68" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.5" />
+    <text x="275" y="250" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="700">Cryptographic Engine</text>
+    <text x="275" y="268" text-anchor="middle" fill="#94a3b8" font-size="11">ChaCha20-Poly1305 + HKDF</text>
+    <text x="275" y="282" text-anchor="middle" fill="#38bdf8" font-size="10">Deterministic FileVersionKey</text>
+  </g>
+
+  <!-- Node: Local SQLite WAL Store -->
+  <g filter="url(#shadow)">
+    <rect x="55" y="345" width="180" height="65" rx="8" fill="url(#cardGrad)" stroke="#0284c7" stroke-width="1.2" />
+    <text x="145" y="370" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">Local SQLite (WAL)</text>
+    <text x="145" y="388" text-anchor="middle" fill="#34d399" font-size="11">DPAPI Protected At Rest</text>
+    <text x="145" y="401" text-anchor="middle" fill="#64748b" font-size="10">.ciphervault/vault.db</text>
+  </g>
+
+  <!-- Node: Hardware Token -->
+  <g filter="url(#shadow)">
+    <rect x="285" y="345" width="180" height="65" rx="8" fill="url(#cardGrad)" stroke="#fbbf24" stroke-width="1.2" />
+    <text x="375" y="370" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">Hardware Token (PIV)</text>
+    <text x="375" y="388" text-anchor="middle" fill="#fbbf24" font-size="11">YubiKey Slot 9C/9D</text>
+    <text x="375" y="401" text-anchor="middle" fill="#fde68a" font-size="10">Touch Verification APDU</text>
+  </g>
+
+  <!-- Node: Web Dashboard UI -->
+  <g filter="url(#shadow)">
+    <rect x="120" y="470" width="280" height="60" rx="8" fill="url(#cardGrad)" stroke="#818cf8" stroke-width="1.2" />
+    <text x="260" y="495" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">Web Dashboard &amp; Telemetry</text>
+    <text x="260" y="514" text-anchor="middle" fill="#818cf8" font-size="11">http://127.0.0.1:8080 (SSE Stream)</text>
+  </g>
+
+  <!-- Client Connections -->
+  <line x1="235" y1="145" x2="283" y2="145" stroke="#38bdf8" stroke-width="1.8" marker-end="url(#arrowCyan)" />
+  <path d="M 375 175 L 375 200 L 295 200 L 295 223" stroke="#38bdf8" stroke-width="1.8" fill="none" marker-end="url(#arrowCyan)" />
+  <path d="M 230 293 L 230 320 L 145 320 L 145 343" stroke="#38bdf8" stroke-width="1.8" fill="none" marker-end="url(#arrowCyan)" />
+  <path d="M 320 293 L 320 320 L 375 320 L 375 343" stroke="#fbbf24" stroke-width="1.8" stroke-dasharray="4,3" fill="none" marker-end="url(#arrowAmber)" />
+  <text x="365" y="313" text-anchor="middle" fill="#fbbf24" font-size="9">Touch Sign</text>
+  <line x1="145" y1="410" x2="145" y2="445" stroke="#64748b" stroke-width="1.5" />
+  <path d="M 145 445 L 260 445 L 260 468" stroke="#818cf8" stroke-width="1.5" fill="none" marker-end="url(#arrowCyan)" />
+
+  <!-- ==================== SUBGRAPH 2: STORAGE OPERATORS ==================== -->
+  <rect x="520" y="85" width="410" height="235" rx="12" fill="url(#opsGrad)" stroke="#059669" stroke-width="1.5" stroke-dasharray="6,4" />
+  <rect x="535" y="73" width="220" height="24" rx="6" fill="#047857" />
+  <text x="645" y="89" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.5">STORAGE OPERATOR QUORUM</text>
+
+  <!-- Op 1 -->
+  <g filter="url(#shadow)">
+    <rect x="540" y="115" width="115" height="80" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="597" y="142" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Operator 1</text>
+    <text x="597" y="160" text-anchor="middle" fill="#34d399" font-size="11">:8201</text>
+    <text x="597" y="178" text-anchor="middle" fill="#64748b" font-size="10">RocksDB Store</text>
+  </g>
+
+  <!-- Op 2 -->
+  <g filter="url(#shadow)">
+    <rect x="668" y="115" width="115" height="80" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="725" y="142" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Operator 2</text>
+    <text x="725" y="160" text-anchor="middle" fill="#34d399" font-size="11">:8202</text>
+    <text x="725" y="178" text-anchor="middle" fill="#64748b" font-size="10">RocksDB Store</text>
+  </g>
+
+  <!-- Op 3 -->
+  <g filter="url(#shadow)">
+    <rect x="795" y="115" width="115" height="80" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="852" y="142" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Operator 3</text>
+    <text x="852" y="160" text-anchor="middle" fill="#34d399" font-size="11">:8203</text>
+    <text x="852" y="178" text-anchor="middle" fill="#64748b" font-size="10">RocksDB Store</text>
+  </g>
+
+  <rect x="540" y="215" width="370" height="40" rx="6" fill="#0f172a" stroke="#334155" stroke-width="1" />
+  <text x="725" y="235" text-anchor="middle" fill="#94a3b8" font-size="11">Proof-of-Storage Readback (PoS): 461-byte challenge vs 1MB</text>
+  <text x="725" y="249" text-anchor="middle" fill="#34d399" font-size="10">99.96% Bandwidth Reduction on Duplicate Detection</text>
+
+  <!-- Inter-Cluster Bridge Arrow -->
+  <path d="M 380 255 L 515 255" stroke="#34d399" stroke-width="2.5" marker-end="url(#arrowEmerald)" />
+  <text x="450" y="248" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600">Encrypted Chunks</text>
+  <text x="450" y="268" text-anchor="middle" fill="#94a3b8" font-size="9">&amp; PoS Challenges</text>
+
+  <!-- ==================== SUBGRAPH 3: MAINTENANCE FLEET ==================== -->
+  <rect x="520" y="340" width="410" height="110" rx="12" fill="url(#clientGrad)" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6,4" />
+  <rect x="535" y="328" width="220" height="24" rx="6" fill="#0284c7" />
+  <text x="645" y="344" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.5">MAINTENANCE FLEET DAEMON</text>
+
+  <g filter="url(#shadow)">
+    <rect x="540" y="365" width="370" height="65" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="725" y="390" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">Autonomous Self-Repair Daemon</text>
+    <text x="725" y="407" text-anchor="middle" fill="#38bdf8" font-size="11">:8200 &bull; SQLite WAL (fleet.db) &bull; 15s Heartbeats</text>
+    <text x="725" y="421" text-anchor="middle" fill="#94a3b8" font-size="10">Heals degraded replicas automatically to replacement nodes</text>
+  </g>
+
+  <!-- Arrow Maintenance -> Ops -->
+  <line x1="725" y1="365" x2="725" y2="287" stroke="#38bdf8" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#arrowCyan)" />
+  <text x="765" y="315" text-anchor="middle" fill="#38bdf8" font-size="9">Audit &amp; Repair</text>
+
+  <!-- ==================== SUBGRAPH 4: ARBITRUM L2 ==================== -->
+  <rect x="520" y="475" width="410" height="115" rx="12" fill="url(#arbGrad)" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="6,4" />
+  <rect x="535" y="463" width="220" height="24" rx="6" fill="#6d28d9" />
+  <text x="645" y="479" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.5">ARBITRUM L2 SETTLEMENT</text>
+
+  <g filter="url(#shadow)">
+    <rect x="540" y="500" width="370" height="68" rx="8" fill="url(#cardGrad)" stroke="#a78bfa" stroke-width="1.2" />
+    <text x="725" y="525" text-anchor="middle" fill="#f8fafc" font-size="13" font-weight="600">CipherVaultRegistry.sol</text>
+    <text x="725" y="542" text-anchor="middle" fill="#a78bfa" font-size="11">Arbitrum One / Sepolia (Chain ID: 42161 / 421614)</text>
+    <text x="725" y="556" text-anchor="middle" fill="#94a3b8" font-size="10">State Commitment: setCommitment(vaultId, commitment, salt)</text>
+  </g>
+
+  <!-- Arrow Client -> L2 -->
+  <path d="M 400 500 L 515 520" stroke="#a78bfa" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#arrowPurple)" />
+  <text x="455" y="495" text-anchor="middle" fill="#a78bfa" font-size="9">Anchor Head</text>
+
+</svg>
