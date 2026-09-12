@@ -45,9 +45,20 @@ pub fn encrypt_chunk(
     let mut nonce = [0u8; NONCE_SIZE];
     rand::thread_rng().fill_bytes(&mut nonce);
 
-    let ciphertext = encrypt_with_nonce(key, &nonce, plaintext, aad)?;
+    encrypt_chunk_with_nonce(key, &nonce, plaintext, aad)
+}
+
+/// Encrypts plaintext with an explicit 24-byte nonce and AAD.
+/// The returned payload is: [nonce (24 bytes) || ciphertext + tag].
+pub fn encrypt_chunk_with_nonce(
+    key: &[u8; KEY_SIZE],
+    nonce: &[u8; NONCE_SIZE],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let ciphertext = encrypt_with_nonce(key, nonce, plaintext, aad)?;
     let mut out = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
-    out.extend_from_slice(&nonce);
+    out.extend_from_slice(nonce);
     out.extend_from_slice(&ciphertext);
     Ok(out)
 }

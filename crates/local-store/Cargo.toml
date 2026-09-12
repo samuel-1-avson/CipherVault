@@ -16,3 +16,4 @@ ed25519-dalek.workspace = true
 anyhow.workspace = true
 ciphervault-recovery.workspace = true
 x25519-dalek.workspace = true
+sha2.workspace = true

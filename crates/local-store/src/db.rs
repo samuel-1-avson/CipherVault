@@ -15,12 +15,31 @@ pub struct LocalVaultStore {
     conn: Connection,
 }
 
+pub type RecoveryDescriptors = ([u8; 32], [u8; 32], [u8; 32]);
+
+/// Represents a local snapshot awaiting replication across remote operators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpload {
+    pub snapshot_id: [u8; 32],
+    pub record_cid: [u8; 32],
+    pub attempts: u32,
+    pub last_error: Option<String>,
+    pub created_at_utc: i64,
+}
+
 impl LocalVaultStore {
     /// Opens or creates a local SQLite vault database at the specified file path.
     pub fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, LocalStoreError> {
         let conn = Connection::open(db_path)?;
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA busy_timeout = 5000;
+            "#,
+        )?;
         let store = Self { conn };
         store.init_tables()?;
+        store.run_migrations()?;
         Ok(store)
     }
 
@@ -37,6 +56,7 @@ impl LocalVaultStore {
                 device_signing_key BLOB NOT NULL,
                 recovery_signing_pk BLOB NOT NULL,
                 recovery_encryption_pk BLOB NOT NULL,
+                recovery_locator BLOB NOT NULL DEFAULT (zeroblob(32)),
                 genesis_cbor BLOB NOT NULL
             );
 
@@ -91,8 +111,38 @@ impl LocalVaultStore {
                 head_cid BLOB PRIMARY KEY,
                 set_cbor BLOB NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS pending_uploads (
+                snapshot_id BLOB PRIMARY KEY,
+                record_cid BLOB NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at_utc INTEGER NOT NULL
+            );
             "#,
         )?;
+        Ok(())
+    }
+
+    fn run_migrations(&self) -> Result<(), LocalStoreError> {
+        let version: u32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
+        if version < 2 {
+            self.conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS pending_uploads (
+                    snapshot_id BLOB PRIMARY KEY,
+                    record_cid BLOB NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at_utc INTEGER NOT NULL
+                );
+                PRAGMA user_version = 2;
+                "#,
+            )?;
+        }
         Ok(())
     }
 
@@ -104,24 +154,27 @@ impl LocalVaultStore {
         device_sk: &SigningKey,
         device_id: &[u8; 32],
         initial_epoch_key: &VaultEpochKey,
+        recovery_locator: &[u8; 32],
     ) -> Result<(), LocalStoreError> {
         let genesis_cbor = to_canonical_cbor(genesis)?;
         let device_sk_bytes = device_sk.to_bytes();
+        let protected_device_sk = crate::keyring::protect_secret(&device_sk_bytes)?;
 
         self.conn.execute(
             r#"
             INSERT INTO vault_metadata (
                 id, vault_id, current_epoch, device_id, device_counter,
                 authority_generation, device_signing_key, recovery_signing_pk,
-                recovery_encryption_pk, genesis_cbor
-            ) VALUES (1, ?1, 1, ?2, 0, 1, ?3, ?4, ?5, ?6)
+                recovery_encryption_pk, recovery_locator, genesis_cbor
+            ) VALUES (1, ?1, 1, ?2, 0, 1, ?3, ?4, ?5, ?6, ?7)
             "#,
             params![
                 vault_id.as_slice(),
                 device_id.as_slice(),
-                device_sk_bytes.as_slice(),
+                protected_device_sk.as_slice(),
                 genesis.recovery_signing_pk.as_slice(),
                 genesis.recovery_encryption_pk.as_slice(),
+                recovery_locator.as_slice(),
                 genesis_cbor
             ],
         )?;
@@ -138,9 +191,61 @@ impl LocalVaultStore {
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
             let blob: Vec<u8> = row.get(0)?;
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&blob);
-            Ok(arr)
+            if blob.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&blob);
+                Ok(arr)
+            } else {
+                Err(LocalStoreError::CorruptedRecord(format!(
+                    "Invalid vault_id length: expected 32, got {}",
+                    blob.len()
+                )))
+            }
+        } else {
+            Err(LocalStoreError::VaultNotInitialized)
+        }
+    }
+
+    /// Retrieves recovery public descriptors (recovery_signing_pk, recovery_encryption_pk, recovery_locator).
+    pub fn get_recovery_descriptors(&self) -> Result<RecoveryDescriptors, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT recovery_signing_pk, recovery_encryption_pk, recovery_locator FROM vault_metadata WHERE id = 1"
+        )?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let sig_pk_blob: Vec<u8> = row.get(0)?;
+            let enc_pk_blob: Vec<u8> = row.get(1)?;
+            let loc_blob: Vec<u8> = row.get(2)?;
+
+            let mut sig_pk = [0u8; 32];
+            let mut enc_pk = [0u8; 32];
+            let mut loc = [0u8; 32];
+
+            if sig_pk_blob.len() == 32 {
+                sig_pk.copy_from_slice(&sig_pk_blob);
+            }
+            if enc_pk_blob.len() == 32 {
+                enc_pk.copy_from_slice(&enc_pk_blob);
+            }
+            if loc_blob.len() == 32 {
+                loc.copy_from_slice(&loc_blob);
+            }
+
+            Ok((sig_pk, enc_pk, loc))
+        } else {
+            Err(LocalStoreError::VaultNotInitialized)
+        }
+    }
+
+    /// Retrieves the vault's GenesisRecord from vault_metadata.
+    pub fn get_genesis_record(&self) -> Result<GenesisRecord, LocalStoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT genesis_cbor FROM vault_metadata WHERE id = 1")?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let blob: Vec<u8> = row.get(0)?;
+            from_canonical_cbor(&blob).map_err(LocalStoreError::FormatError)
         } else {
             Err(LocalStoreError::VaultNotInitialized)
         }
@@ -159,10 +264,23 @@ impl LocalVaultStore {
             let epoch: u64 = row.get(3)?;
 
             let mut dev_id = [0u8; 32];
-            dev_id.copy_from_slice(&dev_id_blob);
+            if dev_id_blob.len() == 32 {
+                dev_id.copy_from_slice(&dev_id_blob);
+            } else {
+                return Err(LocalStoreError::CorruptedRecord(format!(
+                    "Invalid device_id length: expected 32, got {}",
+                    dev_id_blob.len()
+                )));
+            }
 
+            let decrypted_sk = crate::keyring::unprotect_secret(&dev_sk_blob)?;
+            if decrypted_sk.len() != 32 {
+                return Err(LocalStoreError::KeyProtectionError(
+                    "Decrypted device signing key has invalid length".into(),
+                ));
+            }
             let mut sk_bytes = [0u8; 32];
-            sk_bytes.copy_from_slice(&dev_sk_blob);
+            sk_bytes.copy_from_slice(&decrypted_sk);
             let sk = SigningKey::from_bytes(&sk_bytes);
 
             Ok((dev_id, sk, counter, epoch))
@@ -184,16 +302,17 @@ impl LocalVaultStore {
         Ok(counter)
     }
 
-    /// Stores an epoch key.
+    /// Stores an epoch key encrypted via the OS keyring.
     pub fn save_epoch_key(&self, epoch: u64, key: &VaultEpochKey) -> Result<(), LocalStoreError> {
+        let protected_bytes = crate::keyring::protect_secret(key.as_bytes())?;
         self.conn.execute(
             "INSERT OR REPLACE INTO epoch_keys (epoch, epoch_key_bytes) VALUES (?1, ?2)",
-            params![epoch, key.as_bytes().as_slice()],
+            params![epoch, protected_bytes.as_slice()],
         )?;
         Ok(())
     }
 
-    /// Retrieves an epoch key.
+    /// Retrieves and decrypts an epoch key via the OS keyring.
     pub fn get_epoch_key(&self, epoch: u64) -> Result<VaultEpochKey, LocalStoreError> {
         let mut stmt = self
             .conn
@@ -201,8 +320,14 @@ impl LocalVaultStore {
         let mut rows = stmt.query(params![epoch])?;
         if let Some(row) = rows.next()? {
             let blob: Vec<u8> = row.get(0)?;
+            let decrypted = crate::keyring::unprotect_secret(&blob)?;
+            if decrypted.len() != 32 {
+                return Err(LocalStoreError::KeyProtectionError(
+                    "Decrypted epoch key has invalid length".into(),
+                ));
+            }
             let mut arr = [0u8; 32];
-            arr.copy_from_slice(&blob);
+            arr.copy_from_slice(&decrypted);
             Ok(VaultEpochKey::from_bytes(arr))
         } else {
             Err(LocalStoreError::NotFound(format!(
@@ -257,7 +382,17 @@ impl LocalVaultStore {
         Ok(out)
     }
 
-    /// Saves a snapshot and its chunks into the local store.
+    /// Removes a tracked file path from tracking. Returns true if removed, false if it wasn't tracked.
+    pub fn untrack_file(&self, rel_path: &str) -> Result<bool, LocalStoreError> {
+        let normalized = rel_path.replace('\\', "/");
+        let count = self.conn.execute(
+            "DELETE FROM tracked_files WHERE relative_path = ?1",
+            params![normalized],
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Saves a snapshot and its chunks into the local store transactionally.
     pub fn save_snapshot(
         &self,
         record: &SnapshotRecord,
@@ -273,8 +408,10 @@ impl LocalVaultStore {
             .collect::<Vec<_>>()
             .join(",");
 
+        let tx = self.conn.unchecked_transaction()?;
+
         // Primary index by content-addressed record_cid
-        self.conn.execute(
+        tx.execute(
             r#"
             INSERT OR REPLACE INTO snapshots (
                 snapshot_id, parent_snapshot_ids, encrypted_manifest_cid,
@@ -293,7 +430,7 @@ impl LocalVaultStore {
 
         // Secondary alias by logical snapshot_id
         if record.snapshot_id.as_slice() != record_cid.as_slice() {
-            self.conn.execute(
+            tx.execute(
                 r#"
                 INSERT OR REPLACE INTO snapshots (
                     snapshot_id, parent_snapshot_ids, encrypted_manifest_cid,
@@ -314,12 +451,27 @@ impl LocalVaultStore {
         for chunk in chunks {
             let cid = chunk.compute_cid()?;
             let cbor = to_canonical_cbor(chunk)?;
-            self.conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO local_chunks (chunk_cid, chunk_cbor) VALUES (?1, ?2)",
                 params![cid.as_slice(), cbor],
             )?;
         }
 
+        // Register in pending uploads queue
+        tx.execute(
+            r#"
+            INSERT OR REPLACE INTO pending_uploads (
+                snapshot_id, record_cid, attempts, last_error, created_at_utc
+            ) VALUES (?1, ?2, 0, NULL, ?3)
+            "#,
+            params![
+                record.snapshot_id.as_slice(),
+                record_cid.as_slice(),
+                record.advisory_timestamp_utc
+            ],
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -327,23 +479,16 @@ impl LocalVaultStore {
     pub fn prepare_recovery_set(
         &self,
         record: &SnapshotRecord,
-        kit: &ciphervault_recovery::OfflineRecoveryKit,
     ) -> anyhow::Result<ciphervault_format::RecoverySet> {
-        use anyhow::{ensure, Context};
+        use anyhow::Context;
         use ciphervault_format::{
             compute_digest, EpochEnvelope, RecoveryClosure, RecoverySet, SnapshotManifest,
         };
-        let secret = kit.validate_and_extract_secret()?;
-        let recovery_pk = secret
-            .derive_recovery_signing_key()?
-            .verifying_key()
-            .to_bytes();
-        let (_, encryption_pk) = secret.derive_recovery_encryption_keys()?;
-        let locator = secret.derive_recovery_locator()?;
-        ensure!(
-            hex::decode(&kit.vault_id_hex)? == record.vault_id,
-            "Recovery kit belongs to another vault"
-        );
+        use x25519_dalek::PublicKey as X25519PublicKey;
+
+        let (recovery_pk, encryption_pk_bytes, locator) = self.get_recovery_descriptors()?;
+        let encryption_pk = X25519PublicKey::from(encryption_pk_bytes);
+
         let (device_id, device_sk, _, _) = self.get_device_state()?;
         let cert = self
             .list_device_certificates()?
@@ -380,7 +525,12 @@ impl LocalVaultStore {
             signature: Vec::new(),
         };
         envelope.sign(&device_sk)?;
-        let records = vec![to_canonical_cbor(&cert)?, to_canonical_cbor(&envelope)?];
+        let genesis = self.get_genesis_record()?;
+        let records = vec![
+            to_canonical_cbor(&genesis)?,
+            to_canonical_cbor(&cert)?,
+            to_canonical_cbor(&envelope)?,
+        ];
         let mut chunks: Vec<Vec<u8>> = manifest
             .files
             .iter()
@@ -575,14 +725,16 @@ impl LocalVaultStore {
         Ok(out)
     }
 
-    /// Updates the active head record.
+    /// Updates the active head record transactionally.
     pub fn set_head(&self, head: &HeadRecord) -> Result<(), LocalStoreError> {
         let cbor = to_canonical_cbor(head)?;
-        self.conn.execute("UPDATE heads SET is_active = 0", [])?;
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE heads SET is_active = 0", [])?;
+        tx.execute(
             "INSERT OR REPLACE INTO heads (snapshot_id, head_cbor, is_active) VALUES (?1, ?2, 1)",
             params![head.snapshot_id.as_slice(), cbor],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -707,6 +859,75 @@ impl LocalVaultStore {
         }
         Ok(out)
     }
+
+    /// Marks a snapshot upload as completed and removes it from the pending upload queue.
+    pub fn mark_upload_completed(&self, snapshot_id: &[u8; 32]) -> Result<(), LocalStoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM pending_uploads WHERE snapshot_id = ?1",
+            params![snapshot_id.as_slice()],
+        )?;
+        tx.execute(
+            "UPDATE snapshots SET state = 'Replicated' WHERE snapshot_id = ?1",
+            params![snapshot_id.as_slice()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records an upload failure attempt for a snapshot in the pending queue.
+    pub fn record_upload_failure(
+        &self,
+        snapshot_id: &[u8; 32],
+        error: &str,
+    ) -> Result<(), LocalStoreError> {
+        self.conn.execute(
+            r#"
+            UPDATE pending_uploads
+            SET attempts = attempts + 1, last_error = ?2
+            WHERE snapshot_id = ?1
+            "#,
+            params![snapshot_id.as_slice(), error],
+        )?;
+        Ok(())
+    }
+
+    /// Lists all snapshots currently awaiting replication in the pending queue.
+    pub fn list_pending_uploads(&self) -> Result<Vec<PendingUpload>, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT snapshot_id, record_cid, attempts, last_error, created_at_utc FROM pending_uploads ORDER BY created_at_utc ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let s_id: Vec<u8> = row.get(0)?;
+            let r_cid: Vec<u8> = row.get(1)?;
+            let attempts: u32 = row.get(2)?;
+            let last_error: Option<String> = row.get(3)?;
+            let created_at_utc: i64 = row.get(4)?;
+
+            let mut snapshot_id = [0u8; 32];
+            let mut record_cid = [0u8; 32];
+            if s_id.len() == 32 {
+                snapshot_id.copy_from_slice(&s_id);
+            }
+            if r_cid.len() == 32 {
+                record_cid.copy_from_slice(&r_cid);
+            }
+
+            Ok(PendingUpload {
+                snapshot_id,
+                record_cid,
+                attempts,
+                last_error,
+                created_at_utc,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -739,8 +960,10 @@ mod tests {
         let dev_id = [0xBBu8; 32];
         let epoch_key = VaultEpochKey::generate();
 
+        let locator = r.derive_recovery_locator().unwrap();
+
         store
-            .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key)
+            .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
             .unwrap();
 
         let fetched_id = store.get_vault_id().unwrap();
@@ -751,6 +974,70 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, PathBuf::from(".env"));
         assert_eq!(files[0].1, file_id);
+    }
+
+    #[test]
+    fn test_encrypted_key_storage() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let r = RecoverySecret::generate();
+        let r_sk = r.derive_recovery_signing_key().unwrap();
+        let (_, r_enc_pk) = r.derive_recovery_encryption_keys().unwrap();
+        let locator = r.derive_recovery_locator().unwrap();
+
+        let vault_id = [0xAAu8; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: r_sk.verifying_key().as_bytes().to_vec(),
+            recovery_encryption_pk: r_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0u8; 32],
+            created_at_utc: 1000,
+            creation_nonce: vec![0u8; 32],
+            signature: Vec::new(),
+        };
+        genesis.sign(&r_sk).unwrap();
+
+        let dev_sk = generate_signing_key();
+        let dev_id = [0xBBu8; 32];
+        let epoch_key = VaultEpochKey::generate();
+
+        store
+            .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
+            .unwrap();
+
+        // Inspect raw SQLite blob from database to verify it is NOT plaintext
+        let raw_device_sk: Vec<u8> = store
+            .conn
+            .query_row(
+                "SELECT device_signing_key FROM vault_metadata WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(raw_device_sk.as_slice(), dev_sk.to_bytes().as_slice());
+
+        let raw_epoch_key: Vec<u8> = store
+            .conn
+            .query_row(
+                "SELECT epoch_key_bytes FROM epoch_keys WHERE epoch = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(raw_epoch_key.as_slice(), epoch_key.as_bytes().as_slice());
+
+        // get_device_state and get_epoch_key unprotect them seamlessly
+        let (_, fetched_sk, _, _) = store.get_device_state().unwrap();
+        assert_eq!(fetched_sk.to_bytes(), dev_sk.to_bytes());
+
+        let fetched_epoch = store.get_epoch_key(1).unwrap();
+        assert_eq!(fetched_epoch.as_bytes(), epoch_key.as_bytes());
+
+        // Verify descriptors can be fetched
+        let (s_pk, e_pk, loc) = store.get_recovery_descriptors().unwrap();
+        assert_eq!(s_pk.as_slice(), r_sk.verifying_key().as_bytes());
+        assert_eq!(e_pk.as_slice(), r_enc_pk.as_bytes());
+        assert_eq!(loc, locator);
     }
 
     #[test]
@@ -771,5 +1058,105 @@ mod tests {
         assert_eq!(fetched.block_number, 1234567);
         assert_eq!(fetched.chain_id, 42161);
         assert!(fetched.verify_commitment());
+    }
+
+    #[test]
+    fn test_transactional_snapshot_and_pending_uploads() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let snap_id = [0x77u8; 32];
+        let record = SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: snap_id.to_vec(),
+            parent_snapshot_ids: Vec::new(),
+            device_id: vec![0x33u8; 32],
+            device_counter: 1,
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![0x22u8; 32],
+            encrypted_manifest_len: 100,
+            advisory_timestamp_utc: 1000,
+            signature: Vec::new(),
+        };
+
+        let chunk = ChunkWireObject {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            file_version_id: vec![0x44u8; 32],
+            chunk_index: 0,
+            total_chunks: 1,
+            declared_padded_length: 4,
+            key_epoch: 1,
+            payload: vec![1, 2, 3, 4],
+        };
+
+        store
+            .save_snapshot(&record, b"encrypted_manifest_data", &[chunk])
+            .unwrap();
+
+        // Verify snapshot is listed in pending_uploads
+        let pending = store.list_pending_uploads().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].snapshot_id, snap_id);
+        assert_eq!(pending[0].attempts, 0);
+
+        // Record failure
+        store
+            .record_upload_failure(&snap_id, "Network timeout connecting to operator")
+            .unwrap();
+        let pending_after_fail = store.list_pending_uploads().unwrap();
+        assert_eq!(pending_after_fail[0].attempts, 1);
+        assert_eq!(
+            pending_after_fail[0].last_error.as_deref(),
+            Some("Network timeout connecting to operator")
+        );
+
+        // Complete upload
+        store.mark_upload_completed(&snap_id).unwrap();
+        let pending_after_complete = store.list_pending_uploads().unwrap();
+        assert!(pending_after_complete.is_empty());
+    }
+
+    #[test]
+    fn test_set_head_transactional_continuity() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let dev_sk = generate_signing_key();
+        let dev_id = vec![0x33u8; 32];
+
+        let mut head1 = HeadRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: vec![0xAAu8; 32],
+            parent_snapshot_ids: Vec::new(),
+            closure_digest: vec![0x11u8; 32],
+            device_id: dev_id.clone(),
+            device_counter: 1,
+            signature: Vec::new(),
+        };
+        head1.sign(&dev_sk).unwrap();
+        store.set_head(&head1).unwrap();
+
+        assert_eq!(
+            store.get_active_head().unwrap().unwrap().snapshot_id,
+            vec![0xAAu8; 32]
+        );
+
+        let mut head2 = HeadRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: vec![0xBBu8; 32],
+            parent_snapshot_ids: vec![vec![0xAAu8; 32]],
+            closure_digest: vec![0x22u8; 32],
+            device_id: dev_id,
+            device_counter: 2,
+            signature: Vec::new(),
+        };
+        head2.sign(&dev_sk).unwrap();
+        store.set_head(&head2).unwrap();
+
+        assert_eq!(
+            store.get_active_head().unwrap().unwrap().snapshot_id,
+            vec![0xBBu8; 32]
+        );
     }
 }

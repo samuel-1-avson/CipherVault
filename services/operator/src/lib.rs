@@ -23,11 +23,23 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             "/v1/objects/:cid",
             put(handlers::put_object).get(handlers::get_object),
         )
+        .route(
+            "/v1/objects/:cid/challenge",
+            post(handlers::post_object_challenge),
+        )
         .route("/v1/leases", post(handlers::post_lease))
         .route("/v1/leases/:id/renew", post(handlers::post_renew_lease))
         .route(
             "/v1/recovery/:locator/records",
             post(handlers::post_recovery_record).get(handlers::get_recovery_records),
+        )
+        .route(
+            "/v1/relayer/checkpoints",
+            post(handlers::post_relayer_checkpoint),
+        )
+        .route(
+            "/v1/relayer/checkpoints/:commitment",
+            get(handlers::get_relayer_checkpoint),
         )
         .layer(CorsLayer::permissive())
         .with_state(state)

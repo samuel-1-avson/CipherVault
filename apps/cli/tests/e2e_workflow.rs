@@ -48,11 +48,14 @@ fn test_end_to_end_ciphervault_workflow() {
         String::from_utf8_lossy(&init_output.stderr)
     );
 
-    // Verify .ciphervault and recovery kit exist
+    // Verify .ciphervault and local database exist, while kit is not saved to disk
     let vault_dir = test_dir.join(".ciphervault");
     assert!(vault_dir.exists());
     assert!(vault_dir.join("vault.db").exists());
-    assert!(vault_dir.join("recovery_kit_backup.txt").exists());
+    assert!(
+        !vault_dir.join("recovery_kit_backup.txt").exists(),
+        "Recovery kit must not be written to disk by default"
+    );
 
     // Verify .gitignore
     let gitignore_content = fs::read_to_string(test_dir.join(".gitignore")).unwrap();

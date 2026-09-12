@@ -1,5 +1,6 @@
 # Rust build artifacts
 target/
+.cargo-targets/
 **/*.rs.bk
 
 # CipherVault local keys, database, and cache
@@ -7,6 +8,21 @@ target/
 secrets/
 .env*
 !deploy/docker/.env.example
+*.db
+*.db-shm
+*.db-wal
+*.log
+recovery_kit_backup.txt
+emergency_recovery_kit.txt
+guardian_sheets/
+
+# Operator runtime data
+data/
+operator-data/
+
+# Node.js
+node_modules/
+npm-debug.log*
 
 # Foundry build artifacts
 out/
@@ -18,3 +34,4 @@ broadcast/
 Thumbs.db
 .idea/
 .vscode/
+.agents/

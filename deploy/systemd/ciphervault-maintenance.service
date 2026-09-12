@@ -8,8 +8,9 @@ Wants=network-online.target
 Type=simple
 User=ciphervault
 Group=ciphervault
-WorkingDirectory=/etc/ciphervault
-ExecStart=/usr/local/bin/ciphervault-maintenance --operators "http://127.0.0.1:8201" "http://127.0.0.1:8202" "http://127.0.0.1:8203" --interval-secs 30
+WorkingDirectory=/var/lib/ciphervault
+StateDirectory=ciphervault
+ExecStart=/usr/local/bin/ciphervault-maintenance --operators "http://127.0.0.1:8201" "http://127.0.0.1:8202" "http://127.0.0.1:8203" --interval-secs 30 --db /var/lib/ciphervault/fleet.db
 Restart=always
 RestartSec=10s
 

@@ -80,3 +80,182 @@ async fn test_arbitrum_anchoring_commitment_and_evidence() {
 
     let _ = fs::remove_dir_all(test_dir);
 }
+
+#[tokio::test]
+async fn test_automated_l2_relayer_flow() {
+    use ciphervault_operator::{create_router, OperatorState};
+    use ciphervault_storage::AnchorRelayerClient;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_relayer_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let signing_key = ciphervault_crypto::generate_signing_key();
+    let state = Arc::new(OperatorState::new(
+        "test-relayer-op".into(),
+        test_dir.clone(),
+        signing_key,
+    ));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = create_router(state.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let relayer_url = format!("http://{}", addr);
+    let client = AnchorRelayerClient::new(relayer_url);
+
+    let salt = [0x42u8; 32];
+    let head_cid = [0x99u8; 32];
+    let contract = [0x55u8; 20];
+    let dummy_tx = [0u8; 32];
+
+    let draft_evidence =
+        CheckpointEvidence::new(salt, head_cid, 42161, contract, dummy_tx, 0, 1710000000);
+
+    // 1. Submit unmined draft to relayer -> Truthful QueuedForRelay status (F03 resolved)
+    let receipt = client.submit_checkpoint(&draft_evidence).await.unwrap();
+    assert_eq!(receipt.status, "QueuedForRelay");
+    assert_eq!(
+        receipt.commitment_hex,
+        hex::encode(&draft_evidence.commitment)
+    );
+    assert_eq!(receipt.block_number, 0);
+
+    // 2. Query status from relayer -> remains QueuedForRelay until on-chain mined
+    let mut commitment_arr = [0u8; 32];
+    commitment_arr.copy_from_slice(&draft_evidence.commitment);
+    let queried = client.get_checkpoint(&commitment_arr).await.unwrap();
+    assert!(queried.is_some());
+    let q = queried.unwrap();
+    assert_eq!(q.status, "QueuedForRelay");
+    assert_eq!(q.block_number, 0);
+
+    // 3. Update relayer state upon sequencer confirmation receipt
+    let confirmed_tx = "0x7777777777777777777777777777777777777777777777777777777777777777";
+    state.update_relayed_checkpoint(
+        &receipt.commitment_hex,
+        confirmed_tx,
+        250_000_100,
+        "SequencerConfirmed",
+    );
+    let updated = client
+        .get_checkpoint(&commitment_arr)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.status, "SequencerConfirmed");
+    assert_eq!(updated.tx_hash_hex, confirmed_tx);
+    assert_eq!(updated.block_number, 250_000_100);
+
+    // 4. Reject tampered evidence
+    let mut bad_evidence = draft_evidence.clone();
+    bad_evidence.salt[0] ^= 0xFF;
+    assert!(client.submit_checkpoint(&bad_evidence).await.is_err());
+
+    let _ = fs::remove_dir_all(test_dir);
+}
+
+#[tokio::test]
+async fn test_live_arbitrum_rpc_send_raw_transaction_and_receipt() {
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use serde_json::{json, Value};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    let dummy_tx_hash = "0x9876543210987654321098765432109876543210987654321098765432109876";
+
+    // Mock Ethereum / Arbitrum JSON-RPC Server
+    let rpc_app = Router::new().route(
+        "/",
+        post(move |Json(payload): Json<Value>| async move {
+            let method = payload["method"].as_str().unwrap_or("");
+            let id = payload["id"].clone();
+
+            match method {
+                "eth_sendRawTransaction" => Json(json!({
+                    "jsonrpc": "2.0",
+                    "result": dummy_tx_hash,
+                    "id": id
+                })),
+                "eth_getTransactionReceipt" => Json(json!({
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "transactionHash": dummy_tx_hash,
+                        "blockNumber": "0x12345",
+                        "status": "0x1"
+                    },
+                    "id": id
+                })),
+                "eth_call" => Json(json!({
+                    "jsonrpc": "2.0",
+                    "result": "0x0000000000000000000000000000000000000000000000000000000000012345",
+                    "id": id
+                })),
+                "eth_blockNumber" => Json(json!({
+                    "jsonrpc": "2.0",
+                    "result": "0x12350",
+                    "id": id
+                })),
+                _ => Json(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32601, "message": "Method not found" },
+                    "id": id
+                })),
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, rpc_app).await.unwrap();
+    });
+
+    let rpc_url = format!("http://{}", addr);
+    let contract = [0x55u8; 20];
+    let client = ArbitrumAnchorClient::new(rpc_url, 42161, contract);
+
+    // 1. Test eth_sendRawTransaction
+    let raw_tx = "0x02f87082a4b180843b9aca008502540be4008252089455555555555555555555555555555555555555558080c0";
+    let tx_hash = client.send_raw_transaction(raw_tx).await.unwrap();
+    assert_eq!(format!("0x{}", hex::encode(tx_hash)), dummy_tx_hash);
+
+    // 2. Test wait_for_receipt polling
+    let receipt = client
+        .wait_for_receipt(&tx_hash, Duration::from_secs(5), Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert!(receipt.status);
+    assert_eq!(receipt.block_number, 0x12345);
+
+    // 3. Test on-chain query for first-seen block
+    let dummy_commitment = [0x77u8; 32];
+    let first_seen = client
+        .query_first_seen_block(&dummy_commitment)
+        .await
+        .unwrap();
+    assert_eq!(first_seen, Some(0x12345));
+
+    // 4. Test verify_evidence with on-chain confirmation
+    let salt = [0x11u8; 32];
+    let head_cid = [0x22u8; 32];
+    let evidence = CheckpointEvidence::new(
+        salt, head_cid, 42161, contract, tx_hash, 0x12345, 1700000000,
+    );
+    let report = client.verify_evidence(&evidence).await.unwrap();
+    assert!(report.preimage_valid);
+    assert!(report.on_chain_confirmed);
+    assert_eq!(report.recorded_block_number, 0x12345);
+}

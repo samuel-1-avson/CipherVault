@@ -4,7 +4,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
-use ciphervault_format::{to_canonical_cbor, GenesisRecord, HeadRecord, PROTOCOL_VERSION};
+use ciphervault_format::{
+    to_canonical_cbor, DeviceCertificate, GenesisRecord, HeadRecord, PROTOCOL_VERSION,
+};
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_maintenance::MaintenanceEngine;
 use ciphervault_operator::{create_router, OperatorState};
@@ -62,6 +64,7 @@ async fn test_maintenance_audit_and_self_repair() {
     let r = RecoverySecret::generate();
     let r_sk = r.derive_recovery_signing_key().unwrap();
     let (_, r_enc_pk) = r.derive_recovery_encryption_keys().unwrap();
+    let locator = r.derive_recovery_locator().unwrap();
 
     let vault_id = [0x55u8; 32];
     let mut genesis = GenesisRecord {
@@ -83,7 +86,7 @@ async fn test_maintenance_audit_and_self_repair() {
     let db_path = vault_dir.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();
     store
-        .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key)
+        .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
         .unwrap();
 
     let test_file = vault_dir.join("secrets.txt");
@@ -135,6 +138,20 @@ async fn test_maintenance_audit_and_self_repair() {
     head.sign(&dev_sk).unwrap();
     store.set_head(&head).unwrap();
 
+    let mut cert = DeviceCertificate {
+        version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_vec(),
+        certificate_id: vec![1u8; 32],
+        device_signing_pk: dev_sk.verifying_key().as_bytes().to_vec(),
+        permissions: 0xFFFFFFFF,
+        authority_generation: 1,
+        issued_at_utc: 1000,
+        signature: Vec::new(),
+    };
+    cert.sign(&r_sk).unwrap();
+    store.save_device_certificate(&cert).unwrap();
+    let recovery_set = store.prepare_recovery_set(&snap_out.record).unwrap();
+
     // 3. Replicate across all 3 operators
     let pool = MultiOperatorPool::new(operators.clone());
     let mut wire_objects = Vec::new();
@@ -148,7 +165,6 @@ async fn test_maintenance_audit_and_self_repair() {
 
     let closure_digest = snap_out.closure.compute_base_closure_digest().unwrap();
     let head_cbor = to_canonical_cbor(&head).unwrap();
-    let locator = [0x99u8; 32];
 
     let receipts = pool
         .replicate_and_verify(
@@ -160,7 +176,7 @@ async fn test_maintenance_audit_and_self_repair() {
             90,
             &locator,
             &head_cbor,
-            &[],
+            &recovery_set.records,
             3,
         )
         .await
@@ -250,6 +266,72 @@ async fn test_maintenance_audit_and_self_repair() {
         assert_eq!(r.closure_digest_hex, original.closure_digest_hex);
         assert_eq!(r.expires_at_utc, original.expires_at_utc + 30 * 86400);
     }
+
+    let _ = fs::remove_dir_all(test_dir);
+}
+
+#[test]
+fn test_persisted_fleet_maintenance_scheduler() {
+    use ciphervault_maintenance::MaintenanceDb;
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_fleet_sched_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+    let db_path = test_dir.join("fleet_scheduler.db");
+
+    let db = MaintenanceDb::open(&db_path).unwrap();
+
+    // 1. Register fleet vaults
+    let locator_a = "a".repeat(64);
+    let locator_b = "b".repeat(64);
+    db.register_vault(&locator_a, Some("Vault Alpha")).unwrap();
+    db.register_vault(&locator_b, Some("Vault Beta")).unwrap();
+
+    let initial_vaults = db.list_vaults().unwrap();
+    assert_eq!(initial_vaults.len(), 2);
+    assert_eq!(initial_vaults[0].label, "Vault Alpha");
+    assert_eq!(initial_vaults[1].label, "Vault Beta");
+    assert_eq!(initial_vaults[0].last_status, "Registered");
+
+    // 2. Record audits
+    db.record_audit(&locator_a, true, 25, 0, r#"{"healthy": true}"#)
+        .unwrap();
+    db.record_audit(
+        &locator_b,
+        false,
+        25,
+        3,
+        r#"{"healthy": false, "degraded": 3}"#,
+    )
+    .unwrap();
+
+    let updated_vaults = db.list_vaults().unwrap();
+    assert_eq!(updated_vaults[0].last_status, "Healthy");
+    assert_eq!(updated_vaults[1].last_status, "Degraded");
+    assert!(updated_vaults[0].last_audit_at_utc.is_some());
+    assert!(updated_vaults[1].last_audit_at_utc.is_some());
+
+    // 3. Track operator health
+    db.update_operator_health("http://127.0.0.1:8787", 25, true)
+        .unwrap();
+    db.update_operator_health("http://127.0.0.1:8788", 40, true)
+        .unwrap();
+    db.update_operator_health("http://127.0.0.1:8789", 0, false)
+        .unwrap();
+
+    // 4. Validate fleet summary
+    let summary = db.get_fleet_summary().unwrap();
+    assert_eq!(summary.total_tracked_vaults, 2);
+    assert_eq!(summary.healthy_vaults, 1);
+    assert_eq!(summary.degraded_vaults, 1);
+    assert_eq!(summary.total_audits_recorded, 2);
+    assert_eq!(summary.total_operators, 3);
+    assert_eq!(summary.online_operators, 2);
 
     let _ = fs::remove_dir_all(test_dir);
 }

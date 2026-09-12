@@ -5,6 +5,8 @@
 
 pub mod db;
 pub mod error;
+pub mod keyring;
 
-pub use db::LocalVaultStore;
+pub use db::{LocalVaultStore, PendingUpload, RecoveryDescriptors};
 pub use error::LocalStoreError;
+pub use keyring::{protect_secret, unprotect_secret};

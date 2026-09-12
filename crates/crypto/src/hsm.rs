@@ -66,6 +66,14 @@ pub trait HardwareSecurityModule: Send + Sync {
         digest: &[u8; 32],
     ) -> Result<[u8; 64], CryptoError>;
 
+    /// Signs an arbitrary domain-separated message payload inside hardware without exposing the private key.
+    fn sign_message(
+        &self,
+        slot: HsmSlot,
+        domain: &[u8],
+        message: &[u8],
+    ) -> Result<[u8; 64], CryptoError>;
+
     /// Performs Diffie-Hellman key agreement inside hardware (Slot 9D) against a peer's public key.
     fn ecdh_key_agreement(
         &self,
@@ -147,13 +155,22 @@ impl HardwareSecurityModule for SoftwareHsmSimulator {
         domain: &[u8],
         digest: &[u8; 32],
     ) -> Result<[u8; 64], CryptoError> {
+        self.sign_message(slot, domain, digest)
+    }
+
+    fn sign_message(
+        &self,
+        slot: HsmSlot,
+        domain: &[u8],
+        message: &[u8],
+    ) -> Result<[u8; 64], CryptoError> {
         if slot != HsmSlot::DigitalSignature && slot != HsmSlot::Authentication {
             return Err(CryptoError::HsmError(format!(
                 "Slot {:?} does not support digital signatures",
                 slot
             )));
         }
-        let sig = sign_with_domain(&self.sig_key, domain, digest);
+        let sig = sign_with_domain(&self.sig_key, domain, message);
         Ok(sig)
     }
 
@@ -171,6 +188,95 @@ impl HardwareSecurityModule for SoftwareHsmSimulator {
         let peer_pk = X25519PublicKey::from(*peer_public_key);
         let shared_secret = self.ecdh_key.diffie_hellman(&peer_pk);
         Ok(*shared_secret.as_bytes())
+    }
+}
+
+pub use crate::piv::{list_pcsc_readers, PcscHardwareToken};
+
+/// Unified Hardware Security Module Device (Physical Smartcard or Isolated Software Simulator)
+pub enum HsmDevice {
+    Physical(PcscHardwareToken),
+    Virtual(Box<SoftwareHsmSimulator>),
+}
+
+impl HsmDevice {
+    /// Attempts to probe and connect to an attached physical hardware token.
+    pub fn probe() -> Result<Option<Self>, CryptoError> {
+        if let Some(token) = PcscHardwareToken::probe()? {
+            Ok(Some(HsmDevice::Physical(token)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Auto-detects physical token, or generates an isolated virtual simulator if none attached.
+    pub fn probe_or_virtual() -> Self {
+        match Self::probe() {
+            Ok(Some(device)) => device,
+            _ => HsmDevice::Virtual(Box::new(SoftwareHsmSimulator::generate())),
+        }
+    }
+
+    pub fn is_physical(&self) -> bool {
+        matches!(self, HsmDevice::Physical(_))
+    }
+}
+
+impl HardwareSecurityModule for HsmDevice {
+    fn is_connected(&self) -> bool {
+        match self {
+            HsmDevice::Physical(p) => p.is_connected(),
+            HsmDevice::Virtual(v) => v.is_connected(),
+        }
+    }
+
+    fn get_public_key(&self, slot: HsmSlot) -> Result<Vec<u8>, CryptoError> {
+        match self {
+            HsmDevice::Physical(p) => p.get_public_key(slot),
+            HsmDevice::Virtual(v) => v.get_public_key(slot),
+        }
+    }
+
+    fn get_slot_info(&self, slot: HsmSlot) -> Result<HsmSlotInfo, CryptoError> {
+        match self {
+            HsmDevice::Physical(p) => p.get_slot_info(slot),
+            HsmDevice::Virtual(v) => v.get_slot_info(slot),
+        }
+    }
+
+    fn sign_digest(
+        &self,
+        slot: HsmSlot,
+        domain: &[u8],
+        digest: &[u8; 32],
+    ) -> Result<[u8; 64], CryptoError> {
+        match self {
+            HsmDevice::Physical(p) => p.sign_digest(slot, domain, digest),
+            HsmDevice::Virtual(v) => v.sign_digest(slot, domain, digest),
+        }
+    }
+
+    fn sign_message(
+        &self,
+        slot: HsmSlot,
+        domain: &[u8],
+        message: &[u8],
+    ) -> Result<[u8; 64], CryptoError> {
+        match self {
+            HsmDevice::Physical(p) => p.sign_message(slot, domain, message),
+            HsmDevice::Virtual(v) => v.sign_message(slot, domain, message),
+        }
+    }
+
+    fn ecdh_key_agreement(
+        &self,
+        slot: HsmSlot,
+        peer_public_key: &[u8; 32],
+    ) -> Result<[u8; 32], CryptoError> {
+        match self {
+            HsmDevice::Physical(p) => p.ecdh_key_agreement(slot, peer_public_key),
+            HsmDevice::Virtual(v) => v.ecdh_key_agreement(slot, peer_public_key),
+        }
     }
 }
 
@@ -203,6 +309,13 @@ mod tests {
         // Rejects mismatched message
         let wrong_msg = [0x43u8; 32];
         assert!(verify_with_domain(&pk_arr, domain, &wrong_msg, &sig_bytes).is_err());
+
+        // Test arbitrary message signing (unifying raw CBOR vs digest signing)
+        let cbor_sample = b"\xa3\x01\x18\x2a\x02\x44\xde\xad\xbe\xef\x03\x68ciphervault";
+        let cbor_sig = hsm
+            .sign_message(HsmSlot::DigitalSignature, b"head_record", cbor_sample)
+            .unwrap();
+        assert!(verify_with_domain(&pk_arr, b"head_record", cbor_sample, &cbor_sig).is_ok());
     }
 
     #[test]

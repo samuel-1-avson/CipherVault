@@ -41,7 +41,8 @@ RUN mkdir -p /var/lib/ciphervault-ui && \
 
 COPY --from=builder /workspace/target/release/ciphervault /usr/local/bin/ciphervault
 COPY deploy/docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
-RUN chmod +x /usr/local/bin/entrypoint-dashboard.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint-dashboard.sh && \
+    chmod +x /usr/local/bin/entrypoint-dashboard.sh
 
 USER ciphervault
 WORKDIR /var/lib/ciphervault-ui

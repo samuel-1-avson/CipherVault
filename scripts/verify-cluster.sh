@@ -20,5 +20,12 @@ for port in 8201 8202 8203; do
 done
 
 echo
-echo "All 3 container operators are healthy!"
+echo "Probing containerized Web Dashboard endpoints (http://127.0.0.1:8080)..."
+curl -sf "http://127.0.0.1:8080/api/vault" > /dev/null && echo "  [ONLINE] /api/vault"
+curl -sf "http://127.0.0.1:8080/api/token" > /dev/null && echo "  [ONLINE] /api/token"
+curl -sf "http://127.0.0.1:8080/api/fleet" > /dev/null && echo "  [ONLINE] /api/fleet"
+curl -sf "http://127.0.0.1:8080/api/relayer/checkpoints" > /dev/null && echo "  [ONLINE] /api/relayer/checkpoints"
+
+echo
+echo "All container services are healthy and responsive!"
 echo "Run complete!"

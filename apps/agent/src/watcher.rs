@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use ciphervault_format::{to_canonical_cbor, HeadRecord, PROTOCOL_VERSION};
 use ciphervault_local_store::LocalVaultStore;
-use ciphervault_recovery::OfflineRecoveryKit;
 use ciphervault_snapshot::create_snapshot;
 use ciphervault_storage::MultiOperatorPool;
 
@@ -147,12 +146,7 @@ impl VaultWatcher {
             .save_snapshot(&output.record, &output.encrypted_manifest, &output.chunks)?;
         self.store.increment_device_counter()?;
 
-        let kit = OfflineRecoveryKit::parse_from_printable(&fs::read_to_string(
-            self.config
-                .root_dir
-                .join(".ciphervault/recovery_kit_backup.txt"),
-        )?)?;
-        let recovery_set = self.store.prepare_recovery_set(&output.record, &kit)?;
+        let recovery_set = self.store.prepare_recovery_set(&output.record)?;
         let record_cid = output.record.compute_record_cid()?;
 
         let mut head = HeadRecord {
@@ -177,6 +171,14 @@ impl VaultWatcher {
             output.chunks.len()
         );
 
+        let snap_id_arr: [u8; 32] = {
+            let mut a = [0u8; 32];
+            if output.record.snapshot_id.len() == 32 {
+                a.copy_from_slice(&output.record.snapshot_id);
+            }
+            a
+        };
+
         if self.config.replicate_remote && !self.config.operators.is_empty() {
             println!(
                 "Agent: Replicating across {} operators in background...",
@@ -185,23 +187,101 @@ impl VaultWatcher {
 
             let pool = MultiOperatorPool::new(self.config.operators.clone());
             let wire_objects = self.store.recovery_objects(&recovery_set)?;
-            pool.replicate_and_verify(
-                &vault_id,
-                &device_sk,
-                &wire_objects,
-                &recovery_set.closure.compute_base_closure_digest()?,
-                recovery_set.closure.total_bytes,
-                90,
-                &recovery_set.locator,
-                &to_canonical_cbor(&head)?,
-                &recovery_set.records,
-                3,
-            )
-            .await?;
-            println!("Agent: Complete recovery set verified on three operators");
+            match pool
+                .replicate_and_verify(
+                    &vault_id,
+                    &device_sk,
+                    &wire_objects,
+                    &recovery_set.closure.compute_base_closure_digest()?,
+                    recovery_set.closure.total_bytes,
+                    90,
+                    &recovery_set.locator,
+                    &to_canonical_cbor(&head)?,
+                    &recovery_set.records,
+                    3,
+                )
+                .await
+            {
+                Ok(_) => {
+                    let _ = self.store.mark_upload_completed(&snap_id_arr);
+                    println!("Agent: Complete recovery set verified on three operators");
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    let _ = self.store.record_upload_failure(&snap_id_arr, &err_msg);
+                    return Err(e.into());
+                }
+            }
+        } else {
+            let _ = self.store.mark_upload_completed(&snap_id_arr);
         }
 
         Ok(record_cid)
+    }
+
+    /// Retries replication for any snapshots that were saved locally but failed remote replication.
+    pub async fn retry_pending_uploads(&self) -> Result<()> {
+        if !self.config.replicate_remote || self.config.operators.is_empty() {
+            return Ok(());
+        }
+
+        let pending = self.store.list_pending_uploads()?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let vault_id = self.store.get_vault_id()?;
+        let (_, device_sk, _, _) = self.store.get_device_state()?;
+        let pool = MultiOperatorPool::new(self.config.operators.clone());
+
+        for item in pending {
+            if let Ok((record, _)) = self.store.get_snapshot(&item.snapshot_id) {
+                if let Ok(recovery_set) = self.store.prepare_recovery_set(&record) {
+                    if let Ok(wire_objects) = self.store.recovery_objects(&recovery_set) {
+                        if let Ok(Some(head)) = self.store.get_active_head() {
+                            if let Ok(closure_digest) =
+                                recovery_set.closure.compute_base_closure_digest()
+                            {
+                                if let Ok(head_cbor) = to_canonical_cbor(&head) {
+                                    match pool
+                                        .replicate_and_verify(
+                                            &vault_id,
+                                            &device_sk,
+                                            &wire_objects,
+                                            &closure_digest,
+                                            recovery_set.closure.total_bytes,
+                                            90,
+                                            &recovery_set.locator,
+                                            &head_cbor,
+                                            &recovery_set.records,
+                                            3,
+                                        )
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            let _ =
+                                                self.store.mark_upload_completed(&item.snapshot_id);
+                                            println!(
+                                                "Agent: Retry succeeded for pending snapshot {}",
+                                                hex::encode(item.snapshot_id)
+                                            );
+                                        }
+                                        Err(e) => {
+                                            let _ = self.store.record_upload_failure(
+                                                &item.snapshot_id,
+                                                &e.to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Runs the debounced watcher loop until shutdown signal.
@@ -232,12 +312,21 @@ impl VaultWatcher {
                         Ok(false) => {
                             if let Some(t) = last_change {
                                 if t.elapsed() >= self.config.debounce {
-                                    last_change = None;
                                     println!("Agent: Debounce window expired. Capturing coherent snapshot...");
-                                    if let Err(e) = self.capture_and_sync(Some("Automated agent capture".into())).await {
-                                        eprintln!("{} Failed to capture snapshot: {}", "Agent Error:".red(), e);
+                                    match self.capture_and_sync(Some("Automated agent capture".into())).await {
+                                        Ok(_) => {
+                                            last_change = None;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("{} Failed to capture/replicate snapshot: {}", "Agent Error:".red(), e);
+                                            // Keep last_change set to retry on next tick
+                                            last_change = Some(Instant::now());
+                                        }
                                     }
                                 }
+                            } else {
+                                // Periodically drain pending upload retries
+                                let _ = self.retry_pending_uploads().await;
                             }
                         }
                         Err(e) => {

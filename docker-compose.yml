@@ -70,8 +70,12 @@ services:
       "http://operator-2:8202",
       "http://operator-3:8203",
       "--interval-secs",
-      "15"
+      "15",
+      "--db",
+      "/var/lib/ciphervault-ui/.ciphervault/fleet.db"
     ]
+    volumes:
+      - dashboard_data:/var/lib/ciphervault-ui
     depends_on:
       operator-1:
         condition: service_healthy

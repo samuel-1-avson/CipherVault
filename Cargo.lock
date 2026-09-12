@@ -382,6 +382,7 @@ dependencies = [
  "ciphervault-storage",
  "clap",
  "colored",
+ "futures-util",
  "hex",
  "rand 0.8.8",
  "serde",
@@ -389,6 +390,7 @@ dependencies = [
  "sha2",
  "tokio",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -436,6 +438,7 @@ dependencies = [
  "hex",
  "rand 0.8.8",
  "rusqlite",
+ "sha2",
  "thiserror",
  "x25519-dalek",
 ]
@@ -453,6 +456,8 @@ dependencies = [
  "colored",
  "ed25519-dalek",
  "hex",
+ "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

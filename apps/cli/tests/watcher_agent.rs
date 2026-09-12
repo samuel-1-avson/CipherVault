@@ -40,18 +40,13 @@ async fn test_watcher_agent_and_coherent_capture() {
     let dev_id = [0x88u8; 32];
     let epoch_key = VaultEpochKey::generate();
 
+    let locator = r.derive_recovery_locator().unwrap();
     let db_path = vault_dir.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();
     store
-        .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key)
+        .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
         .unwrap();
 
-    let kit = ciphervault_recovery::OfflineRecoveryKit::create(&vault_id, &r, Vec::new()).unwrap();
-    fs::write(
-        vault_dir.join("recovery_kit_backup.txt"),
-        kit.format_printable(),
-    )
-    .unwrap();
     let mut cert = ciphervault_format::DeviceCertificate {
         version: PROTOCOL_VERSION,
         vault_id: vault_id.to_vec(),

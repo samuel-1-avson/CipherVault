@@ -19,4 +19,10 @@ pub enum LocalStoreError {
 
     #[error("Record not found: {0}")]
     NotFound(String),
+
+    #[error("Key protection error: {0}")]
+    KeyProtectionError(String),
+
+    #[error("Corrupted database record: {0}")]
+    CorruptedRecord(String),
 }

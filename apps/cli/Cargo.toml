@@ -17,6 +17,7 @@ hex.workspace = true
 chrono.workspace = true
 rand.workspace = true
 sha2.workspace = true
+zeroize.workspace = true
 ciphervault-crypto = { path = "../../crates/crypto" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-snapshot = { path = "../../crates/snapshot" }
@@ -29,6 +30,7 @@ x25519-dalek.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 axum.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }

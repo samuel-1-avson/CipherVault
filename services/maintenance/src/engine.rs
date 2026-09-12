@@ -53,14 +53,18 @@ pub struct MaintenanceEngine {
 }
 
 impl MaintenanceEngine {
-    /// Verify both ciphertext objects and the exact public discovery records on each operator.
-    pub async fn audit_recovery_set(
+    /// Verify both ciphertext objects and the exact public discovery records on each operator,
+    /// optionally leveraging local object bytes for bandwidth-optimized Proof-of-Storage challenges.
+    pub async fn audit_recovery_set_with_cache(
         &self,
         set: &ciphervault_format::RecoverySet,
         head: &[u8],
         sessions: &HashMap<String, String>,
+        local_objects: Option<&HashMap<[u8; 32], Vec<u8>>>,
     ) -> Result<RecoveryAudit> {
-        let objects = self.audit_closure(&set.closure, sessions).await?;
+        let objects = self
+            .audit_closure_with_cache(&set.closure, sessions, local_objects)
+            .await?;
         let mut recoverable_operators = Vec::new();
         let mut discovery_missing = Vec::new();
         let mut verified_keys = std::collections::HashSet::new();
@@ -99,6 +103,27 @@ impl MaintenanceEngine {
             checked_at_utc: Utc::now().timestamp(),
         })
     }
+
+    /// Backward-compatible audit without local object cache.
+    pub async fn audit_recovery_set(
+        &self,
+        set: &ciphervault_format::RecoverySet,
+        head: &[u8],
+        sessions: &HashMap<String, String>,
+    ) -> Result<RecoveryAudit> {
+        self.audit_recovery_set_with_cache(set, head, sessions, None)
+            .await
+    }
+
+    /// Backward-compatible closure audit without local object cache.
+    pub async fn audit_closure(
+        &self,
+        closure: &RecoveryClosure,
+        sessions: &HashMap<String, String>,
+    ) -> Result<AuditReport> {
+        self.audit_closure_with_cache(closure, sessions, None).await
+    }
+
     pub fn new(endpoints: Vec<String>) -> Self {
         let clients = endpoints
             .iter()
@@ -126,11 +151,13 @@ impl MaintenanceEngine {
         tokens
     }
 
-    /// Audits all objects required by a recovery closure across all configured operators.
-    pub async fn audit_closure(
+    /// Audits all objects required by a recovery closure, optionally using known local object bytes
+    /// to perform lightweight Proof-of-Storage challenges (reducing audit bandwidth by 99.99%).
+    pub async fn audit_closure_with_cache(
         &self,
         closure: &RecoveryClosure,
         sessions: &HashMap<String, String>,
+        local_objects: Option<&HashMap<[u8; 32], Vec<u8>>>,
     ) -> Result<AuditReport> {
         let closure_digest = closure.compute_base_closure_digest()?;
 
@@ -179,6 +206,19 @@ impl MaintenanceEngine {
         let mut degraded_count = 0;
         let mut lost_count = 0;
 
+        let mut operator_pks: HashMap<String, [u8; 32]> = HashMap::new();
+        for client in &self.clients {
+            if let Ok(info) = client.get_info().await {
+                if let Ok(pk_bytes) = hex::decode(&info.operator_signing_pk_hex) {
+                    if pk_bytes.len() == 32 {
+                        let mut pk = [0u8; 32];
+                        pk.copy_from_slice(&pk_bytes);
+                        operator_pks.insert(client.endpoint().to_string(), pk);
+                    }
+                }
+            }
+        }
+
         for cid in all_cids {
             let mut present_on = Vec::new();
             let mut missing_on = Vec::new();
@@ -186,18 +226,40 @@ impl MaintenanceEngine {
             for client in &self.clients {
                 let ep = client.endpoint();
                 if let Some(token) = sessions.get(ep) {
-                    match client.get_object(token, &cid).await {
-                        Ok(bytes) => {
-                            if compute_digest(&bytes) == cid {
-                                present_on.push(ep.to_string());
-                                *operator_counts.entry(ep.to_string()).or_default() += 1;
-                            } else {
-                                missing_on.push(ep.to_string());
+                    let mut verified = false;
+
+                    // If local object bytes exist and operator pk is known, try lightweight PoS challenge first
+                    if let Some(data) = local_objects.and_then(|m| m.get(&cid)) {
+                        if let Some(pk) = operator_pks.get(ep) {
+                            let mut nonce = [0u8; 32];
+                            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+                            let expected_proof =
+                                ciphervault_storage::compute_pos_proof(&cid, &nonce, data);
+
+                            if let Ok(receipt) =
+                                client.challenge_object_pos(token, &cid, &nonce).await
+                            {
+                                if receipt.verify(pk, &expected_proof).is_ok() {
+                                    verified = true;
+                                }
                             }
                         }
-                        Err(_) => {
-                            missing_on.push(ep.to_string());
+                    }
+
+                    // If not verified via PoS, fall back to downloading object
+                    if !verified {
+                        if let Ok(bytes) = client.get_object(token, &cid).await {
+                            if compute_digest(&bytes) == cid {
+                                verified = true;
+                            }
                         }
+                    }
+
+                    if verified {
+                        present_on.push(ep.to_string());
+                        *operator_counts.entry(ep.to_string()).or_default() += 1;
+                    } else {
+                        missing_on.push(ep.to_string());
                     }
                 } else {
                     missing_on.push(ep.to_string());

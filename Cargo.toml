@@ -51,6 +51,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 sha3 = "0.10"
 notify = "6.1"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # Internal workspace crates
 ciphervault-crypto = { path = "crates/crypto" }

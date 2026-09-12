@@ -8,4 +8,4 @@ pub mod kit;
 pub mod trust;
 
 pub use error::RecoveryError;
-pub use kit::OfflineRecoveryKit;
+pub use kit::{OfflineRecoveryKit, ThresholdRecoveryKit};

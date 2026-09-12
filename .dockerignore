@@ -7,4 +7,10 @@ dist/
 node_modules/
 .git/
 *.db
+*.db-shm
+*.db-wal
 *.log
+.ciphervault/
+secrets/
+.env*
+!deploy/docker/.env.example

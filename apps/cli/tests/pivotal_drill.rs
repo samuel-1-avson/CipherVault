@@ -93,8 +93,17 @@ async fn test_pivotal_acceptance_drill() {
     fs::create_dir_all(&client_laptop).unwrap();
 
     // Run ciphervault init with the 3 operator endpoints
+    let safe_offline_kit = base_test_dir.join("printed_emergency_recovery_kit.txt");
     let init_output = Command::new(&bin)
-        .args(["init", "--operators", &url1, &url2, &url3])
+        .args([
+            "init",
+            "--operators",
+            &url1,
+            &url2,
+            &url3,
+            "--save-kit",
+            safe_offline_kit.to_str().unwrap(),
+        ])
         .current_dir(&client_laptop)
         .output()
         .expect("ciphervault init failed");
@@ -104,13 +113,18 @@ async fn test_pivotal_acceptance_drill() {
         String::from_utf8_lossy(&init_output.stderr)
     );
 
-    // Save offline recovery kit in safe offline simulated location
+    // Verify recovery_kit_backup.txt does NOT exist in .ciphervault
     let kit_backup_path = client_laptop
         .join(".ciphervault")
         .join("recovery_kit_backup.txt");
-    assert!(kit_backup_path.exists());
-    let safe_offline_kit = base_test_dir.join("printed_emergency_recovery_kit.txt");
-    fs::copy(&kit_backup_path, &safe_offline_kit).unwrap();
+    assert!(
+        !kit_backup_path.exists(),
+        "Recovery kit must not be stored in .ciphervault by default"
+    );
+    assert!(
+        safe_offline_kit.exists(),
+        "Explicitly saved offline recovery kit must exist"
+    );
 
     // 3. Create confidential files on client
     let env_bytes = b"SERVICE_ENDPOINT=https://samuel.cluster.local:5432/main\nAUTH_HASH_TOKEN=mock_synthetic_token_9876543210\n";

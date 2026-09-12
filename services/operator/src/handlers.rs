@@ -102,6 +102,47 @@ pub async fn get_object(
     Ok(Bytes::from(bytes))
 }
 
+pub async fn post_object_challenge(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Path(cid): Path<String>,
+    Json(req): Json<ciphervault_storage::PosChallengeRequest>,
+) -> Result<Json<ciphervault_storage::ProofOfStorageReceipt>, (StatusCode, String)> {
+    let token =
+        extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
+    if !state.validate_read_session(token) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired read session token".into(),
+        ));
+    }
+
+    let nonce_bytes = hex::decode(&req.nonce_hex).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid hex in nonce: {}", e),
+        )
+    })?;
+    if nonce_bytes.len() != 32 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid challenge nonce length (expected 32 bytes)".into(),
+        ));
+    }
+    let mut nonce = [0u8; 32];
+    nonce.copy_from_slice(&nonce_bytes);
+
+    let receipt = state.generate_pos_proof(&cid, &nonce).map_err(|e| {
+        if e == "Object not found" {
+            (StatusCode::NOT_FOUND, e)
+        } else {
+            (StatusCode::BAD_REQUEST, e)
+        }
+    })?;
+
+    Ok(Json(receipt))
+}
+
 pub async fn post_lease(
     State(state): State<Arc<OperatorState>>,
     headers: HeaderMap,
@@ -158,8 +199,9 @@ pub async fn post_recovery_record(
         ));
     }
 
+    let caller_pk = state.get_session_public_key(token);
     let seq = state
-        .append_recovery_record(&locator, &body)
+        .append_authorized_recovery_record(&locator, &body, caller_pk.as_ref())
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     Ok(Json(AppendRecordResponse {
         sequence: seq,
@@ -174,4 +216,24 @@ pub async fn get_recovery_records(
     let records = state.get_recovery_records(&locator);
     let records_hex = records.into_iter().map(hex::encode).collect();
     Json(RecoveryRecordsResponse { records_hex })
+}
+
+pub async fn post_relayer_checkpoint(
+    State(state): State<Arc<OperatorState>>,
+    Json(evidence): Json<ciphervault_format::CheckpointEvidence>,
+) -> Result<Json<ciphervault_storage::RelayerReceipt>, (StatusCode, String)> {
+    let receipt = state
+        .relay_checkpoint(&evidence)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(receipt))
+}
+
+pub async fn get_relayer_checkpoint(
+    State(state): State<Arc<OperatorState>>,
+    Path(commitment): Path<String>,
+) -> Result<Json<ciphervault_storage::RelayerReceipt>, StatusCode> {
+    match state.get_relayed_checkpoint(&commitment) {
+        Some(receipt) => Ok(Json(receipt)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
 }

@@ -8,7 +8,8 @@ use ciphervault_format::compute_digest;
 use crate::error::StorageError;
 use crate::types::{
     AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt, LeaseRequest,
-    OperatorInfo, RecoveryRecordsResponse, SessionRequest, SessionResponse,
+    OperatorInfo, PosChallengeRequest, ProofOfStorageReceipt, RecoveryRecordsResponse,
+    SessionRequest, SessionResponse,
 };
 
 #[derive(Clone)]
@@ -158,6 +159,37 @@ impl OperatorClient {
         }
 
         Ok(bytes)
+    }
+
+    /// Issues a lightweight Proof-of-Storage challenge to verify that an operator possesses
+    /// an object without transmitting the entire payload over the network.
+    pub async fn challenge_object_pos(
+        &self,
+        token: &str,
+        cid: &[u8; 32],
+        nonce: &[u8; 32],
+    ) -> Result<ProofOfStorageReceipt, StorageError> {
+        let cid_hex = hex::encode(cid);
+        let url = format!("{}/v1/objects/{}/challenge", self.endpoint, cid_hex);
+
+        let resp = self
+            .http
+            .post(&url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", token))
+            .json(&PosChallengeRequest {
+                nonce_hex: hex::encode(nonce),
+            })
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let message = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError { status, message });
+        }
+
+        let receipt = resp.json::<ProofOfStorageReceipt>().await?;
+        Ok(receipt)
     }
 
     pub async fn commit_lease(

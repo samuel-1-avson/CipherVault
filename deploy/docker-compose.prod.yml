@@ -88,8 +88,12 @@ services:
       "http://operator-2:8202",
       "http://operator-3:8203",
       "--interval-secs",
-      "15"
+      "15",
+      "--db",
+      "/var/lib/ciphervault/fleet.db"
     ]
+    volumes:
+      - maintenance_prod_data:/var/lib/ciphervault
     depends_on:
       operator-1:
         condition: service_healthy
@@ -109,5 +113,6 @@ volumes:
   op1_prod_data:
   op2_prod_data:
   op3_prod_data:
+  maintenance_prod_data:
   caddy_data:
   caddy_config:

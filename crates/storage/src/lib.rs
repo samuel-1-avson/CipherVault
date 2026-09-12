@@ -9,8 +9,28 @@ pub mod error;
 pub mod pool;
 pub mod types;
 
-pub use chain::{AnchorFinalityStage, AnchorVerificationReport, ArbitrumAnchorClient};
+use sha2::{Digest, Sha256};
+
+pub use chain::{
+    AnchorFinalityStage, AnchorRelayerClient, AnchorVerificationReport, ArbitrumAnchorClient,
+    RelayerReceipt,
+};
 pub use client::OperatorClient;
 pub use error::StorageError;
 pub use pool::MultiOperatorPool;
-pub use types::{LeaseReceipt, OperatorInfo};
+pub use types::{LeaseReceipt, OperatorInfo, PosChallengeRequest, ProofOfStorageReceipt};
+
+/// Computes the deterministic domain-separated Proof-of-Storage digest for an object.
+///
+/// proof = SHA-256("CIPHERVAULT-POS-V1" || cid || nonce || data)
+pub fn compute_pos_proof(cid: &[u8; 32], nonce: &[u8; 32], data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"CIPHERVAULT-POS-V1");
+    hasher.update(cid);
+    hasher.update(nonce);
+    hasher.update(data);
+    let result = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
+}

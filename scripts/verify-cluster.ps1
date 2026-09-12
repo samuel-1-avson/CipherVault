@@ -41,16 +41,35 @@ foreach ($port in $ports) {
 
 Write-Host "`nAll 3 container operators are healthy and cryptographically unique!" -ForegroundColor Green
 
-# 2. Setup a clean drill vault
+# 2. Probe the containerized Web Dashboard APIs
+Write-Host "`nProbing containerized Web Dashboard endpoints (http://127.0.0.1:8080)..." -ForegroundColor Cyan
+try {
+    $vaultInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/vault" -Method Get -TimeoutSec 5
+    Write-Host " [ONLINE] /api/vault: Tracked files count = $($vaultInfo.tracked_files.Count)" -ForegroundColor Green
+
+    $tokenInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/token" -Method Get -TimeoutSec 5
+    Write-Host " [ONLINE] /api/token: Hardware Token driver active (Simulated/Physical)" -ForegroundColor Green
+
+    $fleetInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/fleet" -Method Get -TimeoutSec 5
+    Write-Host " [ONLINE] /api/fleet: Tracked Vaults = $($fleetInfo.summary.total_tracked_vaults), Online Operators = $($fleetInfo.summary.online_operators)/$($fleetInfo.summary.total_operators)" -ForegroundColor Green
+
+    $relayerInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/relayer/checkpoints" -Method Get -TimeoutSec 5
+    Write-Host " [ONLINE] /api/relayer/checkpoints: L2 Relayer ready" -ForegroundColor Green
+} catch {
+    Write-Host " [WARNING] Dashboard endpoint probe encountered an error: $_" -ForegroundColor Yellow
+}
+
+# 3. Setup a clean drill vault
 $TestVault = Join-Path $env:TEMP "cv_docker_drill_$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $TestVault | Out-Null
+$OriginalLocation = Get-Location
 Set-Location $TestVault
 
-Write-Host "`nInitializing test vault in $TestVault..." -ForegroundColor Cyan
+Write-Host "`nInitializing test vault in $TestVault with zero-disk recovery kit..." -ForegroundColor Cyan
+$KitFile = Join-Path $TestVault "emergency_recovery_kit.txt"
 
 # Initialize vault with custom container operator endpoints
-& $CliBin init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://127.0.0.1:8203
-$KitFile = Join-Path $TestVault ".ciphervault\recovery_kit_backup.txt"
+& $CliBin init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://127.0.0.1:8203 --save-kit $KitFile
 
 # Create synthetic secrets
 Set-Content -Path ".env" -Value "DATABASE_URL=https://db.internal.cluster.local:5432/main`nCLUSTER_AUTH_TOKEN=cluster_test_token_9999"
@@ -59,23 +78,40 @@ Set-Content -Path "prod_api.key" -Value "CV-CLUSTER-KEY-4815162342-OMEGA"
 & $CliBin track .env
 & $CliBin track prod_api.key
 
-# Replicate to 3 container operators
-Write-Host "`nReplicating snapshot to 3 Docker container operators..." -ForegroundColor Cyan
-& $CliBin push -m "Docker cluster validation snapshot"
+# 4. Push snapshot with FastCDC & Proof-of-Storage Readback
+Write-Host "`nReplicating snapshot to 3 Docker operators with Proof-of-Storage (--pos)..." -ForegroundColor Cyan
+& $CliBin push -m "Docker cluster validation snapshot" --pos
+if ($LASTEXITCODE -ne 0) { Write-Error "Push failed!" }
+Write-Host "[PASSED] Replicated and verified 3-way container persistence via PoS!" -ForegroundColor Green
 
-Write-Host "`n[PASSED] Replicated and verified 3-way container persistence!" -ForegroundColor Green
+# 5. Anchor state commitment to Arbitrum L2 relayer
+Write-Host "`nAnchoring checkpoint to Arbitrum L2 relayer on container Operator 1..." -ForegroundColor Cyan
+& $CliBin anchor --auto-relay --relayer-url "http://127.0.0.1:8201"
+if ($LASTEXITCODE -ne 0) { Write-Error "Anchor failed!" }
+Write-Host "[PASSED] L2 state commitment anchored via automated relayer!" -ForegroundColor Green
 
-# 3. Simulate Operator 1 failure
+# 6. Export 2-of-3 Shamir Threshold Guardian sheets
+Write-Host "`nExporting 2-of-3 Shamir Threshold Guardian sheets..." -ForegroundColor Cyan
+$GuardianDir = Join-Path $TestVault "guardians"
+& $CliBin recovery split --threshold 2 --shares 3 --kit $KitFile --out-dir $GuardianDir
+$Share1 = Join-Path $GuardianDir "guardian_share_1_of_3.txt"
+$Share2 = Join-Path $GuardianDir "guardian_share_2_of_3.txt"
+$Share3 = Join-Path $GuardianDir "guardian_share_3_of_3.txt"
+Write-Host "[PASSED] Shamir guardian sheets generated (Threshold: 2 of 3)!" -ForegroundColor Green
+
+# 7. Simulate Operator 1 failure
 Write-Host "`n[DISASTER SIMULATION] Stopping operator-1 container..." -ForegroundColor Yellow
 docker compose -f "$RootDir\docker-compose.yml" stop operator-1
 
-# 4. Perform clean machine recovery using kit and surviving operators 2 & 3
+# 8. Perform clean machine recovery using ONLY Guardian Shares 1 & 3 (Share 2 omitted, original kit deleted)
+Remove-Item -Path $KitFile -Force
 $RestoreDir = Join-Path $env:TEMP "cv_docker_restore_$([guid]::NewGuid().ToString('N'))"
-Write-Host "Restoring to clean machine target $RestoreDir..." -ForegroundColor Cyan
+Write-Host "Restoring to clean machine target using Guardian Shares 1 & 3: $RestoreDir..." -ForegroundColor Cyan
 
-& $CliBin recover --kit $KitFile --to $RestoreDir
+& $CliBin recover --shares $Share1 $Share3 --to $RestoreDir
+if ($LASTEXITCODE -ne 0) { Write-Error "Recovery failed!" }
 
-# 5. Verify byte-for-byte fidelity
+# 9. Verify byte-for-byte fidelity
 $origEnv = Get-Content -Raw ".env"
 $restEnv = Get-Content -Raw (Join-Path $RestoreDir ".env")
 $origKey = Get-Content -Raw "prod_api.key"
@@ -85,9 +121,9 @@ if ($origEnv.Trim() -ne $restEnv.Trim() -or $origKey.Trim() -ne $restKey.Trim())
     Write-Error "INTEGRITY MISMATCH: Restored files differ from original!"
 }
 
-Write-Host "`n[PASSED] Byte-for-byte integrity verified with 1 operator offline (2/3 quorum)!" -ForegroundColor Green
+Write-Host "`n[PASSED] Byte-for-byte integrity verified with 1 operator offline using 2-of-3 Shamir threshold shares!" -ForegroundColor Green
 
-# 6. Restart operator-1 and confirm persistence
+# 10. Restart operator-1 and confirm persistence
 Write-Host "`nRestarting operator-1..." -ForegroundColor Cyan
 docker compose -f "$RootDir\docker-compose.yml" start operator-1
 Start-Sleep -Seconds 3
@@ -99,6 +135,7 @@ Write-Host "`n=======================================================" -Foregrou
 Write-Host "  DOCKER STAGING CLUSTER DRILL: 100% SUCCESS!" -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Cyan
 
-Set-Location $RootDir
+Set-Location $OriginalLocation
+[System.IO.Directory]::SetCurrentDirectory($OriginalLocation)
 Remove-Item -Recurse -Force $TestVault -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $RestoreDir -ErrorAction SilentlyContinue

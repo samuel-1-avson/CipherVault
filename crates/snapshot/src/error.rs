@@ -29,4 +29,7 @@ pub enum SnapshotError {
 
     #[error("Format error: {0}")]
     FormatError(#[from] ciphervault_format::FormatError),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }

@@ -7,8 +7,14 @@ const state = {
   operators: [],
   snapshots: [],
   anchors: [],
+  guardians: null,
+  relayerCheckpoints: [],
+  fleet: null,
   isPolling: true,
   pollTimer: null,
+  sseStream: null,
+  fastCdcResult: null,
+  selectedChunkIndex: null,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -19,6 +25,11 @@ document.addEventListener('DOMContentLoaded', () => {
   initSearchFilters();
   initQuickActions();
   initMathVerifier();
+  initGuardianActions();
+  initRelayerActions();
+  initFleetActions();
+  initSseStream();
+  initFastCdcInspector();
   
   // Initial data load and periodic polling
   fetchAllData();
@@ -42,6 +53,9 @@ async function fetchAllData() {
       fetchSnapshots(),
       fetchAnchors(),
       fetchAudit(),
+      fetchGuardians(),
+      fetchRelayerCheckpoints(),
+      fetchFleet(),
     ]);
   } catch (err) {
     console.error("Data synchronization error:", err);
@@ -211,6 +225,42 @@ async function fetchAnchors() {
     renderAnchors(data);
   } catch (e) {
     console.warn("fetchAnchors error:", e);
+  }
+}
+
+async function fetchGuardians() {
+  try {
+    const res = await fetch('/api/guardians');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.guardians = data;
+    renderGuardians(data);
+  } catch (e) {
+    console.warn("fetchGuardians error:", e);
+  }
+}
+
+async function fetchRelayerCheckpoints() {
+  try {
+    const res = await fetch('/api/relayer/checkpoints');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.relayerCheckpoints = data.checkpoints || [];
+    renderRelayerCheckpoints(data);
+  } catch (e) {
+    console.warn("fetchRelayerCheckpoints error:", e);
+  }
+}
+
+async function fetchFleet() {
+  try {
+    const res = await fetch('/api/fleet');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.fleet = data;
+    renderFleet(data);
+  } catch (e) {
+    console.warn("fetchFleet error:", e);
   }
 }
 
@@ -440,6 +490,313 @@ function renderAnchors(anchors) {
   if (copyTxBtn) {
     copyTxBtn.setAttribute('data-copy', latest.tx_hash_hex);
   }
+
+  const arbiscanLink = document.getElementById('anchor-arbiscan-link');
+  if (arbiscanLink) {
+    if (latest.tx_hash_hex) {
+      const isSepolia = (latest.contract_address_hex || "").toLowerCase().includes("sepolia") || latest.chain_id === 421614;
+      const baseExplorer = isSepolia ? "https://sepolia.arbiscan.io/tx/" : "https://arbiscan.io/tx/";
+      const cleanTx = latest.tx_hash_hex.startsWith("0x") ? latest.tx_hash_hex : `0x${latest.tx_hash_hex}`;
+      arbiscanLink.href = `${baseExplorer}${cleanTx}`;
+      arbiscanLink.style.display = "inline-flex";
+    } else {
+      arbiscanLink.style.display = "none";
+    }
+  }
+}
+
+function renderGuardians(data) {
+  if (!data) return;
+
+  const badgeTab = document.getElementById('badge-tab-guardians');
+  if (badgeTab && data.active_threshold && data.total_guardians) {
+    badgeTab.textContent = `${data.active_threshold}-of-${data.total_guardians}`;
+  }
+
+  const circleBadge = document.getElementById('quorum-circle-badge');
+  if (circleBadge && data.active_threshold && data.total_guardians) {
+    circleBadge.textContent = `${data.active_threshold} / ${data.total_guardians}`;
+  }
+
+  const quorumTitle = document.getElementById('quorum-title');
+  if (quorumTitle && data.active_threshold && data.total_guardians) {
+    quorumTitle.textContent = `Active Quorum Policy: ${data.active_threshold}-of-${data.total_guardians} Guardians Required`;
+  }
+
+  const locatorElem = document.getElementById('guardian-vault-locator');
+  if (locatorElem && data.sheets && data.sheets.length > 0) {
+    locatorElem.textContent = data.sheets[0].recovery_locator || "--";
+  }
+
+  const grid = document.getElementById('guardians-grid');
+  if (!grid) return;
+
+  if (!data.sheets || data.sheets.length === 0) {
+    grid.innerHTML = '<div class="loading-placeholder">No guardian sheets generated yet. Select a threshold above and click "Split Recovery Secret".</div>';
+    return;
+  }
+
+  grid.innerHTML = data.sheets.map((sheet, idx) => {
+    const shareNum = sheet.share_index;
+    const threshold = sheet.threshold;
+    const total = sheet.total_shares;
+    const pkDisplay = truncateHash(sheet.recovery_signing_pk, 10, 8);
+    const locatorDisplay = truncateHash(sheet.recovery_locator, 10, 8);
+    const crc = sheet.crc32 || "--";
+
+    return `
+      <article class="guardian-card" id="card-guardian-${shareNum}">
+        <div class="guardian-card-header">
+          <h4>${escapeHtml(sheet.guardian_name || `Guardian ${shareNum}`)}</h4>
+          <span class="guardian-badge">Share ${shareNum} of ${total}</span>
+        </div>
+
+        <div class="guardian-meta-list">
+          <div class="guardian-meta-item">
+            <span class="key">Threshold:</span>
+            <span class="val" style="color: var(--accent-cyan);">${threshold}-of-${total}</span>
+          </div>
+          <div class="guardian-meta-item">
+            <span class="key">Signing PK:</span>
+            <span class="val" title="${escapeHtml(sheet.recovery_signing_pk)}">${pkDisplay}</span>
+          </div>
+          <div class="guardian-meta-item">
+            <span class="key">Locator:</span>
+            <span class="val" title="${escapeHtml(sheet.recovery_locator)}">${locatorDisplay}</span>
+          </div>
+          <div class="guardian-meta-item">
+            <span class="key">Integrity:</span>
+            <span class="val" style="color: var(--accent-emerald);">CRC32: ${escapeHtml(crc)}</span>
+          </div>
+        </div>
+
+        <div class="guardian-card-actions">
+          <button class="btn-action secondary small btn-inspect-guardian-sheet" data-sheet-index="${idx}">
+            Inspect Sheet
+          </button>
+          <button class="btn-action primary small btn-copy-guardian-sheet-card" data-sheet-text="${encodeURIComponent(sheet.sheet_text)}">
+            Copy Sheet
+          </button>
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  if (grid.querySelectorAll) {
+    const inspectBtns = grid.querySelectorAll('.btn-inspect-guardian-sheet');
+    inspectBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-sheet-index'), 10);
+        if (data.sheets[idx]) {
+          openGuardianSheetModal(data.sheets[idx]);
+        }
+      });
+    });
+
+    const copyBtns = grid.querySelectorAll('.btn-copy-guardian-sheet-card');
+    copyBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const text = decodeURIComponent(btn.getAttribute('data-sheet-text') || '');
+        if (text && typeof navigator !== 'undefined' && navigator.clipboard) {
+          navigator.clipboard.writeText(text).then(() => {
+            showToast("Guardian descriptor sheet copied to clipboard!");
+          });
+        }
+      });
+    });
+  }
+}
+
+function openGuardianSheetModal(sheet) {
+  const modal = document.getElementById('modal-guardian-sheet');
+  const title = document.getElementById('modal-guardian-title');
+  const textElem = document.getElementById('modal-guardian-text');
+  const copyBtn = document.getElementById('btn-copy-guardian-sheet');
+  if (!modal || !textElem) return;
+
+  if (title) title.textContent = `${sheet.guardian_name || 'Guardian'} Descriptor Sheet (Share ${sheet.share_index}/${sheet.total_shares})`;
+  textElem.textContent = sheet.sheet_text;
+
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        navigator.clipboard.writeText(sheet.sheet_text).then(() => {
+          showToast("Printable guardian sheet copied!");
+        });
+      }
+    };
+  }
+
+  modal.classList.add('open');
+}
+
+function renderRelayerCheckpoints(data) {
+  if (!data) return;
+
+  const modeDisplay = document.getElementById('relayer-mode-display');
+  if (modeDisplay && data.relayer_status) {
+    const st = data.relayer_status;
+    modeDisplay.textContent = `Automated L2 Relayer: ${st.operational ? 'Active' : 'Standby'}`;
+  }
+
+  const networkTag = document.getElementById('relayer-target-network');
+  if (networkTag && data.relayer_status && data.relayer_status.target_network) {
+    networkTag.textContent = data.relayer_status.target_network;
+  }
+
+  const tbody = document.getElementById('table-checkpoints-body');
+  if (!tbody) return;
+
+  const checkpoints = data.checkpoints || [];
+  if (checkpoints.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="loading-placeholder">No relayer checkpoints recorded yet. Click "Auto-Relay Latest Head" to submit first L2 commitment.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = checkpoints.slice().reverse().map(cp => {
+    const blockStr = cp.block_number ? `#${cp.block_number.toLocaleString()}` : '#--';
+    const txTrunc = truncateHash(cp.tx_hash || '', 10, 8);
+    const commitTrunc = truncateHash(cp.commitment || '', 10, 8);
+    const explorerUrl = cp.explorer_url || `https://sepolia.arbiscan.io/tx/${cp.tx_hash}`;
+
+    return `
+      <tr>
+        <td style="font-family: var(--font-mono); color: var(--accent-purple); font-weight: 600;">${blockStr}</td>
+        <td>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <code style="font-family: var(--font-mono); font-size: 0.8rem;">${txTrunc}</code>
+            ${cp.tx_hash ? `
+              <button class="btn-copy" data-copy="${escapeHtml(cp.tx_hash)}" title="Copy Tx Hash">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            ` : ''}
+          </div>
+        </td>
+        <td>
+          <span style="color: var(--accent-emerald); font-size: 0.78rem; font-weight: 600;">
+            ${escapeHtml(cp.status || 'SequencerConfirmed')}
+          </span>
+        </td>
+        <td style="font-family: var(--font-mono); color: var(--accent-cyan);" title="${escapeHtml(cp.commitment)}">
+          ${commitTrunc}
+        </td>
+        <td>
+          ${cp.tx_hash ? `
+            <a href="${escapeHtml(explorerUrl)}" target="_blank" rel="noopener noreferrer" class="arbiscan-link">
+              Arbiscan ↗
+            </a>
+          ` : '<span style="color: var(--text-muted); font-size: 0.78rem;">Local</span>'}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderFleet(data) {
+  if (!data) return;
+
+  // Update KPIs
+  if (data.fleet_summary) {
+    const fs = data.fleet_summary;
+    const kpiVaults = document.getElementById('fleet-kpi-vaults');
+    if (kpiVaults) kpiVaults.textContent = String(fs.total_tracked_vaults ?? 1);
+
+    const kpiOps = document.getElementById('fleet-kpi-operators');
+    if (kpiOps) kpiOps.textContent = `${fs.active_operators ?? 3} / 3`;
+
+    const kpiLat = document.getElementById('fleet-kpi-latency');
+    if (kpiLat) kpiLat.textContent = fs.avg_latency_ms != null ? `${fs.avg_latency_ms} ms` : '-- ms';
+
+    const kpiAudits = document.getElementById('fleet-kpi-audits');
+    if (kpiAudits) kpiAudits.textContent = String(fs.audits_completed ?? 0);
+  }
+
+  // Update Fleet badge
+  const badgeFleet = document.getElementById('badge-tab-fleet');
+  if (badgeFleet && data.vaults) {
+    badgeFleet.textContent = `${data.vaults.length} Vault${data.vaults.length > 1 ? 's' : ''}`;
+  }
+
+  // Render Operator Nodes Health Grid
+  const opGrid = document.getElementById('fleet-operators-grid');
+  if (opGrid && data.operator_nodes) {
+    if (data.operator_nodes.length === 0) {
+      opGrid.innerHTML = '<div class="loading-placeholder">No operator nodes registered in maintenance fleet.</div>';
+    } else {
+      opGrid.innerHTML = data.operator_nodes.map(op => {
+        const isOnline = op.status === 'Online';
+        const lat = op.latency_ms != null ? `${op.latency_ms} ms` : 'Unreachable';
+        return `
+          <div class="fleet-op-card">
+            <div class="fleet-op-card-header">
+              <span class="fleet-op-name">${escapeHtml(op.operator_id)}</span>
+              <span class="${isOnline ? 'badge-status-online' : 'badge-status-offline'}">${escapeHtml(op.status)}</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Endpoint</span>
+              <span class="op-meta-val">${escapeHtml(op.endpoint)}</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Probe RTT</span>
+              <span class="op-meta-val" style="color: ${isOnline ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; font-family: var(--font-mono);">${lat}</span>
+            </div>
+            <div class="op-meta-row">
+              <span class="op-meta-label">Heartbeat</span>
+              <span class="op-meta-val" style="font-size: 0.76rem; color: var(--text-muted);">${escapeHtml(op.last_heartbeat)}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  // Render Registered Vaults
+  const vBody = document.getElementById('table-fleet-vaults-body');
+  if (vBody && data.vaults) {
+    if (data.vaults.length === 0) {
+      vBody.innerHTML = '<tr><td colspan="4" class="loading-placeholder">No vaults registered in maintenance database.</td></tr>';
+    } else {
+      vBody.innerHTML = data.vaults.map(v => `
+        <tr>
+          <td style="font-family: var(--font-mono); color: var(--accent-cyan); font-weight: 500;">
+            ${truncateHash(v.vault_id, 10, 8)}
+          </td>
+          <td style="font-family: var(--font-mono); color: var(--text-secondary);">
+            ${v.head_cid ? truncateHash(v.head_cid, 10, 8) : '<em>Genesis</em>'}
+          </td>
+          <td>${formatBytes(v.storage_allowance_bytes || 0)}</td>
+          <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(v.registered_at)}</td>
+        </tr>
+      `).join('');
+    }
+  }
+
+  // Render Audit Log Table
+  const aBody = document.getElementById('table-fleet-audits-body');
+  if (aBody && data.audit_history) {
+    if (data.audit_history.length === 0) {
+      aBody.innerHTML = '<tr><td colspan="7" class="loading-placeholder">No audit records in fleet database. Click "Run Fleet Audit Now" to perform first automated audit.</td></tr>';
+    } else {
+      aBody.innerHTML = data.audit_history.map(a => {
+        const isHealthy = a.status === 'Healthy';
+        const color = isHealthy ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+        return `
+          <tr>
+            <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(a.timestamp)}</td>
+            <td style="font-family: var(--font-mono);">${truncateHash(a.vault_id, 8, 6)}</td>
+            <td><strong style="color: ${color};">${escapeHtml(a.status)}</strong></td>
+            <td style="color: var(--accent-emerald); font-family: var(--font-mono);">${a.healthy_objects}</td>
+            <td style="color: var(--accent-rose); font-family: var(--font-mono);">${a.degraded_objects}</td>
+            <td style="color: var(--accent-cyan); font-family: var(--font-mono);">${a.repaired_objects}</td>
+            <td style="font-family: var(--font-mono);">${a.duration_ms} ms</td>
+          </tr>
+        `;
+      }).join('');
+    }
+  }
 }
 
 function renderRecoveryKit(recovery, vaultIdHex) {
@@ -463,23 +820,109 @@ function renderRecoveryKit(recovery, vaultIdHex) {
 // Interactive Controls & Modals
 // -------------------------------------------------------------
 
+let activeModal = null;
+let lastFocusedElement = null;
+
+function trapModalFocus(modal) {
+  if (!modal) return;
+  const focusables = Array.from(modal.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter(el => !el.hasAttribute('disabled'));
+  if (focusables.length > 0) {
+    focusables[0].focus();
+  }
+}
+
+function openModal(modal, triggerElement) {
+  if (!modal) return;
+  lastFocusedElement = triggerElement || document.activeElement;
+  activeModal = modal;
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  trapModalFocus(modal);
+}
+
+function closeModal(modal) {
+  if (!modal) return;
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+  if (activeModal === modal) {
+    activeModal = null;
+  }
+  if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') {
+    lastFocusedElement.focus();
+    lastFocusedElement = null;
+  }
+}
+
 function initTabs() {
-  const tabButtons = document.querySelectorAll('.tab-btn');
-  const tabContents = document.querySelectorAll('.tab-content');
+  const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
+  const tabContents = Array.from(document.querySelectorAll('.tab-content'));
 
-  tabButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const targetId = btn.getAttribute('data-target');
+  const activateTab = (btn, shouldFocus = false) => {
+    const targetId = btn.getAttribute('data-target');
 
-      tabButtons.forEach(b => b.classList.remove('active'));
-      tabContents.forEach(c => c.classList.remove('active'));
+    tabButtons.forEach(b => {
+      b.classList.remove('active');
+      b.setAttribute('aria-selected', 'false');
+      b.setAttribute('tabindex', '-1');
+    });
 
-      btn.classList.add('active');
-      const targetContent = document.getElementById(targetId);
-      if (targetContent) {
-        targetContent.classList.add('active');
+    tabContents.forEach(c => {
+      c.classList.remove('active');
+      c.setAttribute('tabindex', '-1');
+    });
+
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+    btn.setAttribute('tabindex', '0');
+    if (shouldFocus && typeof btn.focus === 'function') {
+      btn.focus();
+    }
+
+    const targetContent = document.getElementById(targetId);
+    if (targetContent) {
+      targetContent.classList.add('active');
+      targetContent.setAttribute('tabindex', '0');
+    }
+  };
+
+  tabButtons.forEach((btn, idx) => {
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-controls', btn.getAttribute('data-target'));
+    const isActive = btn.classList.contains('active');
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    btn.setAttribute('tabindex', isActive ? '0' : '-1');
+
+    btn.addEventListener('click', () => activateTab(btn));
+
+    btn.addEventListener('keydown', (e) => {
+      let nextIdx = idx;
+      if (e.key === 'ArrowRight') {
+        nextIdx = (idx + 1) % tabButtons.length;
+        e.preventDefault();
+        activateTab(tabButtons[nextIdx], true);
+      } else if (e.key === 'ArrowLeft') {
+        nextIdx = (idx - 1 + tabButtons.length) % tabButtons.length;
+        e.preventDefault();
+        activateTab(tabButtons[nextIdx], true);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        activateTab(tabButtons[0], true);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        activateTab(tabButtons[tabButtons.length - 1], true);
       }
     });
+  });
+
+  tabContents.forEach(c => {
+    c.setAttribute('role', 'tabpanel');
+    const matchingBtn = tabButtons.find(b => b.getAttribute('data-target') === c.id);
+    if (matchingBtn) {
+      c.setAttribute('aria-labelledby', matchingBtn.id);
+    }
+    c.setAttribute('tabindex', c.classList.contains('active') ? '0' : '-1');
   });
 }
 
@@ -493,9 +936,13 @@ function initModals() {
   const btnCloseInspector = document.getElementById('btn-close-modal-inspector');
   const btnCloseInspectorFooter = document.getElementById('btn-close-inspector-footer');
 
+  const modalGuardian = document.getElementById('modal-guardian-sheet');
+  const btnCloseGuardian = document.getElementById('btn-close-modal-guardian');
+  const btnCloseGuardianFooter = document.getElementById('btn-close-guardian-footer');
+
   if (btnOpenSnapshot && modalSnapshot) {
     btnOpenSnapshot.addEventListener('click', () => {
-      modalSnapshot.classList.add('open');
+      openModal(modalSnapshot, btnOpenSnapshot);
       const input = document.getElementById('input-snapshot-message');
       if (input) {
         input.value = '';
@@ -504,31 +951,44 @@ function initModals() {
     });
   }
 
-  const closeSnapshotModal = () => {
-    if (modalSnapshot) modalSnapshot.classList.remove('open');
-  };
+  if (btnCloseSnapshot) btnCloseSnapshot.addEventListener('click', () => closeModal(modalSnapshot));
+  if (btnCancelSnapshot) btnCancelSnapshot.addEventListener('click', () => closeModal(modalSnapshot));
 
-  if (btnCloseSnapshot) btnCloseSnapshot.addEventListener('click', closeSnapshotModal);
-  if (btnCancelSnapshot) btnCancelSnapshot.addEventListener('click', closeSnapshotModal);
+  if (btnCloseInspector) btnCloseInspector.addEventListener('click', () => closeModal(modalInspector));
+  if (btnCloseInspectorFooter) btnCloseInspectorFooter.addEventListener('click', () => closeModal(modalInspector));
 
-  const closeInspectorModal = () => {
-    if (modalInspector) modalInspector.classList.remove('open');
-  };
-
-  if (btnCloseInspector) btnCloseInspector.addEventListener('click', closeInspectorModal);
-  if (btnCloseInspectorFooter) btnCloseInspectorFooter.addEventListener('click', closeInspectorModal);
+  if (btnCloseGuardian) btnCloseGuardian.addEventListener('click', () => closeModal(modalGuardian));
+  if (btnCloseGuardianFooter) btnCloseGuardianFooter.addEventListener('click', () => closeModal(modalGuardian));
 
   // Close on backdrop click
   window.addEventListener('click', (e) => {
-    if (e.target === modalSnapshot) closeSnapshotModal();
-    if (e.target === modalInspector) closeInspectorModal();
+    if (activeModal && e.target === activeModal) {
+      closeModal(activeModal);
+    }
   });
 
-  // Close on Escape key
+  // Global key navigation for modals (Escape to close, Tab to cycle)
   window.addEventListener('keydown', (e) => {
+    if (!activeModal) return;
+
     if (e.key === 'Escape') {
-      closeSnapshotModal();
-      closeInspectorModal();
+      closeModal(activeModal);
+    } else if (e.key === 'Tab') {
+      const focusables = Array.from(activeModal.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )).filter(el => !el.hasAttribute('disabled'));
+
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+
+      if (e.shiftKey && document.activeElement === first) {
+        last.focus();
+        e.preventDefault();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        first.focus();
+        e.preventDefault();
+      }
     }
   });
 }
@@ -586,7 +1046,7 @@ function openSnapshotInspector(snap) {
     };
   }
 
-  modal.classList.add('open');
+  openModal(modal);
 }
 
 function initCopyActions() {
@@ -829,6 +1289,168 @@ function initMathVerifier() {
   }
 }
 
+function initGuardianActions() {
+  const btnGenerate = document.getElementById('btn-generate-guardians');
+  if (btnGenerate) {
+    btnGenerate.addEventListener('click', async () => {
+      const selectM = document.getElementById('select-threshold-m');
+      const selectN = document.getElementById('select-total-n');
+      const m = selectM ? parseInt(selectM.value, 10) : 3;
+      const n = selectN ? parseInt(selectN.value, 10) : 5;
+
+      if (m > n) {
+        showToast("Threshold (M) cannot exceed Total Guardians (N)", "error");
+        return;
+      }
+
+      showToast(`Partitioning recovery secret into ${m}-of-${n} threshold shares...`);
+      try {
+        const res = await fetch('/api/guardians/split', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ threshold: m, total_shares: n })
+        });
+        const result = await res.json();
+        if (result.status === 'ok' || result.success) {
+          state.guardians = result;
+          renderGuardians(result);
+          const demoTag = result.is_drill_demo ? " [DRILL PREVIEW]" : "";
+          showToast(`✓ Generated ${result.sheets.length} guardian shares (${m}-of-${n})${demoTag}`);
+        } else {
+          showToast(`Error: ${result.error || 'Failed to split secret'}`);
+        }
+
+      } catch (err) {
+        showToast("Network error generating guardian shares");
+      }
+    });
+  }
+
+  const btnRecombine = document.getElementById('btn-simulate-recombine');
+  const simSharesInput = document.getElementById('input-simulation-shares');
+  const simResult = document.getElementById('simulation-result');
+
+  if (btnRecombine && simSharesInput && simResult) {
+    btnRecombine.addEventListener('click', async () => {
+      const rawText = simSharesInput.value.trim();
+      if (!rawText) {
+        showToast("Please paste at least 1 guardian share to simulate reconstruction.");
+        return;
+      }
+
+      const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      const shares = [];
+      lines.forEach(l => {
+        if (l.includes('CIPHERVAULT-THRESHOLD-RECOVERY-V1:')) {
+          const match = l.match(/CIPHERVAULT-THRESHOLD-RECOVERY-V1:[A-Za-z0-9+/=]+/);
+          if (match) shares.push(match[0]);
+          else shares.push(l);
+        } else if (l.length > 20 && !l.startsWith('#') && !l.startsWith('---') && !l.startsWith('===')) {
+          shares.push(l);
+        }
+      });
+
+      if (shares.length === 0) {
+        showToast("No valid threshold recovery shares found in input text.");
+        return;
+      }
+
+      simResult.style.display = "block";
+      simResult.className = "simulation-result";
+      simResult.innerHTML = "Computing Shamir polynomial interpolation in zeroized memory...";
+
+      try {
+        const res = await fetch('/api/guardians/reconstruct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shares })
+        });
+        const data = await res.json();
+
+        if (data.verified_signing_pk_matches || data.matches_vault) {
+          simResult.className = "simulation-result success";
+
+          simResult.innerHTML = `
+            <div style="font-weight: 700; color: var(--accent-emerald); margin-bottom: 6px;">
+              ✓ SHAMIR POLYNOMIAL RECONSTRUCTION VERIFIED (100% MATCH)
+            </div>
+            <div>Shares Provided: <strong>${data.shares_provided}</strong> (Quorum Met)</div>
+            <div>Recovered Signing PK: <code style="color: var(--accent-cyan); font-size: 0.78rem;">${escapeHtml(data.recovery_signing_pk)}</code></div>
+            <div style="color: var(--accent-emerald); font-size: 0.78rem; margin-top: 6px;">
+              ✓ Mathematical reconstruction matches registered vault recovery key. Master recovery secret R was validated in volatile RAM and immediately zeroized.
+            </div>
+          `;
+          showToast("✓ Threshold reconstruction verified!");
+        } else {
+          simResult.className = "simulation-result error";
+          simResult.innerHTML = `
+            <div style="font-weight: 700; color: var(--accent-rose); margin-bottom: 6px;">
+              ✗ RECONSTRUCTION FAILED
+            </div>
+            <div>${escapeHtml(data.message || 'Shares could not reconstruct matching recovery key')}</div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 6px;">
+              Shares provided: ${data.shares_provided || 0}. Ensure you have at least M distinct, non-corrupted shares.
+            </div>
+          `;
+          showToast("Simulation failed: Incomplete or mismatched shares");
+        }
+      } catch (err) {
+        simResult.className = "simulation-result error";
+        simResult.textContent = `Simulation error: ${err.message}`;
+      }
+    });
+  }
+
+  // Modal close handlers for guardian sheet modal
+  const modal = document.getElementById('modal-guardian-sheet');
+  const closeBtn = document.getElementById('btn-close-modal-guardian');
+  const closeFooter = document.getElementById('btn-close-guardian-footer');
+  if (closeBtn && modal) closeBtn.addEventListener('click', () => modal.classList.remove('open'));
+  if (closeFooter && modal) closeFooter.addEventListener('click', () => modal.classList.remove('open'));
+}
+
+function initRelayerActions() {
+  const btnRelayerAnchor = document.getElementById('btn-trigger-relayer-anchor');
+  if (btnRelayerAnchor) {
+    btnRelayerAnchor.addEventListener('click', async () => {
+      showToast("Triggering automated L2 relayer anchor...");
+      try {
+        const res = await fetch('/api/relayer/anchor', { method: 'POST' });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          showToast(`✓ Checkpoint relayed! Block #${result.block_number || '--'}`);
+          await Promise.all([fetchAnchors(), fetchRelayerCheckpoints()]);
+        } else {
+          showToast(`Relayer error: ${result.message || 'Failed'}`);
+        }
+      } catch (err) {
+        showToast("Network error submitting relayer anchor");
+      }
+    });
+  }
+}
+
+function initFleetActions() {
+  const btnAudit = document.getElementById('btn-run-fleet-audit');
+  if (btnAudit) {
+    btnAudit.addEventListener('click', async () => {
+      showToast("Running fleet self-repair audit across all replicas...");
+      try {
+        const res = await fetch('/api/fleet/audit', { method: 'POST' });
+        const result = await res.json();
+        if (result.status === 'ok') {
+          showToast("✓ Fleet self-repair audit completed!");
+          await fetchFleet();
+        } else {
+          showToast(`Fleet audit error: ${result.error || 'Failed'}`);
+        }
+      } catch (err) {
+        showToast("Network error running fleet audit");
+      }
+    });
+  }
+}
+
 // -------------------------------------------------------------
 // Utilities
 // -------------------------------------------------------------
@@ -896,3 +1518,412 @@ function showToast(message) {
     setTimeout(() => toast.remove(), 300);
   }, 3200);
 }
+
+// -------------------------------------------------------------
+// Real-Time Server-Sent Events (SSE) Stream
+// -------------------------------------------------------------
+
+function initSseStream() {
+  if (typeof EventSource === 'undefined') return;
+  try {
+    const sse = new EventSource('/api/stream');
+    state.sseStream = sse;
+
+    sse.addEventListener('telemetry', (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        handleTelemetryPacket(payload);
+      } catch (e) {
+        console.warn("SSE telemetry parse error:", e);
+      }
+    });
+
+    sse.onopen = () => {
+      const sseText = document.getElementById('sse-stream-text');
+      const sseDot = document.getElementById('sse-pulse-dot');
+      if (sseText) sseText.textContent = "SSE Stream: Active";
+      if (sseDot) sseDot.style.backgroundColor = "var(--accent-cyan)";
+    };
+
+    sse.onerror = () => {
+      const sseText = document.getElementById('sse-stream-text');
+      const sseDot = document.getElementById('sse-pulse-dot');
+      if (sseText) sseText.textContent = "SSE Stream: Reconnecting";
+      if (sseDot) sseDot.style.backgroundColor = "var(--accent-amber)";
+    };
+  } catch (e) {
+    console.warn("SSE initialization error:", e);
+  }
+}
+
+function handleTelemetryPacket(data) {
+  if (!data) return;
+
+  const tsElem = document.getElementById('sse-last-timestamp');
+  if (tsElem && data.timestamp) {
+    const date = new Date(data.timestamp);
+    tsElem.textContent = `Live Telemetry: ${date.toLocaleTimeString()}`;
+  }
+
+  if (Array.isArray(data.operators)) {
+    let totalLat = 0;
+    let onlineCount = 0;
+    data.operators.forEach((op, idx) => {
+      const elem = document.getElementById(`sse-op${idx + 1}-lat`);
+      if (elem) {
+        if (op.online) {
+          elem.textContent = `${op.latency_ms} ms`;
+          elem.style.color = "var(--accent-emerald)";
+          totalLat += op.latency_ms;
+          onlineCount++;
+        } else {
+          elem.textContent = "OFFLINE";
+          elem.style.color = "#ef4444";
+        }
+      }
+    });
+
+    if (onlineCount > 0) {
+      const avg = Math.round(totalLat / onlineCount);
+      const avgElem = document.getElementById('avg-latency-display');
+      if (avgElem) avgElem.textContent = `${avg} ms`;
+    }
+  }
+
+  const tokenElem = document.getElementById('sse-token-status');
+  if (tokenElem) {
+    if (data.token_attached) {
+      tokenElem.textContent = "PIV Smartcard Detected (Slot 9C/9D Ready)";
+      tokenElem.style.color = "var(--accent-emerald)";
+    } else {
+      tokenElem.textContent = "No Physical Smartcard Attached";
+      tokenElem.style.color = "var(--text-secondary)";
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// Visual FastCDC Inspector & Deduplication Simulator
+// -------------------------------------------------------------
+
+const SAMPLE_LOGS = `{"timestamp":"2026-09-12T12:00:00Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
+{"timestamp":"2026-09-12T12:00:01Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
+{"timestamp":"2026-09-12T12:00:02Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
+{"timestamp":"2026-09-12T12:00:03Z","level":"INFO","service":"auth-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","message":"Authentication ticket validated for session_49182","status":200,"latency_ms":14.2}
+{"timestamp":"2026-09-12T12:00:04Z","level":"WARN","service":"rate-limiter","client_ip":"198.51.100.44","message":"Quota threshold at 85% for tenant_enterprise_99","limit":10000}
+`.repeat(25);
+
+const SAMPLE_CONFIGS = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ciphervault-operator-cluster
+  namespace: production-security
+  labels:
+    app.kubernetes.io/name: ciphervault-operator
+    app.kubernetes.io/part-of: ciphervault-security-mesh
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ciphervault-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ciphervault-operator
+    spec:
+      containers:
+      - name: operator
+        image: ghcr.io/ciphervault/ciphervault-operator:v0.1.0
+        ports:
+        - containerPort: 8201
+          name: http-cluster
+        env:
+        - name: CIPHERVAULT_STORAGE_QUOTA_BYTES
+          value: "107374182400"
+        - name: CIPHERVAULT_RETENTION_TERMS
+          value: "90-Day Immutable Replica Leases"
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+---
+`.repeat(15);
+
+const SAMPLE_CODE = `use ciphervault_crypto::{HardwareSecurityModule, RecoverySecret, VaultEpochKey};
+use ciphervault_format::{from_canonical_cbor, to_canonical_cbor, ChunkWireObject};
+use ciphervault_snapshot::fastcdc::{fastcdc_chunk, FastCdcConfig};
+
+pub fn process_chunk_stream(buffer: &[u8], config: &FastCdcConfig) -> Result<Vec<[u8; 32]>, String> {
+    let slices = fastcdc_chunk(buffer, config);
+    let mut cids = Vec::with_capacity(slices.len());
+    for slice in slices {
+        let digest = ciphervault_format::compute_digest(slice);
+        cids.push(digest);
+    }
+    Ok(cids)
+}
+`.repeat(20);
+
+function initFastCdcInspector() {
+  const contentInput = document.getElementById('fastcdc-content-input');
+  const byteCounter = document.getElementById('fastcdc-byte-counter');
+  const btnRun = document.getElementById('btn-run-fastcdc');
+  const btnShift = document.getElementById('btn-simulate-shift');
+  const btnPresetLogs = document.getElementById('preset-logs');
+  const btnPresetConfigs = document.getElementById('preset-configs');
+  const btnPresetCode = document.getElementById('preset-code');
+  const btnPresetClear = document.getElementById('preset-clear');
+  const btnCopyCid = document.getElementById('btn-copy-chunk-cid');
+
+  if (!contentInput || !btnRun) return;
+
+  const updateByteCount = () => {
+    const val = contentInput.value;
+    const bytes = new Blob([val]).size;
+    if (byteCounter) byteCounter.textContent = `${formatBytes(bytes)} (${bytes} bytes)`;
+  };
+
+  contentInput.addEventListener('input', updateByteCount);
+
+  if (btnPresetLogs) {
+    btnPresetLogs.addEventListener('click', () => {
+      contentInput.value = SAMPLE_LOGS;
+      updateByteCount();
+      runFastCdcInspection(SAMPLE_LOGS);
+    });
+  }
+
+  if (btnPresetConfigs) {
+    btnPresetConfigs.addEventListener('click', () => {
+      contentInput.value = SAMPLE_CONFIGS;
+      updateByteCount();
+      runFastCdcInspection(SAMPLE_CONFIGS);
+    });
+  }
+
+  if (btnPresetCode) {
+    btnPresetCode.addEventListener('click', () => {
+      contentInput.value = SAMPLE_CODE;
+      updateByteCount();
+      runFastCdcInspection(SAMPLE_CODE);
+    });
+  }
+
+  if (btnPresetClear) {
+    btnPresetClear.addEventListener('click', () => {
+      contentInput.value = '';
+      updateByteCount();
+      const container = document.getElementById('chunk-blocks-container');
+      if (container) {
+        container.innerHTML = `<div class="chunk-placeholder-text">Input cleared. Type text or select a preset workload.</div>`;
+      }
+      const detailCard = document.getElementById('chunk-detail-card');
+      if (detailCard) detailCard.style.display = 'none';
+      resetFastCdcMetrics();
+    });
+  }
+
+  btnRun.addEventListener('click', () => {
+    runFastCdcInspection(contentInput.value);
+  });
+
+  if (btnShift) {
+    btnShift.addEventListener('click', () => {
+      const current = contentInput.value || SAMPLE_LOGS;
+      const shifted = `# PREPENDED 19 BYTES FOR BOUNDARY SHIFT TEST\n` + current;
+      contentInput.value = shifted;
+      updateByteCount();
+      showToast("Injected 46-byte prefix to demonstrate FastCDC boundary realignment");
+      runFastCdcInspection(shifted);
+    });
+  }
+
+  if (btnCopyCid) {
+    btnCopyCid.addEventListener('click', () => {
+      const cidElem = document.getElementById('detail-chunk-cid');
+      if (cidElem && cidElem.textContent) {
+        copyToClipboard(cidElem.textContent);
+        showToast("Chunk CID copied to clipboard");
+      }
+    });
+  }
+
+  if (!contentInput.value) {
+    contentInput.value = SAMPLE_LOGS;
+    updateByteCount();
+  }
+}
+
+function resetFastCdcMetrics() {
+  const elems = [
+    'f-metric-total-chunks', 'f-metric-unique-ratio', 'f-metric-savings-pct',
+    'f-metric-saved-bytes', 'f-metric-total-bytes', 'f-metric-unique-bytes', 'f-metric-fixed-count'
+  ];
+  elems.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '--';
+  });
+}
+
+async function runFastCdcInspection(content) {
+  const minSize = parseInt(document.getElementById('fastcdc-min-size')?.value || "4096", 10);
+  const avgSize = parseInt(document.getElementById('fastcdc-avg-size')?.value || "16384", 10);
+  const maxSize = parseInt(document.getElementById('fastcdc-max-size')?.value || "65536", 10);
+
+  const btnRun = document.getElementById('btn-run-fastcdc');
+  if (btnRun) btnRun.disabled = true;
+
+  try {
+    const res = await fetch('/api/fastcdc/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: content || null,
+        min_size: minSize,
+        avg_size: avgSize,
+        max_size: maxSize,
+      }),
+    });
+
+    if (!res.ok) {
+      showToast(`FastCDC inspection failed (${res.status})`);
+      return;
+    }
+
+    const data = await res.json();
+    state.fastCdcResult = data;
+    renderFastCdcResults(data);
+  } catch (err) {
+    console.error("FastCDC inspection error:", err);
+    showToast(`Network error: ${err.message}`);
+  } finally {
+    if (btnRun) btnRun.disabled = false;
+  }
+}
+
+function renderFastCdcResults(data) {
+  if (!data || !data.metrics) return;
+  state.fastCdcResult = data;
+
+  const m = data.metrics;
+  const chunks = data.chunks || [];
+
+  const totalChunksElem = document.getElementById('f-metric-total-chunks');
+  const uniqueRatioElem = document.getElementById('f-metric-unique-ratio');
+  const savingsPctElem = document.getElementById('f-metric-savings-pct');
+  const savedBytesElem = document.getElementById('f-metric-saved-bytes');
+  const totalBytesElem = document.getElementById('f-metric-total-bytes');
+  const uniqueBytesElem = document.getElementById('f-metric-unique-bytes');
+  const fixedCountElem = document.getElementById('f-metric-fixed-count');
+
+  if (totalChunksElem) totalChunksElem.textContent = String(m.total_chunks);
+  if (uniqueRatioElem) uniqueRatioElem.textContent = `${m.unique_chunks} unique (${m.duplicate_chunks} dups)`;
+  if (savingsPctElem) savingsPctElem.textContent = `${m.dedup_savings_pct.toFixed(1)}%`;
+  if (savedBytesElem) savedBytesElem.textContent = `${formatBytes(m.saved_bytes)} pruned`;
+  if (totalBytesElem) totalBytesElem.textContent = formatBytes(m.total_bytes);
+  if (uniqueBytesElem) uniqueBytesElem.textContent = `${formatBytes(m.unique_bytes)} wire size`;
+  if (fixedCountElem) fixedCountElem.textContent = `${m.fixed_chunks_count} blocks`;
+
+  const badgeTab = document.getElementById('badge-tab-fastcdc');
+  if (badgeTab) badgeTab.textContent = `${m.total_chunks} Chunks`;
+
+  const container = document.getElementById('chunk-blocks-container');
+  if (!container) return;
+
+  if (chunks.length === 0) {
+    container.innerHTML = `<div class="chunk-placeholder-text">Zero chunks produced for empty payload.</div>`;
+    return;
+  }
+
+  container.innerHTML = chunks.map((c, i) => {
+    let entropyClass = 'chunk-block-low';
+    if (c.entropy >= 7.0) {
+      entropyClass = 'chunk-block-high';
+    } else if (c.entropy >= 4.0) {
+      entropyClass = 'chunk-block-med';
+    }
+
+    if (c.is_duplicate) {
+      entropyClass = 'chunk-block-dup';
+    }
+
+    const widthPx = Math.max(48, Math.min(180, Math.round((c.length / (data.config?.avg_size || 16384)) * 70)));
+
+    return `
+      <div class="chunk-block ${entropyClass}" 
+           data-chunk-idx="${i}" 
+           style="width: ${widthPx}px;"
+           title="Chunk #${i}: ${formatBytes(c.length)} | Entropy: ${c.entropy} | ${c.is_duplicate ? 'DUPLICATE' : 'UNIQUE'}">
+        <span class="chunk-block-idx">#${i}</span>
+        <span class="chunk-block-sz">${formatBytes(c.length)}</span>
+      </div>
+    `;
+  }).join('');
+
+  const blocks = container.querySelectorAll('.chunk-block');
+  blocks.forEach(block => {
+    block.addEventListener('click', () => {
+      const idx = parseInt(block.getAttribute('data-chunk-idx'), 10);
+      blocks.forEach(b => b.classList.remove('selected'));
+      block.classList.add('selected');
+      selectChunk(idx);
+    });
+  });
+
+  if (chunks.length > 0) {
+    const firstBlock = container.querySelector('.chunk-block');
+    if (firstBlock) firstBlock.classList.add('selected');
+    selectChunk(0);
+  }
+}
+
+function selectChunk(index) {
+  if (!state.fastCdcResult || !state.fastCdcResult.chunks) return;
+  const chunk = state.fastCdcResult.chunks[index];
+  if (!chunk) return;
+
+  state.selectedChunkIndex = index;
+  const detailCard = document.getElementById('chunk-detail-card');
+  if (detailCard) detailCard.style.display = 'block';
+
+  const idxElem = document.getElementById('detail-chunk-index');
+  const badgeElem = document.getElementById('detail-chunk-badge');
+  const rangeElem = document.getElementById('detail-chunk-range');
+  const sizeElem = document.getElementById('detail-chunk-size');
+  const entropyElem = document.getElementById('detail-chunk-entropy');
+  const fillElem = document.getElementById('detail-entropy-fill');
+  const gearElem = document.getElementById('detail-chunk-gear');
+  const cidElem = document.getElementById('detail-chunk-cid');
+  const prevElem = document.getElementById('detail-chunk-preview');
+
+  if (idxElem) idxElem.textContent = String(chunk.index);
+  if (badgeElem) {
+    if (chunk.is_duplicate) {
+      badgeElem.textContent = "Duplicate / Reused Chunk (0 Wire Bytes)";
+      badgeElem.style.color = "#f87171";
+      badgeElem.style.borderColor = "rgba(239, 68, 68, 0.4)";
+    } else {
+      badgeElem.textContent = "Unique Chunk (Stored with Retention Lease)";
+      badgeElem.style.color = "var(--accent-emerald)";
+      badgeElem.style.borderColor = "rgba(0, 230, 118, 0.4)";
+    }
+  }
+
+  if (rangeElem) rangeElem.textContent = `[Offset: ${chunk.offset} .. End: ${chunk.offset + chunk.length}]`;
+  if (sizeElem) sizeElem.textContent = `${chunk.length} bytes (${formatBytes(chunk.length)})`;
+  if (entropyElem) {
+    const entPct = Math.min(100, Math.round((chunk.entropy / 8.0) * 100));
+    entropyElem.textContent = `${chunk.entropy.toFixed(3)} / 8.000 bits/byte (${entPct}%)`;
+  }
+  if (fillElem) {
+    const entPct = Math.min(100, (chunk.entropy / 8.0) * 100);
+    fillElem.style.width = `${entPct}%`;
+  }
+  if (gearElem) gearElem.textContent = chunk.gear_fingerprint;
+  if (cidElem) cidElem.textContent = chunk.cid_hex;
+  if (prevElem) prevElem.textContent = chunk.preview;
+}
+

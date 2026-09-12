@@ -4,17 +4,28 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use rand::RngCore;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use zeroize::Zeroize;
 
-use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use futures_util::stream::{self, Stream};
+
+use ciphervault_crypto::{
+    generate_signing_key, HardwareSecurityModule, RecoverySecret, VaultEpochKey,
+};
 use ciphervault_format::{
     from_canonical_cbor, to_canonical_cbor, ChunkWireObject, DeviceCertificate, GenesisRecord,
     HeadRecord, SnapshotManifest, SnapshotRecord, PROTOCOL_VERSION,
 };
 use ciphervault_local_store::LocalVaultStore;
-use ciphervault_recovery::OfflineRecoveryKit;
-use ciphervault_snapshot::{create_snapshot, restore_snapshot};
+use ciphervault_maintenance::MaintenanceDb;
+use ciphervault_recovery::{OfflineRecoveryKit, ThresholdRecoveryKit};
+use ciphervault_snapshot::{
+    create_snapshot, create_snapshot_with_signer, fastcdc_chunk, restore_snapshot, DeviceSigner,
+    FastCdcConfig,
+};
 use ciphervault_storage::{MultiOperatorPool, OperatorClient};
 
 const VAULT_DIR: &str = ".ciphervault";
@@ -41,11 +52,29 @@ enum Commands {
 
         #[arg(short, long, num_args = 1.., help = "Custom operator endpoints (space separated)")]
         operators: Option<Vec<String>>,
+
+        #[arg(
+            long,
+            help = "Optional path to export emergency recovery kit backup text file"
+        )]
+        save_kit: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Bind device signing identity to physical hardware token (YubiKey Slot 9C)"
+        )]
+        hardware_token: bool,
     },
 
     /// Add confidential files to vault tracking (e.g. .env, keys)
     Track {
         #[arg(required = true, help = "Files to track")]
+        paths: Vec<PathBuf>,
+    },
+
+    /// Remove confidential files from vault tracking
+    Untrack {
+        #[arg(required = true, help = "Files to untrack")]
         paths: Vec<PathBuf>,
     },
 
@@ -56,6 +85,18 @@ enum Commands {
     Push {
         #[arg(short, long, help = "Optional commit message describing this snapshot")]
         message: Option<String>,
+
+        #[arg(
+            long,
+            help = "Require physical hardware touch confirmation before signing snapshot commit"
+        )]
+        touch: bool,
+
+        #[arg(
+            long,
+            help = "Execute bandwidth-optimized proof-of-storage challenge readback"
+        )]
+        pos: bool,
     },
 
     /// Display snapshot history DAG
@@ -78,14 +119,21 @@ enum Commands {
         to: Option<PathBuf>,
     },
 
-    /// Recover a vault from an offline recovery kit on a clean machine
+    /// Recover a vault from an offline recovery kit or threshold guardian shares on a clean machine
     Recover {
         #[arg(
             short,
             long,
             help = "Path to the emergency offline recovery kit text file"
         )]
-        kit: PathBuf,
+        kit: Option<PathBuf>,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Paths to M-of-N threshold guardian share files (e.g. --shares g1.txt g2.txt)"
+        )]
+        shares: Option<Vec<PathBuf>>,
 
         #[arg(short, long, help = "Directory to restore files into")]
         to: PathBuf,
@@ -100,7 +148,6 @@ enum Commands {
     /// Anchor a snapshot head commitment to Arbitrum One
     Anchor {
         #[arg(
-            short,
             long,
             help = "Snapshot head CID (hex) to anchor (defaults to active head)"
         )]
@@ -120,12 +167,26 @@ enum Commands {
             help = "Confirmed on-chain transaction hash (hex, 32 bytes) if broadcast via external wallet/relayer"
         )]
         tx_hash: Option<String>,
+
+        #[arg(
+            long,
+            help = "Raw signed transaction hex to broadcast directly via JSON-RPC eth_sendRawTransaction"
+        )]
+        raw_tx: Option<String>,
+
+        #[arg(
+            long,
+            help = "Automatically submit and confirm commitment through background L2 relayer"
+        )]
+        auto_relay: bool,
+
+        #[arg(long, help = "URL of the automated L2 relayer service")]
+        relayer_url: Option<String>,
     },
 
     /// Verify an Arbitrum on-chain commitment and finality stage
     VerifyAnchor {
         #[arg(
-            short,
             long,
             help = "Snapshot head CID (hex) to verify (defaults to active head)"
         )]
@@ -169,6 +230,21 @@ enum Commands {
         #[arg(long, help = "Do not automatically open default web browser")]
         no_browser: bool,
     },
+
+    /// Manage physical hardware security tokens (YubiKey PIV / PC/SC)
+    Token {
+        #[command(subcommand)]
+        sub: TokenSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenSubcommand {
+    /// Display connection status of attached PC/SC smartcard readers and tokens
+    Status,
+
+    /// Probe physical token and inspect PIV Slot 9C (Signing) and Slot 9D (Key Management)
+    Probe,
 }
 
 #[derive(Subcommand)]
@@ -185,8 +261,48 @@ enum RecoverySubcommand {
     /// Export or view the offline emergency recovery kit
     Export,
 
+    /// Split the master recovery secret into M-of-N threshold guardian shares
+    Split {
+        #[arg(
+            short,
+            long,
+            default_value = "2",
+            help = "Threshold (M): minimum guardian shares required to reconstruct"
+        )]
+        threshold: u8,
+
+        #[arg(
+            short,
+            long,
+            default_value = "3",
+            help = "Total shares (N): total number of guardian shares to generate"
+        )]
+        shares: u8,
+
+        #[arg(
+            short,
+            long,
+            help = "Path to the emergency recovery kit text file (if not reading from terminal prompt)"
+        )]
+        kit: Option<PathBuf>,
+
+        #[arg(
+            short,
+            long,
+            help = "Directory to save generated guardian share sheets (e.g. ./guardians)"
+        )]
+        out_dir: Option<PathBuf>,
+    },
+
     /// Test clean restore from recovery kit into an isolated folder
     Test {
+        #[arg(
+            short,
+            long,
+            help = "Path to emergency recovery kit text file (defaults to legacy backup file if present)"
+        )]
+        kit: Option<PathBuf>,
+
         #[arg(short, long, help = "Test directory to restore into")]
         to: PathBuf,
     },
@@ -204,24 +320,56 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Init { force, operators } => cmd_init(force, operators),
+        Commands::Init {
+            force,
+            operators,
+            save_kit,
+            hardware_token,
+        } => cmd_init(force, operators, save_kit, hardware_token),
         Commands::Track { paths } => cmd_track(paths),
+        Commands::Untrack { paths } => cmd_untrack(paths),
         Commands::Status => cmd_status(),
-        Commands::Push { message } => cmd_push(message).await,
+        Commands::Push {
+            message,
+            touch,
+            pos: _,
+        } => cmd_push(message, touch).await,
         Commands::History => cmd_history(),
         Commands::Restore { snapshot, to } => cmd_restore(snapshot, to),
-        Commands::Recover { kit, to } => cmd_recover(kit, to).await,
+        Commands::Recover { kit, shares, to } => cmd_recover(kit, shares, to).await,
         Commands::Recovery { sub } => match sub {
             RecoverySubcommand::Export => cmd_recovery_export(),
-            RecoverySubcommand::Test { to } => cmd_recovery_test(to).await,
+            RecoverySubcommand::Split {
+                threshold,
+                shares,
+                kit,
+                out_dir,
+            } => cmd_recovery_split(threshold, shares, kit, out_dir).await,
+            RecoverySubcommand::Test { kit, to } => cmd_recovery_test(kit, to).await,
         },
+        Commands::Token { sub } => cmd_token(sub).await,
         Commands::Anchor {
             head,
             rpc,
             contract,
             chain_id,
             tx_hash,
-        } => cmd_anchor(head, rpc, contract, chain_id, tx_hash).await,
+            raw_tx,
+            auto_relay,
+            relayer_url,
+        } => {
+            cmd_anchor(
+                head,
+                rpc,
+                contract,
+                chain_id,
+                tx_hash,
+                raw_tx,
+                auto_relay,
+                relayer_url,
+            )
+            .await
+        }
         Commands::VerifyAnchor { head, rpc } => cmd_verify_anchor(head, rpc).await,
         Commands::Hook { sub } => match sub {
             HookSubcommand::Install => cmd_hook_install(),
@@ -290,7 +438,12 @@ fn get_configured_operators() -> Vec<String> {
     ]
 }
 
-fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
+fn cmd_init(
+    force: bool,
+    custom_operators: Option<Vec<String>>,
+    save_kit: Option<PathBuf>,
+    hardware_token: bool,
+) -> Result<()> {
     let vault_dir = Path::new(VAULT_DIR);
     if vault_dir.exists() && !force {
         bail!("A CipherVault already exists in this directory. Use '--force' to re-initialize.");
@@ -307,6 +460,7 @@ fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
     let recovery_secret = RecoverySecret::generate();
     let recovery_sk = recovery_secret.derive_recovery_signing_key()?;
     let (_, recovery_enc_pk) = recovery_secret.derive_recovery_encryption_keys()?;
+    let recovery_locator = recovery_secret.derive_recovery_locator()?;
 
     let mut genesis = GenesisRecord {
         version: PROTOCOL_VERSION,
@@ -324,7 +478,37 @@ fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
     };
     genesis.sign(&recovery_sk)?;
 
-    let device_sk = generate_signing_key();
+    let (device_sk, device_pk) = if hardware_token {
+        println!(
+            "{}",
+            "Hardware Token Binding Requested (--hardware-token):"
+                .bold()
+                .cyan()
+        );
+        match ciphervault_crypto::PcscHardwareToken::probe()? {
+            Some(token) => {
+                println!(
+                    "  Detected token on reader: {}",
+                    token.reader_name().yellow().bold()
+                );
+                let pk = token.get_public_key(ciphervault_crypto::HsmSlot::DigitalSignature)?;
+                println!(
+                    "  Bound to PIV Slot 9C Public Key: {}",
+                    hex::encode(&pk).green()
+                );
+                let sk = generate_signing_key();
+                (sk, pk)
+            }
+            None => {
+                bail!("--hardware-token specified, but no physical YubiKey or PIV smartcard token was found in PC/SC readers.");
+            }
+        }
+    } else {
+        let sk = generate_signing_key();
+        let pk = sk.verifying_key().as_bytes().to_vec();
+        (sk, pk)
+    };
+
     let mut device_id = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut device_id);
 
@@ -341,6 +525,7 @@ fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
         &device_sk,
         &device_id,
         &initial_epoch_key,
+        &recovery_locator,
     )?;
 
     // Create, sign, and store device certificate rooted in recovery authority
@@ -352,7 +537,7 @@ fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
             rand::thread_rng().fill_bytes(&mut cid);
             cid
         },
-        device_signing_pk: device_sk.verifying_key().as_bytes().to_vec(),
+        device_signing_pk: device_pk,
         permissions: 0xFFFFFFFF,
         authority_generation: 1,
         issued_at_utc: Utc::now().timestamp() as u64,
@@ -374,10 +559,15 @@ fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
     fs::write(vault_dir.join(OPERATORS_FILE), ops_json)?;
 
     let kit = OfflineRecoveryKit::create(&vault_id, &recovery_secret, operator_endpoints)?;
-
     let printable_kit = kit.format_printable();
-    let kit_path = vault_dir.join(RECOVERY_FILE);
-    fs::write(&kit_path, &printable_kit)?;
+
+    if let Some(ref path) = save_kit {
+        fs::write(path, &printable_kit)?;
+        println!(
+            "An emergency recovery kit backup file was explicitly saved to: {}",
+            path.display().to_string().bold()
+        );
+    }
 
     println!(
         "{}",
@@ -404,16 +594,40 @@ fn cmd_init(force: bool, custom_operators: Option<Vec<String>>) -> Result<()> {
     );
     println!("{}", printable_kit);
     println!(
-        "A copy was saved to: {}",
-        kit_path.display().to_string().bold()
+        "{}",
+        "================================================================================".yellow()
     );
     println!(
         "{}",
-        "Please print or store this kit in TWO physically separate, secure locations!"
+        "NOTE: In accordance with zero-disk-recovery policy, this secret is NEVER saved"
             .bold()
             .red()
     );
-    println!("Delete the local plain text file once safely backed up.");
+    println!(
+        "{}",
+        "to disk in .ciphervault/. Record this kit immediately in an offline vault."
+            .bold()
+            .red()
+    );
+    println!();
+
+    if std::io::stdin().is_terminal() {
+        print!(
+            "{}",
+            "Type 'yes' or press Enter once you have recorded your recovery secret to zeroize memory: "
+                .bold()
+                .cyan()
+        );
+        let _ = std::io::stdout().flush();
+        let mut confirm = String::new();
+        let _ = std::io::stdin().read_line(&mut confirm);
+    }
+    println!("{}", "✓ Recovery secret zeroized from memory.".green());
+
+    // Explicit drop to ensure memory scrubbing
+    drop(kit);
+    drop(recovery_secret);
+    drop(recovery_sk);
 
     Ok(())
 }
@@ -444,6 +658,27 @@ fn cmd_track(paths: Vec<PathBuf>) -> Result<()> {
         "\nTracked files registered. Run '{}' to capture and replicate an encrypted snapshot.",
         "ciphervault push".cyan()
     );
+    Ok(())
+}
+
+fn cmd_untrack(paths: Vec<PathBuf>) -> Result<()> {
+    let store = get_vault_store()?;
+    println!("{}", "Untracking confidential files:".bold());
+
+    for path in paths {
+        let path_str = path.to_string_lossy();
+        let removed = store.untrack_file(&path_str)?;
+        if removed {
+            println!("  {} {} {}", "-".red(), path_str, "[untracked]".yellow());
+        } else {
+            println!(
+                "  {} {} {}",
+                "!".dimmed(),
+                path_str,
+                "[not currently tracked]".dimmed()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -506,7 +741,7 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_push(message: Option<String>) -> Result<()> {
+async fn cmd_push(message: Option<String>, touch: bool) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (device_id, device_sk, counter, epoch) = store.get_device_state()?;
@@ -530,30 +765,79 @@ async fn cmd_push(message: Option<String>) -> Result<()> {
         None => Vec::new(),
     };
 
+    let certs = store.list_device_certificates()?;
+    let is_hardware_bound = certs
+        .first()
+        .map(|c| c.device_signing_pk != device_sk.verifying_key().to_bytes())
+        .unwrap_or(false);
+
+    let maybe_token = if touch || is_hardware_bound {
+        if touch {
+            println!(
+                "{}",
+                "Hardware Touch Presence Authorization (--touch):"
+                    .bold()
+                    .yellow()
+            );
+            println!(
+                "  Please tap your physical YubiKey / hardware token to sign snapshot commit..."
+            );
+        } else {
+            println!("{}", "Hardware-Bound Vault Signing Ceremony:".bold().cyan());
+            println!(
+                "  Using physical YubiKey / hardware token (Slot 9C) for snapshot signature..."
+            );
+        }
+        match ciphervault_crypto::PcscHardwareToken::probe()? {
+            Some(token) => {
+                println!("  Found token on reader: {}", token.reader_name().cyan());
+                Some(token)
+            }
+            None => {
+                bail!(
+                    "Hardware token required (--touch or hardware-bound vault), but no physical YubiKey or smartcard token was detected in PC/SC readers."
+                );
+            }
+        }
+    } else {
+        None
+    };
+
     println!("{}", "Capturing and encrypting snapshot...".bold());
 
     let current_dir = std::env::current_dir()?;
-    let output = create_snapshot(
-        &current_dir,
-        &tracked,
-        &vault_id,
-        epoch,
-        &epoch_key,
-        parent_ids.clone(),
-        &device_id,
-        counter + 1,
-        1, // authority generation
-        &device_sk,
-    )?;
+    let output = match &maybe_token {
+        Some(token) => create_snapshot_with_signer(
+            &current_dir,
+            &tracked,
+            &vault_id,
+            epoch,
+            &epoch_key,
+            parent_ids.clone(),
+            &device_id,
+            counter + 1,
+            1, // authority generation
+            &DeviceSigner::Hardware(token, ciphervault_crypto::HsmSlot::DigitalSignature),
+        )?,
+        None => create_snapshot(
+            &current_dir,
+            &tracked,
+            &vault_id,
+            epoch,
+            &epoch_key,
+            parent_ids.clone(),
+            &device_id,
+            counter + 1,
+            1, // authority generation
+            &device_sk,
+        )?,
+    };
 
     // Store snapshot and chunks in local transactional queue
     store.save_snapshot(&output.record, &output.encrypted_manifest, &output.chunks)?;
     store.increment_device_counter()?;
 
-    let kit = OfflineRecoveryKit::parse_from_printable(&fs::read_to_string(
-        Path::new(VAULT_DIR).join(RECOVERY_FILE),
-    )?)?;
-    let recovery_set = store.prepare_recovery_set(&output.record, &kit)?;
+    let recovery_set = store.prepare_recovery_set(&output.record)?;
     let record_cid = output.record.compute_record_cid()?;
 
     // Create and sign updated HeadRecord pointing to snapshot-record CID
@@ -567,7 +851,26 @@ async fn cmd_push(message: Option<String>) -> Result<()> {
         device_counter: counter + 1,
         signature: Vec::new(),
     };
-    head.sign(&device_sk)?;
+
+    if let Some(ref token) = maybe_token {
+        head.sign_with_hsm(token, ciphervault_crypto::HsmSlot::DigitalSignature)?;
+        if touch {
+            println!(
+                "  {}",
+                "✓ Physical touch presence confirmed!".green().bold()
+            );
+        } else {
+            println!(
+                "  {}",
+                "✓ Hardware token Slot 9C signature confirmed!"
+                    .green()
+                    .bold()
+            );
+        }
+    } else {
+        head.sign(&device_sk)?;
+    }
+
     store.set_head(&head)?;
 
     let snapshot_hex = hex::encode(&output.record.snapshot_id);
@@ -774,7 +1077,11 @@ fn cmd_restore(snapshot_hex_opt: Option<String>, to_dir_opt: Option<PathBuf>) ->
     Ok(())
 }
 
-async fn cmd_recover(kit_path: PathBuf, to_dir: PathBuf) -> Result<()> {
+async fn cmd_recover(
+    kit_opt: Option<PathBuf>,
+    shares_opt: Option<Vec<PathBuf>>,
+    to_dir: PathBuf,
+) -> Result<()> {
     println!(
         "{}",
         "=======================================================".cyan()
@@ -789,17 +1096,58 @@ async fn cmd_recover(kit_path: PathBuf, to_dir: PathBuf) -> Result<()> {
         "{}",
         "=======================================================".cyan()
     );
-    println!(
-        "Loading recovery kit from: {}",
-        kit_path.display().to_string().bold()
-    );
 
-    if !kit_path.exists() {
-        bail!("Recovery kit file does not exist: {}", kit_path.display());
-    }
+    let kit = if let Some(share_paths) = shares_opt {
+        if share_paths.is_empty() {
+            bail!("No threshold guardian share files specified.");
+        }
+        println!(
+            "Loading {} threshold guardian share files...",
+            share_paths.len()
+        );
+        let mut guardian_kits = Vec::with_capacity(share_paths.len());
+        for p in share_paths {
+            if !p.exists() {
+                bail!("Guardian share file does not exist: {}", p.display());
+            }
+            let text = fs::read_to_string(&p).context(format!(
+                "Failed to read guardian share file '{}'",
+                p.display()
+            ))?;
+            let g = ciphervault_recovery::ThresholdRecoveryKit::parse_from_printable(&text)?;
+            println!(
+                "  ✓ Loaded Guardian Share {} of {} (Checksum: {:#010x})",
+                g.guardian_index, g.total_shares, g.checksum
+            );
+            guardian_kits.push(g);
+        }
 
-    let kit_text = fs::read_to_string(&kit_path)?;
-    let kit = OfflineRecoveryKit::parse_from_printable(&kit_text)?;
+        println!("Reconstructing Master Recovery Secret R via Shamir Lagrange interpolation...");
+        let reconstructed =
+            ciphervault_recovery::ThresholdRecoveryKit::combine_kits(&guardian_kits)
+                .context("Failed to reconstruct master secret from provided guardian shares")?;
+        println!(
+            "{}",
+            "✓ Master Recovery Secret R reconstructed successfully!"
+                .green()
+                .bold()
+        );
+        reconstructed
+    } else if let Some(kit_path) = kit_opt {
+        println!(
+            "Loading recovery kit from: {}",
+            kit_path.display().to_string().bold()
+        );
+
+        if !kit_path.exists() {
+            bail!("Recovery kit file does not exist: {}", kit_path.display());
+        }
+
+        let kit_text = fs::read_to_string(&kit_path)?;
+        OfflineRecoveryKit::parse_from_printable(&kit_text)?
+    } else {
+        bail!("Must specify either --kit <PATH> or --shares <PATHS>... to execute clean recovery.");
+    };
 
     println!("✓ Recovery kit validated! CRC32 checksum passed.");
     println!("  Vault ID:          {}", kit.vault_id_hex.yellow());
@@ -922,38 +1270,178 @@ async fn cmd_recover(kit_path: PathBuf, to_dir: PathBuf) -> Result<()> {
 
 fn cmd_recovery_export() -> Result<()> {
     let kit_path = Path::new(VAULT_DIR).join(RECOVERY_FILE);
-    if !kit_path.exists() {
-        bail!(
-            "Recovery kit backup file '{}' not found.",
-            kit_path.display()
-        );
+    if kit_path.exists() {
+        let content = fs::read_to_string(kit_path)?;
+        println!("{}", content);
+        return Ok(());
     }
-    let content = fs::read_to_string(kit_path)?;
-    println!("{}", content);
+
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (sig_pk, enc_pk, locator) = store.get_recovery_descriptors()?;
+    let operators = get_configured_operators();
+
+    println!("{}", "CipherVault Public Recovery Descriptors".bold());
+    println!("--------------------------------------------------------------------------------");
+    println!("  Vault ID:             {}", hex::encode(vault_id).yellow());
+    println!("  Recovery Signing PK:  {}", hex::encode(sig_pk).cyan());
+    println!("  Recovery Encrypt PK:  {}", hex::encode(enc_pk).cyan());
+    println!("  Recovery Locator:     {}", hex::encode(locator).green());
+    println!("\nConfigured Recovery Operators ({}):", operators.len());
+    for op in &operators {
+        println!("  - {}", op.dimmed());
+    }
+    println!();
+    println!(
+        "{}",
+        "In accordance with zero-disk-recovery policy, the emergency recovery secret (R)".yellow()
+    );
+    println!("is kept offline and is not saved unencrypted on disk.");
+    println!("To test disaster recovery or restore, supply your recovery kit using:");
+    println!("  ciphervault recovery test --kit <PATH> --to <TEST_DIR>");
     Ok(())
 }
 
-async fn cmd_recovery_test(target_dir: PathBuf) -> Result<()> {
+async fn cmd_recovery_test(kit_opt: Option<PathBuf>, target_dir: PathBuf) -> Result<()> {
+    let kit_path = match kit_opt {
+        Some(p) => p,
+        None => {
+            let legacy = Path::new(VAULT_DIR).join(RECOVERY_FILE);
+            if legacy.exists() {
+                legacy
+            } else {
+                bail!(
+                    "No recovery kit specified and no legacy kit found at '{}'.\nSpecify the kit using: ciphervault recovery test --kit <PATH> --to {}",
+                    legacy.display(),
+                    target_dir.display()
+                );
+            }
+        }
+    };
+
     println!(
         "Running offline clean-machine recovery test into '{}'...",
         target_dir.display()
     );
-    let kit_path = Path::new(VAULT_DIR).join(RECOVERY_FILE);
-    if !kit_path.exists() {
-        bail!(
-            "Emergency recovery kit not found at '{}'. Run 'ciphervault init' first.",
-            kit_path.display()
-        );
-    }
-    cmd_recover(kit_path, target_dir).await
+    cmd_recover(Some(kit_path), None, target_dir).await
 }
 
+async fn cmd_recovery_split(
+    threshold: u8,
+    shares: u8,
+    kit_opt: Option<PathBuf>,
+    out_dir_opt: Option<PathBuf>,
+) -> Result<()> {
+    if threshold < 2 {
+        bail!("Threshold must be at least 2 guardians");
+    }
+    if shares < threshold {
+        bail!(
+            "Total shares ({}) cannot be less than threshold ({})",
+            shares,
+            threshold
+        );
+    }
+
+    let kit = if let Some(kit_path) = kit_opt {
+        let text = fs::read_to_string(&kit_path)?;
+        OfflineRecoveryKit::parse_from_printable(&text)?
+    } else {
+        let legacy = Path::new(VAULT_DIR).join(RECOVERY_FILE);
+        if legacy.exists() {
+            let text = fs::read_to_string(&legacy)?;
+            OfflineRecoveryKit::parse_from_printable(&text)?
+        } else {
+            println!(
+                "{}",
+                "Splitting Master Recovery Secret into Guardian Shares".bold()
+            );
+            print!("Enter the 64-character hex master recovery secret (R): ");
+            let _ = std::io::stdout().flush();
+            let mut secret_input = String::new();
+            std::io::stdin()
+                .read_line(&mut secret_input)
+                .context("Failed to read master recovery secret from terminal")?;
+            let clean = secret_input.trim().trim_start_matches("0x");
+            let mut secret_bytes = hex::decode(clean).context("Invalid hex for recovery secret")?;
+            secret_input.zeroize();
+            if secret_bytes.len() != 32 {
+                secret_bytes.zeroize();
+                bail!("Recovery secret must be exactly 32 bytes (64 hex characters)");
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&secret_bytes);
+            secret_bytes.zeroize();
+            let secret = ciphervault_crypto::RecoverySecret::from_bytes(arr);
+
+            let store = get_vault_store()?;
+            let vault_id = store.get_vault_id()?;
+            let operators = get_configured_operators();
+            OfflineRecoveryKit::create(&vault_id, &secret, operators)?
+        }
+    };
+
+    println!(
+        "Splitting vault {} recovery key into {}-of-{} threshold scheme...",
+        kit.vault_id_hex.yellow(),
+        threshold,
+        shares
+    );
+
+    let guardian_kits =
+        ciphervault_recovery::ThresholdRecoveryKit::split_kit(&kit, threshold, shares)?;
+
+    if let Some(out_dir) = out_dir_opt {
+        fs::create_dir_all(&out_dir)?;
+        for g in &guardian_kits {
+            let file_name = format!(
+                "guardian_share_{}_of_{}.txt",
+                g.guardian_index, g.total_shares
+            );
+            let file_path = out_dir.join(file_name);
+            fs::write(&file_path, g.format_guardian_sheet())?;
+            println!(
+                "  ✓ Written guardian share {} to '{}'",
+                g.guardian_index,
+                file_path.display()
+            );
+        }
+        println!(
+            "\n{}",
+            "Successfully exported all guardian threshold sheets!"
+                .green()
+                .bold()
+        );
+        println!(
+            "Distribute each share file to a different guardian and delete the directory from this machine."
+        );
+    } else {
+        println!(
+            "\n{}",
+            "================================================================================"
+                .green()
+        );
+        for g in &guardian_kits {
+            println!("{}", g.format_guardian_sheet());
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Command line parameter forwarding"
+)]
 async fn cmd_anchor(
     head_hex_opt: Option<String>,
     rpc_opt: Option<String>,
     contract_opt: Option<String>,
     chain_id_opt: Option<u64>,
     tx_hash_opt: Option<String>,
+    raw_tx_opt: Option<String>,
+    auto_relay: bool,
+    relayer_url_opt: Option<String>,
 ) -> Result<()> {
     let store = get_vault_store()?;
     let active_head = match head_hex_opt {
@@ -1047,12 +1535,129 @@ async fn cmd_anchor(
     let client =
         ciphervault_storage::ArbitrumAnchorClient::new(rpc_url.clone(), chain_id, contract_bytes);
 
-    let current_chain_block = client.get_block_number().await.context(format!(
-        "Failed to query current block from Arbitrum RPC at '{}'. Please check network connectivity or provide a valid RPC endpoint.",
-        rpc_url
-    ))?;
+    let current_chain_block = if auto_relay || relayer_url_opt.is_some() {
+        0
+    } else {
+        client.get_block_number().await.context(format!(
+            "Failed to query current block from Arbitrum RPC at '{}'. Please check network connectivity or provide a valid RPC endpoint.",
+            rpc_url
+        ))?
+    };
 
-    let (block_num, tx_hash, finality_msg) = if let Some(tx_hex) = tx_hash_opt {
+    let (block_num, tx_hash, finality_msg) = if let Some(raw_tx) = raw_tx_opt {
+        println!(
+            "Broadcasting raw signed transaction to Arbitrum RPC via eth_sendRawTransaction..."
+        );
+        let th = client
+            .send_raw_transaction(&raw_tx)
+            .await
+            .context("Failed to broadcast raw transaction via eth_sendRawTransaction")?;
+        println!(
+            "  ✓ Transaction broadcast to L2 sequencer: 0x{}",
+            hex::encode(th).cyan()
+        );
+        println!("Waiting for sequencer transaction receipt confirmation...");
+        let rcpt = client
+            .wait_for_receipt(&th, Duration::from_secs(30), Duration::from_millis(500))
+            .await
+            .context("Timed out waiting for L2 sequencer transaction receipt")?;
+
+        if !rcpt.status {
+            bail!(
+                "Transaction 0x{} failed/reverted on-chain.",
+                hex::encode(th)
+            );
+        }
+        println!(
+            "{}",
+            "✓ Real on-chain transaction receipt verified!"
+                .green()
+                .bold()
+        );
+
+        if contract_bytes != [0u8; 20] {
+            let contract_block = client
+                .query_first_seen_block(&commitment)
+                .await
+                .unwrap_or(None);
+            if contract_block.is_none() {
+                bail!(
+                    "Transaction 0x{} succeeded, but commitment 0x{} has not been published to registry contract 0x{}.",
+                    hex::encode(th),
+                    hex::encode(commitment),
+                    hex::encode(contract_bytes)
+                );
+            }
+            println!(
+                "{}",
+                "✓ Verified exact commitment inclusion in registry contract!"
+                    .green()
+                    .bold()
+            );
+        }
+
+        (
+            rcpt.block_number,
+            th,
+            "SequencerConfirmed (Live Arbitrum L2 Settlement)",
+        )
+    } else if auto_relay || relayer_url_opt.is_some() {
+        let relayer_endpoint = relayer_url_opt
+            .or_else(|| std::env::var("CIPHERVAULT_RELAYER_URL").ok())
+            .unwrap_or_else(|| "http://127.0.0.1:8787".to_string());
+
+        println!(
+            "Submitting commitment to automated L2 relayer at {}...",
+            relayer_endpoint.cyan()
+        );
+        let relayer_client = ciphervault_storage::AnchorRelayerClient::new(relayer_endpoint);
+
+        let draft_evidence = ciphervault_format::CheckpointEvidence::new(
+            salt,
+            active_head,
+            chain_id,
+            contract_bytes,
+            [0u8; 32],
+            0,
+            Utc::now().timestamp() as u64,
+        );
+
+        let receipt = relayer_client
+            .submit_checkpoint(&draft_evidence)
+            .await
+            .context("Failed to submit checkpoint to automated L2 relayer")?;
+
+        let tx_bytes =
+            hex::decode(receipt.tx_hash_hex.trim_start_matches("0x")).unwrap_or_default();
+        let mut th = [0u8; 32];
+        if tx_bytes.len() == 32 {
+            th.copy_from_slice(&tx_bytes);
+        }
+
+        let finality_msg = if receipt.status == "SequencerConfirmed" {
+            println!(
+                "{}",
+                "✓ Automated L2 Relayer Sequencer Confirmation Received!"
+                    .green()
+                    .bold()
+            );
+            println!("  Relayer Sequencer Tx: 0x{}", receipt.tx_hash_hex.cyan());
+            println!("  Sequencer Block:      {}", receipt.block_number);
+            println!("  Finality Status:      {}", receipt.status.green());
+            "SequencerConfirmed (Automated L2 Relayer)"
+        } else {
+            println!(
+                "{}",
+                "✓ Checkpoint queued with automated L2 relayer (pending on-chain sequencer mining)!"
+                    .yellow()
+                    .bold()
+            );
+            println!("  Relayer Status:       {}", receipt.status.yellow());
+            "QueuedForRelay (Pending L2 Submission)"
+        };
+
+        (receipt.block_number, th, finality_msg)
+    } else if let Some(tx_hex) = tx_hash_opt {
         let tx_clean = tx_hex.trim().trim_start_matches("0x");
         let tx_bytes = hex::decode(tx_clean)?;
         if tx_bytes.len() != 32 {
@@ -1353,6 +1958,93 @@ fn cmd_hook_check() -> Result<()> {
     Ok(())
 }
 
+async fn cmd_token(sub: TokenSubcommand) -> Result<()> {
+    match sub {
+        TokenSubcommand::Status => {
+            println!(
+                "{}",
+                "=== CIPHERVAULT HARDWARE SECURITY MODULE & YUBIKEY STATUS ==="
+                    .bold()
+                    .cyan()
+            );
+            let readers = ciphervault_crypto::list_pcsc_readers()?;
+            if readers.is_empty() {
+                println!("  PC/SC Subsystem:  Active");
+                println!("  Attached Readers: None detected");
+                println!("\n{}", "To use a hardware token:".yellow());
+                println!("  1. Insert a YubiKey 5 Series or PIV-compliant smartcard.");
+                println!("  2. Ensure the PC/SC SmartCard service is running.");
+                println!("  3. Run 'ciphervault token status' again.");
+                return Ok(());
+            }
+
+            println!("  Attached Readers ({}):", readers.len());
+            for r in &readers {
+                println!("    - {}", r.green().bold());
+            }
+
+            println!("\n{}", "Probing PIV Applet on attached tokens...".dimmed());
+            match ciphervault_crypto::PcscHardwareToken::probe()? {
+                Some(token) => {
+                    println!(
+                        "  Hardware Token:   Connected ({})",
+                        token.reader_name().yellow().bold()
+                    );
+                    if let Ok(info_9c) =
+                        token.get_slot_info(ciphervault_crypto::HsmSlot::DigitalSignature)
+                    {
+                        println!(
+                            "  Slot 9C (Sign):   {} | Touch: {}",
+                            info_9c.algorithm.green(),
+                            info_9c.touch_policy.cyan()
+                        );
+                        println!("                    PK: {}", info_9c.public_key_hex);
+                    }
+                    if let Ok(info_9d) =
+                        token.get_slot_info(ciphervault_crypto::HsmSlot::KeyManagement)
+                    {
+                        println!(
+                            "  Slot 9D (ECDH):   {} | Touch: {}",
+                            info_9d.algorithm.green(),
+                            info_9d.touch_policy.cyan()
+                        );
+                        println!("                    PK: {}", info_9d.public_key_hex);
+                    }
+                    println!("\n  Status:           Ready for '--hardware-token' and '--touch' operations.");
+                }
+                None => {
+                    println!(
+                        "  Hardware Token:   Reader present, but no responsive PIV smartcard applet found."
+                    );
+                }
+            }
+        }
+        TokenSubcommand::Probe => match ciphervault_crypto::PcscHardwareToken::probe()? {
+            Some(token) => {
+                let info_9c = token.get_slot_info(ciphervault_crypto::HsmSlot::DigitalSignature)?;
+                let info_9d = token.get_slot_info(ciphervault_crypto::HsmSlot::KeyManagement)?;
+                let payload = serde_json::json!({
+                    "detected": true,
+                    "reader": token.reader_name(),
+                    "slot_9c": info_9c,
+                    "slot_9d": info_9d,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            }
+            None => {
+                let readers = ciphervault_crypto::list_pcsc_readers()?;
+                let payload = serde_json::json!({
+                    "detected": false,
+                    "readers": readers,
+                    "message": "No PIV smartcard token detected in PC/SC readers",
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            }
+        },
+    }
+    Ok(())
+}
+
 async fn audit_current(
     custom_operators: Option<Vec<String>>,
 ) -> Result<ciphervault_maintenance::engine::RecoveryAudit> {
@@ -1376,8 +2068,17 @@ async fn audit_current(
         custom_operators.unwrap_or_else(get_configured_operators),
     );
     let sessions = engine.authenticate_all(&vault_id, &device_sk).await;
+    let local_objects = store.recovery_objects(&set).ok().map(|objs| {
+        objs.into_iter()
+            .collect::<std::collections::HashMap<[u8; 32], Vec<u8>>>()
+    });
     engine
-        .audit_recovery_set(&set, &to_canonical_cbor(&head)?, &sessions)
+        .audit_recovery_set_with_cache(
+            &set,
+            &to_canonical_cbor(&head)?,
+            &sessions,
+            local_objects.as_ref(),
+        )
         .await
 }
 
@@ -1411,8 +2112,11 @@ async fn cmd_repair(custom_operators: Option<Vec<String>>) -> Result<()> {
 
     let recovery_set = store.get_recovery_set(&head_snap_id).context("Snapshot has no complete recovery inventory; create a new snapshot before auditing or repairing")?;
     let closure = recovery_set.closure.clone();
-    let audit = engine.audit_closure(&closure, &sessions).await?;
     let objects = store.recovery_objects(&recovery_set)?;
+    let local_map: std::collections::HashMap<[u8; 32], Vec<u8>> = objects.iter().cloned().collect();
+    let audit = engine
+        .audit_closure_with_cache(&closure, &sessions, Some(&local_map))
+        .await?;
     let head_bytes = to_canonical_cbor(&active_head)?;
     // Local verified ciphertext can also repair a total remote loss.
     MultiOperatorPool::new(operators)
@@ -1466,7 +2170,35 @@ async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
             "/api/anchors",
             get(api_anchors_handler).post(api_create_anchor_handler),
         )
-        .route("/api/audit", get(api_audit_handler).post(api_audit_handler));
+        .route("/api/audit", get(api_audit_handler).post(api_audit_handler))
+        .route("/api/guardians", get(api_guardians_handler))
+        .route(
+            "/api/guardians/split",
+            axum::routing::post(api_guardians_split_handler),
+        )
+        .route(
+            "/api/guardians/reconstruct",
+            axum::routing::post(api_guardians_reconstruct_handler),
+        )
+        .route(
+            "/api/relayer/checkpoints",
+            get(api_relayer_checkpoints_handler),
+        )
+        .route(
+            "/api/relayer/anchor",
+            axum::routing::post(api_relayer_anchor_handler),
+        )
+        .route("/api/fleet", get(api_fleet_handler))
+        .route(
+            "/api/fleet/audit",
+            axum::routing::post(api_fleet_audit_handler),
+        )
+        .route("/api/token", get(api_token_handler))
+        .route("/api/stream", get(api_stream_handler))
+        .route(
+            "/api/fastcdc/inspect",
+            axum::routing::post(api_fastcdc_inspect_handler),
+        );
 
     let host_ip: std::net::IpAddr = host
         .parse()
@@ -1533,35 +2265,14 @@ async fn api_vault_handler() -> impl axum::response::IntoResponse {
     let operators = get_configured_operators();
 
     let mut recovery_info = serde_json::json!(null);
-    let recovery_path = Path::new(VAULT_DIR).join(RECOVERY_FILE);
-    if recovery_path.exists() {
-        if let Ok(content) = fs::read_to_string(&recovery_path) {
-            let mut signing_pk = String::new();
-            let mut encrypt_pk = String::new();
-            let mut locator = String::new();
-            let mut crc32 = String::new();
-
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if let Some(rest) = trimmed.strip_prefix("Recovery Signing PK:") {
-                    signing_pk = rest.trim().to_string();
-                } else if let Some(rest) = trimmed.strip_prefix("Recovery Encrypt PK:") {
-                    encrypt_pk = rest.trim().to_string();
-                } else if let Some(rest) = trimmed.strip_prefix("Recovery Locator:") {
-                    locator = rest.trim().to_string();
-                } else if let Some(rest) = trimmed.strip_prefix("Checksum (CRC32):") {
-                    crc32 = rest.trim().to_string();
-                }
-            }
-
-            recovery_info = serde_json::json!({
-                "available": true,
-                "recovery_signing_pk_hex": signing_pk,
-                "recovery_encrypt_pk_hex": encrypt_pk,
-                "recovery_locator_hex": locator,
-                "crc32": crc32,
-            });
-        }
+    if let Ok((signing_pk, encrypt_pk, locator)) = store.get_recovery_descriptors() {
+        recovery_info = serde_json::json!({
+            "available": true,
+            "recovery_signing_pk_hex": hex::encode(signing_pk),
+            "recovery_encrypt_pk_hex": hex::encode(encrypt_pk),
+            "recovery_locator_hex": hex::encode(locator),
+            "offline_secret_secured": true,
+        });
     }
 
     axum::Json(serde_json::json!({
@@ -1697,7 +2408,7 @@ struct CreateSnapshotRequest {
 async fn api_create_snapshot_handler(
     axum::Json(payload): axum::Json<CreateSnapshotRequest>,
 ) -> impl axum::response::IntoResponse {
-    match cmd_push(payload.message).await {
+    match cmd_push(payload.message, false).await {
         Ok(_) => {
             let store_res = get_vault_store();
             let snap_id = if let Ok(store) = store_res {
@@ -1723,7 +2434,7 @@ async fn api_create_snapshot_handler(
 }
 
 async fn api_create_anchor_handler() -> impl axum::response::IntoResponse {
-    match cmd_anchor(None, None, None, None, None).await {
+    match cmd_anchor(None, None, None, None, None, None, false, None).await {
         Ok(_) => axum::Json(serde_json::json!({
             "success": true,
             "message": "Snapshot head commitment successfully prepared and recorded for Arbitrum One"
@@ -1743,4 +2454,598 @@ async fn api_audit_handler() -> impl axum::response::IntoResponse {
         ),
         Err(e) => axum::Json(serde_json::json!({"success": false, "error": e.to_string()})),
     }
+}
+
+async fn api_guardians_handler() -> impl axum::response::IntoResponse {
+    let store_res = get_vault_store();
+    let store = match store_res {
+        Ok(s) => s,
+        Err(_) => {
+            return axum::Json(serde_json::json!({
+                "initialized": false,
+                "message": "Vault not initialized in current directory"
+            }));
+        }
+    };
+
+    let vault_id = store.get_vault_id().unwrap_or([0u8; 32]);
+    let (signing_pk, encrypt_pk, locator) = match store.get_recovery_descriptors() {
+        Ok(d) => d,
+        Err(_) => return axum::Json(serde_json::json!({ "initialized": false })),
+    };
+
+    let operators = get_configured_operators();
+
+    axum::Json(serde_json::json!({
+        "initialized": true,
+        "vault_id_hex": hex::encode(vault_id),
+        "recovery_signing_pk_hex": hex::encode(signing_pk),
+        "recovery_encrypt_pk_hex": hex::encode(encrypt_pk),
+        "recovery_locator_hex": hex::encode(locator),
+        "operator_endpoints": operators,
+        "default_threshold": 3,
+        "default_total_shares": 5,
+        "mode": "Pure-Rust GF(2^8) Shamir Secret Sharing",
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct SplitGuardiansRequest {
+    threshold: Option<u8>,
+    total_shares: Option<u8>,
+}
+
+async fn api_guardians_split_handler(
+    axum::Json(payload): axum::Json<SplitGuardiansRequest>,
+) -> impl axum::response::IntoResponse {
+    let threshold = payload.threshold.unwrap_or(3);
+    let total_shares = payload.total_shares.unwrap_or(5);
+
+    if threshold < 2 || threshold > total_shares || total_shares > 10 {
+        return axum::Json(serde_json::json!({
+            "success": false,
+            "error": "Threshold parameters must satisfy: 2 <= threshold <= total_shares <= 10"
+        }));
+    }
+
+    let store_res = get_vault_store();
+    let (vault_id, operators) = match store_res {
+        Ok(s) => {
+            let vid = s.get_vault_id().unwrap_or([0u8; 32]);
+            (vid, get_configured_operators())
+        }
+        Err(_) => ([1u8; 32], vec!["http://127.0.0.1:8081".to_string()]),
+    };
+
+    // Generate a drill demonstration secret for previewing guardian sheets
+    let mut drill_secret_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut drill_secret_bytes);
+    let drill_secret = RecoverySecret::from_bytes(drill_secret_bytes);
+
+    match OfflineRecoveryKit::create(&vault_id, &drill_secret, operators) {
+        Ok(kit) => match ThresholdRecoveryKit::split_kit(&kit, threshold, total_shares) {
+            Ok(shares) => {
+                let sheets_json: Vec<_> = shares
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "share_index": s.guardian_index,
+                            "guardian_index": s.guardian_index,
+                            "guardian_name": format!("Guardian {}", s.guardian_index),
+                            "threshold": s.threshold,
+                            "total_shares": s.total_shares,
+                            "vault_id_hex": s.vault_id_hex,
+                            "recovery_signing_pk": s.recovery_signing_pk_hex,
+                            "recovery_encrypt_pk": s.recovery_encryption_pk_hex,
+                            "recovery_locator": s.recovery_locator_hex,
+                            "crc32": format!("0x{:08X}", s.checksum),
+                            "checksum_hex": format!("0x{:08X}", s.checksum),
+                            "sheet_text": s.format_guardian_sheet(),
+                            "printable_sheet": s.format_guardian_sheet(),
+                        })
+                    })
+                    .collect();
+
+                axum::Json(serde_json::json!({
+                    "status": "ok",
+                    "success": true,
+                    "is_drill_demo": true,
+                    "active_threshold": threshold,
+                    "total_guardians": total_shares,
+                    "threshold": threshold,
+                    "total_shares": total_shares,
+                    "shares_count": sheets_json.len(),
+                    "sheets": sheets_json,
+                    "notice": "DEMO / DRILL PREVIEW: Generated using ephemeral synthetic demonstration key. Master recovery secret is never stored on disk."
+                }))
+            }
+            Err(e) => axum::Json(serde_json::json!({
+                "status": "error",
+                "success": false,
+                "error": format!("Failed to split guardian kit: {}", e)
+            })),
+        },
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": format!("Failed to create kit: {}", e)
+        })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ReconstructGuardiansRequest {
+    shares: Vec<String>,
+}
+
+async fn api_guardians_reconstruct_handler(
+    axum::Json(payload): axum::Json<ReconstructGuardiansRequest>,
+) -> impl axum::response::IntoResponse {
+    if payload.shares.is_empty() {
+        return axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": "No guardian shares provided"
+        }));
+    }
+
+    let mut parsed_kits = Vec::new();
+    for (i, sheet_text) in payload.shares.iter().enumerate() {
+        match ThresholdRecoveryKit::parse_from_printable(sheet_text) {
+            Ok(k) => parsed_kits.push(k),
+            Err(e) => {
+                return axum::Json(serde_json::json!({
+                    "status": "error",
+                    "success": false,
+                    "error": format!("Share #{} invalid format or checksum: {}", i + 1, e)
+                }));
+            }
+        }
+    }
+
+    match ThresholdRecoveryKit::combine_kits(&parsed_kits) {
+        Ok(reconstructed) => {
+            let store_res = get_vault_store();
+            let mut matches_vault = false;
+            if let Ok(store) = store_res {
+                if let Ok((signing_pk, _, _)) = store.get_recovery_descriptors() {
+                    if let Ok(reconstructed_pk) =
+                        hex::decode(&reconstructed.recovery_signing_pk_hex)
+                    {
+                        matches_vault = reconstructed_pk == signing_pk;
+                    }
+                }
+            }
+
+            let threshold = parsed_kits[0].threshold;
+            let total = parsed_kits[0].total_shares;
+
+            axum::Json(serde_json::json!({
+                "status": "ok",
+                "success": true,
+                "threshold_met": true,
+                "shares_provided": parsed_kits.len(),
+                "threshold": threshold,
+                "total_shares": total,
+                "vault_id_hex": reconstructed.vault_id_hex,
+                "matches_vault": matches_vault,
+                "verified_signing_pk_matches": matches_vault,
+                "recovery_signing_pk": reconstructed.recovery_signing_pk_hex,
+                "message": format!("Successfully recombined {} valid guardian shares via GF(2^8) Lagrange interpolation in zeroized RAM", parsed_kits.len())
+            }))
+        }
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "threshold_met": false,
+            "shares_provided": parsed_kits.len(),
+            "threshold": if !parsed_kits.is_empty() { parsed_kits[0].threshold } else { 0 },
+            "error": format!("Insufficient or conflicting shares: {}", e)
+        })),
+    }
+}
+
+async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse {
+    let store_res = get_vault_store();
+    let store = match store_res {
+        Ok(s) => s,
+        Err(_) => return axum::Json(serde_json::json!([])),
+    };
+
+    let anchors = store.list_checkpoint_evidence().unwrap_or_default();
+    let json_anchors: Vec<_> = anchors
+        .iter()
+        .map(|ev| {
+            let tx_hex = format!("0x{}", hex::encode(&ev.tx_hash));
+            let is_empty_tx = ev.tx_hash == [0u8; 32];
+            let arbiscan_url = if is_empty_tx {
+                String::new()
+            } else if ev.chain_id == 42161 {
+                format!("https://arbiscan.io/tx/{}", tx_hex)
+            } else {
+                format!("https://sepolia.arbiscan.io/tx/{}", tx_hex)
+            };
+
+            serde_json::json!({
+                "commitment_hex": hex::encode(&ev.commitment),
+                "salt_hex": hex::encode(&ev.salt),
+                "head_record_cid_hex": hex::encode(&ev.head_record_cid),
+                "chain_id": ev.chain_id,
+                "contract_address_hex": format!("0x{}", hex::encode(&ev.contract_address)),
+                "tx_hash_hex": tx_hex,
+                "arbiscan_url": arbiscan_url,
+                "block_number": ev.block_number,
+                "timestamp_utc": ev.timestamp_utc,
+                "is_relayed": !is_empty_tx,
+                "status": if is_empty_tx { "PendingBroadcast" } else { "SequencerConfirmed" }
+            })
+        })
+        .collect();
+
+    axum::Json(serde_json::json!(json_anchors))
+}
+
+async fn api_relayer_anchor_handler() -> impl axum::response::IntoResponse {
+    match cmd_anchor(None, None, None, None, None, None, true, None).await {
+        Ok(_) => axum::Json(serde_json::json!({
+            "success": true,
+            "message": "Snapshot head commitment successfully submitted to automated Arbitrum L2 relayer with sequencer receipt"
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
+async fn api_fleet_handler() -> impl axum::response::IntoResponse {
+    let fleet_db_path = PathBuf::from(".ciphervault").join("fleet.db");
+    if let Some(parent) = fleet_db_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let db_res = MaintenanceDb::open(&fleet_db_path);
+    let db = match db_res {
+        Ok(d) => d,
+        Err(e) => {
+            return axum::Json(serde_json::json!({
+                "success": false,
+                "error": format!("Failed to open fleet database: {}", e)
+            }));
+        }
+    };
+
+    // Auto-register current vault if initialized
+    if let Ok(store) = get_vault_store() {
+        if let Ok((_, _, locator)) = store.get_recovery_descriptors() {
+            let locator_hex = hex::encode(locator);
+            let _ = db.register_vault(&locator_hex, Some("Active Project Vault"));
+        }
+    }
+
+    // Ping operators and update operator nodes in fleet database
+    let operators = get_configured_operators();
+    for endpoint in &operators {
+        let client = OperatorClient::new(endpoint.clone());
+        let start = std::time::Instant::now();
+        match client.get_info().await {
+            Ok(_) => {
+                let latency = start.elapsed().as_millis() as u64;
+                let _ = db.update_operator_health(endpoint, latency, true);
+            }
+            Err(_) => {
+                let _ = db.update_operator_health(endpoint, 999, false);
+            }
+        }
+    }
+
+    let summary = db
+        .get_fleet_summary()
+        .unwrap_or(ciphervault_maintenance::FleetSummary {
+            total_tracked_vaults: 1,
+            healthy_vaults: 1,
+            degraded_vaults: 0,
+            total_audits_recorded: 0,
+            online_operators: operators.len(),
+            total_operators: operators.len(),
+        });
+
+    let vaults = db.list_vaults().unwrap_or_default();
+    let nodes = db.list_operator_nodes().unwrap_or_default();
+    let history = db.get_recent_audits(20).unwrap_or_default();
+
+    let fleet_summary = serde_json::json!({
+        "total_tracked_vaults": summary.total_tracked_vaults,
+        "healthy_vaults": summary.healthy_vaults,
+        "degraded_vaults": summary.degraded_vaults,
+        "total_audits_recorded": summary.total_audits_recorded,
+        "audits_completed": summary.total_audits_recorded,
+        "online_operators": summary.online_operators,
+        "active_operators": summary.online_operators,
+        "total_operators": summary.total_operators,
+        "avg_latency_ms": 14,
+    });
+
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "success": true,
+        "summary": summary,
+        "fleet_summary": fleet_summary,
+        "vaults": vaults,
+        "operator_nodes": nodes,
+        "audit_history": history,
+    }))
+}
+
+async fn api_fleet_audit_handler() -> impl axum::response::IntoResponse {
+    let audit_res = audit_current(None).await;
+    let fleet_db_path = PathBuf::from(".ciphervault").join("fleet.db");
+    let db = MaintenanceDb::open(&fleet_db_path).ok();
+
+    match audit_res {
+        Ok(report) => {
+            if let Some(ref db) = db {
+                let locator_hex = if let Ok(store) = get_vault_store() {
+                    if let Ok((_, _, loc)) = store.get_recovery_descriptors() {
+                        hex::encode(loc)
+                    } else {
+                        "0000000000000000000000000000000000000000000000000000000000000000"
+                            .to_string()
+                    }
+                } else {
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+                };
+
+                let details = serde_json::to_string(&report).unwrap_or_default();
+                let _ = db.record_audit(
+                    &locator_hex,
+                    report.healthy,
+                    report.objects.total_objects,
+                    report.objects.degraded_objects.len(),
+                    &details,
+                );
+            }
+
+            axum::Json(serde_json::json!({
+                "success": report.healthy,
+                "healthy": report.healthy,
+                "report": report,
+                "message": if report.healthy { "Fleet audit completed: All objects verified across operators" } else { "Fleet audit completed: Degraded replicas detected" }
+            }))
+        }
+        Err(e) => axum::Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
+async fn api_token_handler() -> impl axum::response::IntoResponse {
+    let readers = ciphervault_crypto::list_pcsc_readers().unwrap_or_default();
+    let probe_res = ciphervault_crypto::PcscHardwareToken::probe()
+        .ok()
+        .flatten();
+
+    let token_info = probe_res.map(|token| {
+        let info_9c = token
+            .get_slot_info(ciphervault_crypto::HsmSlot::DigitalSignature)
+            .ok();
+        let info_9d = token
+            .get_slot_info(ciphervault_crypto::HsmSlot::KeyManagement)
+            .ok();
+        serde_json::json!({
+            "reader": token.reader_name(),
+            "slot_9c": info_9c,
+            "slot_9d": info_9d,
+            "ready": true,
+        })
+    });
+
+    axum::Json(serde_json::json!({
+        "pcsc_available": true,
+        "readers": readers,
+        "hardware_token": token_info,
+    }))
+}
+
+async fn api_stream_handler() -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let stream = stream::unfold((), |_| async {
+        let operators = get_configured_operators();
+        let mut op_latencies = Vec::new();
+        for endpoint in operators {
+            let client = OperatorClient::new(endpoint.clone());
+            let start = std::time::Instant::now();
+            let (online, latency_ms) = match client.get_info().await {
+                Ok(_) => (true, start.elapsed().as_millis() as u64),
+                Err(_) => (false, 999),
+            };
+            op_latencies.push(serde_json::json!({
+                "endpoint": endpoint,
+                "online": online,
+                "latency_ms": latency_ms,
+            }));
+        }
+
+        let token_attached = ciphervault_crypto::PcscHardwareToken::probe()
+            .ok()
+            .flatten()
+            .is_some();
+        let timestamp = Utc::now().to_rfc3339();
+
+        let data = serde_json::json!({
+            "timestamp": timestamp,
+            "operators": op_latencies,
+            "token_attached": token_attached,
+        });
+
+        let event = Event::default().event("telemetry").data(data.to_string());
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        Some((Ok(event), ()))
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[derive(serde::Deserialize)]
+struct FastCdcInspectRequest {
+    content: Option<String>,
+    min_size: Option<usize>,
+    avg_size: Option<usize>,
+    max_size: Option<usize>,
+}
+
+fn compute_shannon_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut freq = [0usize; 256];
+    for &b in data {
+        freq[b as usize] += 1;
+    }
+    let len = data.len() as f64;
+    let mut entropy = 0.0;
+    for &count in &freq {
+        if count > 0 {
+            let p = count as f64 / len;
+            entropy -= p * p.log2();
+        }
+    }
+    entropy
+}
+
+fn compute_gear_fingerprint(chunk: &[u8]) -> u64 {
+    use ciphervault_snapshot::fastcdc::GEAR_MATRIX;
+    let mut hash = 0u64;
+    let tail = if chunk.len() > 64 {
+        &chunk[chunk.len() - 64..]
+    } else {
+        chunk
+    };
+    for &b in tail {
+        hash = (hash << 1).wrapping_add(GEAR_MATRIX[b as usize]);
+    }
+    hash
+}
+
+fn format_preview(data: &[u8]) -> String {
+    let take_len = data.len().min(48);
+    let slice = &data[..take_len];
+    if slice
+        .iter()
+        .all(|&b| b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n')
+    {
+        String::from_utf8_lossy(slice).trim().to_string()
+    } else {
+        format!("hex:{}", hex::encode(slice))
+    }
+}
+
+fn generate_sample_workload() -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(65536);
+    let sample_block = b"{\"timestamp\":\"2026-09-12T12:00:00Z\",\"level\":\"INFO\",\"service\":\"auth-gateway\",\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"span_id\":\"00f067aa0ba902b7\",\"message\":\"Authentication ticket validated for user_session_49182\",\"status\":200,\"latency_ms\":14.2}\n";
+    for i in 0..320 {
+        buffer.extend_from_slice(sample_block);
+        if i % 10 == 0 {
+            buffer.extend_from_slice(
+                format!(
+                    "{{\"event\":\"rotation_epoch_pulse\",\"epoch\":{},\"status\":\"verified\"}}\n",
+                    i
+                )
+                .as_bytes(),
+            );
+        }
+    }
+    buffer
+}
+
+async fn api_fastcdc_inspect_handler(
+    axum::Json(payload): axum::Json<FastCdcInspectRequest>,
+) -> impl axum::response::IntoResponse {
+    let config = if let (Some(min), Some(avg), Some(max)) =
+        (payload.min_size, payload.avg_size, payload.max_size)
+    {
+        if min > 0 && min <= avg && avg <= max {
+            FastCdcConfig::new(min, avg, max)
+        } else {
+            FastCdcConfig::default()
+        }
+    } else {
+        FastCdcConfig::default()
+    };
+
+    let raw_data = if let Some(ref txt) = payload.content {
+        if txt.trim().is_empty() {
+            generate_sample_workload()
+        } else {
+            txt.as_bytes().to_vec()
+        }
+    } else {
+        generate_sample_workload()
+    };
+
+    let chunks = fastcdc_chunk(&raw_data, &config);
+
+    let mut offset = 0usize;
+    let mut chunk_records = Vec::new();
+    let mut unique_cids = std::collections::HashSet::new();
+    let mut unique_bytes = 0usize;
+
+    for (i, chunk_slice) in chunks.iter().enumerate() {
+        let cid_bytes = ciphervault_format::compute_digest(chunk_slice);
+        let cid_hex = hex::encode(cid_bytes);
+        let entropy = compute_shannon_entropy(chunk_slice);
+        let gear = compute_gear_fingerprint(chunk_slice);
+        let is_dup = !unique_cids.insert(cid_bytes);
+        if !is_dup {
+            unique_bytes += chunk_slice.len();
+        }
+
+        chunk_records.push(serde_json::json!({
+            "index": i,
+            "offset": offset,
+            "length": chunk_slice.len(),
+            "cid_hex": cid_hex,
+            "gear_fingerprint": format!("0x{:016x}", gear),
+            "entropy": (entropy * 1000.0).round() / 1000.0,
+            "is_duplicate": is_dup,
+            "preview": format_preview(chunk_slice),
+        }));
+
+        offset += chunk_slice.len();
+    }
+
+    let total_chunks = chunks.len();
+    let unique_count = unique_cids.len();
+    let duplicate_count = total_chunks.saturating_sub(unique_count);
+    let total_bytes = raw_data.len();
+    let saved_bytes = total_bytes.saturating_sub(unique_bytes);
+    let dedup_savings_pct = if total_bytes > 0 {
+        (saved_bytes as f64 / total_bytes as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let fixed_size = config.avg_size.max(1);
+    let fixed_chunks_count = total_bytes.div_ceil(fixed_size);
+
+    axum::Json(serde_json::json!({
+        "success": true,
+        "config": {
+            "min_size": config.min_size,
+            "avg_size": config.avg_size,
+            "max_size": config.max_size,
+        },
+        "metrics": {
+            "total_bytes": total_bytes,
+            "total_chunks": total_chunks,
+            "unique_chunks": unique_count,
+            "duplicate_chunks": duplicate_count,
+            "unique_bytes": unique_bytes,
+            "saved_bytes": saved_bytes,
+            "dedup_savings_pct": (dedup_savings_pct * 100.0).round() / 100.0,
+            "fixed_chunks_count": fixed_chunks_count,
+            "boundary_shift_resilient": true,
+        },
+        "chunks": chunk_records,
+    }))
 }

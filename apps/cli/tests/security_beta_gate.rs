@@ -133,8 +133,23 @@ async fn test_canary_leak_defense_across_operators_and_db() {
     let db_path = vault_root.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();
     store
-        .init_vault(&vault_id, &genesis, &device_sk, &device_id, &epoch_key)
+        .init_vault(
+            &vault_id, &genesis, &device_sk, &device_id, &epoch_key, &r_locator,
+        )
         .unwrap();
+
+    let mut cert = ciphervault_format::DeviceCertificate {
+        version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_vec(),
+        certificate_id: vec![1u8; 32],
+        device_signing_pk: device_sk.verifying_key().as_bytes().to_vec(),
+        permissions: 0xFFFFFFFF,
+        authority_generation: 1,
+        issued_at_utc: 1000,
+        signature: Vec::new(),
+    };
+    cert.sign(&r_sk).unwrap();
+    store.save_device_certificate(&cert).unwrap();
 
     store.track_file(".env").unwrap();
     let tracked = store.list_tracked_files().unwrap();
@@ -183,6 +198,7 @@ async fn test_canary_leak_defense_across_operators_and_db() {
     wire_objects.push((snap.manifest_cid, snap.encrypted_manifest.clone()));
     wire_objects.push((record_cid, to_canonical_cbor(&snap.record).unwrap()));
 
+    let recovery_set = store.prepare_recovery_set(&snap.record).unwrap();
     let head_cbor = to_canonical_cbor(&head).unwrap();
     let receipts = pool
         .replicate_and_verify(
@@ -194,7 +210,7 @@ async fn test_canary_leak_defense_across_operators_and_db() {
             90,
             &r_locator,
             &head_cbor,
-            &[],
+            &recovery_set.records,
             3,
         )
         .await
@@ -373,4 +389,231 @@ fn test_operator_boundary_and_dos_limits() {
         "Got error: {}",
         err4
     );
+}
+
+#[tokio::test]
+async fn test_threshold_guardian_recovery_flow() {
+    use ciphervault_crypto::{generate_signing_key, seal_box};
+    use ciphervault_format::{EpochEnvelope, PROTOCOL_VERSION};
+    use ciphervault_recovery::{OfflineRecoveryKit, ThresholdRecoveryKit};
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_guardian_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+
+    // 1. Create a master recovery secret R and offline recovery kit
+    let vault_id = [0x42u8; 32];
+    let secret = RecoverySecret::generate();
+    let (_, rec_enc_pk) = secret.derive_recovery_encryption_keys().unwrap();
+    let kit = OfflineRecoveryKit::create(
+        &vault_id,
+        &secret,
+        vec![
+            "http://127.0.0.1:8787".into(),
+            "http://127.0.0.1:8788".into(),
+        ],
+    )
+    .unwrap();
+
+    // 2. Create an EpochEnvelope sealed with the recovery public key
+    let epoch_key = VaultEpochKey::generate();
+    let sealed_key = seal_box(&rec_enc_pk, epoch_key.as_bytes()).unwrap();
+    let dev_sk = generate_signing_key();
+    let mut envelope = EpochEnvelope {
+        version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_vec(),
+        epoch: 1,
+        recipient_fingerprint: rec_enc_pk.as_bytes().to_vec(),
+        sealed_epoch_key: sealed_key,
+        created_at_utc: 1002,
+        signer_device_id: vec![0u8; 32],
+        signature: Vec::new(),
+    };
+    envelope.sign(&dev_sk).unwrap();
+
+    // 3. Split offline recovery kit into 3-of-5 threshold guardian shares
+    let guardian_shares = ThresholdRecoveryKit::split_kit(&kit, 3, 5).unwrap();
+    assert_eq!(guardian_shares.len(), 5);
+
+    let shares_dir = test_dir.join("guardian_sheets");
+    fs::create_dir_all(&shares_dir).unwrap();
+    let mut share_paths = Vec::new();
+    for g in &guardian_shares {
+        let p = shares_dir.join(format!("guardian_share_{}_of_5.txt", g.guardian_index));
+        fs::write(&p, g.format_guardian_sheet()).unwrap();
+        share_paths.push(p);
+    }
+
+    // 4. Test that 2 shares fail to combine (requires at least 3)
+    let two_shares = [share_paths[0].clone(), share_paths[1].clone()];
+    let parsed_two: Vec<_> = two_shares
+        .iter()
+        .map(|p| {
+            ThresholdRecoveryKit::parse_from_printable(&fs::read_to_string(p).unwrap()).unwrap()
+        })
+        .collect();
+    assert!(ThresholdRecoveryKit::combine_kits(&parsed_two).is_err());
+
+    // 5. Test that any 3 shares (e.g. Guardians 2, 4, 5) reconstruct exact secret
+    let three_shares = [
+        share_paths[1].clone(), // Guardian 2
+        share_paths[3].clone(), // Guardian 4
+        share_paths[4].clone(), // Guardian 5
+    ];
+    let parsed_three: Vec<_> = three_shares
+        .iter()
+        .map(|p| {
+            ThresholdRecoveryKit::parse_from_printable(&fs::read_to_string(p).unwrap()).unwrap()
+        })
+        .collect();
+    let reconstructed_kit = ThresholdRecoveryKit::combine_kits(&parsed_three).unwrap();
+    assert_eq!(reconstructed_kit.vault_id_hex, kit.vault_id_hex);
+    assert_eq!(
+        reconstructed_kit.recovery_secret_hex,
+        kit.recovery_secret_hex
+    );
+    assert_eq!(reconstructed_kit.checksum, kit.checksum);
+    assert_eq!(reconstructed_kit.operator_endpoints, kit.operator_endpoints);
+
+    // 6. Test that the reconstructed kit decrypts the sealed epoch envelope
+    let recovered_epoch_key = reconstructed_kit.open_envelope(&envelope).unwrap();
+    assert_eq!(recovered_epoch_key.as_bytes(), epoch_key.as_bytes());
+
+    // 7. Verify memory scrubbing: secret extraction zeroizes
+    let extracted_secret = reconstructed_kit.validate_and_extract_secret().unwrap();
+    assert_eq!(extracted_secret.as_bytes(), secret.as_bytes());
+
+    let _ = fs::remove_dir_all(test_dir);
+}
+
+#[tokio::test]
+async fn test_unauthorized_caller_cannot_append_to_existing_vault_log() {
+    // Regression test for F02 probe:
+    // Ensure that an authenticated caller with an uncertified key CANNOT append
+    // a self-signed head/envelope/certificate to an existing vault locator.
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_f02_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let state = Arc::new(OperatorState::new(
+        "op_f02".to_string(),
+        test_dir.clone(),
+        generate_signing_key(),
+    ));
+
+    let locator_hex = "42".repeat(32);
+    let owner_secret = RecoverySecret::generate();
+    let owner_sk = owner_secret.derive_recovery_signing_key().unwrap();
+    let (_, owner_enc_pk) = owner_secret.derive_recovery_encryption_keys().unwrap();
+
+    // 1. Owner registers GenesisRecord
+    let mut genesis = GenesisRecord {
+        version: PROTOCOL_VERSION,
+        vault_id: vec![0x11u8; 32],
+        recovery_signing_pk: owner_sk.verifying_key().to_bytes().to_vec(),
+        recovery_encryption_pk: owner_enc_pk.as_bytes().to_vec(),
+        policy_digest: vec![0u8; 32],
+        created_at_utc: 1000,
+        creation_nonce: vec![1u8; 32],
+        signature: Vec::new(),
+    };
+    genesis.sign(&owner_sk).unwrap();
+    let genesis_cbor = to_canonical_cbor(&genesis).unwrap();
+    let seq = state
+        .append_authorized_recovery_record(&locator_hex, &genesis_cbor, None)
+        .expect("Owner genesis must succeed");
+    assert_eq!(seq, 1);
+
+    // 2. Attacker generates independent keypair
+    let attacker_sk = generate_signing_key();
+    let attacker_pk = attacker_sk.verifying_key().to_bytes();
+
+    // 3. Attacker signs a HeadRecord with attacker_sk
+    let mut attacker_head = HeadRecord {
+        version: PROTOCOL_VERSION,
+        vault_id: vec![0x11u8; 32],
+        snapshot_id: vec![0x99u8; 32],
+        parent_snapshot_ids: Vec::new(),
+        closure_digest: vec![0x88u8; 32],
+        device_id: vec![0x77u8; 32],
+        device_counter: 1,
+        signature: Vec::new(),
+    };
+    attacker_head.sign(&attacker_sk).unwrap();
+    let head_cbor = to_canonical_cbor(&attacker_head).unwrap();
+
+    // 4. Attacker attempts to append with caller_pk = attacker_pk
+    let res = state.append_authorized_recovery_record(&locator_hex, &head_cbor, Some(&attacker_pk));
+    assert!(
+        res.is_err(),
+        "Attacker signed head must be rejected, but got success!"
+    );
+
+    // 5. Attacker attempts to forge a DeviceCertificate
+    let mut forged_cert = ciphervault_format::DeviceCertificate {
+        version: PROTOCOL_VERSION,
+        vault_id: vec![0x11u8; 32],
+        certificate_id: vec![0x55u8; 32],
+        device_signing_pk: attacker_pk.to_vec(),
+        permissions: 1,
+        authority_generation: 1,
+        issued_at_utc: 1005,
+        signature: Vec::new(),
+    };
+    forged_cert.sign(&attacker_sk).unwrap();
+    let cert_cbor = to_canonical_cbor(&forged_cert).unwrap();
+
+    let cert_res =
+        state.append_authorized_recovery_record(&locator_hex, &cert_cbor, Some(&attacker_pk));
+    assert!(
+        cert_res.is_err(),
+        "Attacker signed certificate must be rejected!"
+    );
+
+    let _ = fs::remove_dir_all(test_dir);
+}
+
+#[test]
+fn test_untrack_removes_file_from_local_store() {
+    let test_dir = std::env::temp_dir().join(format!(
+        "cv_untrack_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let db_path = test_dir.join("vault.db");
+    let store = LocalVaultStore::open(&db_path).unwrap();
+
+    // Track two files
+    store.track_file("secrets/.env").unwrap();
+    store.track_file("credentials.json").unwrap();
+
+    let tracked_before = store.list_tracked_files().unwrap();
+    assert_eq!(tracked_before.len(), 2);
+
+    // Untrack one file
+    let removed = store.untrack_file("secrets/.env").unwrap();
+    assert!(removed);
+
+    let tracked_after = store.list_tracked_files().unwrap();
+    assert_eq!(tracked_after.len(), 1);
+    assert_eq!(tracked_after[0].0.to_str().unwrap(), "credentials.json");
+
+    // Untrack non-existent returns false
+    assert!(!store.untrack_file("not_tracked.txt").unwrap());
+
+    let _ = fs::remove_dir_all(test_dir);
 }

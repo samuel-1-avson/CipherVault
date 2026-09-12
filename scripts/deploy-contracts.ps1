@@ -73,7 +73,8 @@ if (-not $forgeCmd) {
     Write-Host "`nTo install Foundry on Windows:" -ForegroundColor Yellow
     Write-Host "  powershell -c ""irm https://foundry.paradigm.xyz | iex"""
     Write-Host "  foundryup"
-    Write-Host "`nAlternative: Deploy using cast or standard web3 wallet to contracts/CipherVaultRegistry.sol"
+    Write-Host "`nAlternative 1: Deploy with Node.js script: node scripts/deploy-registry.cjs --network $Network" -ForegroundColor Green
+    Write-Host "Alternative 2: Deploy using cast or standard web3 wallet to contracts/CipherVaultRegistry.sol"
     exit 1
 }
 

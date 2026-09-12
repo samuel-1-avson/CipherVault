@@ -224,6 +224,94 @@ impl ArbitrumAnchorClient {
         }))
     }
 
+    /// Submits a signed raw Ethereum transaction via JSON-RPC `eth_sendRawTransaction`.
+    /// Returns the 32-byte transaction hash.
+    pub async fn send_raw_transaction(&self, raw_tx_hex: &str) -> Result<[u8; 32], StorageError> {
+        let formatted_hex = if raw_tx_hex.starts_with("0x") {
+            raw_tx_hex.to_string()
+        } else {
+            format!("0x{}", raw_tx_hex)
+        };
+
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_sendRawTransaction",
+            "params": [formatted_hex],
+            "id": 1
+        });
+
+        let resp = self.http.post(&self.rpc_url).json(&payload).send().await?;
+        if !resp.status().is_success() {
+            return Err(StorageError::ServerError {
+                status: resp.status().as_u16(),
+                message: "eth_sendRawTransaction HTTP request failed".into(),
+            });
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+        if let Some(err) = body.get("error") {
+            let msg = err["message"].as_str().unwrap_or("Unknown RPC error");
+            return Err(StorageError::ServerError {
+                status: 400,
+                message: format!("eth_sendRawTransaction failed: {}", msg),
+            });
+        }
+
+        let tx_hash_str = body["result"]
+            .as_str()
+            .ok_or_else(|| StorageError::ServerError {
+                status: 500,
+                message: "Missing result in eth_sendRawTransaction response".into(),
+            })?;
+
+        let clean_hex = tx_hash_str.trim_start_matches("0x");
+        let hash_bytes = hex::decode(clean_hex).map_err(|e| StorageError::ServerError {
+            status: 500,
+            message: format!("Invalid hex in transaction hash: {}", e),
+        })?;
+
+        if hash_bytes.len() != 32 {
+            return Err(StorageError::ServerError {
+                status: 500,
+                message: format!(
+                    "Invalid transaction hash length: expected 32 bytes, got {}",
+                    hash_bytes.len()
+                ),
+            });
+        }
+
+        let mut tx_hash = [0u8; 32];
+        tx_hash.copy_from_slice(&hash_bytes);
+        Ok(tx_hash)
+    }
+
+    /// Polls `eth_getTransactionReceipt` until the transaction is mined or timeout expires.
+    pub async fn wait_for_receipt(
+        &self,
+        tx_hash: &[u8; 32],
+        max_wait: Duration,
+        interval: Duration,
+    ) -> Result<TransactionReceipt, StorageError> {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(receipt) = self.get_transaction_receipt(tx_hash).await? {
+                return Ok(receipt);
+            }
+
+            if start.elapsed() >= max_wait {
+                return Err(StorageError::ServerError {
+                    status: 408,
+                    message: format!(
+                        "Timed out waiting for transaction receipt for 0x{}",
+                        hex::encode(tx_hash)
+                    ),
+                });
+            }
+
+            tokio::time::sleep(interval).await;
+        }
+    }
+
     /// Verifies an off-chain CheckpointEvidence against the commitment math and on-chain contract.
     pub async fn verify_evidence(
         &self,
@@ -278,6 +366,85 @@ impl ArbitrumAnchorClient {
             on_chain_confirmed,
             tx_hash_hex: hex::encode(&evidence.tx_hash),
         })
+    }
+}
+
+/// Receipt returned by an automated L2 relayer service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayerReceipt {
+    pub commitment_hex: String,
+    pub tx_hash_hex: String,
+    pub block_number: u64,
+    pub status: String,
+    pub timestamp: u64,
+}
+
+/// Client for interacting with an automated L2 checkpoint relayer service.
+#[derive(Clone)]
+pub struct AnchorRelayerClient {
+    relayer_url: String,
+    http: Client,
+}
+
+impl AnchorRelayerClient {
+    pub fn new(relayer_url: String) -> Self {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self {
+            relayer_url: relayer_url.trim_end_matches('/').to_string(),
+            http,
+        }
+    }
+
+    pub fn relayer_url(&self) -> &str {
+        &self.relayer_url
+    }
+
+    /// Submits a signed checkpoint evidence to the relayer for automated L2 anchoring.
+    pub async fn submit_checkpoint(
+        &self,
+        evidence: &CheckpointEvidence,
+    ) -> Result<RelayerReceipt, StorageError> {
+        let url = format!("{}/v1/relayer/checkpoints", self.relayer_url);
+        let resp = self.http.post(&url).json(evidence).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError {
+                status,
+                message: format!("Relayer error: {}", body),
+            });
+        }
+        let receipt: RelayerReceipt = resp.json().await?;
+        Ok(receipt)
+    }
+
+    /// Queries the relayer for status of a specific commitment.
+    pub async fn get_checkpoint(
+        &self,
+        commitment: &[u8; 32],
+    ) -> Result<Option<RelayerReceipt>, StorageError> {
+        let commitment_hex = hex::encode(commitment);
+        let url = format!(
+            "{}/v1/relayer/checkpoints/{}",
+            self.relayer_url, commitment_hex
+        );
+        let resp = self.http.get(&url).send().await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError {
+                status,
+                message: format!("Relayer error: {}", body),
+            });
+        }
+        let receipt: RelayerReceipt = resp.json().await?;
+        Ok(Some(receipt))
     }
 }
 

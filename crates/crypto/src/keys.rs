@@ -80,6 +80,16 @@ impl VaultEpochKey {
     pub fn derive_manifest_key(&self, epoch: u64) -> Result<[u8; 32], CryptoError> {
         derive_subkey(&self.0, epoch, CTX_MANIFEST_KEY)
     }
+
+    /// Derives the deterministic file-version encryption key for this epoch and plaintext SHA-256.
+    pub fn derive_file_version_key(
+        &self,
+        epoch: u64,
+        plaintext_sha256: &[u8; 32],
+    ) -> Result<FileVersionKey, CryptoError> {
+        let key_bytes = crate::kdf::derive_file_version_key(&self.0, epoch, plaintext_sha256)?;
+        Ok(FileVersionKey::from_bytes(key_bytes))
+    }
 }
 
 /// 32-byte random per-file-version encryption key.

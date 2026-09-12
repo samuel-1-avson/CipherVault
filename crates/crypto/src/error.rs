@@ -28,4 +28,7 @@ pub enum CryptoError {
 
     #[error("Hardware Security Module error: {0}")]
     HsmError(String),
+
+    #[error("Threshold secret sharing error: {0}")]
+    ThresholdError(String),
 }

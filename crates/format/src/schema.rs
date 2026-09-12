@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::{compute_digest, to_canonical_cbor};
 use crate::error::FormatError;
 use ciphervault_crypto::signatures::{sign_with_domain, verify_with_domain};
+use ciphervault_crypto::{HardwareSecurityModule, HsmSlot};
 use ed25519_dalek::SigningKey;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -251,6 +252,19 @@ impl SnapshotRecord {
         Ok(())
     }
 
+    pub fn sign_with_hsm(
+        &mut self,
+        hsm: &dyn HardwareSecurityModule,
+        slot: HsmSlot,
+    ) -> Result<(), FormatError> {
+        let unsigned = self.unsigned_bytes()?;
+        let sig = hsm
+            .sign_message(slot, b"snapshot_record", &unsigned)
+            .map_err(FormatError::CryptoError)?;
+        self.signature = sig.to_vec();
+        Ok(())
+    }
+
     pub fn verify(&self, device_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
         if self.signature.len() != 64 {
             return Err(FormatError::MalformedRecord(
@@ -327,6 +341,19 @@ impl HeadRecord {
     pub fn sign(&mut self, device_sk: &SigningKey) -> Result<(), FormatError> {
         let unsigned = self.unsigned_bytes()?;
         let sig = sign_with_domain(device_sk, b"head_record", &unsigned);
+        self.signature = sig.to_vec();
+        Ok(())
+    }
+
+    pub fn sign_with_hsm(
+        &mut self,
+        hsm: &dyn HardwareSecurityModule,
+        slot: HsmSlot,
+    ) -> Result<(), FormatError> {
+        let unsigned = self.unsigned_bytes()?;
+        let sig = hsm
+            .sign_message(slot, b"head_record", &unsigned)
+            .map_err(FormatError::CryptoError)?;
         self.signature = sig.to_vec();
         Ok(())
     }

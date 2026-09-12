@@ -82,17 +82,31 @@ impl MultiOperatorPool {
         for (client, token) in &sessions {
             let mut operator_ok = true;
 
-            // 1. Upload all objects
+            // 1. Upload all objects (with bandwidth-conserving deduplication via PoS challenge)
             for (cid, data) in objects {
-                if let Err(e) = client.put_object(token, cid, data.clone()).await {
-                    eprintln!(
-                        "Upload to {} failed for object {}: {}",
-                        client.endpoint(),
-                        hex::encode(cid),
-                        e
-                    );
-                    operator_ok = false;
-                    break;
+                let mut challenge_nonce = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge_nonce);
+                let expected_proof = crate::compute_pos_proof(cid, &challenge_nonce, data);
+
+                let already_present = match client
+                    .challenge_object_pos(token, cid, &challenge_nonce)
+                    .await
+                {
+                    Ok(proof) => proof.proof_hex == hex::encode(expected_proof),
+                    Err(_) => false,
+                };
+
+                if !already_present {
+                    if let Err(e) = client.put_object(token, cid, data.clone()).await {
+                        eprintln!(
+                            "Upload to {} failed for object {}: {}",
+                            client.endpoint(),
+                            hex::encode(cid),
+                            e
+                        );
+                        operator_ok = false;
+                        break;
+                    }
                 }
             }
 
@@ -131,14 +145,28 @@ impl MultiOperatorPool {
                 continue;
             }
 
-            // 3. Mandatory Readback Verification (R04)
-            for (cid, _) in objects {
-                if let Err(e) = client.get_object(token, cid).await {
+            // 3. Mandatory Readback Verification (R04) via Bandwidth-Optimized Proof-of-Storage
+            for (cid, data) in objects {
+                let mut nonce = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+                let expected_proof = crate::compute_pos_proof(cid, &nonce, data);
+
+                let verified = match client.challenge_object_pos(token, cid, &nonce).await {
+                    Ok(receipt) => receipt.verify(&pk, &expected_proof).is_ok(),
+                    Err(_) => {
+                        // Transparent fallback to full object readback for older operator versions
+                        match client.get_object(token, cid).await {
+                            Ok(bytes) => ciphervault_format::compute_digest(&bytes) == *cid,
+                            Err(_) => false,
+                        }
+                    }
+                };
+
+                if !verified {
                     eprintln!(
-                        "Readback verification failed on {} for {}: {}",
+                        "Readback verification failed on {} for {}",
                         client.endpoint(),
                         hex::encode(cid),
-                        e
                     );
                     operator_ok = false;
                     break;
