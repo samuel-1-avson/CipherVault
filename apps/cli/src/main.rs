@@ -2366,11 +2366,51 @@ async fn cmd_run(
         return Ok(());
     }
 
+#[cfg(target_os = "windows")]
+fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
+    let p = Path::new(exe);
+    if p.extension().is_some() || exe.contains('\\') || exe.contains('/') {
+        return (exe.to_string(), Vec::new());
+    }
+
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let extensions: Vec<&str> = pathext.split(';').filter(|s| !s.is_empty()).collect();
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for ext in &extensions {
+                let candidate = dir.join(format!("{}{}", exe, ext));
+                if candidate.is_file() {
+                    let ext_upper = ext.to_uppercase();
+                    if ext_upper == ".CMD" || ext_upper == ".BAT" {
+                        return (
+                            "cmd.exe".to_string(),
+                            vec!["/c".to_string(), candidate.to_string_lossy().to_string()],
+                        );
+                    }
+                    return (candidate.to_string_lossy().to_string(), Vec::new());
+                }
+            }
+        }
+    }
+
+    (exe.to_string(), Vec::new())
+}
+
     // Configure Child Command
     let exe = &command[0];
-    let args = &command[1..];
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(args);
+    let raw_args = &command[1..];
+
+    #[cfg(target_os = "windows")]
+    let (target_bin, prefix_args) = resolve_windows_command(exe);
+    #[cfg(not(target_os = "windows"))]
+    let (target_bin, prefix_args): (String, Vec<String>) = (exe.clone(), Vec::new());
+
+    let mut cmd = std::process::Command::new(&target_bin);
+    if !prefix_args.is_empty() {
+        cmd.args(&prefix_args);
+    }
+    cmd.args(raw_args);
 
     if no_inherit {
         cmd.env_clear();
