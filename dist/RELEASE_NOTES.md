@@ -92,6 +92,14 @@
   - **Non-Interactive Automation**: `--import-gitignore` flag on `ciphervault init` enables zero-interaction CI/CD pipelines to import all detected secrets immediately.
   - **On-Demand Discovery**: `ciphervault track --from-gitignore` enables scanning and tracking of confidential patterns found in `.gitignore` at any time.
 
+* **Zero-Disk Secret Injection Engine (`ciphervault run`)**:
+  - **Pure In-Memory Decryption**: Subprocess secret runner powered by `decrypt_snapshot`. Plaintext files (`.env`, `.env.production`) are decrypted strictly into volatile memory and injected directly into child process environments without ever touching disk or SSDs.
+  - **Zero-Dependency Robust Dotenv Parser**: Full support for `.env` standards including `KEY=VALUE`, `export` prefixes, double-quoted values with escape expansions (`\n`, `\t`, `\"`), single-quoted raw literals, and trailing inline comments.
+  - **Hermetic Isolation (`--no-inherit`)**: Allows purging host environment variables while retaining standard core OS paths (`PATH`, `SYSTEMROOT`, `TEMP`, `HOME`).
+  - **Safe Dry-Run Auditing (`--dry-run`)**: Inspects and lists all discovered secret keys while masking values (`KEY = [REDACTED]`), confirming zero disk writes and exiting cleanly.
+  - **Memory Scrubbing**: Immediate compiler-fence zeroization of all intermediate secret buffers and plaintexts prior to child process execution.
+  - **Transparent Process Lifecycle**: Inherits standard I/O streams and accurately propagates child process exit codes.
+
 ---
 
 ## 2. Benchmark & Performance Metrics

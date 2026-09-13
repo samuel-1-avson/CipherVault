@@ -399,6 +399,39 @@ sequenceDiagram
 
 ---
 
+### Workflow 6: Zero-Disk Secret Injection & Subprocess Execution (`ciphervault run`)
+
+To eliminate plaintext `.env` files from developer laptops and production instances, `ciphervault run` streams secrets directly into child process environments:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / CI Pipeline
+    participant CLI as CipherVault CLI Engine
+    participant Store as Local SQLite Store (or Operators)
+    participant Decrypt as In-Memory Decryption Engine
+    participant Parser as Zero-Copy Dotenv Parser
+    participant Child as Spawned Child Process (e.g. Node / Cargo / Python)
+
+    Dev->>CLI: ciphervault run [--env-file ...] -- npm start
+    CLI->>Store: Read active snapshot manifest & encrypted chunks
+    CLI->>Decrypt: Decrypt chunks in RAM using VaultEpochKey (zero disk writes)
+    Decrypt-->>CLI: DecryptedFile plaintexts in volatile heap
+    CLI->>Parser: Parse KEY=VALUE pairs & strip comments/quotes
+    Parser-->>CLI: In-memory environment variable key-value map
+    CLI->>Decrypt: Zeroize in-memory file buffers (Zeroize::zeroize)
+    CLI->>Child: Spawn child process with injected environment variables
+    Child-->>CLI: Inherit stdio and run application
+    Child-->>Dev: Execution completed (Exit status code propagated)
+```
+
+**Zero-Disk Security Invariants:**
+* Plaintext credentials never touch disk, SSD swap blocks, or temporary files.
+* Decrypted buffers are wiped with memory zeroization before child execution begins.
+* `--dry-run` enables developers and security teams to inspect configured variable names without printing secret values or executing commands.
+
+---
+
 ## 6. Security Invariants Matrix
 
 | Attack / Failure Vector | Mitigating Subsystem | Cryptographic / Architectural Guarantee |

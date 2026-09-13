@@ -182,6 +182,29 @@ start-watcher.bat
 ```
 Listens to native OS filesystem save events on tracked secret files. Any time you edit and save `.env` in your editor, CipherVault debounces for 2 seconds, creates a FastCDC snapshot, and replicates to 3/3 operators in the background.
 
+### 10. Zero-Disk Secret Injection (`ciphervault run`)
+
+Execute your applications with decrypted secrets directly injected into their process environment in volatile RAM **without ever writing plaintext `.env` files to disk**:
+
+```sh
+# Execute command with secrets injected into environment
+ciphervault run -- npm start
+ciphervault run -- cargo run
+ciphervault run -- docker compose up
+
+# Inspect decrypted secret keys without executing or exposing values
+ciphervault run --dry-run -- node server.js
+
+# Target a specific secret environment file
+ciphervault run --env-file .env.production -- npm start
+
+# Hermetic isolation (strip host environment variables)
+ciphervault run --no-inherit -- python main.py
+
+# Inject runtime overrides on the fly
+ciphervault run --set PORT=8080 DEBUG=true -- npm start
+```
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
@@ -256,6 +279,7 @@ The device signing private key never leaves the secure element of the physical c
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser]` | Launches embedded self-contained Web Dashboard and API server. |
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive Terminal User Interface (TUI) dashboard with live operator polling and hotkeys. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync]` | Listens to native OS filesystem save events on tracked secret files; auto-snapshots and pushes to operators on save. |
+| `ciphervault run` | `[-s/--snapshot <HEX>] [-e/--env-file <FILE>] [--no-inherit] [--dry-run] [-q/--quiet] [--set <K=V...>] -- <CMD...>` | Injects decrypted secrets directly into child process environment in volatile RAM (zero disk exposure). |
 
 ---
 

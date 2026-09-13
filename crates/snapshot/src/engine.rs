@@ -290,15 +290,21 @@ pub fn validate_safe_relative_path(path_str: &str) -> Result<(), SnapshotError> 
 
 const MAX_RESTORE_FILE_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
 
-/// Restores snapshot files into a destination directory cleanly, atomically, and securely.
-pub fn restore_snapshot(
-    target_dir: &Path,
+/// A decrypted file from a snapshot stored strictly in memory.
+#[derive(Debug, Clone)]
+pub struct DecryptedFile {
+    pub relative_path: String,
+    pub plaintext: Vec<u8>,
+}
+
+/// Decrypts all files from a snapshot manifest strictly in memory without writing anything to disk.
+pub fn decrypt_snapshot(
     vault_id: &[u8; 32],
     epoch_key: &VaultEpochKey,
     epoch: u64,
     encrypted_manifest: &[u8],
     chunks: &[ChunkWireObject],
-) -> Result<Vec<PathBuf>, SnapshotError> {
+) -> Result<Vec<DecryptedFile>, SnapshotError> {
     let manifest_key = epoch_key.derive_manifest_key(epoch)?;
     let aad = [
         b"CipherVault-Manifest:",
@@ -316,14 +322,8 @@ pub fn restore_snapshot(
         chunk_map.insert(cid, chunk);
     }
 
-    // 2. Phase 1: Decrypt and verify ALL files in memory first.
-    // If ANY file fails integrity, chunk lookup, or safety checks, fail immediately without touching destination files.
-    struct VerifiedFile {
-        rel_path: PathBuf,
-        plaintext: Vec<u8>,
-    }
-
-    let mut verified_files = Vec::new();
+    // 2. Decrypt and verify ALL files in memory
+    let mut decrypted_files = Vec::new();
 
     for entry in manifest.files {
         if entry.is_deleted {
@@ -332,7 +332,6 @@ pub fn restore_snapshot(
 
         // Sanitize path against directory traversal, Windows reserved names, and streams
         validate_safe_relative_path(&entry.relative_path)?;
-        let rel_path = PathBuf::from(&entry.relative_path);
 
         // Bounds enforcement on input schema
         if entry.file_version_key.len() != 32 {
@@ -406,18 +405,33 @@ pub fn restore_snapshot(
             });
         }
 
-        verified_files.push(VerifiedFile {
-            rel_path,
+        decrypted_files.push(DecryptedFile {
+            relative_path: entry.relative_path,
             plaintext,
         });
     }
 
-    // 3. Phase 2: All files passed verification! Now publish atomically to target directory.
+    Ok(decrypted_files)
+}
+
+/// Restores snapshot files into a destination directory cleanly, atomically, and securely.
+pub fn restore_snapshot(
+    target_dir: &Path,
+    vault_id: &[u8; 32],
+    epoch_key: &VaultEpochKey,
+    epoch: u64,
+    encrypted_manifest: &[u8],
+    chunks: &[ChunkWireObject],
+) -> Result<Vec<PathBuf>, SnapshotError> {
+    let verified_files = decrypt_snapshot(vault_id, epoch_key, epoch, encrypted_manifest, chunks)?;
+
+    // Phase 2: All files passed verification! Now publish atomically to target directory.
     fs::create_dir_all(target_dir)?;
     let mut restored_paths = Vec::new();
 
     for vf in verified_files {
-        let out_path = target_dir.join(&vf.rel_path);
+        let rel_path = PathBuf::from(&vf.relative_path);
+        let out_path = target_dir.join(&rel_path);
 
         // Symlink / junction defense: check target and its parent chain
         let mut check_path = out_path.clone();
@@ -602,6 +616,59 @@ mod tests {
             }
             other => panic!("Expected InvalidInput error, got: {:?}", other),
         }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_decrypt_snapshot_in_memory() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("cv_decrypt_mem_{}", rand::random::<u64>()));
+        let vault_root = temp_dir.join("vault_root");
+        fs::create_dir_all(&vault_root).unwrap();
+
+        let env_file = vault_root.join(".env");
+        fs::write(
+            &env_file,
+            b"DATABASE_URL=postgres://localhost\nSECRET_KEY=12345",
+        )
+        .unwrap();
+
+        let tracked = vec![(PathBuf::from(".env"), [1u8; 32])];
+        let vault_id = [0x77u8; 32];
+        let epoch_key = VaultEpochKey::generate();
+        let dev_sk = generate_signing_key();
+        let dev_id = [0x88u8; 32];
+
+        let snap = create_snapshot(
+            &vault_root,
+            &tracked,
+            &vault_id,
+            1,
+            &epoch_key,
+            Vec::new(),
+            &dev_id,
+            1,
+            1,
+            &dev_sk,
+        )
+        .unwrap();
+
+        let decrypted = decrypt_snapshot(
+            &vault_id,
+            &epoch_key,
+            1,
+            &snap.encrypted_manifest,
+            &snap.chunks,
+        )
+        .unwrap();
+
+        assert_eq!(decrypted.len(), 1);
+        assert_eq!(decrypted[0].relative_path, ".env");
+        assert_eq!(
+            decrypted[0].plaintext,
+            b"DATABASE_URL=postgres://localhost\nSECRET_KEY=12345"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

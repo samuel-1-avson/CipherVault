@@ -13,8 +13,8 @@ pub use chunker::{
     MIN_CHUNK_SIZE, MIN_PADDING_SIZE,
 };
 pub use engine::{
-    create_snapshot, create_snapshot_with_signer, restore_snapshot, validate_safe_relative_path,
-    DeviceSigner, SnapshotOutput,
+    create_snapshot, create_snapshot_with_signer, decrypt_snapshot, restore_snapshot,
+    validate_safe_relative_path, DecryptedFile, DeviceSigner, SnapshotOutput,
 };
 pub use error::SnapshotError;
 pub use fastcdc::{
