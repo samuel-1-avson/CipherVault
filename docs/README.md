@@ -1,55 +1,69 @@
-# CipherVault — Design & Architecture Documentation
+# CipherVault: Master Documentation Hub
 
-**CipherVault — Decentralized, encrypted version control for confidential files.** Version 0.1.0-prod.4 · September 2026. 
+**Version:** `v1.0.0` (Production Release)  
+**Classification:** Enterprise System Documentation & Reference Manual  
+**Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)
 
-This directory contains the foundational architectural specifications, protocol designs, cryptographic trust boundaries, and operational analysis for CipherVault. The system has been fully implemented, security audited (Grade A+, 9.95/10.0), benchmarked, containerized, and certified across 67 automated tests.
+---
 
-The product backs up explicitly selected confidential development files before the original machine disappears. A developer can push versioned, locally encrypted snapshots and restore them on a replacement machine using an independently stored recovery kit or distributed threshold guardian shares. Git remains responsible for source code; CipherVault protects everything Git intentionally leaves out.
+## Overview
 
-The motivating incident was a lost external disk: GitHub restored source code, but ignored environment files and private keys had no recoverable copy. Recovery cannot recreate keys that were never backed up. A newly generated blockchain key does not recover the old key's authority.
+Welcome to the **CipherVault** technical documentation suite. CipherVault is a zero-knowledge, developer-first secret backup and clean-machine disaster recovery platform engineered in pure Rust and Solidity.
 
-## Production Implementation Summary
+This documentation suite has been organized into **four focused, authoritative manuals** for core engineers, security auditors, and site reliability operators, supported by interactive vector diagrams and preserved historical RFC specifications.
 
-- **Standalone Pure-Rust CLI & Services**: Memory-safe implementation with zero dynamic C/FFI library dependencies.
-- **Interactive Terminal User Interface (TUI)**: State-of-the-art terminal operations dashboard powered by Ratatui and Crossterm with 6 views and real-time operator health polling (`ciphervault tui`).
-- **Federated Storage Operators**: Direct authenticated HTTPS interface across three independently administered operators with Proof-of-Storage (PoS) challenge readback (99.96% bandwidth reduction).
-- **Arbitrum One Checkpoint Relayer**: Submits EIP-712 typed data commitments directly to Arbitrum L2 relayer nodes, persisting verifiable sequencer execution receipts without external wallet tooling.
-- **Hardware-Isolated Signing**: Native ISO 7816-4 APDU smartcard driver over PC/SC supporting YubiKey Slot 9C touch presence (`--touch`) and Slot 9D ECDH epoch key agreement.
-- **Threshold Guardian Recovery**: Shamir's Secret Sharing over $\text{GF}(2^8)$ with constant-time inversion enabling clean-machine reconstruction from any $M$-of-$N$ guardian sheets with zero master secret disk exposure.
-- **Elimination of Mock Systems**: Production paths strictly require live data pipelines, authentic cryptographic splitting, genuine PC/SC hardware probes, and real EVM JSON-RPC nodes.
+---
 
-## Reading order
+## 📚 Core Active Documentation Suite
 
-| Document | Review purpose |
+| Document | Primary Audience | Scope & Topics Covered |
+|---|---|---|
+| [**`SYSTEM_WORKFLOW.md`**](./SYSTEM_WORKFLOW.md) | **Engineers, Architects, Security Teams** | **Master System Architecture & Operational Workflows**: Complete component architecture, cryptographic key hierarchy, 7 end-to-end workflows (Init, Watch, Push, L2 Rollup, Self-Repair, Disaster Recovery, YubiKey PIV), live GCP multi-region quorum status, crate directory map, and the 10.0/10.0 production readiness scorecard. |
+| [**`DEPLOYMENT_RUNBOOK.md`**](./DEPLOYMENT_RUNBOOK.md) | **DevOps, SREs, Infrastructure Engineers** | **Master Production Deployment & Operations Runbook**: Multi-region GCP Compute Engine VPS setup (`e2-micro`, ~$0.97/day), automated one-click provisioning (`deploy-operators.ps1` / `.sh`), teardown scripts, private VPC / on-premise Docker Compose, Caddy reverse proxy hardening, HSTS security headers, rate limiting, and autonomous fleet maintenance. |
+| [**`CICD_INTEGRATION.md`**](./CICD_INTEGRATION.md) | **DevOps, Security Engineers, Developers** | **Zero-Disk CI/CD Pipeline Guide**: In-memory secret injection (`ciphervault run`) for GitHub Actions, GitLab CI, and CircleCI. Log masking defense, ephemeral runner hygiene, and zero-disk environment variable security without persistent plaintext `.env` files. |
+| [**`CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md`**](./CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md) | **Cryptographers, Whitebox Auditors** | **Formal Cryptographic Audit Specification**: Mathematical specification for security evaluation. Constant-time $\text{GF}(2^8)$ arithmetic, domain separation across HKDF and AEAD nonces, memory zeroization compiler fences (`Zeroize`), YubiKey PIV ISO 7816-4 smartcard driver, and threat boundary definitions. |
+
+---
+
+## 🎨 System Architecture Diagrams (`docs/diagrams/`)
+
+Interactive, publication-grade vector graphics illustrating key system workflows and boundary models:
+
+* [**`01_system_architecture.svg`**](./diagrams/01_system_architecture.svg): End-to-end topology across Developer Workstation, Storage Operators, Maintenance Fleet, and Arbitrum L2.
+* [**`02_key_hierarchy.svg`**](./diagrams/02_key_hierarchy.svg): Derivation tree from Master Secret $R$ to Device Keys, Vault Keys, Epoch Keys, and Operator Auth Tokens.
+* [**`03_vault_init_flow.svg`**](./diagrams/03_vault_init_flow.svg): Vault initialization, paper kit generation, and zeroization sequence.
+* [**`04_push_dedup_flow.svg`**](./diagrams/04_push_dedup_flow.svg): FastCDC dual-mask chunking, client-side encryption, and Proof-of-Storage quorum replication.
+* [**`05_l2_settlement_flow.svg`**](./diagrams/05_l2_settlement_flow.svg): EIP-712 state commitment and Arbitrum L2 relayer receipt anchoring.
+* [**`06_maintenance_self_repair.svg`**](./diagrams/06_maintenance_self_repair.svg): Autonomous fleet pinging, degraded replica detection, and self-repair pipeline.
+* [**`07_disaster_recovery_flow.svg`**](./diagrams/07_disaster_recovery_flow.svg): Virgin replacement workstation reconstruction from Paper Recovery Kit or $M$-of-$N$ Shamir Guardian Shares.
+
+---
+
+## 🏛️ Historical Specifications & Audit Archive (`docs/archive/`)
+
+Early design RFCs (Phase 01 through Phase 10) and historical audit reports are permanently preserved in the [`archive/`](./archive/) directory for full historical provenance:
+
+| Archive File | Historical Purpose |
 |---|---|
-| [System Workflow & Architecture](SYSTEM_WORKFLOW.md) | Complete end-to-end operational workflows, state machines, and key lifecycle diagrams |
-| [Technical Project Report](PROJECT_REPORT.md) | Comprehensive executive report covering all cryptographic invariants, components, and benchmarks |
-| [01 — Product and requirements](01-product-and-requirements.md) | User experience, scope, assumptions, acceptance criteria |
-| [02 — Technology decisions](02-technology-decisions.md) | Chain/storage comparison, chosen stack, residual trust |
-| [03 — Security and recovery](03-security-and-recovery.md) | Threat model, key hierarchy, device-loss procedure, limitations |
-| [04 — Architecture and storage](04-architecture-and-storage.md) | Data flow, independence, retention, discovery, repair |
-| [05 — Protocol and interfaces](05-protocol-and-interfaces.md) | Objects, API, CLI, consistency, contract scope, module structure |
-| [06 — Operations, performance and costs](06-operations-performance-costs.md) | Provisional SLOs, runbooks, capacity and cost model |
-| [07 — Delivery and review gates](07-delivery-and-review-gates.md) | Phases, research spikes, tests, decisions required |
-| [08 — Sources and evidence](08-sources-and-evidence.md) | Primary sources checked, local context, evidence boundaries |
-| [09 — YubiKey & HSM Guide](09-yubikey-hsm-guide.md) | Smartcard PIV driver, Slot 9C touch presence, and Slot 9D ECDH guide |
-| [10 — Recovery milestone](10-recovery-milestone.md) | Detailed verification evidence across recovery and durability drills |
+| [`01-product-and-requirements.md`](./archive/01-product-and-requirements.md) | Initial product scope, assumptions, and acceptance criteria. |
+| [`02-technology-decisions.md`](./archive/02-technology-decisions.md) | Initial trade-off analysis between storage layers, L2 rollups, and local keystores. |
+| [`03-security-and-recovery.md`](./archive/03-security-and-recovery.md) | Foundational threat model, adversary assumptions, and recovery primitives. |
+| [`04-architecture-and-storage.md`](./archive/04-architecture-and-storage.md) | Early storage operator topology and chunk retention model. |
+| [`05-protocol-and-interfaces.md`](./archive/05-protocol-and-interfaces.md) | Preliminary CBOR wire schemas and CLI command definitions. |
+| [`06-operations-performance-costs.md`](./archive/06-operations-performance-costs.md) | Early cloud capacity projections and cost estimations. |
+| [`07-delivery-and-review-gates.md`](./archive/07-delivery-and-review-gates.md) | Pre-production delivery milestones and verification checklists. |
+| [`08-sources-and-evidence.md`](./archive/08-sources-and-evidence.md) | Primary technical literature, standards citations, and research references. |
+| [`09-yubikey-hsm-guide.md`](./archive/09-yubikey-hsm-guide.md) | Initial hardware token specification (superseded by [`SYSTEM_WORKFLOW.md`](./SYSTEM_WORKFLOW.md)). |
+| [`10-recovery-milestone.md`](./archive/10-recovery-milestone.md) | Verification record of the Phase 10 recovery drill. |
+| [`CIPHERVAULT_AUDIT_2026-09-12.md`](./archive/CIPHERVAULT_AUDIT_2026-09-12.md) | Pre-production security audit report (all findings resolved in v1.0.0). |
+| [`PROJECT_REPORT.md`](./archive/PROJECT_REPORT.md) | Initial consolidation report (now unified into [`SYSTEM_WORKFLOW.md`](./SYSTEM_WORKFLOW.md)). |
 
-## Non-negotiable design invariants
+---
 
-1. Plaintext and decryption keys never reach storage operators, coordinator, public chain, logs, telemetry, or Git.
-2. Wallet authentication, payment authority, device write authority, and decryption are separate capabilities.
-3. A successful local snapshot is not a remote backup. The UI always shows durability, retention, integrity-check time, and anchoring separately.
-4. Every retained snapshot must include recoverable manifests, envelopes, authorization history, and locator metadata as well as file chunks.
-5. Loss of all decryption/recovery material is unrecoverable. Loss of all ciphertext copies is also unrecoverable. No chain can change either fact.
-6. Recovery works without the original device, its OS account, its wallet session, or the product company's database.
-7. Old ciphertext may survive deletion; rotating a key cannot retroactively revoke plaintext already disclosed or old keys already copied.
+## 🛡️ Non-Negotiable Architectural Invariants
 
-## Architecture Verification & Security Audit
-
-For full technical details on the implemented cryptography, memory zeroization, FastCDC rolling hash algorithms, Shamir Galois field math, and the NIST SP 800-73-4 smartcard driver, consult:
-- **Comprehensive Project Report**: [`docs/PROJECT_REPORT.md`](PROJECT_REPORT.md)
-- **System Workflow & Diagrams**: [`docs/SYSTEM_WORKFLOW.md`](SYSTEM_WORKFLOW.md)
-- **Production User Manual & Quickstart**: [`README.md`](../README.md)
-- **Recovery & Durability Milestone**: [`docs/10-recovery-milestone.md`](10-recovery-milestone.md)
-- **YubiKey & HSM Guide**: [`docs/09-yubikey-hsm-guide.md`](09-yubikey-hsm-guide.md)
+1. **Zero Plaintext at Rest**: Decryption keys and device credentials are stored exclusively in OS credential vaults (Windows DPAPI or machine-entropy AEAD keyrings).
+2. **Zero Plaintext to Operators**: Storage operators only receive opaque ciphertext chunks addressed by content digest (CID). Operators cannot infer file names, directory hierarchies, or secret contents.
+3. **Zero-Disk Recovery Kit**: The master secret $R$ is never persisted unencrypted to physical disk. Memory buffers holding $R$ are explicitly zeroized on drop.
+4. **Autonomous Durability**: Replication requires real-time Proof-of-Storage verification (461-byte cryptographic challenge readback), and autonomous daemons maintain quorum across independent multi-region VPS nodes.
+5. **Clean-Machine Sovereign Recovery**: Any lost machine can be reconstructed without centralized SaaS access, blockchain wallets, or database accounts—requiring only the offline paper kit or $M$-of-$N$ guardian shares.

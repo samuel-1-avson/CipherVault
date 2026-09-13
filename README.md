@@ -4,17 +4,17 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Audit: Evidence-Based (2026-09-12)](https://img.shields.io/badge/Security%20Audit-Reviewed%20(2026--09--12)-blue.svg)](CIPHERVAULT_AUDIT_2026-09-12.md)
-[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(Workspace%20Suite)-success.svg)](CIPHERVAULT_AUDIT_2026-09-12.md)
+[![Audit: Evidence-Based](https://img.shields.io/badge/Security%20Audit-Specification%20Hardened-blue.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
+[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(Workspace%20Suite)-success.svg)](dist/RELEASE_NOTES.md)
 [![Status: Production Ready](https://img.shields.io/badge/Status-Production%20Ready%20(v1.0.0)-success.svg)](dist/RELEASE_NOTES.md)
-[![Report: Technical Audit](https://img.shields.io/badge/Report-Full%20Project%20Report-blue.svg)](docs/PROJECT_REPORT.md)
+[![Report: Master Architecture](https://img.shields.io/badge/Architecture-Master%20System%20Report-blue.svg)](docs/SYSTEM_WORKFLOW.md)
 
 
 **Decentralized, zero-knowledge version control and disaster recovery system for confidential development secrets.**
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
-[Quickstart](#-3-minute-quickstart) • [Architecture](#-architecture--trust-boundary) • [Terminal UI](#-interactive-terminal-user-interface-tui) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Hardware Tokens](#-hardware-security-tokens--yubikey-piv) • [CLI Manual](#-cli-command-reference) • [Docker Cluster](#-docker-compose--cloud-cluster) • [Technical Report](docs/PROJECT_REPORT.md)
+[Quickstart](#-3-minute-quickstart) • [Architecture](docs/SYSTEM_WORKFLOW.md) • [Terminal UI](#-interactive-terminal-user-interface-tui) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Hardware Tokens](#-hardware-security-tokens--yubikey-piv) • [Deployment Runbook](docs/DEPLOYMENT_RUNBOOK.md) • [CI/CD Guide](docs/CICD_INTEGRATION.md) • [Docs Hub](docs/README.md)
 
 </div>
 
@@ -418,6 +418,12 @@ open http://localhost:8080
 | `operator-3` | `ciphervault-operator-3` | `8203` | Tertiary storage operator |
 | `maintenance` | `ciphervault-maintenance` | Internal | Periodic replication auditor & `fleet.db` scheduler |
 | `dashboard` | `ciphervault-dashboard` | `8080` | Self-contained single-page inspector & REST API |
+
+### Multi-Region Cloud VPS Cluster (GCP)
+
+CipherVault supports automated deployment to multi-region Google Cloud Platform VPS nodes across Iowa (`us-central1`) and South Carolina (`us-east1`) for high availability and physical fault isolation at ~$0.97/day.
+
+*(See [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) for full cloud provisioning scripts, Caddy ingress hardening, cost breakdown, and teardown guides)*
 
 ### Automated Cluster Verification Drill
 
