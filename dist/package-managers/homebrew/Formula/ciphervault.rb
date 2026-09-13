@@ -1,22 +1,22 @@
 class Ciphervault < Formula
-  desc "Decentralized, encrypted version control for confidential files"
+  desc "Decentralized, zero-knowledge encrypted version control for confidential files"
   homepage "https://github.com/samuel-1-avson/CipherVault"
-  version "0.1.0-beta.2"
-  license "MIT"
+  version "1.0.0"
+  license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v0.1.0-beta.2/ciphervault-v0.1.0-beta.2-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.0/ciphervault-v1.0.0-aarch64-apple-darwin.tar.gz"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v0.1.0-beta.2/ciphervault-v0.1.0-beta.2-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.0/ciphervault-v1.0.0-x86_64-apple-darwin.tar.gz"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v0.1.0-beta.2/ciphervault-v0.1.0-beta.2-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.0/ciphervault-v1.0.0-aarch64-unknown-linux-gnu.tar.gz"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v0.1.0-beta.2/ciphervault-v0.1.0-beta.2-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.0/ciphervault-v1.0.0-x86_64-unknown-linux-gnu.tar.gz"
     end
   end
 
@@ -37,7 +37,9 @@ class Ciphervault < Formula
         ciphervault init
         ciphervault track .env
         ciphervault push -m "Initial commit"
-        ciphervault ui
+        ciphervault diff
+        ciphervault run -- npm start
+        ciphervault peers
     EOS
   end
 

@@ -29,6 +29,14 @@ foreach ($port in $ports) {
         Write-Host "   Public Key:  $($info.operator_signing_pk_hex.Substring(0, 16))..." -ForegroundColor DarkGray
         Write-Host "   Terms:       $($info.retention_terms)" -ForegroundColor DarkGray
 
+        # Probe dynamic P2P gossip peer endpoint
+        $peers = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/peers" -Method Get -TimeoutSec 5
+        Write-Host "   P2P Gossip:  $($peers.Count) active peer(s) discovered" -ForegroundColor DarkGray
+
+        # Probe out-of-band authorization challenge endpoint
+        $challenges = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/auth/challenges/pending" -Method Get -TimeoutSec 5
+        Write-Host "   Auth Gates:  $($challenges.Count) pending approval challenge(s)" -ForegroundColor DarkGray
+
         if ($keys -contains $info.operator_signing_pk_hex) {
             Write-Error "CRITICAL: Duplicate operator signing key detected between operators!"
         }
@@ -39,7 +47,7 @@ foreach ($port in $ports) {
     }
 }
 
-Write-Host "`nAll 3 container operators are healthy and cryptographically unique!" -ForegroundColor Green
+Write-Host "`nAll 3 container operators are healthy, cryptographically unique, and P2P/Auth enabled!" -ForegroundColor Green
 
 # 2. Probe the containerized Web Dashboard APIs
 Write-Host "`nProbing containerized Web Dashboard endpoints (http://127.0.0.1:8080)..." -ForegroundColor Cyan
