@@ -1,0 +1,35 @@
+{
+    admin off
+    email {$ACME_EMAIL:admin@example.com}
+}
+
+(security_headers) {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}
+
+{$WEB_DOMAIN:vault.example.com} {
+    import security_headers
+    encode zstd gzip
+
+    # Reverse proxy to the containerized CipherVault UI daemon
+    reverse_proxy 127.0.0.1:8080 {
+        header_up Host {host}
+        header_up X-Real-IP {remote}
+        header_up X-Forwarded-For {remote}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Crucial: disable response buffering for real-time SSE telemetry
+        flush_interval -1
+
+        transport http {
+            keepalive 60s
+        }
+    }
+}

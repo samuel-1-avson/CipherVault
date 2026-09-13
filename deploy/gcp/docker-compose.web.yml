@@ -1,0 +1,35 @@
+services:
+  ciphervault-ui:
+    image: ciphervault-ui:gcp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - CIPHERVAULT_OPERATORS=http://136.65.43.84 http://34.9.157.167 http://34.73.53.40
+      - RUST_LOG=info
+    volumes:
+      - vault_data:/var/lib/ciphervault-ui
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/vault"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - WEB_DOMAIN=${WEB_DOMAIN:-vault.example.com}
+      - ACME_EMAIL=${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - /opt/ciphervault-ui/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - ciphervault-ui
+
+volumes:
+  vault_data:
+  caddy_data:
+  caddy_config:
