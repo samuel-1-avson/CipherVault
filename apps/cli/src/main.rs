@@ -244,21 +244,34 @@ enum Commands {
         operators: Option<Vec<String>>,
     },
 
-    /// Launch the local web dashboard and visual vault inspector
+    /// Open the production cloud dashboard or launch an offline local inspector
     Ui {
-        #[arg(long, default_value = "127.0.0.1", help = "Host address to bind to")]
+        #[arg(long, default_value = "127.0.0.1", help = "Host address to bind to in local mode")]
         host: String,
 
         #[arg(
             short,
             long,
             default_value = "8080",
-            help = "Port to serve web dashboard on"
+            help = "Port to serve web dashboard on in local mode"
         )]
         port: u16,
 
         #[arg(long, help = "Do not automatically open default web browser")]
         no_browser: bool,
+
+        #[arg(
+            long,
+            help = "Run an isolated local offline server instead of opening the production cloud dashboard"
+        )]
+        local: bool,
+
+        #[arg(
+            long,
+            default_value = "https://vault.cipherv.online",
+            help = "Production cloud dashboard URL"
+        )]
+        url: String,
     },
 
     /// Launch interactive terminal user interface (TUI)
@@ -578,7 +591,9 @@ async fn run(cli: Cli) -> Result<()> {
             host,
             port,
             no_browser,
-        } => cmd_ui(host, port, no_browser).await,
+            local,
+            url,
+        } => cmd_ui(host, port, no_browser, local, url).await,
         Commands::Tui { poll_ms } => tui::run_tui(poll_ms).await,
         Commands::Watch { debounce, sync } => cmd_watch(debounce, sync).await,
         Commands::Run {
@@ -3934,7 +3949,72 @@ const UI_INDEX_HTML: &str = include_str!("../../ui/index.html");
 const UI_STYLES_CSS: &str = include_str!("../../ui/styles.css");
 const UI_APP_JS: &str = include_str!("../../ui/app.js");
 
-async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("powershell")
+            .args(["-Command", &format!("Start-Process '{}'", url)])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+async fn cmd_ui(
+    host: String,
+    port: u16,
+    no_browser: bool,
+    local: bool,
+    cloud_url: String,
+) -> Result<()> {
+    if !local {
+        let vault_info = get_vault_store().ok();
+        let target_url = if let Some(ref store) = vault_info {
+            if let Ok(vault_id) = store.get_vault_id() {
+                format!("{}/?vault={}", cloud_url.trim_end_matches('/'), hex::encode(vault_id))
+            } else {
+                cloud_url.clone()
+            }
+        } else {
+            cloud_url.clone()
+        };
+
+        println!(
+            "{}",
+            "=======================================================".cyan()
+        );
+        println!(
+            "{}",
+            "  CipherVault Cloud Dashboard & Visual Secrets Explorer"
+                .bold()
+                .green()
+        );
+        println!(
+            "{}",
+            "=======================================================".cyan()
+        );
+        println!("  Dashboard URL:  {}", target_url.bold().yellow());
+        if let Some(ref store) = vault_info {
+            if let Ok(vault_id) = store.get_vault_id() {
+                println!("  Active Vault:   {}", hex::encode(vault_id).cyan());
+            }
+        }
+        println!("  Cluster Status: 3 Live GCP Multi-Region Operators (Iowa & S. Carolina)");
+        println!("  Offline Mode:   Pass '--local' to run an isolated offline server instead.\n");
+
+        if !no_browser {
+            println!("Opening {} in default web browser...", target_url.cyan());
+            open_browser(&target_url);
+        }
+        return Ok(());
+    }
+
     use axum::{http::header, response::Html, routing::get, Router};
 
     let app = Router::new()
@@ -4022,7 +4102,7 @@ async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
     );
     println!(
         "{}",
-        "  CipherVault Web Dashboard & Vault Inspector"
+        "  CipherVault Local Web Dashboard & Vault Inspector"
             .bold()
             .green()
     );
@@ -4034,33 +4114,21 @@ async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
         "  Dashboard URL:  {}",
         format!("http://{}:{}", host, port).bold().yellow()
     );
-    println!("  Serving Mode:   Self-Contained Embedded UI");
+    println!("  Serving Mode:   Isolated Local Offline Server");
     println!("  Press Ctrl+C to stop server.\n");
 
     if !no_browser {
-        let url = format!("http://127.0.0.1:{}", port);
+        let local_url = format!("http://127.0.0.1:{}", port);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-            #[cfg(target_os = "windows")]
-            {
-                let _ = std::process::Command::new("powershell")
-                    .args(["-Command", &format!("Start-Process '{}'", url)])
-                    .spawn();
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let _ = std::process::Command::new("open").arg(&url).spawn();
-            }
-            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-            {
-                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-            }
+            open_browser(&local_url);
         });
     }
 
     axum::serve(listener, app).await?;
     Ok(())
 }
+
 
 async fn api_vault_handler() -> impl axum::response::IntoResponse {
     let store_res = get_vault_store();
