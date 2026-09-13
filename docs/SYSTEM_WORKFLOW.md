@@ -17,6 +17,37 @@
 4. **Autonomous Durability**: Replication requires proof-of-storage readback, while an autonomous maintenance fleet monitors replica durability and triggers self-repair across independent nodes.
 5. **Trustless L2 Settlement**: Vault head state commitments can be anchored on Arbitrum L2, providing immutable sequencing and tamper-evident audit trails.
 
+### Developer Operating Model: CipherVault vs. Traditional SaaS (e.g., GitHub)
+
+Unlike traditional cloud SaaS tools where developers must register centralized accounts with email/passwords and entrust plaintext to third-party servers, CipherVault operates on **self-sovereign cryptography and zero-knowledge federated storage**:
+
+| Dimension | GitHub / Cloud SaaS | CipherVault Architecture |
+|---|---|---|
+| **Identity & Access** | Centralized username, password, OAuth, and API tokens. | **Self-sovereign cryptographic keypairs** derived locally from Master Secret $R$. No email, account, or registration. |
+| **Where Files Reside** | Centralized multi-tenant servers (e.g., Microsoft Azure / AWS). | **Untrusted Storage Operator Federation** holding opaque, client-side encrypted chunks. |
+| **Server Knowledge** | Host servers can inspect plaintexts, files, and metadata. | **Zero Knowledge**: Operators only observe BLAKE2b content hashes (CIDs). |
+| **New Computer Recovery** | Log in with password + 2FA $\to$ clone repo. | Download binary $\to$ run `ciphervault recover --kit kit.txt` (or Shamir shares) to restore bit-for-bit onto virgin machine. |
+| **Blockchain / Wallet** | None. | **No cryptocurrency wallet required** (No MetaMask, seed phrases, or gas tokens for standard developer workflows). |
+| **Developer Synchronization** | Explicit `git push` / `git pull`. | **Dual Operating Modes**: Explicit manual CLI (`push`) or fully automated background file watcher (`watch --sync`). |
+
+### The Two Developer Operating Modes
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    DEVELOPER WORKSTATION                    │
+├──────────────────────────────┬──────────────────────────────┤
+│  MODE 1: DELIBERATE MANUAL   │  MODE 2: AUTONOMOUS SYNC     │
+│  (Like Git / Version Control)│  (Like Dropbox / Continuous) │
+├──────────────────────────────┼──────────────────────────────┤
+│ • ciphervault diff           │ • ciphervault watch --sync   │
+│   (Inspect masked revisions) │   (Background kernel daemon) │
+│ • ciphervault push -m "msg"  │ • Auto-detects editor saves  │
+│   (Deliberate snapshot sync) │ • 2-second sliding debounce  │
+│ • Custom commit messages     │ • FastCDC chunk dedup & push │
+│ • Explicit team coordination │ • Hands-off silent backup    │
+└──────────────────────────────┴──────────────────────────────┘
+```
+
 ### System Architecture Map
 
 ![CipherVault System Architecture](./diagrams/01_system_architecture.svg)
@@ -432,6 +463,48 @@ sequenceDiagram
 
 ---
 
+### Workflow 7: Autonomous Background File Watcher & Automated Sync (`ciphervault watch`)
+
+CipherVault supports two distinct developer operating modes:
+1. **Manual Mode (`ciphervault push`)**: Traditional Git-style explicit commits with user-supplied commit messages.
+2. **Automated Continuous Mode (`ciphervault watch --sync`)**: Hands-off, real-time background synchronization whenever secrets are updated in developer editors (VS Code, Cursor, IntelliJ, etc.).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer (Editor: VS Code / Cursor)
+    participant FS as Host Filesystem (.env)
+    participant Watcher as Autonomous Agent (ciphervault watch)
+    participant Debounce as 2s Sliding Debounce Buffer
+    participant CDC as FastCDC Engine
+    participant AEAD as ChaCha20-Poly1305 Engine
+    participant Ops as Storage Operator Federation
+
+    Dev->>FS: Saves tracked secret (Ctrl+S in Editor)
+    FS->>Watcher: Kernel event notification (ReadDirectoryChangesW / inotify / FSEvents)
+    Watcher->>Watcher: Check path matches tracked secrets & ignore filters
+    Watcher->>Debounce: Register modification event
+    Note over Watcher,Debounce: Sliding 2-second debounce window collapses rapid multi-saves
+    Debounce->>Watcher: Window elapsed; trigger coherent read
+    Watcher->>FS: Read confidential file bytes & verify write completion
+    Watcher->>CDC: Slices file using FastCDC Gear rolling hash
+    CDC-->>Watcher: Dynamic chunk slices
+    Watcher->>AEAD: Encrypt chunks under FileVersionKey & deterministic nonce
+    AEAD-->>Watcher: Encrypted chunks & CIDs
+    Watcher->>Ops: Replicate new chunks & update snapshot Head
+    Ops-->>Watcher: Replication confirmation (3/3 operators durable)
+    Watcher-->>Dev: Console notification: Snapshot auto-captured and pushed
+```
+
+**Watcher Invariants & Guarantees:**
+* **Native Kernel Event Drivers**: Utilizes `ReadDirectoryChangesW` (Windows), `inotify` (Linux), and `FSEvents` (macOS) for sub-millisecond save detection with zero CPU polling overhead.
+* **Sliding Debounce Window**: Defaults to 2 seconds (`--debounce <SECS>`) to collapse multiple rapid editor saves or autosaves into a single coherent snapshot.
+* **Coherent Read Validation**: Verifies that the file write lock is released and complete before reading bytes into memory.
+* **Content-Defined Deduplication**: FastCDC guarantees that localized edits only re-encrypt changed chunks, minimizing network payload to the cluster.
+* **One-Click Launch**: Can be started in the background via `start-watcher.bat` or added to workstation startup scripts.
+
+---
+
 ### Workflow 8: Encrypted Secret Diffing & Shoulder-Surfing Defense (`ciphervault diff`)
 
 Developers and security engineers can inspect changes between secret revisions without exposing plaintext values to screen recorders or shoulder surfers:
@@ -620,17 +693,19 @@ powershell -ExecutionPolicy Bypass -File deploy/chaos_drill.ps1
 # 4. Verify Live Arbitrum Settlement Deployer
 node scripts/deploy-registry.cjs --network arbitrum_sepolia
 
-# 5. Launch Full Production Multi-Container Cluster
-docker compose up -d
-docker compose ps
-curl http://127.0.0.1:8080/api/vault
+# 5. Launch Hardened Production Ingress & Multi-Container Cluster
+docker compose -f deploy/docker-compose.prod.yml up -d
+docker compose -f deploy/docker-compose.prod.yml ps
 
-# 6. Launch Interactive Terminal Operations Console (TUI)
+# 6. Run Automated Staging & Disaster Verification Drill
+powershell -ExecutionPolicy Bypass -File scripts/verify-cluster.ps1
+
+# 7. Launch Interactive Terminal Operations Console (TUI)
 ciphervault tui
 # or run the one-click Windows launcher:
 .\launch-tui.bat
 
-# 7. Launch Autonomous File Watcher Daemon
+# 8. Launch Autonomous File Watcher Daemon
 ciphervault watch --debounce 2 --sync
 # or run the one-click Windows launcher:
 .\start-watcher.bat
