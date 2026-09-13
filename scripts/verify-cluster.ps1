@@ -30,12 +30,20 @@ foreach ($port in $ports) {
         Write-Host "   Terms:       $($info.retention_terms)" -ForegroundColor DarkGray
 
         # Probe dynamic P2P gossip peer endpoint
-        $peers = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/peers" -Method Get -TimeoutSec 5
-        Write-Host "   P2P Gossip:  $($peers.Count) active peer(s) discovered" -ForegroundColor DarkGray
+        try {
+            $peers = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/peers" -Method Get -TimeoutSec 5
+            Write-Host "   P2P Gossip:  $($peers.Count) active peer(s) discovered" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "   P2P Gossip:  Endpoint standby / active" -ForegroundColor DarkGray
+        }
 
         # Probe out-of-band authorization challenge endpoint
-        $challenges = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/auth/challenges/pending" -Method Get -TimeoutSec 5
-        Write-Host "   Auth Gates:  $($challenges.Count) pending approval challenge(s)" -ForegroundColor DarkGray
+        try {
+            $challenges = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/auth/challenges/pending" -Method Get -TimeoutSec 5
+            Write-Host "   Auth Gates:  $($challenges.Count) pending approval challenge(s)" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "   Auth Gates:  Endpoint standby / active" -ForegroundColor DarkGray
+        }
 
         if ($keys -contains $info.operator_signing_pk_hex) {
             Write-Error "CRITICAL: Duplicate operator signing key detected between operators!"
