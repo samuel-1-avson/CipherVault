@@ -86,6 +86,12 @@
   - Automatic FastCDC chunk snapshot creation and background replication across 3/3 storage operators (`--sync`).
   - One-click launcher: `start-watcher.bat`.
 
+* **Smart `.gitignore` Secret Discovery & Two-Way Sync**:
+  - **Automated `.gitignore` Leak Defense**: `ciphervault track <path>` automatically inspects `.gitignore` and appends newly tracked secrets (e.g. `.env`, `*.key`, `*.pem`) so they can never be accidentally committed to Git. Can be bypassed with `--no-gitignore`.
+  - **Interactive Secret Discovery on `ciphervault init`**: During vault initialization, CipherVault parses `.gitignore`, filters for confidential secret patterns (`.env*`, `*.key`, `*.pem`, `*.crt`, `*secret*`, `*token*`), strictly excludes build artifacts (`node_modules/`, `target/`, `dist/`), and interactively prompts the developer to track discovered secrets.
+  - **Non-Interactive Automation**: `--import-gitignore` flag on `ciphervault init` enables zero-interaction CI/CD pipelines to import all detected secrets immediately.
+  - **On-Demand Discovery**: `ciphervault track --from-gitignore` enables scanning and tracking of confidential patterns found in `.gitignore` at any time.
+
 ---
 
 ## 2. Benchmark & Performance Metrics

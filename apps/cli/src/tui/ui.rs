@@ -4,8 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Clear, HighlightSpacing, Paragraph,
-        Row, Table, Tabs, Wrap,
+        Block, BorderType, Borders, Clear, HighlightSpacing, Paragraph, Row, Table, Tabs, Wrap,
     },
     Frame,
 };
@@ -56,21 +55,38 @@ fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     // 1. Logo / Title
     let logo = Paragraph::new(Line::from(vec![
-        Span::styled("CIPHER", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled("VAULT ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "CIPHER",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "VAULT ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("v0.1", Style::default().fg(Color::DarkGray)),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(Color::Cyan)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(logo, header_layout[0]);
 
     // 2. Tab Navigation
-    let titles: Vec<Line> = TuiTab::ALL
-        .iter()
-        .map(|t| Line::from(t.title()))
-        .collect();
+    let titles: Vec<Line> = TuiTab::ALL.iter().map(|t| Line::from(t.title())).collect();
 
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(Color::DarkGray)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
         .select(app.active_tab as usize)
         .style(Style::default().fg(Color::Gray))
         .highlight_style(
@@ -86,24 +102,33 @@ fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let total_count = app.operators.len();
 
     let (badge_text, badge_color) = if online_count == total_count && total_count > 0 {
-        (format!(" {online_count}/{total_count} QUORUM OK "), Color::Green)
+        (
+            format!(" {online_count}/{total_count} QUORUM OK "),
+            Color::Green,
+        )
     } else if online_count > 0 {
-        (format!(" {online_count}/{total_count} DEGRADED "), Color::Yellow)
+        (
+            format!(" {online_count}/{total_count} DEGRADED "),
+            Color::Yellow,
+        )
     } else {
         (" ALL OFFLINE ".into(), Color::Red)
     };
 
-    let badge = Paragraph::new(Line::from(vec![
-        Span::styled(
-            badge_text,
-            Style::default()
-                .fg(Color::Black)
-                .bg(badge_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]))
+    let badge = Paragraph::new(Line::from(vec![Span::styled(
+        badge_text,
+        Style::default()
+            .fg(Color::Black)
+            .bg(badge_color)
+            .add_modifier(Modifier::BOLD),
+    )]))
     .alignment(Alignment::Center)
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(badge_color)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(badge_color)),
+    );
     frame.render_widget(badge, header_layout[2]);
 }
 
@@ -115,21 +140,26 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     let top_cards = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(main_layout[0]);
 
     // Left Card: Vault Identity & Cryptographic Roots
     let vid_snippet = if app.vault_id_hex.len() > 16 {
-        format!("{}...{}", &app.vault_id_hex[..8], &app.vault_id_hex[app.vault_id_hex.len() - 8..])
+        format!(
+            "{}...{}",
+            &app.vault_id_hex[..8],
+            &app.vault_id_hex[app.vault_id_hex.len() - 8..]
+        )
     } else {
         app.vault_id_hex.clone()
     };
 
     let head_snippet = if app.head_cid_hex.len() > 16 {
-        format!("{}...{}", &app.head_cid_hex[..8], &app.head_cid_hex[app.head_cid_hex.len() - 8..])
+        format!(
+            "{}...{}",
+            &app.head_cid_hex[..8],
+            &app.head_cid_hex[app.head_cid_hex.len() - 8..]
+        )
     } else {
         app.head_cid_hex.clone()
     };
@@ -143,11 +173,21 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let info_text = vec![
         Line::from(vec![
             Span::styled("Vault ID:        ", Style::default().fg(Color::Gray)),
-            Span::styled(vid_snippet, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                vid_snippet,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Active Epoch:    ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("Epoch #{}", app.active_epoch), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("Epoch #{}", app.active_epoch),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Latest Head:     ", Style::default().fg(Color::Gray)),
@@ -159,18 +199,20 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Store Mode:      ", Style::default().fg(Color::Gray)),
-            Span::styled("SQLite WAL (DPAPI Protected at rest)", Style::default().fg(Color::LightGreen)),
+            Span::styled(
+                "SQLite WAL (DPAPI Protected at rest)",
+                Style::default().fg(Color::LightGreen),
+            ),
         ]),
     ];
 
-    let info_block = Paragraph::new(info_text)
-        .block(
-            Block::default()
-                .title(" Vault Cryptographic Identity ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Cyan)),
-        );
+    let info_block = Paragraph::new(info_text).block(
+        Block::default()
+            .title(" Vault Cryptographic Identity ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(info_block, top_cards[0]);
 
     // Right Card: Quick Health & Capacity
@@ -180,7 +222,12 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let health_text = vec![
         Line::from(vec![
             Span::styled("Tracked Files:    ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{} confidential files", app.tracked_files.len()), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{} confidential files", app.tracked_files.len()),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Protected Volume: ", Style::default().fg(Color::Gray)),
@@ -188,29 +235,46 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Total Snapshots:  ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{} commits in DAG", app.snapshots.len()), Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{} commits in DAG", app.snapshots.len()),
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Federation Quorum:", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{online_ops} of {} nodes online", app.operators.len()), Style::default().fg(if online_ops == app.operators.len() { Color::Green } else { Color::Yellow })),
+            Span::styled(
+                format!("{online_ops} of {} nodes online", app.operators.len()),
+                Style::default().fg(if online_ops == app.operators.len() {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                }),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Hardware Token:   ", Style::default().fg(Color::Gray)),
             Span::styled(
-                if app.token_status.token_attached { "YubiKey PIV Slot 9C Active" } else { "No Physical Token" },
-                Style::default().fg(if app.token_status.token_attached { Color::Green } else { Color::DarkGray }),
+                if app.token_status.token_attached {
+                    "YubiKey PIV Slot 9C Active"
+                } else {
+                    "No Physical Token"
+                },
+                Style::default().fg(if app.token_status.token_attached {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                }),
             ),
         ]),
     ];
 
-    let health_block = Paragraph::new(health_text)
-        .block(
-            Block::default()
-                .title(" Federation & Storage Metrics ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Green)),
-        );
+    let health_block = Paragraph::new(health_text).block(
+        Block::default()
+            .title(" Federation & Storage Metrics ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Green)),
+    );
     frame.render_widget(health_block, top_cards[1]);
 
     // Bottom Section: Core Security Axioms & Operational Guidelines
@@ -233,23 +297,28 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         ]),
     ];
 
-    let bottom_block = Paragraph::new(axioms)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .title(" Zero-Knowledge System Invariants ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
+    let bottom_block = Paragraph::new(axioms).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .title(" Zero-Knowledge System Invariants ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     frame.render_widget(bottom_block, main_layout[1]);
 }
 
 fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     if app.tracked_files.is_empty() {
-        let p = Paragraph::new("No files tracked yet. Press [t] to track a file (e.g. .env or secrets/dev.key)")
-            .alignment(Alignment::Center)
-            .block(Block::default().title(" Tracked Files ").borders(Borders::ALL).border_type(BorderType::Rounded));
+        let p = Paragraph::new(
+            "No files tracked yet. Press [t] to track a file (e.g. .env or secrets/dev.key)",
+        )
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .title(" Tracked Files ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        );
         frame.render_widget(p, area);
         return;
     }
@@ -266,7 +335,9 @@ fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             };
 
             let row_style = if i == app.file_table_index {
-                Style::default().bg(Color::Rgb(30, 58, 138)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::Rgb(30, 58, 138))
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -293,12 +364,19 @@ fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let table = Table::new(rows, widths)
         .header(
             Row::new(vec!["#", "File Path", "Size", "File ID", "Disk Status"])
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .bottom_margin(1),
         )
         .block(
             Block::default()
-                .title(format!(" Tracked Confidential Files ({} files) - Press [t] to track new ", app.tracked_files.len()))
+                .title(format!(
+                    " Tracked Confidential Files ({} files) - Press [t] to track new ",
+                    app.tracked_files.len()
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan)),
@@ -310,9 +388,16 @@ fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
 fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     if app.snapshots.is_empty() {
-        let p = Paragraph::new("No snapshots committed yet. Press [p] to create and replicate your first snapshot!")
-            .alignment(Alignment::Center)
-            .block(Block::default().title(" Snapshot History DAG ").borders(Borders::ALL).border_type(BorderType::Rounded));
+        let p = Paragraph::new(
+            "No snapshots committed yet. Press [p] to create and replicate your first snapshot!",
+        )
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .title(" Snapshot History DAG ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        );
         frame.render_widget(p, area);
         return;
     }
@@ -330,13 +415,21 @@ fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             };
 
             let head_badge = if s.is_head {
-                Span::styled(" [HEAD] ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD))
+                Span::styled(
+                    " [HEAD] ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 Span::styled(" commit ", Style::default().fg(Color::DarkGray))
             };
 
             let row_style = if i == app.snapshot_table_index {
-                Style::default().bg(Color::Rgb(30, 58, 138)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::Rgb(30, 58, 138))
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -347,7 +440,10 @@ fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 Span::styled(parent_snippet, Style::default().fg(Color::Gray)),
                 Span::styled(&s.message, Style::default().fg(Color::White)),
                 Span::styled(&s.timestamp_rfc3339, Style::default().fg(Color::Yellow)),
-                Span::styled(format!("{} files", s.files_count), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{} files", s.files_count),
+                    Style::default().fg(Color::White),
+                ),
                 head_badge,
             ])
             .style(row_style)
@@ -366,9 +462,21 @@ fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     let table = Table::new(rows, widths)
         .header(
-            Row::new(vec!["#", "CID", "Parent", "Commit Message", "Timestamp", "Files", "Status"])
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .bottom_margin(1),
+            Row::new(vec![
+                "#",
+                "CID",
+                "Parent",
+                "Commit Message",
+                "Timestamp",
+                "Files",
+                "Status",
+            ])
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .bottom_margin(1),
         )
         .block(
             Block::default()
@@ -396,12 +504,23 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     Color::Red
                 };
                 (
-                    Span::styled("ONLINE", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("{} ms", op.latency_ms), Style::default().fg(lat_color)),
+                    Span::styled(
+                        "ONLINE",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{} ms", op.latency_ms),
+                        Style::default().fg(lat_color),
+                    ),
                 )
             } else {
                 (
-                    Span::styled("OFFLINE", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "OFFLINE",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled("Timeout", Style::default().fg(Color::DarkGray)),
                 )
             };
@@ -428,9 +547,20 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     let table = Table::new(rows, widths)
         .header(
-            Row::new(vec!["#", "Operator ID", "Endpoint URI", "Status", "Latency", "Retention Policy"])
-                .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-                .bottom_margin(1),
+            Row::new(vec![
+                "#",
+                "Operator ID",
+                "Endpoint URI",
+                "Status",
+                "Latency",
+                "Retention Policy",
+            ])
+            .style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .bottom_margin(1),
         )
         .block(
             Block::default()
@@ -453,15 +583,46 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         let metrics_text = vec![
             Line::from(vec![
                 Span::styled("Analyzing File: ", Style::default().fg(Color::Gray)),
-                Span::styled(&m.source_name, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  ({} total)", format_bytes(m.total_bytes as u64)), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    &m.source_name,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  ({} total)", format_bytes(m.total_bytes as u64)),
+                    Style::default().fg(Color::Gray),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Chunks Produced: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}", m.total_chunks), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" ({} unique, {} duplicate)", m.unique_chunks, m.duplicate_chunks), Style::default().fg(Color::White)),
-                Span::styled("  |  Deduplication Savings: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:.1}% ({} pruned)", m.dedup_savings_pct, format_bytes(m.saved_bytes as u64)), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{}", m.total_chunks),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        " ({} unique, {} duplicate)",
+                        m.unique_chunks, m.duplicate_chunks
+                    ),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    "  |  Deduplication Savings: ",
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(
+                    format!(
+                        "{:.1}% ({} pruned)",
+                        m.dedup_savings_pct,
+                        format_bytes(m.saved_bytes as u64)
+                    ),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
         ];
 
@@ -489,9 +650,15 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 Row::new(vec![
                     Span::raw(format!("{}", c.index)),
                     Span::styled(format!("{}", c.offset), Style::default().fg(Color::Gray)),
-                    Span::styled(format_bytes(c.length as u64), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        format_bytes(c.length as u64),
+                        Style::default().fg(Color::Cyan),
+                    ),
                     Span::styled(&c.gear_fingerprint, Style::default().fg(Color::Magenta)),
-                    Span::styled(format!("{:.2}", c.entropy), Style::default().fg(Color::White)),
+                    Span::styled(
+                        format!("{:.2}", c.entropy),
+                        Style::default().fg(Color::White),
+                    ),
                     dup_span,
                     Span::styled(&c.preview, Style::default().fg(Color::DarkGray)),
                 ])
@@ -510,9 +677,21 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
         let table = Table::new(rows, widths)
             .header(
-                Row::new(vec!["#", "Offset", "Length", "Gear Rolling Hash", "Entropy", "Deduplication", "Plaintext Preview"])
-                    .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                    .bottom_margin(1),
+                Row::new(vec![
+                    "#",
+                    "Offset",
+                    "Length",
+                    "Gear Rolling Hash",
+                    "Entropy",
+                    "Deduplication",
+                    "Plaintext Preview",
+                ])
+                .style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .bottom_margin(1),
             )
             .block(
                 Block::default()
@@ -523,9 +702,16 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             );
         frame.render_widget(table, chunks[1]);
     } else {
-        let p = Paragraph::new("No confidential files tracked or available to inspect. Press [t] to track a file.")
-            .alignment(Alignment::Center)
-            .block(Block::default().title(" FastCDC Inspector ").borders(Borders::ALL).border_type(BorderType::Rounded));
+        let p = Paragraph::new(
+            "No confidential files tracked or available to inspect. Press [t] to track a file.",
+        )
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .title(" FastCDC Inspector ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        );
         frame.render_widget(p, area);
     }
 }
@@ -537,9 +723,15 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .split(area);
 
     let (token_title, token_color) = if app.token_status.token_attached {
-        (" Physical Smartcard / YubiKey Detected (Slot 9C/9D Ready) ", Color::Green)
+        (
+            " Physical Smartcard / YubiKey Detected (Slot 9C/9D Ready) ",
+            Color::Green,
+        )
     } else {
-        (" No Physical Smartcard Detected (PC/SC Bus Active) ", Color::Yellow)
+        (
+            " No Physical Smartcard Detected (PC/SC Bus Active) ",
+            Color::Yellow,
+        )
     };
 
     let readers_str = if app.token_status.readers.is_empty() {
@@ -556,17 +748,33 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         Line::from(vec![
             Span::styled("Hardware Status:  ", Style::default().fg(Color::Gray)),
             Span::styled(
-                if app.token_status.token_attached { "YubiKey PIV Token Attached" } else { "Waiting for hardware insertion" },
-                Style::default().fg(if app.token_status.token_attached { Color::Green } else { Color::Yellow }).add_modifier(Modifier::BOLD),
+                if app.token_status.token_attached {
+                    "YubiKey PIV Token Attached"
+                } else {
+                    "Waiting for hardware insertion"
+                },
+                Style::default()
+                    .fg(if app.token_status.token_attached {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    })
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
             Span::styled("Slot 9C (Sign):   ", Style::default().fg(Color::Gray)),
-            Span::styled("Digital Signature with User Presence Touch Enforcement", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "Digital Signature with User Presence Touch Enforcement",
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Slot 9D (KeyMgmt):", Style::default().fg(Color::Gray)),
-            Span::styled("Hardware-isolated ECDH Key Agreement for clean recovery", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "Hardware-isolated ECDH Key Agreement for clean recovery",
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
     ];
 
@@ -619,25 +827,63 @@ fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
         Span::styled(" Status: ", Style::default().fg(Color::DarkGray)),
         Span::styled(&app.status_message, Style::default().fg(level_color)),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(Color::DarkGray)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     frame.render_widget(status_p, footer_layout[0]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("[1-6/Tab]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[1-6/Tab]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Tabs  ", Style::default().fg(Color::Gray)),
-        Span::styled("[p]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[p]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Push  ", Style::default().fg(Color::Gray)),
-        Span::styled("[a]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[a]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Anchor  ", Style::default().fg(Color::Gray)),
-        Span::styled("[r]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[r]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Refresh  ", Style::default().fg(Color::Gray)),
-        Span::styled("[t]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[t]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Track  ", Style::default().fg(Color::Gray)),
-        Span::styled("[q]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[q]",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" Quit", Style::default().fg(Color::Gray)),
     ]))
     .alignment(Alignment::Right)
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(Color::DarkGray)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     frame.render_widget(hints, footer_layout[1]);
 }
 
@@ -668,10 +914,19 @@ fn render_track_modal(frame: &mut Frame, app: &TuiApp) {
 
     let input = Paragraph::new(Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::styled(&app.track_input_buffer, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            &app.track_input_buffer,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("█", Style::default().fg(Color::Yellow)),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::White)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::White)),
+    );
     frame.render_widget(input, inner[1]);
 
     let help = Paragraph::new("[Enter] Confirm Tracking    [Esc] Cancel")
@@ -685,7 +940,12 @@ fn render_help_modal(frame: &mut Frame) {
     frame.render_widget(Clear, area);
 
     let help_text = vec![
-        Line::from(Span::styled("CipherVault TUI Keyboard Shortcuts", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "CipherVault TUI Keyboard Shortcuts",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("1 - 6      ", Style::default().fg(Color::Yellow)),
@@ -728,7 +988,10 @@ fn render_help_modal(frame: &mut Frame) {
             Span::raw("Quit TUI and restore terminal cleanly"),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Press [Esc] or [?] to close this help overlay", Style::default().fg(Color::Gray))),
+        Line::from(Span::styled(
+            "Press [Esc] or [?] to close this help overlay",
+            Style::default().fg(Color::Gray),
+        )),
     ];
 
     let p = Paragraph::new(help_text).block(

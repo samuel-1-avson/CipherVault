@@ -112,7 +112,11 @@ dist/bin/ciphervault-operator --port 8203 --data-dir ./data/op3 --operator-id op
 From your project directory containing secret files:
 
 ```sh
+# Option A: Standard initialization (prompts to track secrets found in .gitignore)
 ciphervault init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://127.0.0.1:8203
+
+# Option B: Non-interactive initialization with automatic .gitignore secret import
+ciphervault init --import-gitignore
 ```
 
 *Your Emergency Offline Paper Recovery Kit will be printed exclusively to the terminal. Record master secret $R$ before confirming; it is immediately scrubbed from volatile RAM.*
@@ -120,8 +124,14 @@ ciphervault init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://
 ### 4. Track Confidential Files & Capture Snapshot
 
 ```sh
-# Add secrets to tracking list
+# Add secrets to tracking list (automatically appends to .gitignore if not already present)
 ciphervault track .env certs/server.key
+
+# Or scan and import all secret patterns from .gitignore on demand
+ciphervault track --from-gitignore
+
+# To track without modifying .gitignore:
+ciphervault track .env --no-gitignore
 
 # Inspect tracking state
 ciphervault status
@@ -228,8 +238,8 @@ The device signing private key never leaves the secure element of the physical c
 
 | Command | Arguments / Flags | Description |
 |---|---|---|
-| `ciphervault init` | `[-f/--force] [-o/--operators <URL...>] [--save-kit <PATH>] [--hardware-token]` | Initializes vault, derives key hierarchy, and outputs paper kit. |
-| `ciphervault track` | `<PATH...>` | Registers confidential files for automated snapshot tracking. |
+| `ciphervault init` | `[-f/--force] [-o/--operators <URL...>] [--save-kit <PATH>] [--hardware-token] [-i/--import-gitignore]` | Initializes vault, derives key hierarchy, outputs paper kit, and scans `.gitignore` for secret files. |
+| `ciphervault track` | `[PATH...] [-i/--from-gitignore] [--no-gitignore]` | Registers confidential files for snapshot tracking (or imports from `.gitignore`); automatically appends to `.gitignore` to prevent git leaks. |
 | `ciphervault untrack` | `<PATH...>` | Stops tracking specified files. |
 | `ciphervault status` | *None* | Displays current vault metadata, tracked files, and active epoch. |
 | `ciphervault push` | `[-m/--message <MSG>] [--pos] [--touch]` | Captures FastCDC chunks, encrypts, and replicates across operators with optional PoS readback and hardware touch. |

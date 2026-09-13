@@ -35,6 +35,7 @@ reqwest = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 ciphervault-agent = { path = "../agent" }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }

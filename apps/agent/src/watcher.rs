@@ -504,7 +504,9 @@ mod tests {
     #[test]
     fn test_is_ignored_path() {
         assert!(is_ignored_path(Path::new("/workspace/.git/HEAD")));
-        assert!(is_ignored_path(Path::new("/workspace/.ciphervault/vault.db")));
+        assert!(is_ignored_path(Path::new(
+            "/workspace/.ciphervault/vault.db"
+        )));
         assert!(is_ignored_path(Path::new("/workspace/target/debug/app")));
         assert!(!is_ignored_path(Path::new("/workspace/.env")));
         assert!(!is_ignored_path(Path::new("/workspace/config/key.pem")));

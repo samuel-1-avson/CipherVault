@@ -171,7 +171,10 @@ fn test_unified_hsm_device_abstraction() {
         None => {
             // Strict fail-closed verification: absent physical token must return error
             let connect_err = HsmDevice::connect();
-            assert!(connect_err.is_err(), "Must fail-closed when physical token is absent");
+            assert!(
+                connect_err.is_err(),
+                "Must fail-closed when physical token is absent"
+            );
             println!("No physical smartcard attached; strict fail-closed contract validated.");
         }
     }

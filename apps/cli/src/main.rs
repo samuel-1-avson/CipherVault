@@ -66,12 +66,32 @@ enum Commands {
             help = "Bind device signing identity to physical hardware token (YubiKey Slot 9C)"
         )]
         hardware_token: bool,
+
+        #[arg(
+            short = 'i',
+            long,
+            help = "Automatically import and track secret files discovered in .gitignore"
+        )]
+        import_gitignore: bool,
     },
 
     /// Add confidential files to vault tracking (e.g. .env, keys)
     Track {
-        #[arg(required = true, help = "Files to track")]
+        #[arg(help = "Files to track")]
         paths: Vec<PathBuf>,
+
+        #[arg(
+            short = 'i',
+            long,
+            help = "Scan .gitignore for confidential secret files (.env, keys, certs) and track them"
+        )]
+        from_gitignore: bool,
+
+        #[arg(
+            long,
+            help = "Do not automatically append newly tracked files to .gitignore"
+        )]
+        no_gitignore: bool,
     },
 
     /// Remove confidential files from vault tracking
@@ -355,8 +375,13 @@ async fn run(cli: Cli) -> Result<()> {
             operators,
             save_kit,
             hardware_token,
-        } => cmd_init(force, operators, save_kit, hardware_token),
-        Commands::Track { paths } => cmd_track(paths),
+            import_gitignore,
+        } => cmd_init(force, operators, save_kit, hardware_token, import_gitignore),
+        Commands::Track {
+            paths,
+            from_gitignore,
+            no_gitignore,
+        } => cmd_track(paths, from_gitignore, no_gitignore),
         Commands::Untrack { paths } => cmd_untrack(paths),
         Commands::Status => cmd_status(),
         Commands::Push {
@@ -444,6 +469,171 @@ fn ensure_gitignore() -> Result<()> {
     Ok(())
 }
 
+fn ensure_file_in_gitignore(rel_path: &Path) -> Result<bool> {
+    let gitignore_path = Path::new(".gitignore");
+    let norm = rel_path.to_string_lossy().replace('\\', "/");
+    let target = norm.trim_start_matches("./");
+
+    let existing = if gitignore_path.exists() {
+        fs::read_to_string(gitignore_path)?
+    } else {
+        String::new()
+    };
+
+    for line in existing.lines() {
+        let trimmed = line.trim().replace('\\', "/");
+        if trimmed == target || trimmed == format!("/{}", target) {
+            return Ok(false);
+        }
+        if trimmed.ends_with('*') {
+            let prefix = trimmed.trim_end_matches('*');
+            if target.starts_with(prefix) {
+                return Ok(false);
+            }
+        }
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(gitignore_path)?;
+
+    if !existing.ends_with('\n') && !existing.is_empty() {
+        file.write_all(b"\n")?;
+    }
+    writeln!(file, "{}", target)?;
+    Ok(true)
+}
+
+fn is_secret_pattern(pattern: &str) -> bool {
+    let lower = pattern.to_lowercase();
+    let name = pattern.rsplit('/').next().unwrap_or(pattern).to_lowercase();
+
+    if lower.contains("node_modules")
+        || lower.contains("target")
+        || lower.contains("dist")
+        || lower.contains("build")
+        || lower.contains("vendor")
+        || lower.contains(".next")
+        || lower.contains(".cache")
+        || lower.contains(".git")
+        || lower.contains(".ciphervault")
+        || lower.contains("coverage")
+        || lower.contains("__pycache__")
+        || lower.ends_with(".log")
+        || lower.ends_with(".lock")
+        || lower == ".ds_store"
+        || lower == "thumbs.db"
+    {
+        return false;
+    }
+
+    if name.ends_with(".key")
+        || name.ends_with(".pem")
+        || name.ends_with(".crt")
+        || name.ends_with(".pfx")
+        || name.ends_with(".p12")
+        || name.ends_with(".asc")
+    {
+        return true;
+    }
+
+    if name.starts_with(".env") || name.contains(".env.") || name == ".env" {
+        return true;
+    }
+
+    if name.contains("secret")
+        || name.contains("credential")
+        || name.contains("token")
+        || name.contains("password")
+        || name.contains("seed")
+        || name.contains("id_rsa")
+        || name.contains("id_ed25519")
+        || name.contains("keystore")
+    {
+        return true;
+    }
+
+    false
+}
+
+fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>> {
+    let gitignore_path = root_dir.join(".gitignore");
+    if !gitignore_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(gitignore_path)?;
+    let mut candidate_patterns = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let clean = trimmed.trim_start_matches('/').trim_start_matches("./");
+        if is_secret_pattern(clean) {
+            candidate_patterns.push(clean.to_string());
+        }
+    }
+
+    let mut discovered = std::collections::BTreeSet::new();
+
+    for pat in &candidate_patterns {
+        if !pat.contains('*') {
+            let p = PathBuf::from(pat);
+            let full = root_dir.join(&p);
+            if full.is_file() || (!full.exists() && is_secret_pattern(pat)) {
+                discovered.insert(p);
+            }
+        }
+    }
+
+    for entry in walkdir::WalkDir::new(root_dir)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        let rel = match entry.path().strip_prefix(root_dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let rel_norm = rel.to_string_lossy().replace('\\', "/");
+
+        if rel_norm.starts_with(".ciphervault")
+            || rel_norm.starts_with(".git")
+            || rel_norm.starts_with("target")
+            || rel_norm.starts_with("node_modules")
+            || rel_norm.starts_with("dist")
+        {
+            continue;
+        }
+
+        for pat in &candidate_patterns {
+            let pat_norm = pat.replace('\\', "/");
+            let is_match = if pat_norm.contains('*') {
+                let parts: Vec<&str> = pat_norm.split('*').collect();
+                if parts.len() == 2 {
+                    rel_norm.starts_with(parts[0]) && rel_norm.ends_with(parts[1])
+                } else {
+                    rel_norm.contains(pat_norm.trim_matches('*'))
+                }
+            } else {
+                rel_norm == pat_norm
+            };
+
+            if is_match {
+                discovered.insert(rel.to_path_buf());
+            }
+        }
+    }
+
+    Ok(discovered.into_iter().collect())
+}
+
 async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
     let root_dir = std::env::current_dir()?;
     let vault_db = root_dir.join(VAULT_DIR).join(DB_FILE);
@@ -461,15 +651,34 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
         Vec::new()
     };
 
-    println!("{}", "================================================================================".cyan());
-    println!("{}", "        CIPHERVAULT AUTONOMOUS FILE WATCHER DAEMON (EVENT-DRIVEN)".bold().green());
-    println!("{}", "================================================================================".cyan());
-    println!("  Vault Root:    {}", root_dir.display().to_string().yellow());
-    println!("  Debounce:      {} second(s)", debounce_secs.to_string().cyan());
+    println!(
+        "{}",
+        "================================================================================".cyan()
+    );
+    println!(
+        "{}",
+        "        CIPHERVAULT AUTONOMOUS FILE WATCHER DAEMON (EVENT-DRIVEN)"
+            .bold()
+            .green()
+    );
+    println!(
+        "{}",
+        "================================================================================".cyan()
+    );
+    println!(
+        "  Vault Root:    {}",
+        root_dir.display().to_string().yellow()
+    );
+    println!(
+        "  Debounce:      {} second(s)",
+        debounce_secs.to_string().cyan()
+    );
     println!(
         "  Remote Sync:   {}",
         if sync {
-            format!("Enabled ({} operators)", operators.len()).green().bold()
+            format!("Enabled ({} operators)", operators.len())
+                .green()
+                .bold()
         } else {
             "Disabled (local snapshots only; use --sync to push)".yellow()
         }
@@ -480,7 +689,11 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
         }
     }
     println!();
-    println!("{}", "Listening for save events on tracked confidential files... (Press Ctrl+C to stop)".dimmed());
+    println!(
+        "{}",
+        "Listening for save events on tracked confidential files... (Press Ctrl+C to stop)"
+            .dimmed()
+    );
     println!();
 
     let config = ciphervault_agent::WatcherConfig {
@@ -495,7 +708,10 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
 
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            println!("\n{}", "Received interrupt signal (Ctrl+C). Shutting down watcher...".yellow());
+            println!(
+                "\n{}",
+                "Received interrupt signal (Ctrl+C). Shutting down watcher...".yellow()
+            );
             let _ = shutdown_tx.send(());
         }
     });
@@ -534,6 +750,7 @@ fn cmd_init(
     custom_operators: Option<Vec<String>>,
     save_kit: Option<PathBuf>,
     hardware_token: bool,
+    import_gitignore: bool,
 ) -> Result<()> {
     let vault_dir = Path::new(VAULT_DIR);
     if vault_dir.exists() && !force {
@@ -720,11 +937,107 @@ fn cmd_init(
     drop(recovery_secret);
     drop(recovery_sk);
 
+    // Smart .gitignore secret discovery
+    if let Ok(discovered_secrets) = scan_gitignore_for_secrets(Path::new(".")) {
+        if !discovered_secrets.is_empty() {
+            let should_import = if import_gitignore {
+                true
+            } else if std::io::stdin().is_terminal() {
+                println!();
+                println!("{}", "--------------------------------------------------------------------------------".cyan());
+                println!(
+                    "{}",
+                    "  [GITIGNORE SCAN] Discovered Confidential Files in .gitignore:"
+                        .bold()
+                        .green()
+                );
+                println!("{}", "--------------------------------------------------------------------------------".cyan());
+                for s in &discovered_secrets {
+                    let size_str = if s.exists() {
+                        if let Ok(meta) = s.metadata() {
+                            format!(" [found: {} bytes]", meta.len()).green()
+                        } else {
+                            " [found]".green()
+                        }
+                    } else {
+                        " [planned]".yellow()
+                    };
+                    println!("    - {} {}", s.display().to_string().yellow(), size_str);
+                }
+                println!(
+                    "{}",
+                    "    (Build folders node_modules/, target/, dist/, *.log were excluded)"
+                        .dimmed()
+                );
+                println!();
+                print!("Track these confidential secret file(s) in CipherVault now? [Y/n]: ");
+                let _ = std::io::stdout().flush();
+                let mut ans = String::new();
+                if std::io::stdin().read_line(&mut ans).is_ok() {
+                    let trimmed = ans.trim().to_lowercase();
+                    trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if should_import {
+                println!();
+                println!(
+                    "{}",
+                    "Registering secrets discovered in .gitignore:"
+                        .bold()
+                        .cyan()
+                );
+                for s in discovered_secrets {
+                    let path_str = s.to_string_lossy();
+                    let file_id = store.track_file(&path_str)?;
+                    println!(
+                        "  {} {} (ID: {})",
+                        "+".green(),
+                        path_str.yellow(),
+                        hex::encode(&file_id[0..4]).dimmed()
+                    );
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
-fn cmd_track(paths: Vec<PathBuf>) -> Result<()> {
+fn cmd_track(mut paths: Vec<PathBuf>, from_gitignore: bool, no_gitignore: bool) -> Result<()> {
     let store = get_vault_store()?;
+
+    if from_gitignore {
+        let discovered = scan_gitignore_for_secrets(Path::new("."))?;
+        if discovered.is_empty() {
+            println!(
+                "{}",
+                "No confidential secret files discovered in .gitignore.".yellow()
+            );
+        } else {
+            println!(
+                "{} Discovered {} secret file(s) in .gitignore.",
+                "[GITIGNORE]".bold().cyan(),
+                discovered.len()
+            );
+            for p in discovered {
+                if !paths.contains(&p) {
+                    paths.push(p);
+                }
+            }
+        }
+    }
+
+    if paths.is_empty() {
+        bail!(
+            "No files specified to track.\nProvide paths (e.g. 'ciphervault track .env') or use 'ciphervault track --from-gitignore'."
+        );
+    }
+
     println!("{}", "Tracking confidential files:".bold());
 
     for path in paths {
@@ -743,6 +1056,21 @@ fn cmd_track(paths: Vec<PathBuf>) -> Result<()> {
             status_str,
             hex::encode(&file_id[0..4]).dimmed()
         );
+
+        if !no_gitignore {
+            if let Ok(added) = ensure_file_in_gitignore(&path) {
+                if added {
+                    println!(
+                        "    ↳ {}",
+                        format!(
+                            "Appended '{}' to .gitignore to prevent accidental git leaks",
+                            path_str
+                        )
+                        .dimmed()
+                    );
+                }
+            }
+        }
     }
 
     println!(

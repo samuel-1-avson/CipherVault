@@ -413,6 +413,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "walkdir",
  "x25519-dalek",
  "zeroize",
 ]

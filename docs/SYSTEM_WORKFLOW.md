@@ -161,6 +161,12 @@ sequenceDiagram
     CLI->>Dev: Prompt interactive confirmation: "Have you secured this kit?"
     Dev-->>CLI: Confirmed ("yes")
     CLI->>KDF: Zeroize master secret R from volatile process memory
+    CLI->>Dev: Scan .gitignore for secret patterns (.env, *.key, etc.)
+    alt Discovered Secrets Found
+        CLI->>Dev: Prompt: "Track discovered secrets in CipherVault? [y/N]"
+        Dev-->>CLI: Confirmed ("y") or passed --import-gitignore
+        CLI->>Store: Register discovered secrets for encrypted tracking
+    end
     CLI->>Dev: Vault ready (.ciphervault/ initialized)
 ```
 </details>
@@ -169,6 +175,7 @@ sequenceDiagram
 * The paper kit contains the ONLY instance of $R$ in the universe.
 * If the workstation is decommissioned, zero readable keys exist in `.ciphervault/vault.db` without Windows user logon credentials.
 * `git status` automatically ignores `.ciphervault/` to prevent repository leaks.
+* **Smart `.gitignore` Leak Defense & Discovery**: `ciphervault init` inspects `.gitignore` to onboard existing project secrets into encrypted tracking. Whenever secrets are tracked via `ciphervault track <path>`, CipherVault automatically verifies and appends them to `.gitignore` (unless `--no-gitignore` is specified), preventing plaintext secrets from ever being staged or committed to Git.
 
 ---
 

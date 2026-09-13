@@ -284,9 +284,12 @@ impl TuiApp {
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             };
-                            let dt = chrono::DateTime::from_timestamp(s.advisory_timestamp_utc as i64, 0)
-                                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                                .unwrap_or_else(|| "Unknown".into());
+                            let dt = chrono::DateTime::from_timestamp(
+                                s.advisory_timestamp_utc as i64,
+                                0,
+                            )
+                            .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                            .unwrap_or_else(|| "Unknown".into());
                             let is_h = id_hex == head_cid_hex;
                             SnapshotItem {
                                 snapshot_id_hex: id_hex,
@@ -391,7 +394,10 @@ impl TuiApp {
                 unique_bytes += slice.len();
             }
 
-            let preview = if slice.iter().all(|&b| b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n') {
+            let preview = if slice
+                .iter()
+                .all(|&b| b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n')
+            {
                 let s = String::from_utf8_lossy(&slice[..slice.len().min(40)]);
                 s.trim().replace('\n', " ").to_string()
             } else {
