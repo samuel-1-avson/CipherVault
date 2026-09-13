@@ -3946,6 +3946,14 @@ async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
                     .args(["-Command", &format!("Start-Process '{}'", url)])
                     .spawn();
             }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("open").arg(&url).spawn();
+            }
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+            {
+                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            }
         });
     }
 
