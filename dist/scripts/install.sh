@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # CipherVault — Automated Linux & macOS Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/master/dist/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
 
 set -euo pipefail
 
 REPO="samuel-1-avson/CipherVault"
-TAG="v0.1.0-beta.2"
+TAG="v1.0.0"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"

@@ -1,10 +1,10 @@
 # CipherVault — Automated Windows Installer
-# Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/master/dist/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 $Repo = "samuel-1-avson/CipherVault"
-$Tag = "v0.1.0-beta.2"
+$Tag = "v1.0.0"
 $Target = "x86_64-pc-windows-msvc"
 $PkgName = "ciphervault-$Tag-$Target.zip"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$PkgName"

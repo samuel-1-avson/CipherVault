@@ -9,7 +9,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(name = "ciphervault-maintenance")]
 #[command(author = "CipherVault Contributors")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "CipherVault Autonomous Replication Audit & Persisted Fleet Scheduler")]
 struct Cli {
     #[arg(short, long, num_args = 0.., help = "Operator endpoints to manage")]

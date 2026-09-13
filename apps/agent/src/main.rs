@@ -10,7 +10,7 @@ use ciphervault_agent::{VaultWatcher, WatcherConfig};
 #[derive(Parser)]
 #[command(name = "ciphervault-agent")]
 #[command(author = "CipherVault Contributors")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "CipherVault Background File Watcher & Automated Sync Agent")]
 struct Cli {
     #[arg(

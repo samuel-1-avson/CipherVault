@@ -40,7 +40,7 @@ const OPERATORS_FILE: &str = "operators.json";
 #[derive(Parser)]
 #[command(name = "ciphervault")]
 #[command(author = "CipherVault Team")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "Decentralized, encrypted version control for confidential files", long_about = None)]
 struct Cli {
     #[command(subcommand)]

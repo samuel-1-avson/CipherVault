@@ -1,6 +1,9 @@
 # Rust build artifacts
 target/
 .cargo-targets/
+.cargo/config.toml
+dist/*.zip
+dist/*.tar.gz
 **/*.rs.bk
 
 # CipherVault local keys, database, and cache

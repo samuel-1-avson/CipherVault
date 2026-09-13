@@ -12,6 +12,7 @@ use ciphervault_operator::{create_router, OperatorState};
 
 #[derive(Parser, Debug)]
 #[command(name = "ciphervault-operator")]
+#[command(version)]
 #[command(about = "Independent storage operator daemon for CipherVault", long_about = None)]
 struct Args {
     #[arg(short, long, default_value = "8101", help = "Port to listen on")]

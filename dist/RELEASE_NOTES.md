@@ -160,10 +160,10 @@ Benchmarked on Windows x86_64:
 
 | Binary | Size | SHA-256 Checksum |
 |---|---|---|
-| `ciphervault.exe` | 11.23 MB | `56be7ffbeace777d2159ebb22703dbc2cb8110cc0131d7b9ff70368ff9e23a53` |
-| `ciphervault-operator.exe` | 2.93 MB | `79e3086bba49d79ecf01cc94042f001d7af6e9b4d9c27990f85bf5caecbeab41` |
-| `ciphervault-agent.exe` | 6.84 MB | `fb1d965c477373d4b26f42f540cd59ec2ac946720aa92e231dc398a16586b779` |
-| `ciphervault-maintenance.exe` | 5.66 MB | `8083bfc127f15f4b58288e541cd9a4cd12b5a9537272aad5c4040757053604ed` |
+| `ciphervault.exe` | 11.23 MB | `cc91fefa92ff5d548b1291ecf2ccb66d962f1737f007bbc09c09c87573a30691` |
+| `ciphervault-operator.exe` | 2.93 MB | `0ccac66908d30d77e6390b9b8848dadc73acd6ac8e4aba2f000fc2f371717a93` |
+| `ciphervault-agent.exe` | 6.84 MB | `4fdcff408894e3be1a0caf477df2a47b9cef935b3483e47385efab16a2bfc69e` |
+| `ciphervault-maintenance.exe` | 5.66 MB | `ae27c33a3478ce34ffe2cfae9b0a5ad5c6e11709238d771cb36ede3e126b0f29` |
 
 *(Checksums match `dist/SHA256SUMS.txt`)*
 
