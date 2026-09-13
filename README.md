@@ -39,13 +39,13 @@ Install the standalone `ciphervault` CLI binary on any operating system with a s
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.0/dist/scripts/install.ps1 | iex
 ```
 *(Or via Winget: `winget install CipherVault.CipherVault`)*
 
 ### macOS & Linux (Bash)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.0/dist/scripts/install.sh | bash
 ```
 *(Or via Homebrew: `brew install samuel-1-avson/tap/ciphervault`)*
 
