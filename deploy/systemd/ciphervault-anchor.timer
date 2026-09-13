@@ -1,0 +1,11 @@
+[Unit]
+Description=CipherVault Arbitrum L2 Periodic Anchoring Timer (Hourly)
+Documentation=https://github.com/samuel-1-avson/CipherVault
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

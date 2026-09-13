@@ -195,7 +195,7 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
 }
 
 async fn execute_quick_push() -> anyhow::Result<String> {
-    crate::cmd_push(Some("TUI Snapshot commit".into()), false, false).await?;
+    crate::cmd_push(Some("TUI Snapshot commit".into()), false, false, false).await?;
     Ok("✓ Encrypted snapshot created and confirmed across operator quorum.".into())
 }
 

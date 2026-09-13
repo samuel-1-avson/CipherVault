@@ -1,0 +1,24 @@
+[Unit]
+Description=CipherVault Arbitrum L2 Periodic Anchoring Service
+Documentation=https://github.com/samuel-1-avson/CipherVault
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ciphervault
+Group=ciphervault
+WorkingDirectory=/var/lib/ciphervault
+ExecStart=/usr/local/bin/ciphervault anchor --auto-relay
+StandardOutput=journal
+StandardError=journal
+
+# Security Sandboxing
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true

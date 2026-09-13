@@ -127,6 +127,12 @@ enum Commands {
             help = "Create and commit snapshot locally without replicating to remote operators"
         )]
         local: bool,
+
+        #[arg(
+            long,
+            help = "Automatically anchor newly created snapshot head commitment to Arbitrum L2"
+        )]
+        anchor: bool,
     },
 
     /// Display snapshot history DAG
@@ -218,6 +224,19 @@ enum Commands {
 
         #[arg(long, help = "URL of the automated L2 relayer service")]
         relayer_url: Option<String>,
+
+        #[arg(
+            long,
+            help = "Run in continuous daemon mode, periodically settling state roots on Arbitrum"
+        )]
+        daemon: bool,
+
+        #[arg(
+            long,
+            default_value = "3600",
+            help = "Interval in seconds between periodic anchor checks in daemon mode (default: 3600)"
+        )]
+        interval: u64,
     },
 
     /// Verify an Arbitrum on-chain commitment and finality stage
@@ -555,7 +574,8 @@ async fn run(cli: Cli) -> Result<()> {
             touch,
             pos: _,
             local,
-        } => cmd_push(message, touch, local).await,
+            anchor,
+        } => cmd_push(message, touch, local, anchor).await,
         Commands::History => cmd_history(),
         Commands::Restore { snapshot, to } => cmd_restore(snapshot, to),
         Commands::Recover {
@@ -584,18 +604,89 @@ async fn run(cli: Cli) -> Result<()> {
             raw_tx,
             auto_relay,
             relayer_url,
+            daemon,
+            interval,
         } => {
-            cmd_anchor(
-                head,
-                rpc,
-                contract,
-                chain_id,
-                tx_hash,
-                raw_tx,
-                auto_relay,
-                relayer_url,
-            )
-            .await
+            if daemon {
+                println!(
+                    "{}",
+                    "=======================================================".cyan()
+                );
+                println!(
+                    "{}",
+                    "  CipherVault Arbitrum L2 Periodic Anchoring Daemon"
+                        .bold()
+                        .green()
+                );
+                println!("  Check Interval:  {}s", interval);
+                println!("  Target Chain:    Arbitrum (Auto-Relay: {})", auto_relay);
+                println!(
+                    "{}",
+                    "=======================================================".cyan()
+                );
+
+                // Run initial anchor check immediately
+                println!(
+                    "[{}] Executing initial Arbitrum anchor check...",
+                    chrono::Utc::now().to_rfc3339()
+                );
+                if let Err(e) = cmd_anchor(
+                    head.clone(),
+                    rpc.clone(),
+                    contract.clone(),
+                    chain_id,
+                    tx_hash.clone(),
+                    raw_tx.clone(),
+                    auto_relay,
+                    relayer_url.clone(),
+                )
+                .await
+                {
+                    eprintln!("Notice: Initial anchor check: {}", e);
+                }
+
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            println!("\nShutdown signal received. Exiting anchoring daemon gracefully.");
+                            break;
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {
+                            println!(
+                                "[{}] Executing periodic Arbitrum anchor check...",
+                                chrono::Utc::now().to_rfc3339()
+                            );
+                            if let Err(e) = cmd_anchor(
+                                head.clone(),
+                                rpc.clone(),
+                                contract.clone(),
+                                chain_id,
+                                tx_hash.clone(),
+                                raw_tx.clone(),
+                                auto_relay,
+                                relayer_url.clone(),
+                            )
+                            .await
+                            {
+                                eprintln!("Notice: Periodic anchor check: {}", e);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            } else {
+                cmd_anchor(
+                    head,
+                    rpc,
+                    contract,
+                    chain_id,
+                    tx_hash,
+                    raw_tx,
+                    auto_relay,
+                    relayer_url,
+                )
+                .await
+            }
         }
         Commands::VerifyAnchor { head, rpc } => cmd_verify_anchor(head, rpc).await,
         Commands::Hook { sub } => match sub {
@@ -1364,7 +1455,12 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-pub async fn cmd_push(message: Option<String>, touch: bool, local: bool) -> Result<()> {
+pub async fn cmd_push(
+    message: Option<String>,
+    touch: bool,
+    local: bool,
+    anchor: bool,
+) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (device_id, device_sk, counter, epoch) = store.get_device_state()?;
@@ -1569,6 +1665,16 @@ pub async fn cmd_push(message: Option<String>, touch: bool, local: bool) -> Resu
                 e
             );
             return Err(e.into());
+        }
+    }
+
+    if anchor {
+        println!(
+            "{}",
+            "Triggering automated post-push Arbitrum L2 anchoring...".cyan()
+        );
+        if let Err(e) = cmd_anchor(None, None, None, None, None, None, true, None).await {
+            eprintln!("{}: {}", "Notice: Post-push anchoring failed".yellow(), e);
         }
     }
 
@@ -4399,12 +4505,20 @@ async fn api_anchors_handler() -> impl axum::response::IntoResponse {
 #[derive(serde::Deserialize)]
 struct CreateSnapshotRequest {
     message: Option<String>,
+    anchor: Option<bool>,
 }
 
 async fn api_create_snapshot_handler(
     axum::Json(payload): axum::Json<CreateSnapshotRequest>,
 ) -> impl axum::response::IntoResponse {
-    match cmd_push(payload.message, false, false).await {
+    match cmd_push(
+        payload.message,
+        false,
+        false,
+        payload.anchor.unwrap_or(false),
+    )
+    .await
+    {
         Ok(_) => {
             let store_res = get_vault_store();
             let snap_id = if let Ok(store) = store_res {
@@ -4417,12 +4531,14 @@ async fn api_create_snapshot_handler(
                 String::new()
             };
             axum::Json(serde_json::json!({
+                "status": "ok",
                 "success": true,
                 "snapshot_id_hex": snap_id,
                 "message": "Snapshot successfully captured, encrypted, and replicated across operators"
             }))
         }
         Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
             "success": false,
             "error": e.to_string()
         })),
@@ -4432,10 +4548,12 @@ async fn api_create_snapshot_handler(
 async fn api_create_anchor_handler() -> impl axum::response::IntoResponse {
     match cmd_anchor(None, None, None, None, None, None, false, None).await {
         Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
             "success": true,
             "message": "Snapshot head commitment successfully prepared and recorded for Arbitrum One"
         })),
         Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
             "success": false,
             "error": e.to_string()
         })),
@@ -4768,10 +4886,12 @@ async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse 
 async fn api_relayer_anchor_handler() -> impl axum::response::IntoResponse {
     match cmd_anchor(None, None, None, None, None, None, true, None).await {
         Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
             "success": true,
             "message": "Snapshot head commitment successfully submitted to automated Arbitrum L2 relayer with sequencer receipt"
         })),
         Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
             "success": false,
             "error": e.to_string()
         })),

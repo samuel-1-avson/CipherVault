@@ -1272,9 +1272,9 @@ function initQuickActions() {
     try {
       const res = await fetch('/api/anchors', { method: 'POST' });
       const result = await res.json();
-      if (result.success) {
+      if (result.success || result.status === 'ok') {
         showToast("✓ Checkpoint commitment anchored to Arbitrum One!");
-        await fetchAllData();
+        await Promise.all([fetchAllData(), fetchRelayerCheckpoints()]);
       } else {
         showToast(`Anchor error: ${result.error || 'Failed'}`);
       }
