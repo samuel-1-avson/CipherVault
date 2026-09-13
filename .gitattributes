@@ -1,0 +1,8 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Ensure shell scripts always have Unix LF line endings
+*.sh text eol=lf
+*.bash text eol=lf
+Dockerfile* text eol=lf
+Caddyfile* text eol=lf

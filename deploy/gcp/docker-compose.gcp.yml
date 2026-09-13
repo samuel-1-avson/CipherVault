@@ -1,0 +1,21 @@
+services:
+  operator:
+    image: ghcr.io/samuel-1-avson/ciphervault-operator:latest
+    container_name: ciphervault-operator
+    restart: always
+    network_mode: host
+    command: ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "${OPERATOR_ID:-operator-gcp}"]
+    volumes:
+      - /opt/ciphervault/data:/var/lib/ciphervault
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: ciphervault-caddy
+    restart: always
+    network_mode: host
+    volumes:
+      - /opt/ciphervault/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/ciphervault/caddy_data:/data
+      - /opt/ciphervault/caddy_config:/config
+    depends_on:
+      - operator
