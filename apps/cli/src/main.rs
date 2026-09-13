@@ -1326,6 +1326,12 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
     watcher.run_loop(shutdown_rx).await
 }
 
+pub const DEFAULT_PRODUCTION_OPERATORS: &[&str] = &[
+    "http://136.65.43.84",
+    "http://34.9.157.167",
+    "http://34.73.53.40",
+];
+
 fn get_configured_operators() -> Vec<String> {
     if let Ok(env_ops) = std::env::var("CIPHERVAULT_OPERATORS") {
         let list: Vec<String> = env_ops
@@ -1345,11 +1351,10 @@ fn get_configured_operators() -> Vec<String> {
             }
         }
     }
-    vec![
-        "http://127.0.0.1:8201".into(),
-        "http://127.0.0.1:8202".into(),
-        "http://127.0.0.1:8203".into(),
-    ]
+    DEFAULT_PRODUCTION_OPERATORS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn cmd_init(
@@ -1459,11 +1464,10 @@ fn cmd_init(
     store.save_device_certificate(&cert)?;
 
     let operator_endpoints = custom_operators.unwrap_or_else(|| {
-        vec![
-            "http://127.0.0.1:8101".into(),
-            "http://127.0.0.1:8102".into(),
-            "http://127.0.0.1:8103".into(),
-        ]
+        DEFAULT_PRODUCTION_OPERATORS
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     });
 
     // Save operators config

@@ -86,3 +86,4 @@ test-scratch/
 tmp/
 secrets/.env.production
 secrets/credentials.json
+config/credentials.json
