@@ -10,29 +10,41 @@ param(
     [string]$Project = "",
     [string]$MachineType = "e2-small",
     [string]$DiskSize = "20GB",
-    [string[]]$Zones = @("us-central1-a", "us-central1-b", "us-central1-c"),
+    [string[]]$Zones = @("us-central1-a", "us-central1-b", "us-east1-b"),
     [string]$Prefix = "cv-operator"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host "  CipherVault GCP VPS Storage Operator Provisioner" -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Cyan
 
-# 1. Check gcloud CLI
+# 1. Check gcloud CLI (with PATH auto-discovery)
 Write-Host "Checking Google Cloud SDK..." -NoNewline
-try {
-    $null = gcloud --version 2>&1
+$gcloudCmd = Get-Command gcloud -ErrorAction SilentlyContinue
+if (-not $gcloudCmd) {
+    $defaultGcloudDir = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin"
+    if (Test-Path "$defaultGcloudDir\gcloud.cmd") {
+        $env:PATH = "$defaultGcloudDir;$env:PATH"
+        $gcloudCmd = Get-Command gcloud -ErrorAction SilentlyContinue
+    }
+}
+
+if ($gcloudCmd) {
     Write-Host " [FOUND]" -ForegroundColor Green
-} catch {
+} else {
     Write-Host " [FAILED]" -ForegroundColor Red
     Write-Error "gcloud CLI is not installed or not in PATH. Please install Google Cloud SDK."
 }
 
 # 2. Resolve Active Project
 if (-not $Project) {
-    $Project = (gcloud config get-value project 2>&1).Trim()
+    $Project = (gcloud config get-value project 2>$null)
+    if ($Project) { $Project = $Project.Trim() }
 }
 if (-not $Project -or $Project -match "none") {
     Write-Error "No GCP project configured. Run 'gcloud config set project <PROJECT_ID>' first."
@@ -51,7 +63,7 @@ if (-not (Test-Path $StartupScript)) {
 $FirewallRule = "ciphervault-allow-ingress"
 Write-Host ""
 Write-Host "Checking Cloud Firewall Rule '$FirewallRule'..." -NoNewline
-$fwList = & gcloud compute firewall-rules list --project=$Project "--filter=name=$FirewallRule" '--format=value(name)' 2>&1
+$fwList = & gcloud compute firewall-rules list --project=$Project "--filter=name=$FirewallRule" '--format=value(name)' 2>$null
 
 if (-not $fwList) {
     Write-Host " Creating rule..." -ForegroundColor Yellow
@@ -89,7 +101,7 @@ for ($i = 0; $i -lt $Zones.Count; $i++) {
 
     # Check if instance already exists
     $listArgs = @("compute", "instances", "list", "--project=$Project", "--filter=name=$vmName AND zone:$zone", '--format=value(name)')
-    $existing = & gcloud @listArgs 2>&1
+    $existing = & gcloud @listArgs 2>$null
     if ($existing) {
         Write-Host "  Instance $vmName already exists in $zone. Reusing." -ForegroundColor DarkGray
     } else {
@@ -106,13 +118,19 @@ for ($i = 0; $i -lt $Zones.Count; $i++) {
             "--image-family=ubuntu-2404-lts-amd64",
             "--image-project=ubuntu-os-cloud"
         )
-        & gcloud @createArgs | Out-Null
+        $createOut = (& gcloud @createArgs 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [FAILED] Could not launch $vmName in ${zone}:" -ForegroundColor Red
+            Write-Host $createOut -ForegroundColor Red
+            return
+        }
         Write-Host "  [OK] Instance $vmName launched!" -ForegroundColor Green
     }
 
     # Fetch External IP
     $ipArgs = @("compute", "instances", "describe", $vmName, "--project=$Project", "--zone=$zone", '--format=value(networkInterfaces[0].accessConfigs[0].natIP)')
-    $externalIp = (& gcloud @ipArgs 2>&1).Trim()
+    $externalIp = (& gcloud @ipArgs 2>$null)
+    if ($externalIp) { $externalIp = $externalIp.Trim() }
     
     $Instances += [PSCustomObject]@{
         Node        = $nodeNum

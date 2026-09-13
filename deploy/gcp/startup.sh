@@ -38,10 +38,11 @@ if ! command -v docker &> /dev/null; then
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
-# 4. Setup Persistent Storage Layout
+# 4. Setup Persistent Storage Layout (chown 10001 for non-root ciphervault container user)
 mkdir -p /opt/ciphervault/data
 mkdir -p /opt/ciphervault/caddy_data
 mkdir -p /opt/ciphervault/caddy_config
+chown -R 10001:10001 /opt/ciphervault/data
 
 # 5. Clone / Fetch Repository
 echo "Fetching CipherVault repository..."

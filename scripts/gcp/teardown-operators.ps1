@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [string]$Project = "",
-    [string[]]$Zones = @("us-central1-a", "us-central1-b", "us-central1-c"),
+    [string[]]$Zones = @("us-central1-a", "us-central1-b", "us-east1-b", "us-central1-c"),
     [string]$Prefix = "cv-operator",
     [switch]$DeleteFirewall
 )
@@ -19,14 +19,24 @@ Write-Host "=======================================================" -Foreground
 Write-Host "  CipherVault GCP VPS Storage Operator Teardown" -ForegroundColor Red
 Write-Host "=======================================================" -ForegroundColor Cyan
 
-# 1. Resolve Active Project
+# 1. Check gcloud CLI (with PATH auto-discovery)
+$gcloudCmd = Get-Command gcloud -ErrorAction SilentlyContinue
+if (-not $gcloudCmd) {
+    $defaultGcloudDir = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin"
+    if (Test-Path "$defaultGcloudDir\gcloud.cmd") {
+        $env:PATH = "$defaultGcloudDir;$env:PATH"
+    }
+}
+
+# 2. Resolve Active Project
 if (-not $Project) {
-    $Project = (gcloud config get-value project 2>&1).Trim()
+    $Project = (gcloud config get-value project 2>$null)
+    if ($Project) { $Project = $Project.Trim() }
 }
 Write-Host "Active GCP Project: " -NoNewline
 Write-Host $Project -ForegroundColor Yellow
 
-# 2. Delete Compute Instances
+# 3. Delete Compute Instances
 for ($i = 0; $i -lt $Zones.Count; $i++) {
     $nodeNum = $i + 1
     $vmName = "$Prefix-$nodeNum"
@@ -34,7 +44,7 @@ for ($i = 0; $i -lt $Zones.Count; $i++) {
 
     Write-Host "Checking $vmName in $zone..." -NoNewline
     $checkArgs = @("compute", "instances", "list", "--project=$Project", "--filter=name=$vmName AND zone:$zone", '--format=value(name)')
-    $exists = & gcloud @checkArgs 2>&1
+    $exists = & gcloud @checkArgs 2>$null
     if ($exists) {
         Write-Host " Deleting..." -ForegroundColor Yellow
         $delArgs = @("compute", "instances", "delete", $vmName, "--project=$Project", "--zone=$zone", "--quiet")
@@ -45,13 +55,13 @@ for ($i = 0; $i -lt $Zones.Count; $i++) {
     }
 }
 
-# 3. Optional Firewall Deletion
+# 4. Optional Firewall Deletion
 if ($DeleteFirewall) {
     $FirewallRule = "ciphervault-allow-ingress"
     Write-Host ""
     Write-Host "Deleting firewall rule $FirewallRule..." -ForegroundColor Yellow
     $fwDelArgs = @("compute", "firewall-rules", "delete", $FirewallRule, "--project=$Project", "--quiet")
-    & gcloud @fwDelArgs 2>&1 | Out-Null
+    & gcloud @fwDelArgs 2>$null | Out-Null
     Write-Host "  [OK] Deleted $FirewallRule!" -ForegroundColor Green
 }
 

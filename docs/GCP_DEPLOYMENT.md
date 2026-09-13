@@ -6,18 +6,19 @@ This runbook specifies the production deployment architecture, provisioning auto
 
 ## 1. Cloud Architecture & Quorum Topology
 
-To achieve true disaster recovery, fault tolerance, and zero single points of failure, CipherVault operators are deployed across **three independent availability zones**:
+To achieve true disaster recovery, fault tolerance, and zero single points of failure, CipherVault operators are deployed across **multiple independent availability zones and regions**:
 
 ```text
                            DEVELOPER CLIENTS / CI/CD
                            
              ┌─────────────────────────┬────────────────────────┐
              │                         │                        │
-             ▼ HTTPS (443)             ▼ HTTPS (443)            ▼ HTTPS (443)
+             ▼ HTTP/HTTPS              ▼ HTTP/HTTPS             ▼ HTTP/HTTPS
     ┌──────────────────┐      ┌──────────────────┐     ┌──────────────────┐
     │   cv-operator-1  │      │   cv-operator-2  │     │   cv-operator-3  │
-    │  Zone:           │      │  Zone:           │     │  Zone:           │
-    │  us-central1-a   │      │  us-central1-b   │     │  us-central1-c   │
+    │  Region:         │      │  Region:         │     │  Region:         │
+    │  us-central1-a   │      │  us-central1-b   │     │  us-east1-b      │
+    │  (Iowa)          │      │  (Iowa)          │     │  (S. Carolina)   │
     ├──────────────────┤      ├──────────────────┤     ├──────────────────┤
     │ Caddy (TLS 443)  │      │ Caddy (TLS 443)  │     │ Caddy (TLS 443)  │
     │ Operator (:8201) │      │ Operator (:8201) │     │ Operator (:8201) │
