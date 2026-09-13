@@ -2169,7 +2169,12 @@ async fn cmd_pull(dry_run: bool, force: bool) -> Result<()> {
 
     let local_head = store.get_active_head()?;
     if let Some(lh) = &local_head {
-        if lh.snapshot_id == chosen_head.snapshot_id {
+        let any_missing = store
+            .list_tracked_files()
+            .unwrap_or_default()
+            .iter()
+            .any(|(p, _)| !p.exists());
+        if lh.snapshot_id == chosen_head.snapshot_id && !force && !any_missing {
             println!(
                 "{}",
                 format!(
@@ -2185,10 +2190,24 @@ async fn cmd_pull(dry_run: bool, force: bool) -> Result<()> {
     let mut snap_cid = [0u8; 32];
     snap_cid.copy_from_slice(&chosen_head.snapshot_id);
 
-    println!(
-        "Found newer remote snapshot: {}",
-        hex::encode(snap_cid)[..12].yellow()
-    );
+    if let Some(lh) = &local_head {
+        if lh.snapshot_id == chosen_head.snapshot_id {
+            println!(
+                "Syncing confidential files from remote snapshot: {}",
+                hex::encode(snap_cid)[..12].yellow()
+            );
+        } else {
+            println!(
+                "Found newer remote snapshot: {}",
+                hex::encode(snap_cid)[..12].yellow()
+            );
+        }
+    } else {
+        println!(
+            "Found remote snapshot: {}",
+            hex::encode(snap_cid)[..12].yellow()
+        );
+    }
 
     if dry_run {
         println!(
