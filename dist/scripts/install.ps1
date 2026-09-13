@@ -32,22 +32,42 @@ if (Test-Path -Path $LocalCandidate -PathType Leaf) {
     Copy-Item -Path "dist\bin\*.exe" -Destination $BinDir -Force
 } else {
     Write-Host "Downloading CipherVault from GitHub ($Repo)..." -ForegroundColor Cyan
+    $Downloaded = $false
     try {
         Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempZip -UseBasicParsing
         Expand-Archive -Path $TempZip -DestinationPath $InstallDir -Force
-        Remove-Item -Path $TempZip -Force
+        Get-ChildItem -Path $InstallDir -Filter "*.exe" -Recurse | ForEach-Object {
+            if ($_.DirectoryName -ne $BinDir) {
+                Copy-Item -Path $_.FullName -Destination $BinDir -Force
+            }
+        }
+        Remove-Item -Path $TempZip -Force -ErrorAction SilentlyContinue
+        $Downloaded = $true
     } catch {
-        Write-Host "Release archive not yet attached to tag. Downloading standalone binary from repository..." -ForegroundColor Yellow
+        Write-Host "Release archive not yet attached or failed. Trying standalone release binary..." -ForegroundColor Yellow
+    }
+
+    if (-not $Downloaded) {
+        $ReleaseBinaryUrl = "https://github.com/$Repo/releases/download/$Tag/ciphervault.exe"
         try {
-            Invoke-WebRequest -Uri $RawBinaryUrl -OutFile $TargetExe -UseBasicParsing
-            Write-Host "Downloaded standalone binary from repository." -ForegroundColor Green
+            Invoke-WebRequest -Uri $ReleaseBinaryUrl -OutFile $TargetExe -UseBasicParsing
+            Write-Host "Downloaded standalone release binary." -ForegroundColor Green
+            $Downloaded = $true
         } catch {
-            if (Get-Command cargo -ErrorAction SilentlyContinue) {
-                Write-Host "Building locally via cargo..." -ForegroundColor Yellow
-                cargo build --release -p ciphervault-cli
-                Copy-Item -Path "target\release\ciphervault.exe" -Destination $BinDir -Force
-            } else {
-                throw "Could not download CipherVault. Please check your internet connection or visit https://github.com/$Repo"
+            Write-Host "Release binary not found. Downloading raw binary from repository..." -ForegroundColor Yellow
+            try {
+                Invoke-WebRequest -Uri $RawBinaryUrl -OutFile $TargetExe -UseBasicParsing
+                Write-Host "Downloaded standalone binary from repository." -ForegroundColor Green
+                $Downloaded = $true
+            } catch {
+                if (Get-Command cargo -ErrorAction SilentlyContinue) {
+                    Write-Host "Building locally via cargo..." -ForegroundColor Yellow
+                    cargo build --release -p ciphervault-cli
+                    Copy-Item -Path "target\release\ciphervault.exe" -Destination $BinDir -Force
+                    $Downloaded = $true
+                } else {
+                    throw "Could not download CipherVault. Please check your internet connection or visit https://github.com/$Repo"
+                }
             }
         }
     }

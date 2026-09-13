@@ -53,18 +53,35 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 echo "Downloading ${DOWNLOAD_URL}..."
+INSTALLED=false
+
 if curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${PKG_NAME}"; then
     tar -xzf "${TMP_DIR}/${PKG_NAME}" -C "${TMP_DIR}"
-    cp "${TMP_DIR}"/bin/ciphervault* "${INSTALL_DIR}/"
+    find "${TMP_DIR}" -type f -name "ciphervault*" -exec cp {} "${INSTALL_DIR}/" \;
     chmod +x "${INSTALL_DIR}"/ciphervault*
+    INSTALLED=true
+fi
+
+if [ "$INSTALLED" = "false" ]; then
+    echo "Release archive not yet attached or failed. Checking standalone release binary..."
+    STANDALONE_URL="https://github.com/${REPO}/releases/download/${TAG}/ciphervault-${TARGET}"
+    if curl -fsSL "${STANDALONE_URL}" -o "${INSTALL_DIR}/ciphervault"; then
+        chmod +x "${INSTALL_DIR}/ciphervault"
+        INSTALLED=true
+    fi
+fi
+
+if [ "$INSTALLED" = "false" ]; then
     echo "Pre-built binary not found for ${TAG}. Attempting cargo install from GitHub..."
     if command -v cargo >/dev/null 2>&1; then
         cargo install --git "https://github.com/${REPO}.git" ciphervault-cli --root "${INSTALL_DIR}/.."
+        INSTALLED=true
     else
         echo "Error: Could not download pre-built binary and cargo is not installed." >&2
         echo "Please install Rust (https://rustup.rs) or download a release from https://github.com/${REPO}/releases" >&2
         exit 1
     fi
+fi
 
 echo ""
 echo "✓ CipherVault installed successfully to ${INSTALL_DIR}!"
