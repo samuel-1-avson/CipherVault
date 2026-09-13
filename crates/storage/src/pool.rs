@@ -24,6 +24,44 @@ impl MultiOperatorPool {
         &self.clients
     }
 
+    pub fn endpoints(&self) -> Vec<String> {
+        self.clients
+            .iter()
+            .map(|c| c.endpoint().to_string())
+            .collect()
+    }
+
+    /// Discovers active peer operators from current endpoints via P2P gossip and dynamically expands the pool.
+    /// Returns the number of newly discovered and verified peer operators.
+    pub async fn discover_and_expand_peers(&mut self) -> Result<usize, StorageError> {
+        let mut new_endpoints = Vec::new();
+        let existing: std::collections::HashSet<String> = self
+            .clients
+            .iter()
+            .map(|c| c.endpoint().trim_end_matches('/').to_string())
+            .collect();
+
+        for client in &self.clients {
+            if let Ok(peers) = client.get_peers().await {
+                for peer in peers {
+                    if peer.verify().is_ok() {
+                        let normalized = peer.endpoint.trim_end_matches('/').to_string();
+                        if !existing.contains(&normalized) && !new_endpoints.contains(&normalized) {
+                            new_endpoints.push(normalized);
+                        }
+                    }
+                }
+            }
+        }
+
+        let count = new_endpoints.len();
+        for endpoint in new_endpoints {
+            self.clients.push(OperatorClient::new(endpoint));
+        }
+
+        Ok(count)
+    }
+
     /// Authenticates against all configured operators in parallel.
     /// Returns a list of (OperatorClient, session_token) for successful operators.
     pub async fn authenticate_all(

@@ -161,6 +161,12 @@ enum Commands {
 
         #[arg(short, long, help = "Directory to restore files into")]
         to: PathBuf,
+
+        #[arg(
+            long,
+            help = "Require out-of-band cryptographic approval receipt from team lead or guardian before restoring"
+        )]
+        require_approval: bool,
     },
 
     /// Emergency offline recovery commands
@@ -380,6 +386,43 @@ enum Commands {
         #[command(subcommand)]
         sub: TokenSubcommand,
     },
+
+    /// Inspect discovered peer operators and dynamic P2P gossip cluster
+    Peers {
+        #[arg(
+            short,
+            long,
+            help = "Query operators to dynamically discover new peer nodes"
+        )]
+        discover: bool,
+    },
+
+    /// Out-of-band cryptographic approval and multi-party authorization
+    Approve {
+        #[command(subcommand)]
+        sub: ApproveSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ApproveSubcommand {
+    /// List pending out-of-band authorization challenges across the cluster
+    List,
+
+    /// Cryptographically sign and approve a pending authorization challenge
+    Sign {
+        #[arg(help = "The 32-character hex ID of the challenge to approve")]
+        challenge_id: String,
+
+        #[arg(short, long, help = "Name or role of the approving guardian/lead")]
+        name: Option<String>,
+    },
+
+    /// Inspect approval status and collected signatures for a challenge
+    Status {
+        #[arg(help = "The 32-character hex ID of the challenge")]
+        challenge_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -485,7 +528,12 @@ async fn run(cli: Cli) -> Result<()> {
         } => cmd_push(message, touch).await,
         Commands::History => cmd_history(),
         Commands::Restore { snapshot, to } => cmd_restore(snapshot, to),
-        Commands::Recover { kit, shares, to } => cmd_recover(kit, shares, to).await,
+        Commands::Recover {
+            kit,
+            shares,
+            to,
+            require_approval,
+        } => cmd_recover(kit, shares, to, require_approval).await,
         Commands::Recovery { sub } => match sub {
             RecoverySubcommand::Export => cmd_recovery_export(),
             RecoverySubcommand::Split {
@@ -554,6 +602,14 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_completions(shell);
             Ok(())
         }
+        Commands::Peers { discover } => cmd_peers(discover).await,
+        Commands::Approve { sub } => match sub {
+            ApproveSubcommand::List => cmd_approve_list().await,
+            ApproveSubcommand::Sign { challenge_id, name } => {
+                cmd_approve_sign(challenge_id, name).await
+            }
+            ApproveSubcommand::Status { challenge_id } => cmd_approve_status(challenge_id).await,
+        },
     }
 }
 
@@ -2262,6 +2318,7 @@ async fn cmd_recover(
     kit_opt: Option<PathBuf>,
     shares_opt: Option<Vec<PathBuf>>,
     to_dir: PathBuf,
+    require_approval: bool,
 ) -> Result<()> {
     println!(
         "{}",
@@ -2324,8 +2381,11 @@ async fn cmd_recover(
             bail!("Recovery kit file does not exist: {}", kit_path.display());
         }
 
-        let kit_text = fs::read_to_string(&kit_path)?;
-        OfflineRecoveryKit::parse_from_printable(&kit_text)?
+        let text = fs::read_to_string(&kit_path).context(format!(
+            "Failed to read emergency recovery kit file '{}'",
+            kit_path.display()
+        ))?;
+        OfflineRecoveryKit::parse_from_printable(&text)?
     } else {
         bail!("Must specify either --kit <PATH> or --shares <PATHS>... to execute clean recovery.");
     };
@@ -2364,6 +2424,114 @@ async fn cmd_recover(
 
     let (chosen_head, certificate) =
         ciphervault_recovery::trust::select_head(&raw_records, &vault_id, &recovery_signing_pk)?;
+
+    if require_approval {
+        println!();
+        println!(
+            "{}",
+            "=======================================================".yellow()
+        );
+        println!(
+            "{}",
+            "  OUT-OF-BAND CRYPTOGRAPHIC APPROVAL REQUIRED"
+                .bold()
+                .yellow()
+        );
+        println!(
+            "{}",
+            "=======================================================".yellow()
+        );
+        let challenge = ciphervault_recovery::ApprovalChallenge::new(
+            &vault_id,
+            ciphervault_recovery::ApprovalAction::EmergencyRecovery,
+            &[0u8; 32],
+            format!(
+                "Clean-machine emergency recovery into '{}'",
+                to_dir.display()
+            ),
+            600,
+        );
+        let challenge_id = challenge.challenge_id.clone();
+        println!("  Challenge ID:     {}", challenge_id.cyan().bold());
+        println!("  Action:           EmergencyRecovery");
+        println!("  Target Directory: {}", to_dir.display());
+        println!("  Validity TTL:     600 seconds");
+        println!();
+
+        // Broadcast challenge to operator federation
+        let mut broadcast_count = 0;
+        let http = reqwest::Client::new();
+        for op in &kit.operator_endpoints {
+            let url = format!("{}/v1/auth/challenges", op.trim_end_matches('/'));
+            if let Ok(resp) = http.post(&url).json(&challenge).send().await {
+                if resp.status().is_success() {
+                    broadcast_count += 1;
+                }
+            }
+        }
+        if broadcast_count == 0 {
+            bail!("Failed to broadcast approval challenge to any operator node");
+        }
+
+        println!("Challenge registered with {} operator(s).", broadcast_count);
+        println!(
+            "{}",
+            "Awaiting cryptographic approval receipt from team lead or guardian..."
+                .bold()
+                .cyan()
+        );
+        println!(
+            "  Approver instruction: Run '{}'",
+            format!("ciphervault approve sign {}", challenge_id).yellow()
+        );
+
+        let mut approved = false;
+        let start_time = std::time::Instant::now();
+        while start_time.elapsed().as_secs() < 300 {
+            for op in &kit.operator_endpoints {
+                let url = format!(
+                    "{}/v1/auth/challenges/{}",
+                    op.trim_end_matches('/'),
+                    challenge_id
+                );
+                if let Ok(resp) = http.get(&url).send().await {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if json["approved"].as_bool().unwrap_or(false) {
+                            if let Some(receipts) = json["receipts"].as_array() {
+                                if let Some(first) = receipts.first() {
+                                    let name = first["approver_name"]
+                                        .as_str()
+                                        .unwrap_or("Authorized Approver");
+                                    println!(
+                                        "{}",
+                                        format!(
+                                            "✓ Cryptographic approval receipt verified from '{}'!",
+                                            name
+                                        )
+                                        .green()
+                                        .bold()
+                                    );
+                                    approved = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if approved {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+
+        if !approved {
+            bail!(
+                "Emergency recovery aborted: Timed out waiting for out-of-band approval receipt."
+            );
+        }
+    }
+
     // Fetch and authenticate snapshot record object
     let mut snap_cid = [0u8; 32];
     snap_cid.copy_from_slice(&chosen_head.snapshot_id);
@@ -2449,6 +2617,362 @@ async fn cmd_recover(
     Ok(())
 }
 
+async fn cmd_peers(discover: bool) -> Result<()> {
+    let mut operators = get_configured_operators();
+    if operators.is_empty() {
+        bail!("No operators configured. Run 'ciphervault init' first.");
+    }
+
+    println!("{}", "CipherVault Operator Federation Routing Table".bold());
+    println!("------------------------------------------------------------");
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .unwrap_or_default();
+
+    if discover {
+        println!("Querying cluster for dynamic P2P peer announcements...");
+        let mut discovered_endpoints = Vec::new();
+        for op in &operators {
+            let url = format!("{}/v1/peers", op.trim_end_matches('/'));
+            if let Ok(resp) = http.get(&url).send().await {
+                if let Ok(peers) = resp
+                    .json::<Vec<ciphervault_storage::PeerDescriptor>>()
+                    .await
+                {
+                    for p in peers {
+                        if p.verify().is_ok() {
+                            let norm = p.endpoint.trim_end_matches('/').to_string();
+                            if !operators.contains(&norm) && !discovered_endpoints.contains(&norm) {
+                                discovered_endpoints.push(norm);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !discovered_endpoints.is_empty() {
+            println!(
+                "{}",
+                format!(
+                    "  ✓ Discovered {} new dynamic peer node(s)!",
+                    discovered_endpoints.len()
+                )
+                .green()
+            );
+            operators.extend(discovered_endpoints);
+        } else {
+            println!("  (All cluster peers are already known)");
+        }
+        println!();
+    }
+
+    println!(
+        "{:<32} {:<12} {:<10} {:<18}",
+        "OPERATOR ENDPOINT", "STATUS", "LATENCY", "PUBLIC KEY"
+    );
+    println!(
+        "{:<32} {:<12} {:<10} {:<18}",
+        "-------------------------------", "------", "-------", "----------"
+    );
+
+    for op in &operators {
+        let norm = op.trim_end_matches('/');
+        let url = format!("{}/v1/info", norm);
+        let start = std::time::Instant::now();
+        match http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let latency = format!("{}ms", start.elapsed().as_millis());
+                if let Ok(info) = resp.json::<ciphervault_storage::OperatorInfo>().await {
+                    let short_pk = if info.operator_signing_pk_hex.len() >= 12 {
+                        format!("{}...", &info.operator_signing_pk_hex[..12])
+                    } else {
+                        info.operator_signing_pk_hex
+                    };
+                    println!(
+                        "{:<32} {:<12} {:<10} {:<18}",
+                        norm.cyan(),
+                        "ONLINE".green().bold(),
+                        latency.yellow(),
+                        short_pk.dimmed()
+                    );
+                } else {
+                    println!(
+                        "{:<32} {:<12} {:<10} {:<18}",
+                        norm.cyan(),
+                        "ONLINE".green().bold(),
+                        latency.yellow(),
+                        "unknown".dimmed()
+                    );
+                }
+            }
+            _ => {
+                println!(
+                    "{:<32} {:<12} {:<10} {:<18}",
+                    norm.dimmed(),
+                    "OFFLINE".red().bold(),
+                    "-",
+                    "-"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_approve_list() -> Result<()> {
+    let operators = get_configured_operators();
+    if operators.is_empty() {
+        bail!("No operators configured.");
+    }
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    println!(
+        "{}",
+        "Pending Out-of-Band Cryptographic Authorization Challenges".bold()
+    );
+    println!("---------------------------------------------------------------------------------");
+
+    let mut all_challenges = Vec::new();
+    for op in &operators {
+        let url = format!("{}/v1/auth/challenges/pending", op.trim_end_matches('/'));
+        if let Ok(resp) = http.get(&url).send().await {
+            if let Ok(challenges) = resp
+                .json::<Vec<ciphervault_recovery::ApprovalChallenge>>()
+                .await
+            {
+                for c in challenges {
+                    if !all_challenges
+                        .iter()
+                        .any(|x: &ciphervault_recovery::ApprovalChallenge| {
+                            x.challenge_id == c.challenge_id
+                        })
+                    {
+                        all_challenges.push(c);
+                    }
+                }
+            }
+        }
+    }
+
+    if all_challenges.is_empty() {
+        println!(
+            "{}",
+            "  (No pending authorization challenges found across cluster)".dimmed()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{:<20} {:<18} {:<14} {:<10} {:<24}",
+        "CHALLENGE ID", "ACTION", "VAULT ID", "TTL", "DETAILS"
+    );
+    println!(
+        "{:<20} {:<18} {:<14} {:<10} {:<24}",
+        "------------------",
+        "----------------",
+        "------------",
+        "--------",
+        "----------------------"
+    );
+
+    let now = chrono::Utc::now().timestamp() as u64;
+    for c in &all_challenges {
+        let remaining_secs = c.expires_at_utc.saturating_sub(now);
+        let ttl_str = format!("{}s", remaining_secs);
+        let short_vault = if c.vault_id_hex.len() >= 8 {
+            &c.vault_id_hex[..8]
+        } else {
+            &c.vault_id_hex
+        };
+        let action_str = format!("{:?}", c.action);
+        println!(
+            "{:<20} {:<18} {:<14} {:<10} {:<24}",
+            c.challenge_id.cyan().bold(),
+            action_str.yellow(),
+            short_vault.dimmed(),
+            ttl_str.green(),
+            c.details
+        );
+    }
+
+    println!();
+    println!(
+        "To approve a challenge, run: {}",
+        "ciphervault approve sign <CHALLENGE_ID>".cyan()
+    );
+    Ok(())
+}
+
+async fn cmd_approve_sign(challenge_id: String, approver_name: Option<String>) -> Result<()> {
+    let operators = get_configured_operators();
+    if operators.is_empty() {
+        bail!("No operators configured.");
+    }
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    // 1. Fetch challenge details from operator cluster
+    let mut found_challenge: Option<ciphervault_recovery::ApprovalChallenge> = None;
+    for op in &operators {
+        let url = format!(
+            "{}/v1/auth/challenges/{}",
+            op.trim_end_matches('/'),
+            challenge_id
+        );
+        if let Ok(resp) = http.get(&url).send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Ok(c) = serde_json::from_value::<ciphervault_recovery::ApprovalChallenge>(
+                    json["challenge"].clone(),
+                ) {
+                    found_challenge = Some(c);
+                    break;
+                }
+            }
+        }
+    }
+
+    let challenge = found_challenge.context(format!(
+        "Challenge '{}' not found or already expired on operator cluster",
+        challenge_id
+    ))?;
+
+    println!("{}", "Authorize Cryptographic Approval Challenge".bold());
+    println!("--------------------------------------------------");
+    println!(
+        "  Challenge ID:     {}",
+        challenge.challenge_id.cyan().bold()
+    );
+    println!("  Action:           {:?}", challenge.action);
+    println!("  Vault ID:         {}", challenge.vault_id_hex.yellow());
+    println!("  Details:          {}", challenge.details);
+    println!(
+        "  Expires in:       {}s",
+        challenge
+            .expires_at_utc
+            .saturating_sub(chrono::Utc::now().timestamp() as u64)
+    );
+
+    // Sign using device key from local store, or create an ad-hoc guardian key
+    let store = get_vault_store();
+    let signing_key = if let Ok(ref s) = store {
+        let (_, key, _, _) = s.get_device_state()?;
+        key
+    } else {
+        ciphervault_crypto::generate_signing_key()
+    };
+
+    let name = approver_name.unwrap_or_else(|| {
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "Authorized Approver".into())
+    });
+
+    let receipt =
+        ciphervault_recovery::SignedApprovalReceipt::sign(&challenge, name.clone(), &signing_key);
+
+    // Broadcast receipt to operators
+    let mut accepted_count = 0;
+    for op in &operators {
+        let url = format!(
+            "{}/v1/auth/challenges/{}/approve",
+            op.trim_end_matches('/'),
+            challenge_id
+        );
+        if let Ok(resp) = http.post(&url).json(&receipt).send().await {
+            if resp.status().is_success() {
+                accepted_count += 1;
+            }
+        }
+    }
+
+    if accepted_count == 0 {
+        bail!("Failed to submit approval receipt to any operator");
+    }
+
+    println!(
+        "{}",
+        format!(
+            "✓ Cryptographic approval signature by '{}' submitted and accepted by {} operator(s)!",
+            name, accepted_count
+        )
+        .green()
+        .bold()
+    );
+
+    Ok(())
+}
+
+async fn cmd_approve_status(challenge_id: String) -> Result<()> {
+    let operators = get_configured_operators();
+    if operators.is_empty() {
+        bail!("No operators configured.");
+    }
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    for op in &operators {
+        let url = format!(
+            "{}/v1/auth/challenges/{}",
+            op.trim_end_matches('/'),
+            challenge_id
+        );
+        if let Ok(resp) = http.get(&url).send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Ok(challenge) = serde_json::from_value::<
+                    ciphervault_recovery::ApprovalChallenge,
+                >(json["challenge"].clone())
+                {
+                    println!("{}", "Approval Challenge Status".bold());
+                    println!("--------------------------------------------------");
+                    println!("  Challenge ID:  {}", challenge.challenge_id.cyan().bold());
+                    println!("  Action:        {:?}", challenge.action);
+                    println!("  Details:       {}", challenge.details);
+                    let approved = json["approved"].as_bool().unwrap_or(false);
+                    let count = json["receipt_count"].as_u64().unwrap_or(0);
+                    println!(
+                        "  Status:        {}",
+                        if approved {
+                            "APPROVED".green().bold()
+                        } else {
+                            "PENDING".yellow().bold()
+                        }
+                    );
+                    println!("  Signatures:    {}", count);
+
+                    if let Some(receipts) = json["receipts"].as_array() {
+                        for r in receipts {
+                            let name = r["approver_name"].as_str().unwrap_or("Unknown");
+                            let pk = r["approver_pk_hex"].as_str().unwrap_or("");
+                            let short_pk = if pk.len() >= 12 { &pk[..12] } else { pk };
+                            println!(
+                                "    - Signed by: {} (Key: {}...)",
+                                name.cyan(),
+                                short_pk.dimmed()
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    bail!("Challenge '{}' not found on any operator", challenge_id);
+}
+
 fn cmd_recovery_export() -> Result<()> {
     let kit_path = Path::new(VAULT_DIR).join(RECOVERY_FILE);
     if kit_path.exists() {
@@ -2504,7 +3028,7 @@ async fn cmd_recovery_test(kit_opt: Option<PathBuf>, target_dir: PathBuf) -> Res
         "Running offline clean-machine recovery test into '{}'...",
         target_dir.display()
     );
-    cmd_recover(Some(kit_path), None, target_dir).await
+    cmd_recover(Some(kit_path), None, target_dir, false).await
 }
 
 async fn cmd_recovery_split(

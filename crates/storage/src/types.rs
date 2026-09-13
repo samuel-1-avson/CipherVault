@@ -186,6 +186,100 @@ impl ProofOfStorageReceipt {
     }
 }
 
+/// Signed peer announcement descriptor for dynamic P2P operator gossip.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PeerDescriptor {
+    pub operator_id: String,
+    pub endpoint: String,
+    pub signing_pk_hex: String,
+    pub timestamp_utc: u64,
+    pub signature_hex: String,
+}
+
+impl PeerDescriptor {
+    pub fn new(
+        operator_id: String,
+        endpoint: String,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Self {
+        let mut desc = Self {
+            operator_id,
+            endpoint,
+            signing_pk_hex: hex::encode(signing_key.verifying_key().to_bytes()),
+            timestamp_utc: chrono::Utc::now().timestamp() as u64,
+            signature_hex: String::new(),
+        };
+        desc.sign(signing_key);
+        desc
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(self.operator_id.as_bytes());
+        bytes.extend_from_slice(b":");
+        bytes.extend_from_slice(self.endpoint.trim_end_matches('/').as_bytes());
+        bytes.extend_from_slice(b":");
+        bytes.extend_from_slice(self.signing_pk_hex.as_bytes());
+        bytes.extend_from_slice(b":");
+        bytes.extend_from_slice(&self.timestamp_utc.to_le_bytes());
+        bytes
+    }
+
+    pub fn sign(&mut self, signing_key: &ed25519_dalek::SigningKey) {
+        let msg = self.signing_bytes();
+        let sig = ciphervault_crypto::signatures::sign_with_domain(
+            signing_key,
+            b"operator_peer_gossip",
+            &msg,
+        );
+        self.signature_hex = hex::encode(sig);
+    }
+
+    pub fn verify(&self) -> Result<(), crate::error::StorageError> {
+        let pk_bytes = hex::decode(&self.signing_pk_hex).map_err(|e| {
+            crate::error::StorageError::ServerError {
+                status: 400,
+                message: format!("Invalid peer signing_pk_hex: {}", e),
+            }
+        })?;
+        if pk_bytes.len() != 32 {
+            return Err(crate::error::StorageError::ServerError {
+                status: 400,
+                message: "Peer signing_pk must be 32 bytes".into(),
+            });
+        }
+        let mut pk_arr = [0u8; 32];
+        pk_arr.copy_from_slice(&pk_bytes);
+
+        let sig_bytes = hex::decode(&self.signature_hex).map_err(|e| {
+            crate::error::StorageError::ServerError {
+                status: 400,
+                message: format!("Invalid peer signature_hex: {}", e),
+            }
+        })?;
+        if sig_bytes.len() != 64 {
+            return Err(crate::error::StorageError::ServerError {
+                status: 400,
+                message: "Peer signature must be 64 bytes".into(),
+            });
+        }
+        let mut sig_arr = [0u8; 64];
+        sig_arr.copy_from_slice(&sig_bytes);
+
+        let msg = self.signing_bytes();
+        ciphervault_crypto::signatures::verify_with_domain(
+            &pk_arr,
+            b"operator_peer_gossip",
+            &msg,
+            &sig_arr,
+        )
+        .map_err(|e| crate::error::StorageError::ServerError {
+            status: 400,
+            message: format!("Cryptographic peer announcement signature invalid: {}", e),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +324,35 @@ mod tests {
         let other_key = generate_signing_key();
         let other_pk = other_key.verifying_key().to_bytes();
         assert!(receipt.verify(&other_pk, &proof).is_err());
+    }
+
+    #[test]
+    fn test_peer_descriptor_signing_and_verification() {
+        let key = generate_signing_key();
+        let pk = key.verifying_key().to_bytes();
+
+        let mut peer = PeerDescriptor {
+            operator_id: "op-alpha".into(),
+            endpoint: "http://127.0.0.1:8201".into(),
+            signing_pk_hex: hex::encode(pk),
+            timestamp_utc: 1700000000,
+            signature_hex: String::new(),
+        };
+
+        peer.sign(&key);
+        assert!(!peer.signature_hex.is_empty());
+        assert!(peer.verify().is_ok());
+
+        // Tampered endpoint fails verification
+        let mut tampered = peer.clone();
+        tampered.endpoint = "http://127.0.0.1:9999".into();
+        assert!(tampered.verify().is_err());
+
+        // Tampered key fails verification
+        let other_key = generate_signing_key();
+        let other_pk = other_key.verifying_key().to_bytes();
+        let mut tampered_key = peer.clone();
+        tampered_key.signing_pk_hex = hex::encode(other_pk);
+        assert!(tampered_key.verify().is_err());
     }
 }

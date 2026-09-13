@@ -13,18 +13,19 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::error::CryptoError;
 
 /// Multiplication in GF(2^8) with Rijndael polynomial x^8 + x^4 + x^3 + x + 1 (0x11B).
+///
+/// Implemented using strictly branchless bitwise operations to eliminate timing side channels.
 #[inline(always)]
 pub fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut p = 0u8;
     for _ in 0..8 {
-        if (b & 1) != 0 {
-            p ^= a;
-        }
-        let hi_bit = (a & 0x80) != 0;
-        a <<= 1;
-        if hi_bit {
-            a ^= 0x1B;
-        }
+        // Branchless mask: 0xFF if (b & 1) != 0, else 0x00
+        let mask_b = 0u8.wrapping_sub(b & 1);
+        p ^= a & mask_b;
+
+        // Branchless reduction: 0xFF if MSB of a was set, else 0x00
+        let mask_hi = 0u8.wrapping_sub((a >> 7) & 1);
+        a = (a << 1) ^ (0x1B & mask_hi);
         b >>= 1;
     }
     p

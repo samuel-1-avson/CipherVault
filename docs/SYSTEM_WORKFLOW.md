@@ -525,6 +525,63 @@ sequenceDiagram
 
 ---
 
+### Workflow 11: Dynamic P2P Operator Discovery & Gossip Protocol
+
+Decentralized operator clusters discover active peers dynamically without requiring static IP configuration:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OpNew as New Operator Node (Beta)
+    participant OpSeed as Seed Operator (Alpha)
+    participant Client as Client MultiOperatorPool
+
+    OpNew->>OpNew: Generate PeerDescriptor(ID, Endpoint, Timestamp)
+    OpNew->>OpNew: Sign descriptor with Ed25519 node key (operator_peer_gossip)
+    OpNew->>OpSeed: POST /v1/peers/announce (PeerDescriptor)
+    OpSeed->>OpSeed: Verify Ed25519 signature & update peer_routing_table
+    OpSeed-->>OpNew: 200 OK (Registration accepted)
+    
+    Client->>OpSeed: GET /v1/peers
+    OpSeed-->>Client: 200 OK (List of active, verified PeerDescriptors)
+    Client->>Client: Verify each PeerDescriptor signature
+    Client->>Client: Dynamically expand MultiOperatorPool endpoints
+    Client->>OpNew: Perform read/write/recovery operations directly
+```
+
+---
+
+### Workflow 12: Out-of-Band Push Approvals for Emergency Disaster Recovery
+
+Clean-machine emergency recovery can be gated upon out-of-band cryptographic approval receipts signed by authorized team leads or guardians:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Target as Recovering Machine (ciphervault recover --require-approval)
+    participant Cluster as Operator Federation
+    participant Lead as Security Lead / Approver (ciphervault approve)
+
+    Target->>Target: Generate ApprovalChallenge(VaultID, Action, TTL=600s)
+    Target->>Cluster: POST /v1/auth/challenges (Broadcast challenge)
+    Cluster-->>Target: Challenge registered; awaiting approval receipt
+    
+    Lead->>Cluster: GET /v1/auth/challenges/pending (ciphervault approve list)
+    Cluster-->>Lead: List of active challenges with details and TTL
+    Lead->>Lead: Review target directory, vault ID, and action
+    Lead->>Lead: Sign challenge with device/guardian key (out_of_band_approval)
+    Lead->>Cluster: POST /v1/auth/challenges/:id/approve (SignedApprovalReceipt)
+    Cluster->>Cluster: Verify receipt signature & mark challenge approved
+    
+    loop Polling (Every 500ms, up to TTL)
+        Target->>Cluster: GET /v1/auth/challenges/:id
+        Cluster-->>Target: 200 OK (approved: true, receipts: [SignedApprovalReceipt])
+    end
+    Target->>Target: Verify approver signature & proceed with snapshot restoration
+```
+
+---
+
 ## 6. Security Invariants Matrix
 
 | Attack / Failure Vector | Mitigating Subsystem | Cryptographic / Architectural Guarantee |
@@ -540,6 +597,9 @@ sequenceDiagram
 | **Shoulder Surfing / Visual Secret Leakage** | Encrypted Diff Engine | Secret values in `ciphervault diff` masked with `***` unless `--reveal` is explicitly supplied. |
 | **Accidental Overwrite on Remote Pull** | Working Tree Dirty Guard | `ciphervault pull` aborts if local tracked files have uncommitted edits unless `--force` is given. |
 | **CI/CD Plaintext Disk Persistence** | Zero-Disk Secret Injection | `ciphervault run` passes decrypted secrets strictly via in-memory process environment blocks. |
+| **Cache-Timing / Branch Microarchitectural Attacks** | Branchless $\text{GF}(2^8)$ Galois Field Arithmetic | Elimination of secret-dependent branches in Shamir Secret Sharing multiplication via bitwise masking. |
+| **Rogue Operator Impersonation & Sybil Attacks** | P2P Signed Gossip Descriptors | Peer discovery requires Ed25519 domain-separated signatures (`operator_peer_gossip`) with timestamp freshness. |
+| **Unapproved Clean-Machine Secret Extraction** | Out-of-Band Push Authorization | Emergency recovery enforced through cryptographic challenge receipts signed by team leads or threshold guardians. |
 
 ---
 

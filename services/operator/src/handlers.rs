@@ -237,3 +237,80 @@ pub async fn get_relayer_checkpoint(
         None => Err(StatusCode::NOT_FOUND),
     }
 }
+
+// -----------------------------------------------------------------------------
+// Dynamic P2P Peer Gossip Handlers
+// -----------------------------------------------------------------------------
+
+pub async fn post_peer_announce(
+    State(state): State<Arc<OperatorState>>,
+    Json(peer): Json<ciphervault_storage::PeerDescriptor>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let count = state
+        .register_peer(peer)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({
+        "status": "registered",
+        "peer_count": count
+    })))
+}
+
+pub async fn get_peers(
+    State(state): State<Arc<OperatorState>>,
+) -> Json<Vec<ciphervault_storage::PeerDescriptor>> {
+    let peers = state.get_active_peers();
+    Json(peers)
+}
+
+// -----------------------------------------------------------------------------
+// Out-of-Band Cryptographic Approval Handlers
+// -----------------------------------------------------------------------------
+
+pub async fn post_approval_challenge(
+    State(state): State<Arc<OperatorState>>,
+    Json(challenge): Json<ciphervault_recovery::ApprovalChallenge>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let id = challenge.challenge_id.clone();
+    state
+        .register_approval_challenge(challenge)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({
+        "status": "challenge_created",
+        "challenge_id": id
+    })))
+}
+
+pub async fn get_pending_challenges(
+    State(state): State<Arc<OperatorState>>,
+) -> Json<Vec<ciphervault_recovery::ApprovalChallenge>> {
+    let list = state.get_pending_challenges();
+    Json(list)
+}
+
+pub async fn get_challenge_status(
+    State(state): State<Arc<OperatorState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match state.get_challenge_status(&id) {
+        Some((challenge, receipts)) => Ok(Json(serde_json::json!({
+            "challenge": challenge,
+            "receipts": receipts,
+            "approved": !receipts.is_empty(),
+            "receipt_count": receipts.len()
+        }))),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+pub async fn post_submit_approval(
+    State(state): State<Arc<OperatorState>>,
+    Json(receipt): Json<ciphervault_recovery::SignedApprovalReceipt>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let count = state
+        .submit_approval_receipt(receipt)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({
+        "status": "receipt_accepted",
+        "approval_count": count
+    })))
+}

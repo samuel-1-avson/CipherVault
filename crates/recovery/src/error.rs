@@ -19,4 +19,10 @@ pub enum RecoveryError {
 
     #[error("Invalid recovery kit format: {0}")]
     InvalidKitFormat(String),
+
+    #[error("Invalid cryptographic signature: {0}")]
+    InvalidSignature(String),
+
+    #[error("Invalid or expired authorization challenge: {0}")]
+    InvalidChallenge(String),
 }

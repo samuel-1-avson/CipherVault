@@ -499,6 +499,7 @@ dependencies = [
  "ciborium",
  "ciphervault-crypto",
  "ciphervault-format",
+ "ciphervault-recovery",
  "ciphervault-storage",
  "clap",
  "colored",
@@ -525,6 +526,7 @@ dependencies = [
  "crc32fast",
  "ed25519-dalek",
  "hex",
+ "rand 0.8.8",
  "serde",
  "thiserror",
  "x25519-dalek",
@@ -549,6 +551,7 @@ dependencies = [
 name = "ciphervault-storage"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "ciborium",
  "ciphervault-crypto",
  "ciphervault-format",

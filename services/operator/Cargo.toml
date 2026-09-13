@@ -28,3 +28,4 @@ ed25519-dalek.workspace = true
 ciphervault-crypto = { path = "../../crates/crypto" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-storage = { path = "../../crates/storage" }
+ciphervault-recovery = { path = "../../crates/recovery" }

@@ -304,4 +304,30 @@ impl OperatorClient {
         }
         Ok(out)
     }
+
+    pub async fn announce_peer(
+        &self,
+        descriptor: &crate::types::PeerDescriptor,
+    ) -> Result<(), StorageError> {
+        let url = format!("{}/v1/peers/announce", self.endpoint);
+        let resp = self.http.post(&url).json(descriptor).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let message = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError { status, message });
+        }
+        Ok(())
+    }
+
+    pub async fn get_peers(&self) -> Result<Vec<crate::types::PeerDescriptor>, StorageError> {
+        let url = format!("{}/v1/peers", self.endpoint);
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let message = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError { status, message });
+        }
+        let peers = resp.json::<Vec<crate::types::PeerDescriptor>>().await?;
+        Ok(peers)
+    }
 }

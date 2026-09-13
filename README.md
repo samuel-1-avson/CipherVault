@@ -280,6 +280,33 @@ Inject encrypted secrets into automated CI/CD pipelines without ever writing cre
 ```
 *(See [docs/CICD_INTEGRATION.md](docs/CICD_INTEGRATION.md) for full GitHub Actions, GitLab CI, and CircleCI guides)*
 
+### 15. Dynamic P2P Operator Discovery (`ciphervault peers`)
+
+Inspect active storage operators and discover dynamic cluster peers via Ed25519-signed P2P gossip:
+
+```sh
+# Inspect current storage operator cluster status, latency, and signing public keys
+ciphervault peers
+
+# Query operators to dynamically discover new peer nodes via P2P gossip
+ciphervault peers --discover
+```
+
+### 16. Out-of-Band Cryptographic Push Approvals (`ciphervault approve`)
+
+Authorize high-risk emergency recoveries and operations with cryptographic signatures from team leads or threshold guardians:
+
+```sh
+# List pending authorization challenges across the operator federation
+ciphervault approve list
+
+# Inspect detailed parameters (vault ID, action, TTL, target directory)
+ciphervault approve status <CHALLENGE_ID>
+
+# Cryptographically sign and approve a pending challenge using your authorized device key
+ciphervault approve sign <CHALLENGE_ID>
+```
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
@@ -300,9 +327,18 @@ Reconstruct the master recovery secret $R$ strictly in RAM by combining any $M$ 
 ciphervault recover --shares guardian_share_1_of_3.txt guardian_share_3_of_3.txt --to ./restored_secrets/
 ```
 
-- **Lagrange Interpolation**: Reconstructs $R$ over $\text{GF}(2^8)$ in volatile memory.
+- **Branchless Constant-Time Arithmetic**: Reconstructs $R$ over $\text{GF}(2^8)$ in volatile memory with zero secret-dependent branches.
 - **Zero Disk Exposure**: $R$ is never persisted to disk during or after recovery.
 - **Bit-for-Bit Fidelity**: Restores all files with 100% SHA-256 identity verification.
+
+### Method C: Out-of-Band Multi-Party Gated Recovery
+
+Enforce cryptographic approval receipts before restoring secrets onto untrusted or clean hardware:
+
+```sh
+ciphervault recover --kit emergency_recovery_kit.txt --to ./restored_secrets/ --require-approval
+```
+*(The command registers a 600s authorization challenge and awaits a signed receipt from `ciphervault approve sign <ID>`)*
 
 ---
 

@@ -41,6 +41,26 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             "/v1/relayer/checkpoints/:commitment",
             get(handlers::get_relayer_checkpoint),
         )
+        // Dynamic P2P Peer Gossip routes
+        .route("/v1/peers/announce", post(handlers::post_peer_announce))
+        .route("/v1/peers", get(handlers::get_peers))
+        // Out-of-Band Cryptographic Approval routes
+        .route(
+            "/v1/auth/challenges",
+            post(handlers::post_approval_challenge),
+        )
+        .route(
+            "/v1/auth/challenges/pending",
+            get(handlers::get_pending_challenges),
+        )
+        .route(
+            "/v1/auth/challenges/:id",
+            get(handlers::get_challenge_status),
+        )
+        .route(
+            "/v1/auth/challenges/:id/approve",
+            post(handlers::post_submit_approval),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

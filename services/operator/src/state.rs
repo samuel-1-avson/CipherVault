@@ -34,6 +34,18 @@ pub struct OperatorState {
     pub session_keys: Mutex<HashMap<String, [u8; 32]>>,
     // Relayed L2 checkpoints: commitment_hex -> RelayerReceipt
     pub relayed_checkpoints: Mutex<HashMap<String, ciphervault_storage::RelayerReceipt>>,
+    // Active P2P peers: operator_id -> PeerDescriptor
+    pub peer_routing_table: Mutex<HashMap<String, ciphervault_storage::PeerDescriptor>>,
+    // Out-of-band authorization challenges: challenge_id -> (ApprovalChallenge, Vec<SignedApprovalReceipt>)
+    pub approval_challenges: Mutex<
+        HashMap<
+            String,
+            (
+                ciphervault_recovery::ApprovalChallenge,
+                Vec<ciphervault_recovery::SignedApprovalReceipt>,
+            ),
+        >,
+    >,
 }
 
 impl OperatorState {
@@ -51,6 +63,8 @@ impl OperatorState {
             sessions: Mutex::new(HashMap::new()),
             session_keys: Mutex::new(HashMap::new()),
             relayed_checkpoints: Mutex::new(HashMap::new()),
+            peer_routing_table: Mutex::new(HashMap::new()),
+            approval_challenges: Mutex::new(HashMap::new()),
         }
     }
 
@@ -685,6 +699,85 @@ impl OperatorState {
         let lock = self.relayed_checkpoints.lock().unwrap();
         lock.get(commitment_hex).cloned()
     }
+
+    /// Registers a gossip peer announcement in the active routing table.
+    pub fn register_peer(
+        &self,
+        peer: ciphervault_storage::PeerDescriptor,
+    ) -> Result<usize, String> {
+        peer.verify()
+            .map_err(|e| format!("Invalid peer signature: {}", e))?;
+        let mut lock = self.peer_routing_table.lock().unwrap();
+        let now = Utc::now().timestamp() as u64;
+        lock.retain(|_, p| now.saturating_sub(p.timestamp_utc) < 86400);
+        lock.insert(peer.operator_id.clone(), peer);
+        Ok(lock.len())
+    }
+
+    /// Retrieves all currently active and unexpired peer operators in the cluster.
+    pub fn get_active_peers(&self) -> Vec<ciphervault_storage::PeerDescriptor> {
+        let lock = self.peer_routing_table.lock().unwrap();
+        lock.values().cloned().collect()
+    }
+
+    /// Registers a pending out-of-band authorization challenge.
+    pub fn register_approval_challenge(
+        &self,
+        challenge: ciphervault_recovery::ApprovalChallenge,
+    ) -> Result<(), String> {
+        if challenge.is_expired() {
+            return Err("Challenge is already expired".into());
+        }
+        let mut lock = self.approval_challenges.lock().unwrap();
+        let now = Utc::now().timestamp() as u64;
+        lock.retain(|_, (c, _)| c.expires_at_utc > now);
+        lock.insert(challenge.challenge_id.clone(), (challenge, Vec::new()));
+        Ok(())
+    }
+
+    /// Lists all pending and unexpired authorization challenges.
+    pub fn get_pending_challenges(&self) -> Vec<ciphervault_recovery::ApprovalChallenge> {
+        let lock = self.approval_challenges.lock().unwrap();
+        let now = Utc::now().timestamp() as u64;
+        lock.values()
+            .filter(|(c, receipts)| c.expires_at_utc > now && receipts.is_empty())
+            .map(|(c, _)| c.clone())
+            .collect()
+    }
+
+    /// Retrieves challenge details and collected signed receipts.
+    pub fn get_challenge_status(
+        &self,
+        challenge_id: &str,
+    ) -> Option<(
+        ciphervault_recovery::ApprovalChallenge,
+        Vec<ciphervault_recovery::SignedApprovalReceipt>,
+    )> {
+        let lock = self.approval_challenges.lock().unwrap();
+        lock.get(challenge_id).cloned()
+    }
+
+    /// Submits a cryptographically signed approval receipt.
+    pub fn submit_approval_receipt(
+        &self,
+        receipt: ciphervault_recovery::SignedApprovalReceipt,
+    ) -> Result<usize, String> {
+        let mut lock = self.approval_challenges.lock().unwrap();
+        if let Some((challenge, receipts)) = lock.get_mut(&receipt.challenge_id) {
+            receipt
+                .verify(challenge)
+                .map_err(|e| format!("Invalid receipt: {}", e))?;
+            if !receipts
+                .iter()
+                .any(|r| r.approver_pk_hex == receipt.approver_pk_hex)
+            {
+                receipts.push(receipt);
+            }
+            Ok(receipts.len())
+        } else {
+            Err("Challenge ID not found or already expired".into())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -921,6 +1014,77 @@ mod tests {
 
         // 3. Invalid CID hex length fails
         assert!(state.generate_pos_proof("short_cid", &nonce).is_err());
+
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_peer_gossip_registry() {
+        let root = std::env::temp_dir().join(format!("cv-peer-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        let state = OperatorState::new("test-op".into(), root.clone(), key);
+
+        let peer_key = ciphervault_crypto::generate_signing_key();
+        let peer_pk = peer_key.verifying_key().to_bytes();
+        let mut peer = ciphervault_storage::PeerDescriptor {
+            operator_id: "peer-1".into(),
+            endpoint: "http://127.0.0.1:8102".into(),
+            signing_pk_hex: hex::encode(peer_pk),
+            timestamp_utc: Utc::now().timestamp() as u64,
+            signature_hex: String::new(),
+        };
+        peer.sign(&peer_key);
+
+        assert_eq!(state.register_peer(peer.clone()).unwrap(), 1);
+        let peers = state.get_active_peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].operator_id, "peer-1");
+
+        // Invalid signature rejected
+        let mut bad_peer = peer.clone();
+        bad_peer.signature_hex = hex::encode([0x00u8; 64]);
+        assert!(state.register_peer(bad_peer).is_err());
+
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_approval_challenge_registry() {
+        let root = std::env::temp_dir().join(format!("cv-appr-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        let state = OperatorState::new("test-op".into(), root.clone(), key);
+
+        let vault_id = [0xAAu8; 32];
+        let device_id = [0xBBu8; 32];
+        let challenge = ciphervault_recovery::ApprovalChallenge::new(
+            &vault_id,
+            ciphervault_recovery::ApprovalAction::EmergencyRecovery,
+            &device_id,
+            "Recovery test".into(),
+            300,
+        );
+
+        state
+            .register_approval_challenge(challenge.clone())
+            .unwrap();
+        let pending = state.get_pending_challenges();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].challenge_id, challenge.challenge_id);
+
+        let approver_key = ciphervault_crypto::generate_signing_key();
+        let receipt = ciphervault_recovery::SignedApprovalReceipt::sign(
+            &challenge,
+            "Alice Lead".into(),
+            &approver_key,
+        );
+
+        assert_eq!(state.submit_approval_receipt(receipt.clone()).unwrap(), 1);
+
+        let status = state.get_challenge_status(&challenge.challenge_id).unwrap();
+        assert_eq!(status.1.len(), 1);
+        assert_eq!(status.1[0].approver_name, "Alice Lead");
 
         drop(state);
         fs::remove_dir_all(root).unwrap();

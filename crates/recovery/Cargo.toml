@@ -14,8 +14,10 @@ serde.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 x25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
 zeroize.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
-ed25519-dalek.workspace = true
+
