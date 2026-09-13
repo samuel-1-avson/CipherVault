@@ -1,1 +1,2 @@
-1519235f604d46386cd66c0e7b8e67127a72310f2a63cd617d66332d5e158308  ciphervault-windows-x64.exe
+96f91544a6a26642ec9bee2ef7d3b89e84e8d38bd9cbc63dcd54d4d4b8fa1269  ciphervault-windows-x64.exe
+96f91544a6a26642ec9bee2ef7d3b89e84e8d38bd9cbc63dcd54d4d4b8fa1269  ciphervault.exe

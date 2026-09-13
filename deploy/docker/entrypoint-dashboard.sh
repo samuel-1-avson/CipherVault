@@ -40,4 +40,5 @@ fi
 echo "======================================================="
 echo " Starting CipherVault Web Dashboard on 0.0.0.0:8080    "
 echo "======================================================="
-exec ciphervault ui --host 0.0.0.0 --port 8080 --no-browser
+exec ciphervault ui --serve --host 0.0.0.0 --port 8080 --no-browser
+

@@ -27,6 +27,16 @@ pub struct PendingUpload {
     pub created_at_utc: i64,
 }
 
+/// Represents a recorded event in the vault's persistent local activity history.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActivityEntry {
+    pub id: i64,
+    pub event_type: String,
+    pub summary: String,
+    pub details_json: String,
+    pub created_at_utc: i64,
+}
+
 impl LocalVaultStore {
     /// Opens or creates a local SQLite vault database at the specified file path.
     pub fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, LocalStoreError> {
@@ -119,6 +129,15 @@ impl LocalVaultStore {
                 last_error TEXT,
                 created_at_utc INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at_utc INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at_utc DESC);
             "#,
         )?;
         Ok(())
@@ -631,11 +650,11 @@ impl LocalVaultStore {
         }
     }
 
-    /// Retrieves all snapshots in chronological order.
+    /// Retrieves all snapshots in chronological order (canonical deduplicated by CID).
     pub fn list_snapshots(&self) -> Result<Vec<SnapshotRecord>, LocalStoreError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT record_cbor FROM snapshots ORDER BY created_at_utc ASC")?;
+            .prepare("SELECT DISTINCT record_cbor FROM snapshots ORDER BY created_at_utc ASC")?;
         let rows = stmt.query_map([], |row| {
             let blob: Vec<u8> = row.get(0)?;
             let rec: SnapshotRecord = from_canonical_cbor(&blob).map_err(|e| {
@@ -646,6 +665,54 @@ impl LocalVaultStore {
                 )
             })?;
             Ok(rec)
+        })?;
+
+        let mut out = Vec::new();
+        let mut seen_cids = std::collections::HashSet::new();
+        for r in rows {
+            let rec = r?;
+            if let Ok(cid) = rec.compute_record_cid() {
+                if seen_cids.insert(cid) {
+                    out.push(rec);
+                }
+            } else {
+                out.push(rec);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Records an event in the persistent local activity log.
+    pub fn record_activity(
+        &self,
+        event_type: &str,
+        summary: &str,
+        details_json: &str,
+    ) -> Result<(), LocalStoreError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn.execute(
+            "INSERT INTO activity_log (event_type, summary, details_json, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
+            params![event_type, summary, details_json, now],
+        )?;
+        Ok(())
+    }
+
+    /// Lists recent activity events in reverse chronological order.
+    pub fn list_activity(&self, limit: usize) -> Result<Vec<ActivityEntry>, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event_type, summary, details_json, created_at_utc FROM activity_log ORDER BY created_at_utc DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(ActivityEntry {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                summary: row.get(2)?,
+                details_json: row.get(3)?,
+                created_at_utc: row.get(4)?,
+            })
         })?;
 
         let mut out = Vec::new();

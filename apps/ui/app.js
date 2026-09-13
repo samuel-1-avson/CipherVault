@@ -10,6 +10,10 @@ const state = {
   guardians: null,
   relayerCheckpoints: [],
   fleet: null,
+  activity: [],
+  searchQueryDag: '',
+  searchQueryFiles: '',
+  lastActiveElement: null,
   isPolling: true,
   pollTimer: null,
   sseStream: null,
@@ -35,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDiffViewer();
   initFileManagement();
   initSnapshotDrawer();
+  initActivityFeed();
   initTerminalConsole();
   initKeyboardShortcuts();
   
@@ -63,6 +68,7 @@ async function fetchAllData() {
       fetchGuardians(),
       fetchRelayerCheckpoints(),
       fetchFleet(),
+      fetchActivity(),
     ]);
   } catch (err) {
     console.error("Data synchronization error:", err);
@@ -402,7 +408,7 @@ function renderSnapshots(snapshots) {
   const sorted = [...snapshots].reverse();
 
   container.innerHTML = sorted.map((snap, idx) => {
-    const isHead = snap.is_head || idx === 0;
+    const isHead = Boolean(snap.is_head);
     const snapIdTrunc = truncateHash(snap.snapshot_id_hex, 10, 8);
     const manifestTrunc = truncateHash(snap.manifest_cid_hex, 10, 8);
     const deviceTrunc = truncateHash(snap.device_id_hex, 8, 6);
@@ -451,6 +457,10 @@ function renderSnapshots(snapshots) {
   // Synchronize Diff selector dropdowns with latest snapshot list
   if (typeof updateDiffSelects === 'function') {
     updateDiffSelects(snapshots);
+  }
+
+  if (typeof applyDagFilter === 'function') {
+    applyDagFilter();
   }
 }
 
@@ -503,6 +513,10 @@ function renderTrackedFiles(files) {
       </tr>
     `;
   }).join('');
+
+  if (typeof applyFilesFilter === 'function') {
+    applyFilesFilter();
+  }
 }
 
 function renderAnchors(anchors) {
@@ -700,9 +714,11 @@ function renderRelayerCheckpoints(data) {
 
   tbody.innerHTML = checkpoints.slice().reverse().map(cp => {
     const blockStr = cp.block_number ? `#${cp.block_number.toLocaleString()}` : '#--';
-    const txTrunc = truncateHash(cp.tx_hash || '', 10, 8);
+    const txHash = cp.tx_hash || cp.tx_hash_hex || '';
+    const isZeroTx = !txHash || txHash.startsWith('0x00000000') || txHash === '0000000000000000000000000000000000000000000000000000000000000000';
+    const txTrunc = txHash && !isZeroTx ? truncateHash(txHash, 10, 8) : '--';
     const commitTrunc = truncateHash(cp.commitment || '', 10, 8);
-    const explorerUrl = cp.explorer_url || `https://sepolia.arbiscan.io/tx/${cp.tx_hash}`;
+    const explorerUrl = cp.explorer_url || (!isZeroTx && txHash ? `https://sepolia.arbiscan.io/tx/${txHash}` : '');
 
     return `
       <tr>
@@ -710,8 +726,8 @@ function renderRelayerCheckpoints(data) {
         <td>
           <div style="display: flex; align-items: center; gap: 6px;">
             <code style="font-family: var(--font-mono); font-size: 0.8rem;">${txTrunc}</code>
-            ${cp.tx_hash ? `
-              <button class="btn-copy" data-copy="${escapeHtml(cp.tx_hash)}" title="Copy Tx Hash">
+            ${txHash && !isZeroTx ? `
+              <button class="btn-copy" data-copy="${escapeHtml(txHash)}" title="Copy Tx Hash">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -721,7 +737,7 @@ function renderRelayerCheckpoints(data) {
           </div>
         </td>
         <td>
-          <span style="color: var(--accent-emerald); font-size: 0.78rem; font-weight: 600;">
+          <span style="color: ${cp.status === 'Failed' ? 'var(--accent-rose)' : 'var(--accent-emerald)'}; font-size: 0.78rem; font-weight: 600;">
             ${escapeHtml(cp.status || 'SequencerConfirmed')}
           </span>
         </td>
@@ -729,7 +745,7 @@ function renderRelayerCheckpoints(data) {
           ${commitTrunc}
         </td>
         <td>
-          ${cp.tx_hash ? `
+          ${explorerUrl ? `
             <a href="${escapeHtml(explorerUrl)}" target="_blank" rel="noopener noreferrer" class="arbiscan-link">
               Arbiscan ↗
             </a>
@@ -1157,28 +1173,46 @@ function initSecretToggle() {
   }
 }
 
+function applyDagFilter() {
+  const q = (state.searchQueryDag || '').toLowerCase().trim();
+  const nodes = document.querySelectorAll('#dag-list .dag-node');
+  nodes.forEach(n => {
+    if (!q) {
+      n.style.display = 'flex';
+      return;
+    }
+    const text = n.textContent.toLowerCase();
+    n.style.display = text.includes(q) ? 'flex' : 'none';
+  });
+}
+
+function applyFilesFilter() {
+  const q = (state.searchQueryFiles || '').toLowerCase().trim();
+  const rows = document.querySelectorAll('#table-files-body tr');
+  rows.forEach(r => {
+    if (!q) {
+      r.style.display = '';
+      return;
+    }
+    const text = r.textContent.toLowerCase();
+    r.style.display = text.includes(q) ? '' : 'none';
+  });
+}
+
 function initSearchFilters() {
   const dagSearch = document.getElementById('input-search-dag');
   if (dagSearch) {
     dagSearch.addEventListener('input', (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      const nodes = document.querySelectorAll('#dag-list .dag-node');
-      nodes.forEach(n => {
-        const text = n.textContent.toLowerCase();
-        n.style.display = text.includes(q) ? 'flex' : 'none';
-      });
+      state.searchQueryDag = e.target.value;
+      applyDagFilter();
     });
   }
 
   const filesSearch = document.getElementById('input-search-files');
   if (filesSearch) {
     filesSearch.addEventListener('input', (e) => {
-      const q = e.target.value.toLowerCase().trim();
-      const rows = document.querySelectorAll('#table-files-body tr');
-      rows.forEach(r => {
-        const text = r.textContent.toLowerCase();
-        r.style.display = text.includes(q) ? '' : 'none';
-      });
+      state.searchQueryFiles = e.target.value;
+      applyFilesFilter();
     });
   }
 }
@@ -1551,16 +1585,31 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-function showToast(message) {
+function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container');
   if (!container) return;
 
   const toast = document.createElement('div');
-  toast.className = 'toast';
+  const typeClass = type === 'error' ? 'error' : (type === 'warning' ? 'warning' : (type === 'success' ? 'success' : 'info'));
+  toast.className = `toast ${typeClass}`;
+
+  let strokeColor = 'var(--accent-cyan)';
+  let iconSvg = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>';
+
+  if (typeClass === 'error') {
+    strokeColor = 'var(--accent-rose)';
+    iconSvg = '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>';
+  } else if (typeClass === 'warning') {
+    strokeColor = 'var(--accent-amber)';
+    iconSvg = '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>';
+  } else if (typeClass === 'success') {
+    strokeColor = 'var(--accent-emerald)';
+    iconSvg = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>';
+  }
+
   toast.innerHTML = `
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00f0ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-      <polyline points="22 4 12 14.01 9 11.01"></polyline>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${strokeColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      ${iconSvg}
     </svg>
     <span>${escapeHtml(message)}</span>
   `;
@@ -1571,7 +1620,9 @@ function showToast(message) {
     toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
     toast.style.opacity = '0';
     toast.style.transform = 'translateY(10px)';
-    setTimeout(() => toast.remove(), 300);
+    setTimeout(() => {
+      if (typeof toast.remove === 'function') toast.remove();
+    }, 300);
   }, 3200);
 }
 
@@ -2392,6 +2443,8 @@ function openSnapshotDrawer(snap) {
 
   if (!drawer || !snap) return;
 
+  state.lastActiveElement = document.activeElement;
+
   if (titleId) titleId.textContent = truncateHash(snap.snapshot_id_hex, 8, 6);
 
   if (body) {
@@ -2458,17 +2511,15 @@ function openSnapshotDrawer(snap) {
       </div>
 
       <div class="drawer-section">
-        <span class="drawer-sec-title">Tracked Confidential Files</span>
-        <div class="drawer-files-list">
-          ${(state.vault && state.vault.tracked_files ? state.vault.tracked_files : []).map(f => `
-            <div class="drawer-file-item">
-              <div class="file-top">
-                <span class="file-name font-mono">${escapeHtml(f.path)}</span>
-                <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
-              </div>
-              <div class="file-sub font-mono text-muted">File ID: ${truncateHash(f.file_id_hex, 8, 6)}</div>
-            </div>
-          `).join('') || '<div style="color: var(--text-muted); font-size: 0.85rem;">No files registered</div>'}
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span class="drawer-sec-title">Snapshot Historical Manifest</span>
+          <span id="drawer-files-count-badge" class="badge-status-subtle">Inspecting...</span>
+        </div>
+        <div class="drawer-files-list" id="drawer-files-list">
+          <div style="color: var(--accent-cyan); font-size: 0.85rem; padding: 8px 0;">
+            <span class="spinner" style="display:inline-block; width:12px; height:12px; border:2px solid var(--accent-cyan); border-top-color:transparent; border-radius:50%; animation:spin 1s linear infinite; margin-right:8px; vertical-align:middle;"></span>
+            Decrypting historical snapshot manifest...
+          </div>
         </div>
       </div>
 
@@ -2480,29 +2531,96 @@ function openSnapshotDrawer(snap) {
       </div>
     `;
 
+    // Fetch snapshot-specific manifest (F07)
+    fetch(`/api/snapshots/${encodeURIComponent(snap.snapshot_id_hex)}/manifest`)
+      .then(r => r.json())
+      .then(data => {
+        const filesListElem = document.getElementById('drawer-files-list');
+        const badgeElem = document.getElementById('drawer-files-count-badge');
+        if (!filesListElem) return;
+
+        if (data && data.status === 'ok' && Array.isArray(data.files)) {
+          if (badgeElem) badgeElem.textContent = `${data.files_count} files (${formatBytes(data.total_bytes)})`;
+          if (data.files.length === 0) {
+            filesListElem.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No confidential files registered in snapshot manifest.</div>';
+          } else {
+            filesListElem.innerHTML = data.files.map(f => `
+              <div class="drawer-file-item ${f.is_deleted ? 'deleted' : ''}">
+                <div class="file-top">
+                  <span class="file-name font-mono">${escapeHtml(f.path)}</span>
+                  <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
+                </div>
+                <div class="file-sub font-mono text-muted" style="display: flex; justify-content: space-between; align-items: center;">
+                  <span>${f.chunk_count} chunk${f.chunk_count === 1 ? '' : 's'} · ID: ${truncateHash(f.file_id_hex, 6, 4)}</span>
+                  ${f.is_deleted ? '<span class="badge-status-subtle" style="color: var(--accent-rose); border-color: rgba(248, 113, 113, 0.3);">DELETED</span>' : ''}
+                </div>
+              </div>
+            `).join('');
+          }
+        } else {
+          if (badgeElem) badgeElem.textContent = 'Zero-Knowledge';
+          const fallbackFiles = state.vault && state.vault.tracked_files ? state.vault.tracked_files : [];
+          filesListElem.innerHTML = `
+            <div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 8px;">
+              <span style="color: var(--accent-amber);">🔒 Zero-Knowledge Proof:</span> Manifest is encrypted under epoch keys. Decryption is available in local authenticated workspace (<code>ciphervault ui --local</code>).
+            </div>
+            ${fallbackFiles.map(f => `
+              <div class="drawer-file-item">
+                <div class="file-top">
+                  <span class="file-name font-mono">${escapeHtml(f.path)}</span>
+                  <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
+                </div>
+                <div class="file-sub font-mono text-muted">Tracked Descriptor · ${truncateHash(f.file_id_hex, 8, 6)}</div>
+              </div>
+            `).join('')}
+          `;
+        }
+      })
+      .catch(() => {
+        const filesListElem = document.getElementById('drawer-files-list');
+        if (filesListElem) {
+          const fallbackFiles = state.vault && state.vault.tracked_files ? state.vault.tracked_files : [];
+          filesListElem.innerHTML = fallbackFiles.map(f => `
+            <div class="drawer-file-item">
+              <div class="file-top">
+                <span class="file-name font-mono">${escapeHtml(f.path)}</span>
+                <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
+              </div>
+              <div class="file-sub font-mono text-muted">File ID: ${truncateHash(f.file_id_hex, 8, 6)}</div>
+            </div>
+          `).join('') || '<div style="color: var(--text-muted); font-size: 0.85rem;">No files registered</div>';
+        }
+      });
+
+    // Safe restore prompt with target folder selection (F12)
     const btnRestore = document.getElementById('btn-drawer-restore-action');
     if (btnRestore) {
       btnRestore.addEventListener('click', async () => {
-        const confirmed = window.confirm(
-          `Restore snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 6, 4)}) to local directory?\n\n` +
-          `This will decrypt and unpack all confidential files into your workspace.`
+        const targetDir = window.prompt(
+          `Restore snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 6, 4)})\n\n` +
+          `Enter destination directory path to unpack decrypted confidential files:`,
+          "./restore-target"
         );
-        if (!confirmed) return;
+        if (targetDir === null) return;
 
         btnRestore.disabled = true;
         try {
           const res = await fetch('/api/snapshots/restore', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ snapshot_id: snap.snapshot_id_hex })
+            body: JSON.stringify({
+              snapshot_id: snap.snapshot_id_hex,
+              to: targetDir.trim() || "."
+            })
           });
           const data = await res.json();
           if (!res.ok || !data.success) {
             throw new Error(data.error || "Failed to restore snapshot");
           }
 
-          showToast(data.message || "Snapshot restored successfully");
-          appendTerminalLog('RESTORE', `Restored snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 8, 6)}) to disk`, 'var(--accent-emerald)');
+          showToast(data.message || `Snapshot restored to ${targetDir}`, 'success');
+          appendTerminalLog('RESTORE', `Restored snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 8, 6)}) to ${targetDir}`, 'var(--accent-emerald)');
+          if (typeof fetchActivity === 'function') fetchActivity();
           closeSnapshotDrawer();
         } catch (err) {
           showToast(err.message, 'error');
@@ -2517,21 +2635,42 @@ function openSnapshotDrawer(snap) {
       btnCopy.addEventListener('click', () => {
         const cmd = `ciphervault restore --snapshot ${snap.snapshot_id_hex}`;
         navigator.clipboard.writeText(cmd).then(() => {
-          showToast("Restore command copied to clipboard!");
+          showToast("Restore command copied to clipboard!", "info");
         });
       });
     }
   }
 
+  drawer.classList.add('drawer-open');
   drawer.classList.add('open');
-  if (backdrop) backdrop.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  if (backdrop) {
+    backdrop.classList.add('active');
+    backdrop.classList.add('open');
+  }
+
+  const btnClose = document.getElementById('btn-close-drawer');
+  if (btnClose && typeof btnClose.focus === 'function') {
+    btnClose.focus();
+  }
 }
 
 function closeSnapshotDrawer() {
   const drawer = document.getElementById('snapshot-drawer');
   const backdrop = document.getElementById('snapshot-drawer-backdrop');
-  if (drawer) drawer.classList.remove('open');
-  if (backdrop) backdrop.classList.remove('open');
+  if (drawer) {
+    drawer.classList.remove('drawer-open');
+    drawer.classList.remove('open');
+    drawer.setAttribute('aria-hidden', 'true');
+  }
+  if (backdrop) {
+    backdrop.classList.remove('active');
+    backdrop.classList.remove('open');
+  }
+  if (state.lastActiveElement && typeof state.lastActiveElement.focus === 'function') {
+    try { state.lastActiveElement.focus(); } catch (_) {}
+    state.lastActiveElement = null;
+  }
 }
 
 // -------------------------------------------------------------
@@ -2682,8 +2821,8 @@ function initKeyboardShortcuts() {
 
     if (isInput) return;
 
-    // Number keys 1-8 for tab switching
-    if (e.key >= '1' && e.key <= '8') {
+    // Number keys 1-9 for tab switching
+    if (e.key >= '1' && e.key <= '9') {
       const idx = parseInt(e.key, 10) - 1;
       const tabButtons = document.querySelectorAll('.tab-btn');
       if (tabButtons[idx]) {
@@ -2705,7 +2844,7 @@ function initKeyboardShortcuts() {
     // 'r' or 'R' to refresh data
     if (e.key === 'r' || e.key === 'R') {
       fetchAllData();
-      showToast("Cluster state refreshed");
+      showToast("Cluster state refreshed", "info");
       return;
     }
 
@@ -2723,6 +2862,80 @@ function initKeyboardShortcuts() {
       return;
     }
   });
+}
+
+// -------------------------------------------------------------
+// Durable Vault Activity Log (F13)
+// -------------------------------------------------------------
+
+function initActivityFeed() {
+  const btnRefresh = document.getElementById('btn-refresh-activity');
+  if (btnRefresh) {
+    btnRefresh.addEventListener('click', () => {
+      fetchActivity();
+      showToast("Activity journal refreshed", "info");
+    });
+  }
+}
+
+async function fetchActivity() {
+  try {
+    const res = await fetch('/api/activity?limit=50');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && Array.isArray(data.events)) {
+      state.activity = data.events;
+      const badge = document.getElementById('badge-tab-activity');
+      if (badge) badge.textContent = String(data.events.length);
+      renderActivity(data.events);
+    }
+  } catch (err) {
+    console.warn("fetchActivity error:", err);
+  }
+}
+
+function renderActivity(events) {
+  const container = document.getElementById('activity-feed-list');
+  if (!container) return;
+
+  if (!events || events.length === 0) {
+    container.innerHTML = '<div class="loading-placeholder">No activity events recorded yet. Snapshot creations and restores will appear here.</div>';
+    return;
+  }
+
+  container.innerHTML = events.map(ev => {
+    let badgeClass = 'generic';
+    const type = (ev.event_type || '').toUpperCase();
+    if (type.includes('PUSH') || type.includes('SNAPSHOT')) badgeClass = 'push';
+    else if (type.includes('RESTORE')) badgeClass = 'restore';
+    else if (type.includes('ANCHOR')) badgeClass = 'anchor';
+    else if (type.includes('AUDIT')) badgeClass = 'audit';
+    else if (type.includes('INIT')) badgeClass = 'init';
+
+    const timeStr = ev.created_at_utc ? new Date(ev.created_at_utc * 1000).toLocaleString() : 'Recent';
+    let detailsHtml = '';
+    if (ev.details_json && ev.details_json !== '{}') {
+      try {
+        const parsed = JSON.parse(ev.details_json);
+        detailsHtml = `<div class="activity-details">${escapeHtml(JSON.stringify(parsed))}</div>`;
+      } catch (_) {
+        detailsHtml = `<div class="activity-details">${escapeHtml(ev.details_json)}</div>`;
+      }
+    }
+
+    return `
+      <div class="activity-item">
+        <div class="activity-item-left">
+          <span class="activity-badge ${badgeClass}">${escapeHtml(ev.event_type || 'EVENT')}</span>
+          <div>
+            <div class="activity-summary">${escapeHtml(ev.summary || '')}</div>
+            ${detailsHtml}
+          </div>
+        </div>
+        <div class="activity-time">${timeStr}</div>
+      </div>
+    `;
+  }).join('');
 }
 
 

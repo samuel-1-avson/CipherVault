@@ -464,6 +464,7 @@ dependencies = [
  "hex",
  "rand 0.8.8",
  "rusqlite",
+ "serde",
  "sha2",
  "thiserror",
  "x25519-dalek",

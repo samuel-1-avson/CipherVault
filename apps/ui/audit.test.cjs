@@ -368,8 +368,17 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
     });
   `, context);
   assert(getElementById('snapshot-drawer').classList.contains('open'), 'Drawer must open upon inspect trigger');
+  assert(getElementById('snapshot-drawer').classList.contains('drawer-open'), 'Drawer must have drawer-open class');
+  assert.equal(getElementById('snapshot-drawer').getAttribute('aria-hidden'), 'false', 'Open drawer must have aria-hidden="false"');
+  assert(getElementById('snapshot-drawer-backdrop').classList.contains('active'), 'Drawer backdrop must have active class');
   assert(getElementById('drawer-snap-id').textContent.includes('e63584c0'), 'Drawer must display snapshot ID');
   assert(getElementById('drawer-body').innerHTML.includes('Restore Snapshot to Disk'), 'Drawer must provide one-click restore action');
+
+  // Test drawer close
+  vm.runInContext('closeSnapshotDrawer()', context);
+  assert(!getElementById('snapshot-drawer').classList.contains('drawer-open'), 'Closed drawer must not have drawer-open');
+  assert.equal(getElementById('snapshot-drawer').getAttribute('aria-hidden'), 'true', 'Closed drawer must have aria-hidden="true"');
+  assert(!getElementById('snapshot-drawer-backdrop').classList.contains('active'), 'Closed backdrop must not have active class');
 
   // =========================================================================
   // 10. Live Terminal Console & CLI Command Dispatch
@@ -381,6 +390,36 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert.equal(getElementById('terminal-event-counter').textContent, '2 events');
   assert(getElementById('terminal-logs').innerHTML.includes('Testing terminal event emission'), 'Terminal log must include emitted message');
   assert(getElementById('terminal-logs').innerHTML.includes('Operators: 3/3 online'), 'Terminal status command must output live cluster summary');
+
+  // =========================================================================
+  // 11. Truthful Active Head & Snapshot History Tests (F06)
+  // =========================================================================
+  vm.runInContext(`
+    renderSnapshots([
+      { snapshot_id_hex: 'aaaa1111', device_counter: 1, is_head: false, epoch: 1, timestamp_utc: 1789200000 },
+      { snapshot_id_hex: 'bbbb2222', device_counter: 2, is_head: true, epoch: 1, timestamp_utc: 1789210000 },
+      { snapshot_id_hex: 'cccc3333', device_counter: 3, is_head: false, epoch: 1, timestamp_utc: 1789220000 }
+    ]);
+  `, context);
+  const dagHtml = getElementById('dag-list').innerHTML;
+  assert(dagHtml.includes('ACTIVE HEAD'), 'Active head must be rendered');
+  const headCount = (dagHtml.match(/ACTIVE HEAD/g) || []).length;
+  assert.equal(headCount, 1, 'Only the true canonical head must receive the ACTIVE HEAD badge');
+
+  // =========================================================================
+  // 12. Durable Activity Journal Tests (F13)
+  // =========================================================================
+  vm.runInContext(`
+    renderActivity([
+      { event_type: 'SNAPSHOT_PUSH', summary: 'Encrypted snapshot captured', details_json: '{"epoch":1}', created_at_utc: 1789250000 },
+      { event_type: 'SNAPSHOT_RESTORE', summary: 'Restored snapshot into ./restore-target', details_json: '{}', created_at_utc: 1789250100 },
+      { event_type: 'ARBITRUM_ANCHOR', summary: 'Anchored head commitment to L2', details_json: '{"block":123}', created_at_utc: 1789250200 }
+    ]);
+  `, context);
+  const actHtml = getElementById('activity-feed-list').innerHTML;
+  assert(actHtml.includes('SNAPSHOT_PUSH'), 'Activity feed must render push event');
+  assert(actHtml.includes('SNAPSHOT_RESTORE'), 'Activity feed must render restore event');
+  assert(actHtml.includes('ARBITRUM_ANCHOR'), 'Activity feed must render anchor event');
 
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });

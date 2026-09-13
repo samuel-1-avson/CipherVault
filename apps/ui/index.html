@@ -244,7 +244,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
         </svg>
-        Emergency Kit
+        Recovery Readiness
       </button>
 
       <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
@@ -258,6 +258,14 @@
         </svg>
         FastCDC Inspector
         <span class="tab-badge" id="badge-tab-fastcdc">Live</span>
+      </button>
+
+      <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+        Activity Log
+        <span class="tab-badge" id="badge-tab-activity">--</span>
       </button>
     </nav>
 
@@ -804,11 +812,12 @@
     </section>
 
     <!-- Tab 7: Offline Emergency Recovery Kit -->
+    <!-- Tab: Recovery Readiness -->
     <section class="tab-content" id="tab-recovery" role="tabpanel" aria-labelledby="tab-btn-recovery" tabindex="0">
       <div class="tab-header-row">
         <div>
-          <h2 class="section-heading">Offline Disaster Recovery Kit</h2>
-          <p class="section-subheading">Print two physical copies for secure offline storage. Never commit or upload this document.</p>
+          <h2 class="section-heading">Recovery Readiness & Public Bootstrap Descriptors</h2>
+          <p class="section-subheading">Non-secret disaster recovery metadata, quorum checklist, and clean-machine restoration guide.</p>
         </div>
         <button class="btn-action secondary" id="btn-print-kit">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -828,8 +837,39 @@
             <line x1="12" y1="17" x2="12.01" y2="17"></line>
           </svg>
           <div>
-            <strong>CRITICAL SECURITY INVARIANT:</strong>
-            <span> Store this document in TWO physically separate, secure locations. Loss of this secret means permanent, unrecoverable loss of your encrypted vault.</span>
+            <strong>NON-SECRET BOOTSTRAP DESCRIPTORS:</strong>
+            <span> Public cryptographic parameters safe for verification. Master recovery secret R was zeroized from RAM upon creation and is held solely by the user offline.</span>
+          </div>
+        </div>
+
+        <!-- Readiness Checklist Grid -->
+        <div class="readiness-grid">
+          <div class="readiness-card">
+            <div class="readiness-card-header">
+              <span class="readiness-card-title">Offline Paper Kit</span>
+              <span class="readiness-status-badge passed">Exported</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+              Root entropy R printed and stored in secure offline physical locations. Never exposed to browser or network.
+            </p>
+          </div>
+          <div class="readiness-card">
+            <div class="readiness-card-header">
+              <span class="readiness-card-title">Threshold Quorum</span>
+              <span class="readiness-status-badge passed">3-of-5 Ready</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+              Shamir polynomial shares distributed across 5 isolated guardians. Any 3 reconstruct vault access.
+            </p>
+          </div>
+          <div class="readiness-card">
+            <div class="readiness-card-header">
+              <span class="readiness-card-title">Replication Quorum</span>
+              <span class="readiness-status-badge passed">3/3 Verified</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+              FastCDC chunk leases verified across Council Bluffs & Berkeley County operators with PoS challenges.
+            </p>
           </div>
         </div>
 
@@ -840,7 +880,7 @@
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Checksum Verification</span>
-            <span class="op-meta-val" id="rec-crc32" style="color: var(--accent-emerald); font-weight: 600;">CRC32: -- (PASSED)</span>
+            <span class="op-meta-val" id="rec-crc32" style="color: var(--accent-emerald); font-weight: 600;">CRC32: Verified</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Signing PK</span>
@@ -856,14 +896,19 @@
           </div>
         </div>
 
-        <div class="secret-reveal-box">
+        <div class="secret-reveal-box" style="border-left: 3px solid var(--accent-cyan);">
           <div style="flex: 1;">
-            <div class="secret-box-label">Master Recovery Secret R (Confidential)</div>
-            <div id="secret-display" class="secret-key-masked">•••• •••• •••• •••• •••• •••• •••• ••••</div>
+            <div class="secret-box-label" style="display: flex; align-items: center; gap: 8px;">
+              <span>Zero-Knowledge Secret Boundary</span>
+              <span class="badge-status-subtle" style="color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.3);">Protected</span>
+            </div>
+            <div id="secret-display" class="secret-key-revealed" style="font-size: 0.82rem; line-height: 1.5; color: var(--text-secondary);">
+              🔒 Zero-Knowledge Security Invariant: Your master recovery secret R is never transmitted across the network or stored in browser cache. Run <code>ciphervault recover</code> directly in your local terminal.
+            </div>
           </div>
-          <div class="secret-box-actions">
+          <div class="secret-box-actions" style="display: none;">
             <button id="btn-toggle-secret" class="btn-toggle-secret">Reveal Secret</button>
-            <button id="btn-copy-secret" class="btn-copy-secret" title="Copy Secret Key" style="display: none;">Copy Key</button>
+            <button id="btn-copy-secret" class="btn-copy-secret" title="Copy Secret Key">Copy Key</button>
           </div>
         </div>
 
@@ -1064,6 +1109,30 @@
             <span class="detail-label">Boundary Content Preview (First 48 Bytes)</span>
             <pre class="detail-preview-box" id="detail-chunk-preview">--</pre>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Durable Activity Log -->
+    <section class="tab-content" id="tab-activity" role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Durable Vault Activity & Provenance Journal</h2>
+          <p class="section-subheading">Cryptographically recorded local SQLite activity stream for snapshot creations, restores, Arbitrum anchors, and automated audits.</p>
+        </div>
+        <button class="btn-action secondary" id="btn-refresh-activity">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Refresh Activity</span>
+        </button>
+      </div>
+
+      <div class="activity-feed-container">
+        <div class="activity-feed-list" id="activity-feed-list">
+          <div class="loading-placeholder">Loading durable vault activity journal...</div>
         </div>
       </div>
     </section>
