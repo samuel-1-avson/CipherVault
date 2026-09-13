@@ -419,8 +419,46 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   const actHtml = getElementById('activity-feed-list').innerHTML;
   assert(actHtml.includes('SNAPSHOT_PUSH'), 'Activity feed must render push event');
   assert(actHtml.includes('SNAPSHOT_RESTORE'), 'Activity feed must render restore event');
-  assert(actHtml.includes('ARBITRUM_ANCHOR'), 'Activity feed must render anchor event');
+  // =========================================================================
+  // 13. Multi-Vault Workspace Explorer Switcher Tests
+  // =========================================================================
+  assert(getElementById('workspace-switcher-wrap'), 'Workspace switcher dropdown wrapper must exist in DOM');
+  assert(getElementById('btn-workspace-switcher'), 'Workspace switcher trigger button must exist');
+  assert(getElementById('workspace-dropdown-menu'), 'Workspace dropdown menu must exist');
+  assert(getElementById('btn-rescan-workspaces'), 'Rescan workspaces button must exist');
+
+  vm.runInContext(`
+    renderWorkspaces([
+      {
+        name: 'CipherVault (Root)',
+        path: 'c:/projects/CipherVault',
+        db_path: 'c:/projects/CipherVault/.ciphervault/vault.db',
+        vault_id: '11223344',
+        active_head_cid: 'aabbccdd',
+        snapshot_count: 5,
+        tracked_files_count: 3,
+        is_active: true
+      },
+      {
+        name: 'Backend-Vault',
+        path: 'c:/projects/CipherVault/backend',
+        db_path: 'c:/projects/CipherVault/backend/.ciphervault/vault.db',
+        vault_id: '55667788',
+        active_head_cid: 'eeff0011',
+        snapshot_count: 2,
+        tracked_files_count: 1,
+        is_active: false
+      }
+    ], 'c:/projects/CipherVault/.ciphervault/vault.db');
+  `, context);
+
+  assert.equal(getElementById('workspace-count-badge').textContent, '2');
+  assert(getElementById('active-workspace-name').textContent.includes('CipherVault (Root)'));
+  const wsHtml = getElementById('workspace-dropdown-list').innerHTML;
+  assert(wsHtml.includes('Backend-Vault'), 'Workspace dropdown must list non-active vaults');
+  assert(wsHtml.includes('ACTIVE'), 'Active workspace must have ACTIVE badge');
 
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
 

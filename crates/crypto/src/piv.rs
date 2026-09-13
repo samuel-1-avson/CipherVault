@@ -8,7 +8,117 @@
 
 use crate::error::CryptoError;
 use crate::hsm::{HardwareSecurityModule, HsmSlot, HsmSlotInfo};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use zeroize::Zeroize;
+
+static GLOBAL_PIN_CACHE: RwLock<Option<Vec<u8>>> = RwLock::new(None);
+
+/// Sets the process-level cached PIN for hardware token operations.
+pub fn set_cached_pin(pin: &[u8]) {
+    if let Ok(mut guard) = GLOBAL_PIN_CACHE.write() {
+        if let Some(ref mut existing) = *guard {
+            existing.zeroize();
+        }
+        *guard = Some(pin.to_vec());
+    }
+}
+
+/// Retrieves the process-level cached PIN, or resolves from environment variables
+/// (CIPHERVAULT_PIN, CIPHERVAULT_TOKEN_PIN, YUBIKEY_PIN) if in-memory cache is empty.
+pub fn get_cached_pin() -> Option<Vec<u8>> {
+    if let Ok(guard) = GLOBAL_PIN_CACHE.read() {
+        if let Some(ref p) = *guard {
+            return Some(p.clone());
+        }
+    }
+    // Check environment variables for headless automation
+    for var in &["CIPHERVAULT_PIN", "CIPHERVAULT_TOKEN_PIN", "YUBIKEY_PIN"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                let pin_bytes = trimmed.as_bytes().to_vec();
+                set_cached_pin(&pin_bytes);
+                return Some(pin_bytes);
+            }
+        }
+    }
+    None
+}
+
+/// Clears and securely zeroizes the process-level cached PIN.
+pub fn clear_cached_pin() {
+    if let Ok(mut guard) = GLOBAL_PIN_CACHE.write() {
+        if let Some(ref mut existing) = *guard {
+            existing.zeroize();
+        }
+        *guard = None;
+    }
+}
+
+/// Enumerates all detected PC/SC smartcard readers.
+pub fn list_readers() -> Result<Vec<String>, CryptoError> {
+    list_pcsc_readers()
+}
+
+/// Probes all attached PC/SC readers and returns tokens for every reader that has a responsive PIV applet.
+pub fn probe_all() -> Result<Vec<PcscHardwareToken>, CryptoError> {
+    let readers = list_pcsc_readers()?;
+    let mut tokens = Vec::new();
+    for reader in readers {
+        if let Ok(transport) = NativePcscTransport::connect(&reader) {
+            let select_apdu = CommandApdu::select_piv();
+            if let Ok(resp) = transport.transmit(&select_apdu) {
+                if resp.is_success() {
+                    tokens.push(PcscHardwareToken {
+                        reader_name: reader,
+                        transport: Arc::new(Mutex::new(Some(transport))),
+                        cached_9c_pk: Arc::new(Mutex::new(None)),
+                        cached_9d_pk: Arc::new(Mutex::new(None)),
+                        cached_pin: Arc::new(Mutex::new(get_cached_pin())),
+                    });
+                }
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+/// Probes for a hardware token matching an optional reader filter or CIPHERVAULT_READER env var.
+pub fn probe_with_reader(
+    reader_filter: Option<&str>,
+) -> Result<Option<PcscHardwareToken>, CryptoError> {
+    let filter = reader_filter
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("CIPHERVAULT_READER").ok());
+
+    let tokens = probe_all()?;
+    if tokens.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(ref f) = filter {
+        let f_lower = f.to_lowercase();
+        if let Some(token) = tokens
+            .into_iter()
+            .find(|t| t.reader_name().to_lowercase().contains(&f_lower))
+        {
+            return Ok(Some(token));
+        }
+        return Ok(None);
+    }
+
+    // Default preference: readers containing "yubi"
+    if let Some(token) = tokens
+        .iter()
+        .find(|t| t.reader_name().to_lowercase().contains("yubi"))
+        .cloned()
+    {
+        return Ok(Some(token));
+    }
+
+    // Otherwise return first responsive token
+    Ok(tokens.into_iter().next())
+}
 
 /// PIV Application AID (NIST SP 800-73-4): A0 00 00 03 08 00 00 10 00 01 00
 pub const PIV_AID: [u8; 11] = [
@@ -476,46 +586,35 @@ pub struct PcscHardwareToken {
     transport: Arc<Mutex<Option<NativePcscTransport>>>,
     cached_9c_pk: Arc<Mutex<Option<[u8; 32]>>>,
     cached_9d_pk: Arc<Mutex<Option<[u8; 32]>>>,
+    cached_pin: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl Clone for PcscHardwareToken {
+    fn clone(&self) -> Self {
+        Self {
+            reader_name: self.reader_name.clone(),
+            transport: Arc::clone(&self.transport),
+            cached_9c_pk: Arc::clone(&self.cached_9c_pk),
+            cached_9d_pk: Arc::clone(&self.cached_9d_pk),
+            cached_pin: Arc::clone(&self.cached_pin),
+        }
+    }
 }
 
 impl PcscHardwareToken {
     /// Attempts to auto-detect and connect to an attached YubiKey or PIV token.
     pub fn probe() -> Result<Option<Self>, CryptoError> {
-        let readers = list_pcsc_readers()?;
-        if readers.is_empty() {
-            return Ok(None);
-        }
+        probe_with_reader(None)
+    }
 
-        // Prefer readers containing "Yubico" or "YubiKey"
-        let selected_reader = readers
-            .iter()
-            .find(|r| r.to_lowercase().contains("yubi"))
-            .or_else(|| readers.first())
-            .cloned();
+    /// Probes for a hardware token matching a specific reader substring or CIPHERVAULT_READER.
+    pub fn probe_with_reader(reader_filter: Option<&str>) -> Result<Option<Self>, CryptoError> {
+        probe_with_reader(reader_filter)
+    }
 
-        let reader_name = match selected_reader {
-            Some(r) => r,
-            None => return Ok(None),
-        };
-
-        match NativePcscTransport::connect(&reader_name) {
-            Ok(transport) => {
-                // Verify PIV applet exists
-                let select_apdu = CommandApdu::select_piv();
-                let resp = transport.transmit(&select_apdu)?;
-                if !resp.is_success() {
-                    return Ok(None);
-                }
-
-                Ok(Some(Self {
-                    reader_name,
-                    transport: Arc::new(Mutex::new(Some(transport))),
-                    cached_9c_pk: Arc::new(Mutex::new(None)),
-                    cached_9d_pk: Arc::new(Mutex::new(None)),
-                }))
-            }
-            Err(_) => Ok(None),
-        }
+    /// Enumerates and connects to all attached hardware tokens with active PIV applets.
+    pub fn probe_all() -> Result<Vec<Self>, CryptoError> {
+        probe_all()
     }
 
     /// Creates a hardware token controller bound to a specific reader.
@@ -536,11 +635,33 @@ impl PcscHardwareToken {
             transport: Arc::new(Mutex::new(Some(transport))),
             cached_9c_pk: Arc::new(Mutex::new(None)),
             cached_9d_pk: Arc::new(Mutex::new(None)),
+            cached_pin: Arc::new(Mutex::new(get_cached_pin())),
         })
     }
 
     pub fn reader_name(&self) -> &str {
         &self.reader_name
+    }
+
+    /// Updates the cached PIN for this token and the ambient process session.
+    pub fn set_pin(&self, pin: &[u8]) {
+        if let Ok(mut guard) = self.cached_pin.lock() {
+            if let Some(ref mut existing) = *guard {
+                existing.zeroize();
+            }
+            *guard = Some(pin.to_vec());
+        }
+        set_cached_pin(pin);
+    }
+
+    /// Retrieves the current cached PIN for this token or session if available.
+    pub fn get_pin(&self) -> Option<Vec<u8>> {
+        if let Ok(guard) = self.cached_pin.lock() {
+            if let Some(ref p) = *guard {
+                return Some(p.clone());
+            }
+        }
+        get_cached_pin()
     }
 
     /// Verifies the card PIN (standard default '123456' for testing or user-provided).
@@ -553,6 +674,14 @@ impl PcscHardwareToken {
         let apdu = CommandApdu::verify_pin(pin);
         let resp = transport.transmit(&apdu)?;
         if resp.is_success() {
+            // Securely cache PIN upon verified success
+            if let Ok(mut pin_guard) = self.cached_pin.lock() {
+                if let Some(ref mut existing) = *pin_guard {
+                    existing.zeroize();
+                }
+                *pin_guard = Some(pin.to_vec());
+            }
+            set_cached_pin(pin);
             Ok(())
         } else {
             Err(CryptoError::HsmError(format!(
@@ -560,6 +689,20 @@ impl PcscHardwareToken {
                 resp.error_description()
             )))
         }
+    }
+
+    /// Verifies using explicitly provided PIN, falling back to cached PIN or environment variables.
+    pub fn verify_cached_or_provided_pin(
+        &self,
+        explicit_pin: Option<&[u8]>,
+    ) -> Result<(), CryptoError> {
+        if let Some(pin) = explicit_pin {
+            return self.verify_pin(pin);
+        }
+        if let Some(pin) = self.get_pin() {
+            return self.verify_pin(&pin);
+        }
+        Ok(())
     }
 
     /// Reads slot metadata and public key bytes via YubiKey metadata command.
@@ -570,7 +713,21 @@ impl PcscHardwareToken {
         })?;
 
         let apdu = CommandApdu::get_slot_metadata(slot_byte);
-        let resp = transport.transmit(&apdu)?;
+        let mut resp = transport.transmit(&apdu)?;
+
+        // Auto-authenticate with cached PIN if required by card policy
+        if resp.is_pin_required() {
+            if let Some(pin) = self.get_pin() {
+                let pin_apdu = CommandApdu::verify_pin(&pin);
+                if let Ok(pin_resp) = transport.transmit(&pin_apdu) {
+                    if pin_resp.is_success() {
+                        if let Ok(r) = transport.transmit(&apdu) {
+                            resp = r;
+                        }
+                    }
+                }
+            }
+        }
         if !resp.is_success() {
             return Err(CryptoError::HsmError(format!(
                 "Failed to query slot 0x{:02X} metadata: {}",
@@ -758,7 +915,19 @@ impl HardwareSecurityModule for PcscHardwareToken {
         let apdu =
             CommandApdu::general_authenticate_sign(ALG_ED25519, PIV_SLOT_SIGNATURE, &payload);
 
-        let resp = transport.transmit(&apdu)?;
+        let mut resp = transport.transmit(&apdu)?;
+        if resp.is_pin_required() {
+            if let Some(pin) = self.get_pin() {
+                let pin_apdu = CommandApdu::verify_pin(&pin);
+                if let Ok(pin_resp) = transport.transmit(&pin_apdu) {
+                    if pin_resp.is_success() {
+                        if let Ok(r) = transport.transmit(&apdu) {
+                            resp = r;
+                        }
+                    }
+                }
+            }
+        }
         if resp.is_touch_timeout() {
             return Err(CryptoError::HsmError(
                 "Hardware touch timed out: user presence not detected on YubiKey token".to_string(),
@@ -801,7 +970,19 @@ impl HardwareSecurityModule for PcscHardwareToken {
             peer_public_key,
         );
 
-        let resp = transport.transmit(&apdu)?;
+        let mut resp = transport.transmit(&apdu)?;
+        if resp.is_pin_required() {
+            if let Some(pin) = self.get_pin() {
+                let pin_apdu = CommandApdu::verify_pin(&pin);
+                if let Ok(pin_resp) = transport.transmit(&pin_apdu) {
+                    if pin_resp.is_success() {
+                        if let Ok(r) = transport.transmit(&apdu) {
+                            resp = r;
+                        }
+                    }
+                }
+            }
+        }
         if resp.is_touch_timeout() {
             return Err(CryptoError::HsmError(
                 "Hardware touch timed out during key agreement on YubiKey".to_string(),
@@ -958,5 +1139,34 @@ mod tests {
         assert_eq!(alg, ALG_ED25519);
         assert_eq!(touch, 0x02);
         assert_eq!(pk, vec![0x42u8; 32]);
+    }
+
+    #[test]
+    fn test_pin_cache_lifecycle_and_env_resolution() {
+        clear_cached_pin();
+        assert!(get_cached_pin().is_none() || std::env::var("CIPHERVAULT_PIN").is_ok());
+
+        set_cached_pin(b"987654");
+        assert_eq!(get_cached_pin(), Some(b"987654".to_vec()));
+
+        clear_cached_pin();
+        // Test env fallback
+        std::env::set_var("CIPHERVAULT_PIN", "123123");
+        assert_eq!(get_cached_pin(), Some(b"123123".to_vec()));
+        std::env::remove_var("CIPHERVAULT_PIN");
+        clear_cached_pin();
+    }
+
+    #[test]
+    fn test_reader_discovery_safe_contract() {
+        let readers = list_readers().expect("list_readers must succeed");
+        println!("Safe reader query returned {} readers", readers.len());
+
+        let tokens = probe_all().expect("probe_all must not error");
+        println!("Active PIV token count: {}", tokens.len());
+
+        // Probe with a nonexistent reader filter returns Ok(None)
+        let specific = probe_with_reader(Some("NonExistentVirtualReader12345")).unwrap();
+        assert!(specific.is_none());
     }
 }

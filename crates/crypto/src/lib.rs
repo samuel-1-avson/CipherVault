@@ -20,8 +20,9 @@ pub use aead::{
 };
 pub use error::CryptoError;
 pub use hsm::{
-    list_pcsc_readers, HardwareSecurityModule, HsmDevice, HsmSlot, HsmSlotInfo, PcscHardwareToken,
-    SoftwareHsmSimulator,
+    clear_cached_pin, get_cached_pin, list_pcsc_readers, list_readers, probe_all,
+    probe_with_reader, set_cached_pin, HardwareSecurityModule, HsmDevice, HsmSlot, HsmSlotInfo,
+    PcscHardwareToken, SoftwareHsmSimulator,
 };
 pub use kdf::{derive_chunk_nonce, derive_file_version_id, derive_file_version_key, derive_subkey};
 pub use keys::{FileVersionKey, RecoverySecret, VaultEpochKey};

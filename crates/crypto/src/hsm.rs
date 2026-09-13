@@ -191,7 +191,10 @@ impl HardwareSecurityModule for SoftwareHsmSimulator {
     }
 }
 
-pub use crate::piv::{list_pcsc_readers, PcscHardwareToken};
+pub use crate::piv::{
+    clear_cached_pin, get_cached_pin, list_pcsc_readers, list_readers, probe_all,
+    probe_with_reader, set_cached_pin, PcscHardwareToken,
+};
 
 /// Physical Hardware Security Module Device (Native PIV ISO 7816-4 Smartcard via PC/SC).
 ///
@@ -204,7 +207,12 @@ pub struct HsmDevice {
 impl HsmDevice {
     /// Attempts to probe and connect to an attached physical hardware token.
     pub fn probe() -> Result<Option<Self>, CryptoError> {
-        if let Some(token) = PcscHardwareToken::probe()? {
+        Self::probe_with_reader(None)
+    }
+
+    /// Probes for an attached physical hardware token matching an optional reader filter.
+    pub fn probe_with_reader(reader_filter: Option<&str>) -> Result<Option<Self>, CryptoError> {
+        if let Some(token) = PcscHardwareToken::probe_with_reader(reader_filter)? {
             Ok(Some(HsmDevice { inner: token }))
         } else {
             Ok(None)
@@ -213,12 +221,27 @@ impl HsmDevice {
 
     /// Connects to a physical hardware token, strictly failing closed if absent.
     pub fn connect() -> Result<Self, CryptoError> {
-        match Self::probe()? {
+        Self::connect_with_reader(None)
+    }
+
+    /// Connects to a physical hardware token on a specific reader or default preference.
+    pub fn connect_with_reader(reader_filter: Option<&str>) -> Result<Self, CryptoError> {
+        match Self::probe_with_reader(reader_filter)? {
             Some(dev) => Ok(dev),
             None => Err(CryptoError::HsmError(
-                "No physical PIV hardware token (e.g. YubiKey 5 Series) detected in PC/SC card readers. Insert a physical token to proceed.".to_string(),
+                "No physical PIV hardware token (e.g. YubiKey 5 Series) detected matching specified reader criteria.".to_string(),
             )),
         }
+    }
+
+    /// Sets or updates the cached PIN for this hardware device.
+    pub fn set_pin(&self, pin: &[u8]) {
+        self.inner.set_pin(pin);
+    }
+
+    /// Verifies the PIN against the physical token.
+    pub fn verify_pin(&self, pin: &[u8]) -> Result<(), CryptoError> {
+        self.inner.verify_pin(pin)
     }
 
     pub fn is_physical(&self) -> bool {

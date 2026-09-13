@@ -75,6 +75,12 @@ enum Commands {
             help = "Automatically import and track secret files discovered in .gitignore"
         )]
         import_gitignore: bool,
+
+        #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
+        reader: Option<String>,
+
+        #[arg(long, help = "Hardware token user PIN for automated verification")]
+        pin: Option<String>,
     },
 
     /// Add confidential files to vault tracking (e.g. .env, keys)
@@ -133,6 +139,12 @@ enum Commands {
             help = "Automatically anchor newly created snapshot head commitment to Arbitrum L2"
         )]
         anchor: bool,
+
+        #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
+        reader: Option<String>,
+
+        #[arg(long, help = "Hardware token user PIN for automated verification")]
+        pin: Option<String>,
     },
 
     /// Display snapshot history DAG
@@ -153,6 +165,18 @@ enum Commands {
             help = "Directory to restore files into (defaults to current directory)"
         )]
         to: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Validate snapshot signature or authenticate against physical hardware token"
+        )]
+        hardware_token: bool,
+
+        #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
+        reader: Option<String>,
+
+        #[arg(long, help = "Hardware token user PIN for automated verification")]
+        pin: Option<String>,
     },
 
     /// Recover a vault from an offline recovery kit or threshold guardian shares on a clean machine
@@ -476,10 +500,43 @@ enum ApproveSubcommand {
 #[derive(Subcommand)]
 enum TokenSubcommand {
     /// Display connection status of attached PC/SC smartcard readers and tokens
-    Status,
+    Status {
+        #[arg(short, long, help = "Optional reader name filter")]
+        reader: Option<String>,
+    },
 
     /// Probe physical token and inspect PIV Slot 9C (Signing) and Slot 9D (Key Management)
-    Probe,
+    Probe {
+        #[arg(short, long, help = "Optional reader name filter")]
+        reader: Option<String>,
+    },
+
+    /// Enumerate all detected PC/SC smartcard readers and card presence status
+    List,
+
+    /// Inspect detailed cryptographic configuration across all PIV slots (9A, 9C, 9D, 9E)
+    Slots {
+        #[arg(short, long, help = "Optional reader name filter")]
+        reader: Option<String>,
+    },
+
+    /// Test or securely cache a hardware token PIN in memory / session
+    Pin {
+        #[arg(short, long, help = "PIN value to verify and cache")]
+        pin: Option<String>,
+
+        #[arg(long, help = "Test PIN against attached hardware token")]
+        test: bool,
+
+        #[arg(long, help = "Clear cached PIN from memory session")]
+        clear: bool,
+    },
+
+    /// Select and persist default active hardware token reader for this vault
+    Select {
+        #[arg(short, long, help = "Reader name or substring to select")]
+        reader: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -561,7 +618,17 @@ async fn run(cli: Cli) -> Result<()> {
             save_kit,
             hardware_token,
             import_gitignore,
-        } => cmd_init(force, operators, save_kit, hardware_token, import_gitignore),
+            reader,
+            pin,
+        } => cmd_init(
+            force,
+            operators,
+            save_kit,
+            hardware_token,
+            import_gitignore,
+            reader,
+            pin,
+        ),
         Commands::Track {
             paths,
             from_gitignore,
@@ -575,9 +642,17 @@ async fn run(cli: Cli) -> Result<()> {
             pos: _,
             local,
             anchor,
-        } => cmd_push(message, touch, local, anchor).await,
+            reader,
+            pin,
+        } => cmd_push(message, touch, local, anchor, reader, pin).await,
         Commands::History => cmd_history(),
-        Commands::Restore { snapshot, to } => cmd_restore(snapshot, to),
+        Commands::Restore {
+            snapshot,
+            to,
+            hardware_token,
+            reader,
+            pin,
+        } => cmd_restore(snapshot, to, hardware_token, reader, pin),
         Commands::Recover {
             kit,
             shares,
@@ -737,15 +812,252 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+static ACTIVE_VAULT_PATH: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+pub fn set_active_vault_path(path: Option<PathBuf>) {
+    if let Ok(mut guard) = ACTIVE_VAULT_PATH.write() {
+        *guard = path;
+    }
+}
+
+pub fn get_active_vault_path() -> PathBuf {
+    if let Ok(guard) = ACTIVE_VAULT_PATH.read() {
+        if let Some(ref p) = *guard {
+            return p.clone();
+        }
+    }
+    Path::new(VAULT_DIR).join(DB_FILE)
+}
+
 pub fn get_vault_store() -> Result<LocalVaultStore> {
-    let path = Path::new(VAULT_DIR).join(DB_FILE);
+    let path = get_active_vault_path();
     if !path.exists() {
         bail!(
-            "No CipherVault found in current directory. Run '{}' first.",
+            "No CipherVault found at '{}'. Run '{}' first.",
+            path.display(),
             "ciphervault init".cyan()
         );
     }
-    LocalVaultStore::open(path).context("Failed to open local vault database")
+    LocalVaultStore::open(&path).context("Failed to open local vault database")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct WorkspaceVaultInfo {
+    pub name: String,
+    pub path: String,
+    pub db_path: String,
+    pub vault_id: String,
+    pub active_head_cid: Option<String>,
+    pub snapshot_count: usize,
+    pub tracked_files_count: usize,
+    pub is_active: bool,
+    pub last_modified: String,
+}
+
+pub fn discover_workspace_vaults() -> Vec<WorkspaceVaultInfo> {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut discovered = Vec::new();
+    let mut searched_paths = std::collections::HashSet::new();
+
+    let default_db = current_dir.join(VAULT_DIR).join(DB_FILE);
+    if default_db.exists() {
+        searched_paths.insert(default_db.clone());
+    }
+
+    for entry in walkdir::WalkDir::new(&current_dir)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() && entry.file_name() == DB_FILE {
+            let p = entry.into_path();
+            if let Some(parent) = p.parent() {
+                if parent.file_name().and_then(|n| n.to_str()) == Some(VAULT_DIR) {
+                    searched_paths.insert(p);
+                }
+            }
+        }
+    }
+
+    let active_path = get_active_vault_path();
+
+    for db_path in searched_paths {
+        if let Ok(store) = LocalVaultStore::open(&db_path) {
+            let vault_id = store.get_vault_id().unwrap_or_default();
+            let vault_id_hex = hex::encode(vault_id);
+            let head = store.get_active_head().ok().flatten();
+            let head_cid = head.as_ref().map(|h| hex::encode(&h.snapshot_id));
+            let snaps = store.list_snapshots().unwrap_or_default();
+            let tracked = store.list_tracked_files().unwrap_or_default();
+
+            let parent_folder = db_path
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or(&current_dir);
+            let raw_name = parent_folder
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Vault")
+                .to_string();
+
+            let is_active = db_path == active_path
+                || (active_path.is_relative() && current_dir.join(&active_path) == db_path);
+
+            let last_modified = fs::metadata(&db_path)
+                .and_then(|m| m.modified())
+                .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                .unwrap_or_else(|_| Utc::now().to_rfc3339());
+
+            discovered.push(WorkspaceVaultInfo {
+                name: if is_active {
+                    format!("{} (Active)", raw_name)
+                } else {
+                    raw_name
+                },
+                path: parent_folder.display().to_string(),
+                db_path: db_path.display().to_string(),
+                vault_id: vault_id_hex,
+                active_head_cid: head_cid,
+                snapshot_count: snaps.len(),
+                tracked_files_count: tracked.len(),
+                is_active,
+                last_modified,
+            });
+        }
+    }
+
+    discovered.sort_by(|a, b| {
+        b.is_active
+            .cmp(&a.is_active)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    discovered
+}
+
+fn get_saved_token_reader() -> Option<String> {
+    let cfg_path = Path::new(VAULT_DIR).join("token_config.json");
+    if cfg_path.exists() {
+        if let Ok(text) = fs::read_to_string(&cfg_path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                return val
+                    .get("reader")
+                    .and_then(|r| r.as_str())
+                    .map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn save_token_reader_preference(reader: &str) -> Result<()> {
+    let vault_dir = Path::new(VAULT_DIR);
+    if vault_dir.exists() {
+        let cfg_path = vault_dir.join("token_config.json");
+        let payload = serde_json::json!({
+            "reader": reader,
+            "updated_at": Utc::now().to_rfc3339(),
+        });
+        fs::write(&cfg_path, serde_json::to_string_pretty(&payload)?)?;
+    }
+    Ok(())
+}
+
+pub fn resolve_hardware_token(
+    reader_arg: Option<&str>,
+    pin_arg: Option<&str>,
+    headless: bool,
+) -> Result<ciphervault_crypto::PcscHardwareToken> {
+    let saved_reader = get_saved_token_reader();
+    let reader_filter = reader_arg.or(saved_reader.as_deref());
+
+    let tokens = ciphervault_crypto::probe_all()?;
+    if tokens.is_empty() {
+        bail!(
+            "Hardware token required (--hardware-token, --touch, or hardware-bound vault), but no physical YubiKey or PIV smartcard token was detected in PC/SC readers."
+        );
+    }
+
+    let selected_token = if let Some(filter) = reader_filter {
+        let f_lower = filter.to_lowercase();
+        tokens
+            .into_iter()
+            .find(|t| t.reader_name().to_lowercase().contains(&f_lower))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No attached hardware token matched reader filter '{}'",
+                    filter
+                )
+            })?
+    } else if tokens.len() == 1 {
+        tokens.into_iter().next().unwrap()
+    } else {
+        if !headless && std::io::stdin().is_terminal() {
+            println!(
+                "\n{}",
+                "Multiple PIV hardware security tokens detected:"
+                    .bold()
+                    .cyan()
+            );
+            for (idx, t) in tokens.iter().enumerate() {
+                println!("  [{}] {}", idx + 1, t.reader_name().green().bold());
+            }
+            print!("Select hardware token [1-{}]: ", tokens.len());
+            let _ = std::io::stdout().flush();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let choice: usize = input.trim().parse().unwrap_or(1);
+            let idx = if choice >= 1 && choice <= tokens.len() {
+                choice - 1
+            } else {
+                0
+            };
+            tokens[idx].clone()
+        } else {
+            let best = tokens
+                .iter()
+                .find(|t| t.reader_name().to_lowercase().contains("yubi"))
+                .unwrap_or(&tokens[0])
+                .clone();
+            eprintln!(
+                "{} Headless token resolution: auto-selected '{}'",
+                "[ciphervault]".bold().cyan(),
+                best.reader_name().yellow()
+            );
+            best
+        }
+    };
+
+    let resolved_pin = if let Some(p) = pin_arg {
+        Some(p.as_bytes().to_vec())
+    } else if let Some(cached) = selected_token.get_pin() {
+        Some(cached)
+    } else if let Some(cached) = ciphervault_crypto::get_cached_pin() {
+        Some(cached)
+    } else if !headless && std::io::stdin().is_terminal() {
+        if let Ok(prompted) =
+            rpassword::prompt_password("Enter hardware token PIN (or press Enter to skip): ")
+        {
+            let trimmed = prompted.trim();
+            if !trimmed.is_empty() {
+                Some(trimmed.as_bytes().to_vec())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(pin) = resolved_pin {
+        selected_token.set_pin(&pin);
+        if let Err(e) = selected_token.verify_pin(&pin) {
+            bail!("Hardware token PIN authentication failed: {}", e);
+        }
+    }
+
+    Ok(selected_token)
 }
 
 fn ensure_gitignore() -> Result<()> {
@@ -1046,6 +1358,8 @@ fn cmd_init(
     save_kit: Option<PathBuf>,
     hardware_token: bool,
     import_gitignore: bool,
+    reader: Option<String>,
+    pin: Option<String>,
 ) -> Result<()> {
     let vault_dir = Path::new(VAULT_DIR);
     if vault_dir.exists() && !force {
@@ -1088,24 +1402,19 @@ fn cmd_init(
                 .bold()
                 .cyan()
         );
-        match ciphervault_crypto::PcscHardwareToken::probe()? {
-            Some(token) => {
-                println!(
-                    "  Detected token on reader: {}",
-                    token.reader_name().yellow().bold()
-                );
-                let pk = token.get_public_key(ciphervault_crypto::HsmSlot::DigitalSignature)?;
-                println!(
-                    "  Bound to PIV Slot 9C Public Key: {}",
-                    hex::encode(&pk).green()
-                );
-                let sk = generate_signing_key();
-                (sk, pk)
-            }
-            None => {
-                bail!("--hardware-token specified, but no physical YubiKey or PIV smartcard token was found in PC/SC readers.");
-            }
-        }
+        let token = resolve_hardware_token(reader.as_deref(), pin.as_deref(), false)?;
+        println!(
+            "  Detected token on reader: {}",
+            token.reader_name().yellow().bold()
+        );
+        let pk = token.get_public_key(ciphervault_crypto::HsmSlot::DigitalSignature)?;
+        println!(
+            "  Bound to PIV Slot 9C Public Key: {}",
+            hex::encode(&pk).green()
+        );
+        let _ = save_token_reader_preference(token.reader_name());
+        let sk = generate_signing_key();
+        (sk, pk)
     } else {
         let sk = generate_signing_key();
         let pk = sk.verifying_key().as_bytes().to_vec();
@@ -1460,6 +1769,8 @@ pub async fn cmd_push(
     touch: bool,
     local: bool,
     anchor: bool,
+    reader: Option<String>,
+    pin: Option<String>,
 ) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
@@ -1507,17 +1818,9 @@ pub async fn cmd_push(
                 "  Using physical YubiKey / hardware token (Slot 9C) for snapshot signature..."
             );
         }
-        match ciphervault_crypto::PcscHardwareToken::probe()? {
-            Some(token) => {
-                println!("  Found token on reader: {}", token.reader_name().cyan());
-                Some(token)
-            }
-            None => {
-                bail!(
-                    "Hardware token required (--touch or hardware-bound vault), but no physical YubiKey or smartcard token was detected in PC/SC readers."
-                );
-            }
-        }
+        let token = resolve_hardware_token(reader.as_deref(), pin.as_deref(), false)?;
+        println!("  Found token on reader: {}", token.reader_name().cyan());
+        Some(token)
     } else {
         None
     };
@@ -1727,11 +2030,36 @@ fn cmd_history() -> Result<()> {
     Ok(())
 }
 
-fn cmd_restore(snapshot_hex_opt: Option<String>, to_dir_opt: Option<PathBuf>) -> Result<()> {
+fn cmd_restore(
+    snapshot_hex_opt: Option<String>,
+    to_dir_opt: Option<PathBuf>,
+    hardware_token: bool,
+    reader_opt: Option<String>,
+    pin_opt: Option<String>,
+) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
-    let (_, _, _, epoch) = store.get_device_state()?;
+    let (_, device_sk, _, epoch) = store.get_device_state()?;
     let epoch_key = store.get_epoch_key(epoch)?;
+
+    let certs = store.list_device_certificates()?;
+    let is_hardware_bound = certs
+        .first()
+        .map(|c| c.device_signing_pk != device_sk.verifying_key().to_bytes())
+        .unwrap_or(false);
+
+    if hardware_token || is_hardware_bound {
+        println!("{}", "Hardware Token Authentication:".bold().cyan());
+        let token = resolve_hardware_token(
+            reader_opt.as_deref(),
+            pin_opt.as_deref(),
+            !std::io::stdin().is_terminal(),
+        )?;
+        println!(
+            "  ✓ Hardware Key Verified: {} (Slot 9C/9D authenticated)",
+            token.reader_name().green()
+        );
+    }
 
     let target_dir = to_dir_opt.unwrap_or_else(|| PathBuf::from("."));
 
@@ -3903,14 +4231,14 @@ fn cmd_hook_check() -> Result<()> {
 
 async fn cmd_token(sub: TokenSubcommand) -> Result<()> {
     match sub {
-        TokenSubcommand::Status => {
+        TokenSubcommand::Status { reader } => {
             println!(
                 "{}",
                 "=== CIPHERVAULT HARDWARE SECURITY MODULE & YUBIKEY STATUS ==="
                     .bold()
                     .cyan()
             );
-            let readers = ciphervault_crypto::list_pcsc_readers()?;
+            let readers = ciphervault_crypto::list_readers()?;
             if readers.is_empty() {
                 println!("  PC/SC Subsystem:  Active");
                 println!("  Attached Readers: None detected");
@@ -3927,7 +4255,7 @@ async fn cmd_token(sub: TokenSubcommand) -> Result<()> {
             }
 
             println!("\n{}", "Probing PIV Applet on attached tokens...".dimmed());
-            match ciphervault_crypto::PcscHardwareToken::probe()? {
+            match ciphervault_crypto::probe_with_reader(reader.as_deref())? {
                 Some(token) => {
                     println!(
                         "  Hardware Token:   Connected ({})",
@@ -3962,28 +4290,221 @@ async fn cmd_token(sub: TokenSubcommand) -> Result<()> {
                 }
             }
         }
-        TokenSubcommand::Probe => match ciphervault_crypto::PcscHardwareToken::probe()? {
-            Some(token) => {
-                let info_9c = token.get_slot_info(ciphervault_crypto::HsmSlot::DigitalSignature)?;
-                let info_9d = token.get_slot_info(ciphervault_crypto::HsmSlot::KeyManagement)?;
-                let payload = serde_json::json!({
-                    "detected": true,
-                    "reader": token.reader_name(),
-                    "slot_9c": info_9c,
-                    "slot_9d": info_9d,
-                });
-                println!("{}", serde_json::to_string_pretty(&payload)?);
+        TokenSubcommand::Probe { reader } => {
+            match ciphervault_crypto::probe_with_reader(reader.as_deref())? {
+                Some(token) => {
+                    let info_9c =
+                        token.get_slot_info(ciphervault_crypto::HsmSlot::DigitalSignature)?;
+                    let info_9d =
+                        token.get_slot_info(ciphervault_crypto::HsmSlot::KeyManagement)?;
+                    let payload = serde_json::json!({
+                        "detected": true,
+                        "reader": token.reader_name(),
+                        "slot_9c": info_9c,
+                        "slot_9d": info_9d,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                }
+                None => {
+                    let readers = ciphervault_crypto::list_readers()?;
+                    let payload = serde_json::json!({
+                        "detected": false,
+                        "readers": readers,
+                        "message": "No PIV smartcard token detected in PC/SC readers",
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                }
             }
-            None => {
-                let readers = ciphervault_crypto::list_pcsc_readers()?;
-                let payload = serde_json::json!({
-                    "detected": false,
-                    "readers": readers,
-                    "message": "No PIV smartcard token detected in PC/SC readers",
-                });
-                println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
+        TokenSubcommand::List => {
+            println!(
+                "{}",
+                "=== CIPHERVAULT PC/SC READERS & TOKENS ===".bold().cyan()
+            );
+            let readers = ciphervault_crypto::list_readers()?;
+            if readers.is_empty() {
+                println!("  No PC/SC card readers detected on system.");
+                return Ok(());
             }
-        },
+            let active_tokens = ciphervault_crypto::probe_all()?;
+            let active_reader_names: std::collections::HashSet<String> = active_tokens
+                .iter()
+                .map(|t| t.reader_name().to_string())
+                .collect();
+
+            let preferred = get_saved_token_reader();
+
+            for (i, r) in readers.iter().enumerate() {
+                let has_piv = active_reader_names.contains(r);
+                let is_pref = preferred.as_deref() == Some(r.as_str());
+                let pref_str = if is_pref {
+                    " [Default]".cyan().bold()
+                } else {
+                    "".normal()
+                };
+                if has_piv {
+                    println!(
+                        "  [{}] {} {} {}",
+                        i + 1,
+                        r.green().bold(),
+                        "✓ PIV Ready".green(),
+                        pref_str
+                    );
+                } else {
+                    println!(
+                        "  [{}] {} {} {}",
+                        i + 1,
+                        r.dimmed(),
+                        "(No PIV card inserted)".dimmed(),
+                        pref_str
+                    );
+                }
+            }
+            println!(
+                "\n  Total Readers: {} | Active PIV Tokens: {}",
+                readers.len(),
+                active_tokens.len()
+            );
+        }
+        TokenSubcommand::Slots { reader } => {
+            println!(
+                "{}",
+                "=== CIPHERVAULT HARDWARE TOKEN SLOT INSPECTOR ==="
+                    .bold()
+                    .cyan()
+            );
+            let token =
+                resolve_hardware_token(reader.as_deref(), None, !std::io::stdin().is_terminal())?;
+            println!(
+                "  Hardware Token: {}\n",
+                token.reader_name().yellow().bold()
+            );
+
+            let slots = [
+                (
+                    ciphervault_crypto::HsmSlot::DigitalSignature,
+                    "9C",
+                    "Digital Signature",
+                ),
+                (
+                    ciphervault_crypto::HsmSlot::KeyManagement,
+                    "9D",
+                    "Key Management / ECDH",
+                ),
+                (
+                    ciphervault_crypto::HsmSlot::Authentication,
+                    "9A",
+                    "Authentication",
+                ),
+                (
+                    ciphervault_crypto::HsmSlot::CardAuthentication,
+                    "9E",
+                    "Card Authentication",
+                ),
+            ];
+
+            for (slot, hex_code, label) in slots {
+                print!("  Slot {} ({}): ", hex_code.bold(), label);
+                match token.get_slot_info(slot) {
+                    Ok(info) => {
+                        println!("{}", "Active".green().bold());
+                        println!("    Algorithm:    {}", info.algorithm.cyan());
+                        println!("    Touch Policy: {}", info.touch_policy);
+                        println!("    PIN Policy:   {}", info.pin_policy);
+                        println!("    Public Key:   {}", info.public_key_hex.dimmed());
+                    }
+                    Err(e) => {
+                        println!("{} ({})", "Unprovisioned / Inaccessible".dimmed(), e);
+                    }
+                }
+                println!();
+            }
+        }
+        TokenSubcommand::Pin { pin, test, clear } => {
+            if clear {
+                ciphervault_crypto::clear_cached_pin();
+                println!(
+                    "{}",
+                    "✓ Cleared cached hardware token PIN from session memory.".green()
+                );
+                return Ok(());
+            }
+
+            let pin_val = if let Some(p) = pin {
+                p
+            } else if std::io::stdin().is_terminal() {
+                rpassword::prompt_password("Enter hardware token PIN: ")?
+            } else {
+                bail!("Must specify --pin <PIN> in headless/non-interactive mode");
+            };
+
+            let pin_bytes = pin_val.trim().as_bytes();
+            if test {
+                match ciphervault_crypto::PcscHardwareToken::probe()? {
+                    Some(token) => {
+                        token.verify_pin(pin_bytes)?;
+                        println!(
+                            "{}",
+                            "✓ PIN verified successfully with attached hardware token!"
+                                .bold()
+                                .green()
+                        );
+                        ciphervault_crypto::set_cached_pin(pin_bytes);
+                    }
+                    None => {
+                        bail!("Cannot test PIN: No PIV hardware token detected in PC/SC readers.");
+                    }
+                }
+            } else {
+                ciphervault_crypto::set_cached_pin(pin_bytes);
+                println!(
+                    "{}",
+                    "✓ Hardware token PIN cached in volatile session memory.".green()
+                );
+            }
+        }
+        TokenSubcommand::Select { reader } => {
+            let readers = ciphervault_crypto::list_readers()?;
+            if readers.is_empty() {
+                bail!("No PC/SC smartcard readers detected on system.");
+            }
+
+            let target = if let Some(r) = reader {
+                let r_lower = r.to_lowercase();
+                readers
+                    .into_iter()
+                    .find(|name| name.to_lowercase().contains(&r_lower))
+                    .ok_or_else(|| anyhow::anyhow!("Reader matching '{}' not found", r))?
+            } else if std::io::stdin().is_terminal() {
+                println!(
+                    "\n{}",
+                    "Select default hardware token reader:".bold().cyan()
+                );
+                for (i, r) in readers.iter().enumerate() {
+                    println!("  [{}] {}", i + 1, r.green());
+                }
+                print!("Selection [1-{}]: ", readers.len());
+                let _ = std::io::stdout().flush();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                let choice: usize = input.trim().parse().unwrap_or(1);
+                let idx = if choice >= 1 && choice <= readers.len() {
+                    choice - 1
+                } else {
+                    0
+                };
+                readers[idx].clone()
+            } else {
+                bail!("Must provide reader name in headless mode. Usage: ciphervault token select --reader <NAME>");
+            };
+
+            save_token_reader_preference(&target)?;
+            println!(
+                "{} Default hardware token reader set to '{}'",
+                "✓".green().bold(),
+                target.yellow()
+            );
+        }
     }
     Ok(())
 }
@@ -4234,7 +4755,16 @@ async fn cmd_ui(
             "/api/snapshots/restore",
             axum::routing::post(api_snapshots_restore_handler),
         )
-        .route("/api/secrets/inspect", get(api_secrets_inspect_handler));
+        .route("/api/secrets/inspect", get(api_secrets_inspect_handler))
+        .route("/api/workspaces", get(api_workspaces_handler))
+        .route(
+            "/api/workspaces/switch",
+            axum::routing::post(api_workspaces_switch_handler),
+        )
+        .route(
+            "/api/workspaces/scan",
+            axum::routing::post(api_workspaces_scan_handler),
+        );
 
     let host_ip: std::net::IpAddr = host
         .parse()
@@ -4516,6 +5046,8 @@ async fn api_create_snapshot_handler(
         false,
         false,
         payload.anchor.unwrap_or(false),
+        None,
+        None,
     )
     .await
     {
@@ -5490,13 +6022,22 @@ async fn api_files_untrack_handler(
 struct RestoreSnapshotPayload {
     snapshot_id: Option<String>,
     to: Option<String>,
+    hardware_token: Option<bool>,
+    reader: Option<String>,
+    pin: Option<String>,
 }
 
 async fn api_snapshots_restore_handler(
     axum::Json(payload): axum::Json<RestoreSnapshotPayload>,
 ) -> impl axum::response::IntoResponse {
     let to_path = payload.to.clone().unwrap_or_else(|| ".".to_string());
-    match cmd_restore(payload.snapshot_id, payload.to.map(PathBuf::from)) {
+    match cmd_restore(
+        payload.snapshot_id,
+        payload.to.map(PathBuf::from),
+        payload.hardware_token.unwrap_or(false),
+        payload.reader,
+        payload.pin,
+    ) {
         Ok(_) => {
             if let Ok(store) = get_vault_store() {
                 let _ = store.record_activity(
@@ -5786,5 +6327,69 @@ async fn api_secrets_inspect_handler() -> impl axum::response::IntoResponse {
         "snapshot_id_hex": hex::encode(head_cid),
         "secrets_count": secrets_list.len(),
         "secrets": secrets_list
+    }))
+}
+
+async fn api_workspaces_handler() -> impl axum::response::IntoResponse {
+    let vaults = discover_workspace_vaults();
+    let active_path = get_active_vault_path().display().to_string();
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "active_workspace_db": active_path,
+        "count": vaults.len(),
+        "workspaces": vaults
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct SwitchWorkspaceRequest {
+    db_path: Option<String>,
+    workspace_path: Option<String>,
+}
+
+async fn api_workspaces_switch_handler(
+    axum::Json(payload): axum::Json<SwitchWorkspaceRequest>,
+) -> impl axum::response::IntoResponse {
+    let target_db = if let Some(db) = payload.db_path {
+        PathBuf::from(db)
+    } else if let Some(ws) = payload.workspace_path {
+        PathBuf::from(ws).join(VAULT_DIR).join(DB_FILE)
+    } else {
+        return axum::Json(serde_json::json!({
+            "status": "error",
+            "error": "Must provide either 'db_path' or 'workspace_path'"
+        }));
+    };
+
+    if !target_db.exists() {
+        return axum::Json(serde_json::json!({
+            "status": "error",
+            "error": format!("Vault database does not exist at '{}'", target_db.display())
+        }));
+    }
+
+    match LocalVaultStore::open(&target_db) {
+        Ok(_) => {
+            set_active_vault_path(Some(target_db.clone()));
+            axum::Json(serde_json::json!({
+                "status": "ok",
+                "message": format!("Switched active workspace to {}", target_db.display()),
+                "active_workspace_db": target_db.display().to_string()
+            }))
+        }
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "error": format!("Failed to open vault store: {}", e)
+        })),
+    }
+}
+
+async fn api_workspaces_scan_handler() -> impl axum::response::IntoResponse {
+    let vaults = discover_workspace_vaults();
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "message": format!("Discovered {} vault workspace(s)", vaults.len()),
+        "count": vaults.len(),
+        "workspaces": vaults
     }))
 }

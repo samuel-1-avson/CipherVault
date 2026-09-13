@@ -42,6 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initActivityFeed();
   initTerminalConsole();
   initKeyboardShortcuts();
+  initWorkspaceSwitcher();
   
   // Initial data load and periodic polling
   fetchAllData();
@@ -69,6 +70,7 @@ async function fetchAllData() {
       fetchRelayerCheckpoints(),
       fetchFleet(),
       fetchActivity(),
+      fetchWorkspaces(),
     ]);
   } catch (err) {
     console.error("Data synchronization error:", err);
@@ -2936,6 +2938,134 @@ function renderActivity(events) {
       </div>
     `;
   }).join('');
+}
+
+// -------------------------------------------------------------
+// Multi-Vault Workspace Switcher
+// -------------------------------------------------------------
+
+async function fetchWorkspaces() {
+  try {
+    const res = await fetch('/api/workspaces');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.status === 'ok' && data.workspaces) {
+      state.workspaces = data.workspaces;
+      renderWorkspaces(data.workspaces, data.active_workspace_db);
+    }
+  } catch (err) {
+    console.debug("Workspaces fetch notice:", err);
+  }
+}
+
+function renderWorkspaces(workspaces, activeDb) {
+  const nameEl = document.getElementById('active-workspace-name');
+  const badgeEl = document.getElementById('workspace-count-badge');
+  const listEl = document.getElementById('workspace-dropdown-list');
+  if (!nameEl || !listEl) return;
+
+  if (badgeEl) badgeEl.textContent = String(workspaces.length);
+
+  const active = workspaces.find(w => w.is_active) || workspaces[0];
+  if (active) {
+    nameEl.textContent = active.name.replace(" (Active)", "");
+  }
+
+  listEl.innerHTML = workspaces.map(ws => `
+    <div class="workspace-item ${ws.is_active ? 'active' : ''}" data-db-path="${escapeHtml(ws.db_path)}" role="menuitem" tabindex="0">
+      <div class="workspace-item-info">
+        <div class="workspace-item-title">
+          ${ws.is_active ? '<span class="active-dot" aria-hidden="true"></span>' : ''}
+          <span>${escapeHtml(ws.name)}</span>
+        </div>
+        <div class="workspace-item-path" title="${escapeHtml(ws.path)}">${escapeHtml(ws.path)}</div>
+        <div class="workspace-item-meta">
+          <span>${ws.snapshot_count} snap${ws.snapshot_count === 1 ? '' : 's'}</span>
+          <span>•</span>
+          <span>${ws.tracked_files_count} file${ws.tracked_files_count === 1 ? '' : 's'}</span>
+          ${ws.active_head_cid ? `<span>•</span><span style="font-family:var(--font-mono)">${ws.active_head_cid.substring(0, 8)}</span>` : ''}
+        </div>
+      </div>
+      ${ws.is_active ? '<span class="workspace-badge-active">ACTIVE</span>' : ''}
+    </div>
+  `).join('');
+
+  listEl.querySelectorAll('.workspace-item').forEach(item => {
+    item.addEventListener('click', async () => {
+      const dbPath = item.getAttribute('data-db-path');
+      if (!dbPath) return;
+      await switchWorkspace(dbPath);
+    });
+    item.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        const dbPath = item.getAttribute('data-db-path');
+        if (dbPath) await switchWorkspace(dbPath);
+      }
+    });
+  });
+}
+
+async function switchWorkspace(dbPath) {
+  try {
+    showToast("Switching workspace profile...");
+    const res = await fetch('/api/workspaces/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ db_path: dbPath })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast("✓ " + data.message);
+      const wrap = document.getElementById('workspace-switcher-wrap');
+      if (wrap) wrap.classList.remove('open');
+      const btn = document.getElementById('btn-workspace-switcher');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+      await Promise.all([fetchWorkspaces(), fetchAllData()]);
+    } else {
+      showToast("Workspace switch error: " + (data.error || "Failed"), true);
+    }
+  } catch (err) {
+    showToast("Workspace switch failed: " + err.message, true);
+  }
+}
+
+function initWorkspaceSwitcher() {
+  const wrap = document.getElementById('workspace-switcher-wrap');
+  const btn = document.getElementById('btn-workspace-switcher');
+  const rescanBtn = document.getElementById('btn-rescan-workspaces');
+
+  if (btn && wrap) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = wrap.classList.toggle('open');
+      btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!wrap.contains(e.target)) {
+        wrap.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  if (rescanBtn) {
+    rescanBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        showToast("Scanning system for local vaults...");
+        const res = await fetch('/api/workspaces/scan', { method: 'POST' });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(`✓ Found ${data.count} vault workspace(s)`);
+          renderWorkspaces(data.workspaces, data.active_workspace_db);
+        }
+      } catch (err) {
+        showToast("Rescan failed: " + err.message, true);
+      }
+    });
+  }
 }
 
 

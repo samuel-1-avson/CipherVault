@@ -286,3 +286,35 @@ fn test_hardware_token_snapshot_and_head_signing_ceremony() {
     // Clean up
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_token_pin_caching_and_subcommands() {
+    use ciphervault_crypto::{clear_cached_pin, get_cached_pin, set_cached_pin};
+
+    clear_cached_pin();
+    set_cached_pin(b"123456");
+    assert_eq!(get_cached_pin(), Some(b"123456".to_vec()));
+
+    clear_cached_pin();
+    assert!(get_cached_pin().is_none() || std::env::var("CIPHERVAULT_PIN").is_ok());
+
+    // Test environment variable PIN resolution
+    std::env::set_var("CIPHERVAULT_PIN", "654321");
+    assert_eq!(get_cached_pin(), Some(b"654321".to_vec()));
+    std::env::remove_var("CIPHERVAULT_PIN");
+    clear_cached_pin();
+}
+
+#[test]
+fn test_multi_token_and_reader_selection() {
+    use ciphervault_crypto::{list_readers, probe_all, probe_with_reader};
+
+    let readers = list_readers().unwrap();
+    println!("PC/SC reader count: {}", readers.len());
+
+    let tokens = probe_all().unwrap();
+    println!("Connected PIV token count: {}", tokens.len());
+
+    let unknown_reader = probe_with_reader(Some("NonExistentTestReader999")).unwrap();
+    assert!(unknown_reader.is_none());
+}
