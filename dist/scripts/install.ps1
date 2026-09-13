@@ -21,9 +21,12 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 $TempZip = Join-Path ([System.IO.Path]::GetTempPath()) $PkgName
 
-# Check if local release zip exists (e.g. running from repo), otherwise download
-$LocalBin = Join-Path (Split-Path -Parent $PSScriptRoot) "bin\ciphervault.exe"
-if (Test-Path $LocalBin) {
+# Check if local release binaries exist (e.g. running locally from repo), otherwise download
+$LocalBin = $null
+if ($PSScriptRoot) {
+    $LocalBin = Join-Path (Split-Path -Parent $PSScriptRoot) "bin\ciphervault.exe"
+}
+if ($LocalBin -and (Test-Path $LocalBin)) {
     Write-Host "Local binaries found in workspace. Copying..." -ForegroundColor Yellow
     Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) "bin\*.exe") -Destination $BinDir -Force
 } else {
@@ -60,10 +63,13 @@ if ($UserPath -notlike "*$BinDir*") {
     $env:Path = "$env:Path;$BinDir"
 }
 
-Write-Host "`n✓ CipherVault successfully installed to $BinDir!" -ForegroundColor Green
-Write-Host "`nQuickstart:" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "[+] CipherVault successfully installed to $BinDir!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Quickstart:" -ForegroundColor Yellow
 Write-Host "  ciphervault init                    # Initialize vault in current repository"
 Write-Host "  ciphervault track .env              # Track confidential files"
 Write-Host "  ciphervault push -m 'Initial'       # Encrypt and replicate snapshot"
 Write-Host "  ciphervault ui                      # Launch local web dashboard"
 Write-Host ""
+
