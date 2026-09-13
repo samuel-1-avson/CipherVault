@@ -265,6 +265,123 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(checkpointHtml.includes('QueuedForRelay'), 'Unmined checkpoint must truthfully report QueuedForRelay');
   assert(!checkpointHtml.includes('arbiscan.io/tx/'), 'Unmined checkpoint must not fabricate explorer link');
 
-  console.log('Dashboard audit regressions & WCAG 2.1 AA accessibility checks passed');
+  // =========================================================================
+  // 7. Secret Revision Diff Engine Tests
+  // =========================================================================
+  vm.runInContext(`
+    state.diffReveal = false;
+    renderDiffResults({
+      base_label: 'head:b38eb88b',
+      target_label: 'working tree',
+      total_added_keys: 1,
+      total_modified_keys: 1,
+      total_deleted_keys: 0,
+      file_diffs: [
+        {
+          path: 'secrets.env',
+          format: 'Env',
+          change_type: 'Modified',
+          lines: [
+            {
+              kind: 'Modified',
+              key: 'DATABASE_URL',
+              old_value_masked: 'pos***0.1',
+              new_value_masked: 'pos***2.5',
+              old_value_plain: 'postgres://admin:old@10.0.0.1',
+              new_value_plain: 'postgres://admin:new@10.0.2.5'
+            },
+            {
+              kind: 'Added',
+              key: 'REDIS_PORT',
+              new_value_masked: '63***79',
+              new_value_plain: '6379'
+            }
+          ]
+        }
+      ]
+    });
+  `, context);
+  assert.equal(getElementById('diff-kpi-added').textContent, '1');
+  assert.equal(getElementById('diff-kpi-modified').textContent, '1');
+  assert.equal(getElementById('diff-kpi-removed').textContent, '0');
+  assert.equal(getElementById('diff-kpi-files').textContent, '1');
+  assert(getElementById('diff-results-container').innerHTML.includes('pos***0.1'), 'Diff must show masked secret by default');
+  assert(!getElementById('diff-results-container').innerHTML.includes('postgres://admin:old'), 'Diff must not reveal plaintext without unmask toggle');
+
+  // Test reveal unmasking
+  vm.runInContext(`
+    state.diffReveal = true;
+    renderDiffResults({
+      base_label: 'head:b38eb88b',
+      target_label: 'working tree',
+      total_added_keys: 1,
+      total_modified_keys: 1,
+      total_deleted_keys: 0,
+      file_diffs: [
+        {
+          path: 'secrets.env',
+          format: 'Env',
+          change_type: 'Modified',
+          lines: [
+            {
+              kind: 'Modified',
+              key: 'DATABASE_URL',
+              old_value_masked: 'pos***0.1',
+              new_value_masked: 'pos***2.5',
+              old_value_plain: 'postgres://admin:old@10.0.0.1',
+              new_value_plain: 'postgres://admin:new@10.0.2.5'
+            }
+          ]
+        }
+      ]
+    });
+  `, context);
+  assert(getElementById('diff-results-container').innerHTML.includes('postgres://admin:old'), 'Diff must show revealed plaintext when toggle is activated');
+
+  // =========================================================================
+  // 8. Geographic Multi-Region Quorum Topology Tests
+  // =========================================================================
+  vm.runInContext(`
+    renderOperators([
+      { operator_id: 'cv-operator-1', endpoint: 'http://136.65.43.84', status: 'online', latency_ms: 12, region: 'us-central1', zone: 'us-central1-a' },
+      { operator_id: 'cv-operator-2', endpoint: 'http://34.9.157.167', status: 'online', latency_ms: 14, region: 'us-central1', zone: 'us-central1-b' },
+      { operator_id: 'cv-operator-3', endpoint: 'http://34.73.53.40', status: 'online', latency_ms: 32, region: 'us-east1', zone: 'us-east1-b' }
+    ]);
+  `, context);
+  assert(getElementById('quorum-health-text').textContent.includes('Quorum 3/3 Healthy'), 'Quorum health must reflect 3/3 online nodes');
+  assert(getElementById('ping-op1').innerHTML.includes('12 ms'), 'Ping op1 must reflect live latency');
+  assert(getElementById('ping-op3').innerHTML.includes('32 ms'), 'Ping op3 must reflect live latency');
+
+  // =========================================================================
+  // 9. Snapshot Deep Inspector Drawer Tests
+  // =========================================================================
+  vm.runInContext(`
+    state.vault = { tracked_files: [{ path: 'secrets.env', size_bytes: 170, file_id_hex: 'b9300ccc11223344' }] };
+    openSnapshotDrawer({
+      snapshot_id_hex: 'e63584c0642f31b9638af6bc9c806dfb153bd16c91e7124770fcaa630795b28d',
+      manifest_cid_hex: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+      device_id_hex: '6b793bf54a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6',
+      device_counter: 2,
+      epoch: 1,
+      timestamp_utc: 1789250000,
+      parent_ids_hex: []
+    });
+  `, context);
+  assert(getElementById('snapshot-drawer').classList.contains('open'), 'Drawer must open upon inspect trigger');
+  assert(getElementById('drawer-snap-id').textContent.includes('e63584c0'), 'Drawer must display snapshot ID');
+  assert(getElementById('drawer-body').innerHTML.includes('Restore Snapshot to Disk'), 'Drawer must provide one-click restore action');
+
+  // =========================================================================
+  // 10. Live Terminal Console & CLI Command Dispatch
+  // =========================================================================
+  vm.runInContext(`
+    appendTerminalLog('DIFF', 'Testing terminal event emission');
+    handleTerminalCommand('status');
+  `, context);
+  assert.equal(getElementById('terminal-event-counter').textContent, '2 events');
+  assert(getElementById('terminal-logs').innerHTML.includes('Testing terminal event emission'), 'Terminal log must include emitted message');
+  assert(getElementById('terminal-logs').innerHTML.includes('Operators: 3/3 online'), 'Terminal status command must output live cluster summary');
+
+  console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

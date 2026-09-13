@@ -1962,13 +1962,12 @@ fn cmd_completions(shell: clap_complete::Shell) {
     clap_complete::generate(shell, &mut cmd, "ciphervault", &mut std::io::stdout());
 }
 
-fn cmd_diff(
+pub fn generate_diff_report(
     snapshot_a_opt: Option<String>,
     snapshot_b_opt: Option<String>,
     file_filter_opt: Option<String>,
     reveal: bool,
-    json_output: bool,
-) -> Result<()> {
+) -> Result<diff::DiffReport> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (_, _, _, epoch) = store.get_device_state()?;
@@ -2022,30 +2021,45 @@ fn cmd_diff(
         Ok(arr)
     };
 
-    let (old_label, new_label, old_files, new_files) = match (snapshot_a_opt, snapshot_b_opt) {
-        // Mode 1: Working directory vs latest head snapshot
-        (None, None) => {
-            let head = store
-                .get_active_head()?
-                .context("Vault has no snapshots committed yet. Create a snapshot first with 'ciphervault push'")?;
-            if head.snapshot_id.len() != 32 {
-                bail!("Invalid snapshot ID length in active head");
-            }
-            let mut head_cid = [0u8; 32];
-            head_cid.copy_from_slice(&head.snapshot_id);
-            let old_map = decrypt_snap(&head_cid)?;
-
-            let mut new_map = std::collections::BTreeMap::new();
-            if let Ok(tracked) = store.list_tracked_files() {
-                for (p, _) in tracked {
-                    let rel_str = p.display().to_string().replace('\\', "/");
-                    if p.exists() {
-                        if let Ok(data) = fs::read(&p) {
-                            new_map.insert(rel_str, data);
-                        }
+    let read_working_tree = || -> std::collections::BTreeMap<String, Vec<u8>> {
+        let mut map = std::collections::BTreeMap::new();
+        if let Ok(tracked) = store.list_tracked_files() {
+            for (p, _) in tracked {
+                let rel_str = p.display().to_string().replace('\\', "/");
+                if p.exists() {
+                    if let Ok(data) = fs::read(&p) {
+                        map.insert(rel_str, data);
                     }
                 }
             }
+        }
+        map
+    };
+
+    let get_head_cid = || -> Result<[u8; 32]> {
+        let head = store
+            .get_active_head()?
+            .context("Vault has no snapshots committed yet. Create a snapshot first with 'ciphervault push'")?;
+        if head.snapshot_id.len() != 32 {
+            bail!("Invalid snapshot ID length in active head");
+        }
+        let mut head_cid = [0u8; 32];
+        head_cid.copy_from_slice(&head.snapshot_id);
+        Ok(head_cid)
+    };
+
+    let snap_a_clean = snapshot_a_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let snap_b_clean = snapshot_b_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (old_label, new_label, old_files, new_files) = match (snap_a_clean.as_deref(), snap_b_clean.as_deref()) {
+        (None, None) | (Some("head"), None) | (Some("head"), Some("working")) | (None, Some("working")) => {
+            let head_cid = get_head_cid()?;
+            let old_map = decrypt_snap(&head_cid)?;
+            let new_map = read_working_tree();
             (
                 format!("head:{}", &hex::encode(head_cid)[..8]),
                 "working tree".to_string(),
@@ -2053,22 +2067,21 @@ fn cmd_diff(
                 new_map,
             )
         }
-        // Mode 2: Working directory vs specific snapshot_a
-        (Some(a_str), None) => {
-            let a_id = parse_snap_id(&a_str)?;
+        (Some("working"), Some("head")) => {
+            let head_cid = get_head_cid()?;
+            let old_map = read_working_tree();
+            let new_map = decrypt_snap(&head_cid)?;
+            (
+                "working tree".to_string(),
+                format!("head:{}", &hex::encode(head_cid)[..8]),
+                old_map,
+                new_map,
+            )
+        }
+        (Some(a_str), None) | (Some(a_str), Some("working")) => {
+            let a_id = parse_snap_id(a_str)?;
             let old_map = decrypt_snap(&a_id)?;
-
-            let mut new_map = std::collections::BTreeMap::new();
-            if let Ok(tracked) = store.list_tracked_files() {
-                for (p, _) in tracked {
-                    let rel_str = p.display().to_string().replace('\\', "/");
-                    if p.exists() {
-                        if let Ok(data) = fs::read(&p) {
-                            new_map.insert(rel_str, data);
-                        }
-                    }
-                }
-            }
+            let new_map = read_working_tree();
             (
                 format!("snapshot:{}", &hex::encode(a_id)[..8]),
                 "working tree".to_string(),
@@ -2076,10 +2089,44 @@ fn cmd_diff(
                 new_map,
             )
         }
-        // Mode 3: Snapshot A vs Snapshot B
+        (Some("working"), Some(b_str)) => {
+            let b_id = parse_snap_id(b_str)?;
+            let old_map = read_working_tree();
+            let new_map = decrypt_snap(&b_id)?;
+            (
+                "working tree".to_string(),
+                format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                old_map,
+                new_map,
+            )
+        }
+        (Some("head"), Some(b_str)) => {
+            let head_cid = get_head_cid()?;
+            let b_id = parse_snap_id(b_str)?;
+            let old_map = decrypt_snap(&head_cid)?;
+            let new_map = decrypt_snap(&b_id)?;
+            (
+                format!("head:{}", &hex::encode(head_cid)[..8]),
+                format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                old_map,
+                new_map,
+            )
+        }
+        (Some(a_str), Some("head")) => {
+            let a_id = parse_snap_id(a_str)?;
+            let head_cid = get_head_cid()?;
+            let old_map = decrypt_snap(&a_id)?;
+            let new_map = decrypt_snap(&head_cid)?;
+            (
+                format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                format!("head:{}", &hex::encode(head_cid)[..8]),
+                old_map,
+                new_map,
+            )
+        }
         (Some(a_str), Some(b_str)) => {
-            let a_id = parse_snap_id(&a_str)?;
-            let b_id = parse_snap_id(&b_str)?;
+            let a_id = parse_snap_id(a_str)?;
+            let b_id = parse_snap_id(b_str)?;
             let old_map = decrypt_snap(&a_id)?;
             let new_map = decrypt_snap(&b_id)?;
             (
@@ -2089,7 +2136,18 @@ fn cmd_diff(
                 new_map,
             )
         }
-        (None, Some(_)) => unreachable!(),
+        (None, Some(b_str)) => {
+            let head_cid = get_head_cid()?;
+            let b_id = parse_snap_id(b_str)?;
+            let old_map = decrypt_snap(&head_cid)?;
+            let new_map = decrypt_snap(&b_id)?;
+            (
+                format!("head:{}", &hex::encode(head_cid)[..8]),
+                format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                old_map,
+                new_map,
+            )
+        }
     };
 
     let mut report = diff::DiffReport::new(old_label, new_label);
@@ -2132,12 +2190,22 @@ fn cmd_diff(
         }
     }
 
+    Ok(report)
+}
+
+fn cmd_diff(
+    snapshot_a_opt: Option<String>,
+    snapshot_b_opt: Option<String>,
+    file_filter_opt: Option<String>,
+    reveal: bool,
+    json_output: bool,
+) -> Result<()> {
+    let report = generate_diff_report(snapshot_a_opt, snapshot_b_opt, file_filter_opt, reveal)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         diff::print_diff_report(&report);
     }
-
     Ok(())
 }
 
@@ -3926,7 +3994,21 @@ async fn cmd_ui(host: String, port: u16, no_browser: bool) -> Result<()> {
         .route(
             "/api/fastcdc/vault-files",
             get(api_fastcdc_vault_files_handler),
-        );
+        )
+        .route("/api/diff", get(api_diff_handler))
+        .route(
+            "/api/files/track",
+            axum::routing::post(api_files_track_handler),
+        )
+        .route(
+            "/api/files/untrack",
+            axum::routing::post(api_files_untrack_handler),
+        )
+        .route(
+            "/api/snapshots/restore",
+            axum::routing::post(api_snapshots_restore_handler),
+        )
+        .route("/api/secrets/inspect", get(api_secrets_inspect_handler));
 
     let host_ip: std::net::IpAddr = host
         .parse()
@@ -4057,6 +4139,17 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     .chars()
                     .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
+                let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84") || safe_id.contains("operator-1") || safe_id.contains("8201") {
+                    ("us-central1", "us-central1-a", "Council Bluffs, Iowa, USA", true)
+                } else if endpoint.contains("34.9.157.167") || safe_id.contains("operator-2") || safe_id.contains("8202") {
+                    ("us-central1", "us-central1-b", "Council Bluffs, Iowa, USA", true)
+                } else if endpoint.contains("34.73.53.40") || safe_id.contains("operator-3") || safe_id.contains("8203") {
+                    ("us-east1", "us-east1-b", "Moncks Corner, South Carolina, USA", true)
+                } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
+                    ("local", "local-dev", "Local Container / Loopback", false)
+                } else {
+                    ("custom", "cloud-vps", "Custom Storage Node", true)
+                };
                 results.push(serde_json::json!({
                     "endpoint": endpoint,
                     "status": "online",
@@ -4064,13 +4157,34 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     "operator_signing_pk_hex": safe_pk,
                     "latency_ms": latency_ms,
                     "retention_terms": info.retention_terms,
+                    "region": region,
+                    "zone": zone,
+                    "location": location,
+                    "is_cloud": is_cloud,
+                    "quorum_role": "Byzantine Quorum Validator (2-of-3 Required)",
                 }));
             }
             Err(e) => {
+                let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84") {
+                    ("us-central1", "us-central1-a", "Council Bluffs, Iowa, USA", true)
+                } else if endpoint.contains("34.9.157.167") {
+                    ("us-central1", "us-central1-b", "Council Bluffs, Iowa, USA", true)
+                } else if endpoint.contains("34.73.53.40") {
+                    ("us-east1", "us-east1-b", "Moncks Corner, South Carolina, USA", true)
+                } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
+                    ("local", "local-dev", "Local Container / Loopback", false)
+                } else {
+                    ("custom", "cloud-vps", "Custom Storage Node", true)
+                };
                 results.push(serde_json::json!({
                     "endpoint": endpoint,
                     "status": "offline",
                     "error": e.to_string(),
+                    "region": region,
+                    "zone": zone,
+                    "location": location,
+                    "is_cloud": is_cloud,
+                    "quorum_role": "Byzantine Quorum Validator (2-of-3 Required)",
                 }));
             }
         }
@@ -4907,5 +5021,188 @@ async fn api_fastcdc_inspect_handler(
             "boundary_shift_resilient": true,
         },
         "chunks": chunk_records,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct DiffQueryParams {
+    snapshot_a: Option<String>,
+    snapshot_b: Option<String>,
+    file: Option<String>,
+    reveal: Option<bool>,
+}
+
+async fn api_diff_handler(
+    axum::extract::Query(params): axum::extract::Query<DiffQueryParams>,
+) -> impl axum::response::IntoResponse {
+    let reveal = params.reveal.unwrap_or(false);
+    match generate_diff_report(params.snapshot_a, params.snapshot_b, params.file, reveal) {
+        Ok(report) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "success": true,
+            "report": report
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FileActionPayload {
+    path: String,
+}
+
+async fn api_files_track_handler(
+    axum::Json(payload): axum::Json<FileActionPayload>,
+) -> impl axum::response::IntoResponse {
+    let p = PathBuf::from(payload.path.trim());
+    if !p.exists() {
+        return axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": format!("File '{}' does not exist on disk", p.display())
+        }));
+    }
+    match cmd_track(vec![p.clone()], false, false) {
+        Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "success": true,
+            "message": format!("Tracked file '{}' successfully and appended to .gitignore", p.display())
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
+async fn api_files_untrack_handler(
+    axum::Json(payload): axum::Json<FileActionPayload>,
+) -> impl axum::response::IntoResponse {
+    let p = PathBuf::from(payload.path.trim());
+    match cmd_untrack(vec![p.clone()]) {
+        Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "success": true,
+            "message": format!("Untracked file '{}' successfully", p.display())
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RestoreSnapshotPayload {
+    snapshot_id: Option<String>,
+    to: Option<String>,
+}
+
+async fn api_snapshots_restore_handler(
+    axum::Json(payload): axum::Json<RestoreSnapshotPayload>,
+) -> impl axum::response::IntoResponse {
+    let to_path = payload.to.clone().unwrap_or_else(|| ".".to_string());
+    match cmd_restore(payload.snapshot_id, payload.to.map(PathBuf::from)) {
+        Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "success": true,
+            "message": format!("Snapshot restored successfully to '{}'", to_path)
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "status": "error",
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
+async fn api_secrets_inspect_handler() -> impl axum::response::IntoResponse {
+    let store_res = get_vault_store();
+    let store = match store_res {
+        Ok(s) => s,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let vault_id = match store.get_vault_id() {
+        Ok(v) => v,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let (_, _, _, epoch) = match store.get_device_state() {
+        Ok(s) => s,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let epoch_key = match store.get_epoch_key(epoch) {
+        Ok(k) => k,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let head = match store.get_active_head() {
+        Ok(Some(h)) => h,
+        _ => return axum::Json(serde_json::json!({ "status": "error", "error": "No active head found" })),
+    };
+    let mut head_cid = [0u8; 32];
+    head_cid.copy_from_slice(&head.snapshot_id);
+    let (record, encrypted_manifest) = match store.get_snapshot(&head_cid) {
+        Ok(res) => res,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let manifest_key = match epoch_key.derive_manifest_key(record.epoch) {
+        Ok(k) => k,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let aad = [b"CipherVault-Manifest:", vault_id.as_slice(), &record.epoch.to_le_bytes()].concat();
+    let manifest_bytes = match ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad) {
+        Ok(b) => b,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let manifest: SnapshotManifest = match from_canonical_cbor(&manifest_bytes) {
+        Ok(m) => m,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let mut needed_cids = Vec::new();
+    for file in &manifest.files {
+        for cid_bytes in &file.chunk_cids {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(cid_bytes);
+            needed_cids.push(arr);
+        }
+    }
+    let chunks = match store.get_chunks(&needed_cids) {
+        Ok(c) => c,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let files = match decrypt_snapshot(&vault_id, &epoch_key, record.epoch, &encrypted_manifest, &chunks) {
+        Ok(f) => f,
+        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let mut secrets_list = Vec::new();
+    for file in files {
+        if file.relative_path.ends_with(".env") || file.relative_path.contains(".env") {
+            if let Ok(vars) = dotenv::parse_dotenv_bytes(&file.plaintext) {
+                for (k, v) in vars {
+                    let masked = if v.len() <= 6 {
+                        "******".to_string()
+                    } else {
+                        format!("{}***{}", &v[..2], &v[v.len() - 3..])
+                    };
+                    secrets_list.push(serde_json::json!({
+                        "file": file.relative_path,
+                        "key": k,
+                        "masked_value": masked,
+                        "raw_value": v,
+                    }));
+                }
+            }
+        }
+    }
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "snapshot_id_hex": hex::encode(head_cid),
+        "secrets_count": secrets_list.len(),
+        "secrets": secrets_list
     }))
 }

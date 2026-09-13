@@ -15,6 +15,8 @@ const state = {
   sseStream: null,
   fastCdcResult: null,
   selectedChunkIndex: null,
+  diffReveal: false,
+  terminalEventsCount: 0,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -30,6 +32,11 @@ document.addEventListener('DOMContentLoaded', () => {
   initFleetActions();
   initSseStream();
   initFastCdcInspector();
+  initDiffViewer();
+  initFileManagement();
+  initSnapshotDrawer();
+  initTerminalConsole();
+  initKeyboardShortcuts();
   
   // Initial data load and periodic polling
   fetchAllData();
@@ -317,8 +324,12 @@ function renderOperators(operators) {
             <span class="op-meta-val" style="color: var(--accent-emerald);">${escapeHtml(op.retention_terms || "90-Day Immutable")}</span>
           </div>
           <div class="op-meta-row">
-            <span class="op-meta-label">Auth Mode</span>
-            <span class="op-meta-val" style="color: var(--accent-cyan);">Ed25519 Challenge</span>
+            <span class="op-meta-label">Region / Zone</span>
+            <span class="op-meta-val" style="color: var(--accent-cyan); font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(op.location || (op.region ? `${op.region} (${op.zone})` : 'Multi-Region'))}</span>
+          </div>
+          <div class="op-meta-row">
+            <span class="op-meta-label">Quorum Role</span>
+            <span class="op-meta-val" style="color: var(--accent-purple); font-size: 0.78rem;">${escapeHtml(op.quorum_role || "Validator (2-of-3)")}</span>
           </div>
         </div>
         <div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
@@ -328,6 +339,25 @@ function renderOperators(operators) {
       </article>
     `;
   }).join('');
+
+  // Update Geographic Topology Visualizer
+  const onlineCount = (operators || []).filter(o => o.status === 'online').length;
+  const quorumElem = document.getElementById('quorum-health-text');
+  if (quorumElem) {
+    quorumElem.textContent = onlineCount >= 2
+      ? `Quorum ${onlineCount}/3 Healthy (2-of-3 Required)`
+      : `Quorum Degraded (${onlineCount}/3 Online)`;
+    quorumElem.style.color = onlineCount >= 2 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+  }
+
+  // Update ping elements for GCP nodes
+  (operators || []).forEach((op, i) => {
+    const pingElem = document.getElementById(`ping-op${i + 1}`);
+    if (pingElem) {
+      const isOnline = op.status === 'online';
+      pingElem.innerHTML = `Ping: <span class="ping-val" style="color: ${isOnline ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${isOnline ? `${op.latency_ms ?? 1} ms` : 'Offline'}</span>`;
+    }
+  });
 }
 
 function renderLatencyBars(operators) {
@@ -379,7 +409,7 @@ function renderSnapshots(snapshots) {
     const timeDisplay = snap.timestamp_utc ? formatTimestamp(snap.timestamp_utc) : "Recorded";
 
     return `
-      <div class="dag-node" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}">
+      <div class="dag-node" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" style="cursor: pointer;">
         <div class="dag-timeline-track">
           <div class="dag-node-dot ${isHead ? 'head' : ''}"></div>
           ${idx < sorted.length - 1 ? '<div class="dag-timeline-line"></div>' : ''}
@@ -398,20 +428,30 @@ function renderSnapshots(snapshots) {
             <span>Manifest CID: <strong style="color: var(--accent-cyan);">${manifestTrunc}</strong></span>
             <span>Device: <strong style="color: var(--text-secondary);">${deviceTrunc}</strong></span>
           </div>
+          <div style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
+            <button class="btn-action-ghost btn-drawer-inspect" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" style="padding: 3px 10px; font-size: 0.75rem; color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.3);">
+              Inspect Manifest ➔
+            </button>
+          </div>
         </div>
       </div>
     `;
   }).join('');
 
-  // Attach click listeners to dag-nodes for inspection
+  // Attach click listeners to dag-nodes for drawer deep inspection
   container.querySelectorAll('.dag-node').forEach(node => {
     node.addEventListener('click', (e) => {
       if (e.target.closest('.hash-click')) return; // let copy happen
       const snapId = node.getAttribute('data-snap-id');
       const snap = snapshots.find(s => s.snapshot_id_hex === snapId);
-      if (snap) openSnapshotInspector(snap);
+      if (snap) openSnapshotDrawer(snap);
     });
   });
+
+  // Synchronize Diff selector dropdowns with latest snapshot list
+  if (typeof updateDiffSelects === 'function') {
+    updateDiffSelects(snapshots);
+  }
 }
 
 function renderTrackedFiles(files) {
@@ -448,12 +488,17 @@ function renderTrackedFiles(files) {
         <td>${chunks} chunk (${formatBytes(chunks * 1024 * 1024)} padded)</td>
         <td>${replicaBadge}</td>
         <td>
-          <button class="btn-copy" data-copy="${escapeHtml(file.file_id_hex)}" title="Copy File ID">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <button class="btn-copy" data-copy="${escapeHtml(file.file_id_hex)}" title="Copy File ID">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+            <button class="btn-action-ghost btn-untrack-file" data-path="${escapeHtml(file.path)}" title="Untrack from vault" style="padding: 3px 8px; font-size: 0.75rem; color: var(--accent-rose); border: 1px solid rgba(248, 113, 113, 0.3);">
+              Untrack
+            </button>
+          </div>
         </td>
       </tr>
     `;
@@ -1948,4 +1993,736 @@ function selectChunk(index) {
   if (cidElem) cidElem.textContent = chunk.cid_hex;
   if (prevElem) prevElem.textContent = chunk.preview;
 }
+
+// -------------------------------------------------------------
+// Secret Revision Diff Engine (Tab 3)
+// -------------------------------------------------------------
+
+function updateDiffSelects(snapshots) {
+  const selectBase = document.getElementById('diff-select-base');
+  const selectTarget = document.getElementById('diff-select-target');
+  if (!selectBase || !selectTarget) return;
+
+  const currentBase = selectBase.value;
+  const currentTarget = selectTarget.value;
+
+  const baseOptions = [
+    '<option value="head">Latest Head (Active)</option>',
+    '<option value="working">Working Tree (Disk)</option>'
+  ];
+  const targetOptions = [
+    '<option value="working">Working Tree (Disk)</option>',
+    '<option value="head">Latest Head (Active)</option>'
+  ];
+
+  if (Array.isArray(snapshots)) {
+    snapshots.forEach((snap, i) => {
+      const label = `Snapshot #${snap.device_counter || (snapshots.length - i)} (${truncateHash(snap.snapshot_id_hex, 6, 4)})`;
+      baseOptions.push(`<option value="${escapeHtml(snap.snapshot_id_hex)}">${escapeHtml(label)}</option>`);
+      targetOptions.push(`<option value="${escapeHtml(snap.snapshot_id_hex)}">${escapeHtml(label)}</option>`);
+    });
+  }
+
+  selectBase.innerHTML = baseOptions.join('');
+  selectTarget.innerHTML = targetOptions.join('');
+
+  if (currentBase) selectBase.value = currentBase;
+  if (currentTarget) selectTarget.value = currentTarget;
+}
+
+function initDiffViewer() {
+  const btnRun = document.getElementById('btn-run-diff');
+  const btnReveal = document.getElementById('btn-toggle-reveal-diff');
+  const textReveal = document.getElementById('text-reveal-diff');
+
+  if (btnRun) {
+    btnRun.addEventListener('click', () => runDiffComparison());
+  }
+
+  if (btnReveal) {
+    btnReveal.addEventListener('click', () => {
+      state.diffReveal = !state.diffReveal;
+      if (textReveal) {
+        textReveal.textContent = state.diffReveal ? "Mask Values" : "Reveal Values";
+      }
+      if (btnReveal) {
+        btnReveal.classList.toggle('active', state.diffReveal);
+      }
+      if (state.lastDiffReport) {
+        renderDiffResults(state.lastDiffReport);
+      }
+    });
+  }
+}
+
+async function runDiffComparison() {
+  const selectBase = document.getElementById('diff-select-base');
+  const selectTarget = document.getElementById('diff-select-target');
+  const btnRun = document.getElementById('btn-run-diff');
+  const container = document.getElementById('diff-results-container');
+
+  const baseVal = selectBase ? selectBase.value : 'head';
+  const targetVal = selectTarget ? selectTarget.value : 'working';
+
+  if (btnRun) {
+    btnRun.disabled = true;
+    btnRun.innerHTML = `
+      <svg class="rotating" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+      </svg>
+      <span>Analyzing...</span>
+    `;
+  }
+
+  try {
+    const url = `/api/diff?snapshot_a=${encodeURIComponent(baseVal)}&snapshot_b=${encodeURIComponent(targetVal)}&reveal=${state.diffReveal ? 'true' : 'false'}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to calculate secret diff`);
+    const data = await res.json();
+    if (!data.success && data.error) throw new Error(data.error);
+
+    state.lastDiffReport = data.report;
+    renderDiffResults(data.report);
+    showToast("Diff comparison complete");
+    appendTerminalLog('DIFF', `Calculated diff between '${data.report.base_label}' and '${data.report.target_label}'`);
+  } catch (err) {
+    console.error("Diff computation error:", err);
+    if (container) {
+      container.innerHTML = `
+        <div class="diff-placeholder" style="color: var(--accent-rose);">
+          <p>Failed to calculate diff: ${escapeHtml(err.message)}</p>
+        </div>
+      `;
+    }
+    showToast(`Diff error: ${err.message}`, 'error');
+  } finally {
+    if (btnRun) {
+      btnRun.disabled = false;
+      btnRun.innerHTML = `<span>Calculate Diff</span>`;
+    }
+  }
+}
+
+function maskSecretValue(val) {
+  if (!val) return "";
+  const len = val.length;
+  if (len <= 6) return "***";
+  if (len <= 12) return val.slice(0, 2) + "***" + val.slice(len - 2);
+  return val.slice(0, 3) + "***" + val.slice(len - 3);
+}
+
+function renderDiffResults(report) {
+  const container = document.getElementById('diff-results-container');
+  const kpiAdded = document.getElementById('diff-kpi-added');
+  const kpiModified = document.getElementById('diff-kpi-modified');
+  const kpiRemoved = document.getElementById('diff-kpi-removed');
+  const kpiFiles = document.getElementById('diff-kpi-files');
+  const badgeDiff = document.getElementById('badge-tab-diff');
+
+  if (!report) return;
+
+  const files = report.files || report.file_diffs || [];
+  const addedCount = report.total_added !== undefined ? report.total_added : (report.total_added_keys || 0);
+  const modifiedCount = report.total_modified !== undefined ? report.total_modified : (report.total_modified_keys || 0);
+  const removedCount = report.total_removed !== undefined ? report.total_removed : (report.total_deleted_keys || 0);
+  const baseLabel = report.old_source || report.base_label || 'Base';
+  const targetLabel = report.new_source || report.target_label || 'Target';
+
+  if (kpiAdded) kpiAdded.textContent = String(addedCount);
+  if (kpiModified) kpiModified.textContent = String(modifiedCount);
+  if (kpiRemoved) kpiRemoved.textContent = String(removedCount);
+  if (kpiFiles) kpiFiles.textContent = String(files.length);
+  if (badgeDiff) badgeDiff.textContent = `${files.length} diffs`;
+
+  if (!container) return;
+
+  if (files.length === 0) {
+    container.innerHTML = `
+      <div class="diff-placeholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent-emerald)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 12px;">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
+        <p>No confidential differences detected between <strong>${escapeHtml(baseLabel)}</strong> and <strong>${escapeHtml(targetLabel)}</strong>.</p>
+        <span style="font-size: 0.8rem; color: var(--text-muted);">All secrets, keys, and values are byte-identical.</span>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = files.map(file => {
+    const filePath = file.file_path || file.path || 'Unknown';
+    const isAddedFile = file.change_type === 'Added' || (file.added_count > 0 && file.modified_count === 0 && file.removed_count === 0 && (file.entries || []).every(e => (e.change?.type || e.kind) === 'Added'));
+    const isDeletedFile = file.change_type === 'Deleted' || (file.removed_count > 0 && file.modified_count === 0 && file.added_count === 0 && (file.entries || []).every(e => (e.change?.type || e.kind) === 'Removed'));
+    const isModifiedFile = !isAddedFile && !isDeletedFile && ((file.modified_count > 0 || file.added_count > 0 || file.removed_count > 0) || file.change_type === 'Modified');
+
+    const statusBadge = isAddedFile
+      ? '<span class="diff-badge added">+ CREATED</span>'
+      : isDeletedFile
+      ? '<span class="diff-badge removed">- DELETED</span>'
+      : isModifiedFile
+      ? '<span class="diff-badge modified">~ MODIFIED</span>'
+      : '<span class="diff-badge" style="background: rgba(255,255,255,0.06); color: var(--text-muted);">UNCHANGED</span>';
+
+    const rawEntries = file.entries || file.lines || [];
+    const linesHtml = rawEntries.map(entry => {
+      let kind = 'Unchanged';
+      let key = entry.key;
+      let oldVal = '';
+      let newVal = '';
+      let rawLine = entry.raw_line || '';
+
+      if (entry.change) {
+        kind = entry.change.type || 'Unchanged';
+        const det = entry.change.details || {};
+        if (kind === 'Added') {
+          newVal = det.value || '';
+        } else if (kind === 'Removed') {
+          oldVal = det.value || '';
+        } else if (kind === 'Modified') {
+          oldVal = det.old_value || '';
+          newVal = det.new_value || '';
+        } else if (kind === 'Unchanged') {
+          newVal = det.value || '';
+          oldVal = det.value || '';
+        }
+      } else {
+        kind = entry.kind || 'Unchanged';
+        oldVal = state.diffReveal ? (entry.old_value_plain || entry.old_value_masked || '') : (entry.old_value_masked || entry.old_value_plain || '');
+        newVal = state.diffReveal ? (entry.new_value_plain || entry.new_value_masked || '') : (entry.new_value_masked || entry.new_value_plain || '');
+      }
+
+      // If masked values needed:
+      const displayOld = state.diffReveal ? oldVal : (oldVal.includes('***') ? oldVal : maskSecretValue(oldVal));
+      const displayNew = state.diffReveal ? newVal : (newVal.includes('***') ? newVal : maskSecretValue(newVal));
+
+      const kindSign = kind === 'Added' ? '+' : kind === 'Removed' || kind === 'Deleted' ? '-' : kind === 'Modified' ? '~' : ' ';
+      const lineClass = (kind === 'Deleted' ? 'removed' : kind).toLowerCase();
+
+      let valHtml = '';
+      if (key) {
+        if (kind === 'Added') {
+          valHtml = `<span class="diff-key">${escapeHtml(key)}</span>=<span class="diff-val-new">${escapeHtml(displayNew)}</span>`;
+        } else if (kind === 'Removed' || kind === 'Deleted') {
+          valHtml = `<span class="diff-key">${escapeHtml(key)}</span>=<span class="diff-val-old">${escapeHtml(displayOld)}</span>`;
+        } else if (kind === 'Modified') {
+          valHtml = `<span class="diff-key">${escapeHtml(key)}</span>: <span class="diff-val-old">${escapeHtml(displayOld)}</span> ➔ <span class="diff-val-new">${escapeHtml(displayNew)}</span>`;
+        } else {
+          valHtml = `<span class="diff-key">${escapeHtml(key)}</span>=<span class="diff-val-same">${escapeHtml(displayNew)}</span>`;
+        }
+      } else if (rawLine) {
+        valHtml = `<span class="diff-raw">${escapeHtml(rawLine)}</span>`;
+      }
+
+      return `
+        <div class="diff-line ${lineClass}">
+          <span class="diff-sign">${kindSign}</span>
+          <div class="diff-content">${valHtml}</div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <article class="diff-card">
+        <div class="diff-card-header">
+          <div class="diff-file-info">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+              <polyline points="13 2 13 9 20 9"></polyline>
+            </svg>
+            <span class="diff-file-path">${escapeHtml(filePath)}</span>
+            <span class="diff-file-fmt">${escapeHtml(file.is_dotenv ? 'ENV' : (file.format || 'RAW'))}</span>
+          </div>
+          <div class="diff-card-status">
+            ${statusBadge}
+          </div>
+        </div>
+        <div class="diff-lines-container">
+          ${linesHtml}
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+// -------------------------------------------------------------
+// Interactive Secret File Management (Tab 4 & Modals)
+// -------------------------------------------------------------
+
+function initFileManagement() {
+  const modalTrack = document.getElementById('modal-track-file');
+  const btnOpenTrack = document.getElementById('btn-open-track-modal');
+  const btnCloseTrack = document.getElementById('btn-close-modal-track');
+  const btnCancelTrack = document.getElementById('btn-cancel-modal-track');
+  const btnSubmitTrack = document.getElementById('btn-submit-track');
+  const inputTrackPath = document.getElementById('input-track-path');
+  const suggestionPills = document.querySelectorAll('.suggestion-pills .pill-btn');
+
+  if (btnOpenTrack && modalTrack) {
+    btnOpenTrack.addEventListener('click', () => {
+      openModal(modalTrack, btnOpenTrack);
+      if (inputTrackPath) {
+        inputTrackPath.value = '';
+        setTimeout(() => inputTrackPath.focus(), 50);
+      }
+    });
+  }
+
+  if (btnCloseTrack && modalTrack) {
+    btnCloseTrack.addEventListener('click', () => closeModal(modalTrack));
+  }
+  if (btnCancelTrack && modalTrack) {
+    btnCancelTrack.addEventListener('click', () => closeModal(modalTrack));
+  }
+
+  suggestionPills.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const suggest = btn.getAttribute('data-suggest') || btn.textContent.trim();
+      if (inputTrackPath) {
+        inputTrackPath.value = suggest;
+        inputTrackPath.focus();
+      }
+    });
+  });
+
+  if (btnSubmitTrack) {
+    btnSubmitTrack.addEventListener('click', async () => {
+      if (!inputTrackPath) return;
+      const pathVal = inputTrackPath.value.trim();
+      if (!pathVal) {
+        showToast("Please enter a relative path to track");
+        return;
+      }
+
+      btnSubmitTrack.disabled = true;
+      const btnText = document.getElementById('btn-track-text');
+      if (btnText) btnText.textContent = "Registering...";
+
+      try {
+        const res = await fetch('/api/files/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: pathVal })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "Failed to track file");
+        }
+
+        showToast(data.message || `Tracked '${pathVal}' successfully`);
+        appendTerminalLog('TRACK', `Tracked confidential file: ${pathVal} (.gitignore updated)`, 'var(--accent-emerald)');
+        closeModal(modalTrack);
+        fetchVault();
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnSubmitTrack.disabled = false;
+        if (btnText) btnText.textContent = "Track & Protect";
+      }
+    });
+  }
+
+  // Event Delegation for Untracking and FastCDC Inspection
+  document.addEventListener('click', async (e) => {
+    const untrackBtn = e.target.closest('.btn-untrack-file');
+    if (untrackBtn) {
+      const filePath = untrackBtn.getAttribute('data-path');
+      if (!filePath) return;
+
+      const confirmed = window.confirm(
+        `Untrack confidential file '${filePath}' from CipherVault?\n\n` +
+        `• The local file on disk will NOT be deleted.\n` +
+        `• Future snapshots will no longer include this file.`
+      );
+      if (!confirmed) return;
+
+      untrackBtn.disabled = true;
+      try {
+        const res = await fetch('/api/files/untrack', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || `Failed to untrack ${filePath}`);
+        }
+
+        showToast(data.message || `Untracked '${filePath}'`);
+        appendTerminalLog('UNTRACK', `Untracked secret file: ${filePath}`, 'var(--accent-rose)');
+        fetchVault();
+      } catch (err) {
+        showToast(err.message, 'error');
+        untrackBtn.disabled = false;
+      }
+      return;
+    }
+
+    const drawerInspectBtn = e.target.closest('.btn-drawer-inspect');
+    if (drawerInspectBtn) {
+      e.stopPropagation();
+      const snapId = drawerInspectBtn.getAttribute('data-snap-id');
+      const snap = (state.snapshots || []).find(s => s.snapshot_id_hex === snapId);
+      if (snap) openSnapshotDrawer(snap);
+    }
+  });
+}
+
+// -------------------------------------------------------------
+// Slide-Out Snapshot Deep Inspector Drawer
+// -------------------------------------------------------------
+
+function initSnapshotDrawer() {
+  const backdrop = document.getElementById('snapshot-drawer-backdrop');
+  const btnClose = document.getElementById('btn-close-drawer');
+
+  if (backdrop) {
+    backdrop.addEventListener('click', () => closeSnapshotDrawer());
+  }
+  if (btnClose) {
+    btnClose.addEventListener('click', () => closeSnapshotDrawer());
+  }
+}
+
+function openSnapshotDrawer(snap) {
+  const drawer = document.getElementById('snapshot-drawer');
+  const backdrop = document.getElementById('snapshot-drawer-backdrop');
+  const titleId = document.getElementById('drawer-snap-id');
+  const body = document.getElementById('drawer-body');
+
+  if (!drawer || !snap) return;
+
+  if (titleId) titleId.textContent = truncateHash(snap.snapshot_id_hex, 8, 6);
+
+  if (body) {
+    const epoch = snap.epoch || 1;
+    const counter = snap.device_counter || 0;
+    const timestampStr = snap.timestamp_utc ? new Date(snap.timestamp_utc * 1000).toUTCString() : "Recorded";
+    const authorDevice = truncateHash(snap.device_id_hex, 10, 8);
+    const manifestCid = snap.manifest_cid_hex;
+    const parents = (snap.parent_ids_hex || []).length > 0
+      ? snap.parent_ids_hex.map(p => `<code>${truncateHash(p, 8, 6)}</code>`).join(', ')
+      : '<em style="color: var(--text-muted);">Genesis</em>';
+
+    body.innerHTML = `
+      <div class="drawer-section">
+        <span class="drawer-sec-title">Cryptographic Identity</span>
+        <div class="drawer-meta-grid">
+          <div class="drawer-meta-item">
+            <span class="lbl">Snapshot ID</span>
+            <span class="val font-mono highlight-cyan" style="word-break: break-all;">${escapeHtml(snap.snapshot_id_hex)}</span>
+          </div>
+          <div class="drawer-meta-item">
+            <span class="lbl">Manifest CID</span>
+            <span class="val font-mono" style="word-break: break-all;">${escapeHtml(manifestCid)}</span>
+          </div>
+          <div class="drawer-meta-item">
+            <span class="lbl">Author Device</span>
+            <span class="val font-mono" title="${escapeHtml(snap.device_id_hex)}">${authorDevice}</span>
+          </div>
+          <div class="drawer-meta-item">
+            <span class="lbl">Epoch & Sequence</span>
+            <span class="val">Epoch #${epoch} · Seq #${counter}</span>
+          </div>
+          <div class="drawer-meta-item">
+            <span class="lbl">Parents</span>
+            <span class="val">${parents}</span>
+          </div>
+          <div class="drawer-meta-item">
+            <span class="lbl">Committed At</span>
+            <span class="val">${timestampStr}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="drawer-section">
+        <span class="drawer-sec-title">Quick Actions</span>
+        <div class="drawer-actions-row">
+          <button class="btn-action primary" id="btn-drawer-restore-action" style="flex: 1;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+              <path d="M21 3v5h-5"></path>
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+              <path d="M8 16H3v5"></path>
+            </svg>
+            <span>Restore Snapshot to Disk</span>
+          </button>
+          <button class="btn-action secondary" id="btn-drawer-copy-cmd" title="Copy CLI restore command">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span>CLI Command</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="drawer-section">
+        <span class="drawer-sec-title">Tracked Confidential Files</span>
+        <div class="drawer-files-list">
+          ${(state.vault && state.vault.tracked_files ? state.vault.tracked_files : []).map(f => `
+            <div class="drawer-file-item">
+              <div class="file-top">
+                <span class="file-name font-mono">${escapeHtml(f.path)}</span>
+                <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
+              </div>
+              <div class="file-sub font-mono text-muted">File ID: ${truncateHash(f.file_id_hex, 8, 6)}</div>
+            </div>
+          `).join('') || '<div style="color: var(--text-muted); font-size: 0.85rem;">No files registered</div>'}
+        </div>
+      </div>
+
+      <div class="drawer-section">
+        <span class="drawer-sec-title">Quorum Replicas</span>
+        <div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+          Snapshot is pinned across 3 independent Byzantine operators (Council Bluffs, IA & Berkeley County, SC) with tamper-evident Ed25519 signatures.
+        </div>
+      </div>
+    `;
+
+    const btnRestore = document.getElementById('btn-drawer-restore-action');
+    if (btnRestore) {
+      btnRestore.addEventListener('click', async () => {
+        const confirmed = window.confirm(
+          `Restore snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 6, 4)}) to local directory?\n\n` +
+          `This will decrypt and unpack all confidential files into your workspace.`
+        );
+        if (!confirmed) return;
+
+        btnRestore.disabled = true;
+        try {
+          const res = await fetch('/api/snapshots/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ snapshot_id: snap.snapshot_id_hex })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.success) {
+            throw new Error(data.error || "Failed to restore snapshot");
+          }
+
+          showToast(data.message || "Snapshot restored successfully");
+          appendTerminalLog('RESTORE', `Restored snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 8, 6)}) to disk`, 'var(--accent-emerald)');
+          closeSnapshotDrawer();
+        } catch (err) {
+          showToast(err.message, 'error');
+        } finally {
+          btnRestore.disabled = false;
+        }
+      });
+    }
+
+    const btnCopy = document.getElementById('btn-drawer-copy-cmd');
+    if (btnCopy) {
+      btnCopy.addEventListener('click', () => {
+        const cmd = `ciphervault restore --snapshot ${snap.snapshot_id_hex}`;
+        navigator.clipboard.writeText(cmd).then(() => {
+          showToast("Restore command copied to clipboard!");
+        });
+      });
+    }
+  }
+
+  drawer.classList.add('open');
+  if (backdrop) backdrop.classList.add('open');
+}
+
+function closeSnapshotDrawer() {
+  const drawer = document.getElementById('snapshot-drawer');
+  const backdrop = document.getElementById('snapshot-drawer-backdrop');
+  if (drawer) drawer.classList.remove('open');
+  if (backdrop) backdrop.classList.remove('open');
+}
+
+// -------------------------------------------------------------
+// Collapsible Cyberpunk Live Terminal Console
+// -------------------------------------------------------------
+
+function initTerminalConsole() {
+  const bar = document.getElementById('terminal-bar');
+  const header = document.getElementById('terminal-toggle-btn');
+  const content = document.getElementById('terminal-content');
+  const expandBtn = document.getElementById('btn-terminal-expand');
+  const cmdInput = document.getElementById('terminal-cmd-input');
+  const execBtn = document.getElementById('btn-terminal-exec');
+
+  if (header && content) {
+    header.addEventListener('click', () => {
+      const isClosed = content.style.display === 'none';
+      content.style.display = isClosed ? 'block' : 'none';
+      if (bar) bar.classList.toggle('expanded', isClosed);
+      if (expandBtn) expandBtn.textContent = isClosed ? '▼' : '▲';
+      if (isClosed && cmdInput) {
+        setTimeout(() => cmdInput.focus(), 50);
+      }
+    });
+  }
+
+  const executeCommand = () => {
+    if (!cmdInput) return;
+    const cmd = cmdInput.value.trim();
+    if (!cmd) return;
+    cmdInput.value = '';
+
+    appendTerminalLog('CLI', cmd, 'var(--text-primary)');
+    handleTerminalCommand(cmd);
+  };
+
+  if (execBtn) {
+    execBtn.addEventListener('click', executeCommand);
+  }
+  if (cmdInput) {
+    cmdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        executeCommand();
+      }
+    });
+  }
+}
+
+function appendTerminalLog(tag, message, color = 'var(--accent-cyan)') {
+  const logs = document.getElementById('terminal-logs');
+  const counter = document.getElementById('terminal-event-counter');
+
+  state.terminalEventsCount = (state.terminalEventsCount || 0) + 1;
+  if (counter) counter.textContent = `${state.terminalEventsCount} events`;
+
+  if (!logs) return;
+
+  const now = new Date();
+  const timeStr = now.toTimeString().split(' ')[0];
+  const rowHtml = `<div class="terminal-line"><span class="terminal-time">[${timeStr}]</span> <span class="terminal-tag" style="color: ${color};">[${escapeHtml(tag)}]</span> ${escapeHtml(message)}</div>`;
+
+  if (typeof document.createElement === 'function' && typeof logs.appendChild === 'function') {
+    const line = document.createElement('div');
+    line.className = 'terminal-line';
+    line.innerHTML = `<span class="terminal-time">[${timeStr}]</span> <span class="terminal-tag" style="color: ${color};">[${escapeHtml(tag)}]</span> ${escapeHtml(message)}`;
+    logs.appendChild(line);
+  } else {
+    logs.innerHTML = (logs.innerHTML || '') + rowHtml;
+  }
+  if (logs.scrollTop !== undefined) logs.scrollTop = logs.scrollHeight || 0;
+}
+
+function handleTerminalCommand(cmd) {
+  const parts = cmd.split(' ').filter(Boolean);
+  const root = (parts[0] || '').toLowerCase();
+
+  switch (root) {
+    case 'help':
+      appendTerminalLog('SYS', 'Available commands: status, diff, audit, refresh, fleet, clear', 'var(--accent-purple)');
+      break;
+    case 'status':
+      const vId = state.vault ? truncateHash(state.vault.vault_id_hex, 8, 6) : 'Uninitialized';
+      const onlineOps = (state.operators || []).filter(o => o.status === 'online').length;
+      appendTerminalLog('STATUS', `Vault: ${vId} | Operators: ${onlineOps}/3 online | Files: ${(state.vault?.tracked_files || []).length}`, 'var(--accent-cyan)');
+      break;
+    case 'diff':
+      const tabDiffBtn = document.getElementById('tab-btn-diff');
+      if (tabDiffBtn) tabDiffBtn.click();
+      runDiffComparison();
+      break;
+    case 'audit':
+      appendTerminalLog('AUDIT', 'Triggering live multi-operator audit verification...', 'var(--accent-amber)');
+      fetchAudit();
+      break;
+    case 'refresh':
+      appendTerminalLog('REFRESH', 'Synchronizing entire vault state...', 'var(--accent-cyan)');
+      fetchAllData();
+      break;
+    case 'fleet':
+      const tabFleetBtn = document.querySelector('[data-target="tab-fleet"]');
+      if (tabFleetBtn) tabFleetBtn.click();
+      appendTerminalLog('FLEET', 'Switched to Maintenance Fleet Overview', 'var(--accent-purple)');
+      break;
+    case 'clear':
+      const logs = document.getElementById('terminal-logs');
+      if (logs) logs.innerHTML = '<div class="terminal-line system-line">[SYSTEM] Terminal logs cleared.</div>';
+      break;
+    default:
+      appendTerminalLog('SYS', `Unknown command: '${cmd}'. Type 'help' for options.`, 'var(--accent-rose)');
+      break;
+  }
+}
+
+// -------------------------------------------------------------
+// Ergonomic Keyboard Shortcuts
+// -------------------------------------------------------------
+
+function initKeyboardShortcuts() {
+  const modalShortcuts = document.getElementById('modal-shortcuts');
+  const btnClose = document.getElementById('btn-close-modal-shortcuts');
+  const btnFooter = document.getElementById('btn-close-shortcuts-footer');
+
+  if (btnClose && modalShortcuts) {
+    btnClose.addEventListener('click', () => closeModal(modalShortcuts));
+  }
+  if (btnFooter && modalShortcuts) {
+    btnFooter.addEventListener('click', () => closeModal(modalShortcuts));
+  }
+
+  window.addEventListener('keydown', (e) => {
+    // If typing inside an input or textarea
+    const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
+
+    if (e.key === 'Escape') {
+      if (modalShortcuts && modalShortcuts.classList.contains('open')) {
+        closeModal(modalShortcuts);
+        return;
+      }
+      const modalTrack = document.getElementById('modal-track-file');
+      if (modalTrack && modalTrack.classList.contains('open')) {
+        closeModal(modalTrack);
+        return;
+      }
+      closeSnapshotDrawer();
+      if (isInput) e.target.blur();
+      return;
+    }
+
+    if (isInput) return;
+
+    // Number keys 1-8 for tab switching
+    if (e.key >= '1' && e.key <= '8') {
+      const idx = parseInt(e.key, 10) - 1;
+      const tabButtons = document.querySelectorAll('.tab-btn');
+      if (tabButtons[idx]) {
+        tabButtons[idx].click();
+      }
+      return;
+    }
+
+    // '/' to focus search input
+    if (e.key === '/') {
+      const searchInput = document.getElementById('input-filter-files') || document.getElementById('terminal-cmd-input');
+      if (searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+      }
+      return;
+    }
+
+    // 'r' or 'R' to refresh data
+    if (e.key === 'r' || e.key === 'R') {
+      fetchAllData();
+      showToast("Cluster state refreshed");
+      return;
+    }
+
+    // '`' to toggle live terminal
+    if (e.key === '`') {
+      e.preventDefault();
+      const terminalToggle = document.getElementById('terminal-toggle-btn');
+      if (terminalToggle) terminalToggle.click();
+      return;
+    }
+
+    // '?' to open shortcuts modal
+    if (e.key === '?') {
+      if (modalShortcuts) openModal(modalShortcuts);
+      return;
+    }
+  });
+}
+
 

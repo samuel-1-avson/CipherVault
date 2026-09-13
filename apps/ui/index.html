@@ -190,6 +190,19 @@
         <span class="tab-badge" id="badge-tab-snapshots">--</span>
       </button>
 
+      <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="20" x2="18" y2="10"></line>
+          <line x1="12" y1="20" x2="12" y2="4"></line>
+          <line x1="6" y1="20" x2="6" y2="14"></line>
+          <line x1="4" y1="14" x2="8" y2="14"></line>
+          <line x1="10" y1="4" x2="14" y2="4"></line>
+          <line x1="16" y1="10" x2="20" y2="10"></line>
+        </svg>
+        Secret Diff
+        <span class="tab-badge" id="badge-tab-diff">Compare</span>
+      </button>
+
       <button class="tab-btn" id="tab-btn-files" data-target="tab-files" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -261,6 +274,76 @@
         </div>
       </div>
 
+      <!-- Live Multi-Region GCP Quorum Topology Visualizer -->
+      <div class="quorum-topology-card" id="quorum-topology-card">
+        <div class="topology-header">
+          <div>
+            <h3 class="card-subheading">Live Geographic Quorum Topology (GCP Multi-Region)</h3>
+            <p class="topology-subtext">3-Node Byzantine Fault Tolerant Cluster across Iowa and South Carolina (~1,000 miles physical isolation).</p>
+          </div>
+          <div class="quorum-pill" id="quorum-status-pill">
+            <span class="pulse-dot"></span>
+            <span id="quorum-health-text">Quorum 3/3 Healthy (2-of-3 Required)</span>
+          </div>
+        </div>
+
+        <div class="topology-grid">
+          <!-- Region 1: Iowa us-central1 -->
+          <div class="region-card" id="region-card-iowa">
+            <div class="region-badge">
+              <span class="flag-icon">🇺🇸</span>
+              <span>us-central1 (Iowa, USA)</span>
+            </div>
+            <div class="region-instances">
+              <div class="instance-item" id="instance-op1">
+                <div class="instance-name">
+                  <span class="status-indicator-dot online"></span>
+                  <strong>cv-operator-1</strong>
+                  <span class="zone-tag">us-central1-a</span>
+                </div>
+                <div class="instance-ip">136.65.43.84</div>
+                <div class="instance-ping" id="ping-op1">Ping: <span class="ping-val">-- ms</span></div>
+              </div>
+              <div class="instance-item" id="instance-op2">
+                <div class="instance-name">
+                  <span class="status-indicator-dot online"></span>
+                  <strong>cv-operator-2</strong>
+                  <span class="zone-tag">us-central1-b</span>
+                </div>
+                <div class="instance-ip">34.9.157.167</div>
+                <div class="instance-ping" id="ping-op2">Ping: <span class="ping-val">-- ms</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Network Connection Pipe -->
+          <div class="topology-pipe">
+            <div class="pipe-line"></div>
+            <div class="pipe-badge">~1,000 Miles Physical Isolation</div>
+            <div class="pipe-line"></div>
+          </div>
+
+          <!-- Region 2: South Carolina us-east1 -->
+          <div class="region-card" id="region-card-sc">
+            <div class="region-badge">
+              <span class="flag-icon">🇺🇸</span>
+              <span>us-east1 (South Carolina, USA)</span>
+            </div>
+            <div class="region-instances">
+              <div class="instance-item" id="instance-op3">
+                <div class="instance-name">
+                  <span class="status-indicator-dot online"></span>
+                  <strong>cv-operator-3</strong>
+                  <span class="zone-tag">us-east1-b</span>
+                </div>
+                <div class="instance-ip">34.73.53.40</div>
+                <div class="instance-ping" id="ping-op3">Ping: <span class="ping-val">-- ms</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="operators-grid" id="operators-grid">
         <!-- Dynamic operator cards populated by app.js -->
         <div class="loading-placeholder">Probing operator nodes...</div>
@@ -299,6 +382,71 @@
       </div>
     </section>
 
+    <!-- Tab: Secret Revision Diff Engine -->
+    <section class="tab-content" id="tab-diff" role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Secret Revision Diff Engine</h2>
+          <p class="section-subheading">Format-aware semantic diffing with sensitive value masking and zero-disk plaintext security.</p>
+        </div>
+        <div class="diff-controls">
+          <div class="diff-selector-group">
+            <label for="diff-select-base" class="diff-label">Base:</label>
+            <select id="diff-select-base" class="diff-select">
+              <option value="head">Latest Head (Active)</option>
+            </select>
+            <span class="diff-vs">vs</span>
+            <label for="diff-select-target" class="diff-label">Target:</label>
+            <select id="diff-select-target" class="diff-select">
+              <option value="working">Working Tree (Disk)</option>
+            </select>
+          </div>
+          <button class="btn-action secondary" id="btn-toggle-reveal-diff" title="Toggle masked/unmasked secret values">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span id="text-reveal-diff">Reveal Values</span>
+          </button>
+          <button class="btn-action primary" id="btn-run-diff">
+            <span>Calculate Diff</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Diff KPI Summary Ribbon -->
+      <div class="diff-kpi-ribbon">
+        <div class="diff-kpi-card added">
+          <span class="diff-kpi-val" id="diff-kpi-added">0</span>
+          <span class="diff-kpi-lbl">+ Added Keys</span>
+        </div>
+        <div class="diff-kpi-card modified">
+          <span class="diff-kpi-val" id="diff-kpi-modified">0</span>
+          <span class="diff-kpi-lbl">~ Modified Keys</span>
+        </div>
+        <div class="diff-kpi-card removed">
+          <span class="diff-kpi-val" id="diff-kpi-removed">0</span>
+          <span class="diff-kpi-lbl">- Removed Keys</span>
+        </div>
+        <div class="diff-kpi-card neutral">
+          <span class="diff-kpi-val" id="diff-kpi-files">0</span>
+          <span class="diff-kpi-lbl">Files Changed</span>
+        </div>
+      </div>
+
+      <!-- Diff Results Container -->
+      <div class="diff-results-container" id="diff-results-container">
+        <div class="diff-placeholder">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.4; margin-bottom: 12px;">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <p>Select snapshot targets and click <strong>Calculate Diff</strong> to inspect confidential changes.</p>
+        </div>
+      </div>
+    </section>
+
     <!-- Tab 3: Tracked Secrets Explorer -->
     <section class="tab-content" id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0">
       <div class="tab-header-row">
@@ -306,12 +454,21 @@
           <h2 class="section-heading">Protected Confidential Inventory</h2>
           <p class="section-subheading">Tracked secret files chunked into 1 MiB blocks with PKCS#7 zero-leak padding and XChaCha20-Poly1305 AEAD.</p>
         </div>
-        <div class="search-bar-wrap">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-          <input type="text" id="input-search-files" class="search-input" placeholder="Search tracked files...">
+        <div class="header-actions">
+          <button class="btn-action primary" id="btn-open-track-modal" title="Add a confidential file to vault tracking">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            <span>Track Secret</span>
+          </button>
+          <div class="search-bar-wrap">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="input-search-files" class="search-input" placeholder="Search tracked files...">
+          </div>
         </div>
       </div>
 
@@ -976,6 +1133,101 @@
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-close-guardian-footer">Close</button>
         <button class="btn-action primary" id="btn-copy-guardian-sheet">Copy Printable Sheet</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Slide-out Snapshot Deep Inspector Drawer -->
+  <div class="drawer-backdrop" id="snapshot-drawer-backdrop"></div>
+  <aside class="drawer" id="snapshot-drawer" aria-labelledby="drawer-title" role="dialog" aria-modal="true">
+    <div class="drawer-header">
+      <div>
+        <span class="drawer-tag">Snapshot Deep Inspector</span>
+        <h3 id="drawer-title" class="drawer-title">Snapshot <span id="drawer-snap-id" class="font-mono highlight-cyan">--</span></h3>
+      </div>
+      <button class="btn-modal-close" id="btn-close-drawer" aria-label="Close drawer">&times;</button>
+    </div>
+    <div class="drawer-body" id="drawer-body">
+      <!-- Dynamically filled with manifest details, chunks, and restore action -->
+    </div>
+  </aside>
+
+  <!-- Collapsible Cyberpunk Live Terminal Console -->
+  <div class="terminal-bar" id="terminal-bar">
+    <div class="terminal-bar-header" id="terminal-toggle-btn">
+      <div class="terminal-bar-left">
+        <span class="terminal-icon">❯_</span>
+        <strong class="terminal-title">CipherVault Live Terminal & Telemetry Console</strong>
+        <span class="badge-terminal-live">STREAM ACTIVE</span>
+      </div>
+      <div class="terminal-bar-right">
+        <span class="terminal-event-counter" id="terminal-event-counter">0 events</span>
+        <button class="btn-terminal-toggle" id="btn-terminal-expand" aria-label="Toggle terminal">▲</button>
+      </div>
+    </div>
+    <div class="terminal-content" id="terminal-content" style="display: none;">
+      <div class="terminal-logs" id="terminal-logs">
+        <div class="terminal-line system-line">[SYSTEM] CipherVault Web Console initialized. Listening to Axum SSE telemetry stream...</div>
+      </div>
+      <div class="terminal-footer">
+        <span class="terminal-prompt">ciphervault&gt;</span>
+        <input type="text" id="terminal-cmd-input" class="terminal-input" placeholder="Type a CLI command (e.g. diff, status, audit, push)..." aria-label="CLI Command Input">
+        <button class="btn-terminal-exec" id="btn-terminal-exec">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Track Confidential File -->
+  <div class="modal-backdrop" id="modal-track-file" role="dialog" aria-modal="true" aria-labelledby="modal-track-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-track-title" class="modal-title">Track Confidential Secret File</h3>
+        <button class="btn-modal-close" id="btn-close-modal-track" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+          Tracking a file registers it for FastCDC chunking and encrypted replication. CipherVault will automatically append it to <code>.gitignore</code> to prevent accidental repository leaks.
+        </p>
+        <div class="form-group">
+          <label for="input-track-path" class="form-label">Relative File Path</label>
+          <input type="text" id="input-track-path" class="form-input" placeholder="e.g. secrets.env, .env.production, certs/server.key">
+        </div>
+        <div class="suggestion-pills">
+          <span class="pill-hint">Quick Suggestions:</span>
+          <button class="pill-btn" data-suggest="secrets.env">secrets.env</button>
+          <button class="pill-btn" data-suggest=".env">.env</button>
+          <button class="pill-btn" data-suggest=".env.local">.env.local</button>
+          <button class="pill-btn" data-suggest="credentials.json">credentials.json</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-track">Cancel</button>
+        <button class="btn-action primary" id="btn-submit-track">
+          <span id="btn-track-text">Track & Protect</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Keyboard Shortcuts -->
+  <div class="modal-backdrop" id="modal-shortcuts" role="dialog" aria-modal="true" aria-labelledby="modal-shortcuts-title">
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3 id="modal-shortcuts-title" class="modal-title">Keyboard Shortcuts</h3>
+        <button class="btn-modal-close" id="btn-close-modal-shortcuts" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="shortcuts-list">
+          <div class="shortcut-row"><kbd>1</kbd> - <kbd>8</kbd> <span>Switch tabs (Operators, DAG, Diff, Files, Guardians, Relayer, Fleet, FastCDC)</span></div>
+          <div class="shortcut-row"><kbd>/</kbd> <span>Focus search input</span></div>
+          <div class="shortcut-row"><kbd>r</kbd> <span>Force refresh cluster state</span></div>
+          <div class="shortcut-row"><kbd>`</kbd> <span>Toggle terminal console</span></div>
+          <div class="shortcut-row"><kbd>?</kbd> <span>Open this shortcuts help modal</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd> <span>Close active modal or drawer</span></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action primary" id="btn-close-shortcuts-footer">Got it</button>
       </div>
     </div>
   </div>
