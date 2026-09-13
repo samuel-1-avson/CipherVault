@@ -121,6 +121,12 @@ enum Commands {
             help = "Execute bandwidth-optimized proof-of-storage challenge readback"
         )]
         pos: bool,
+
+        #[arg(
+            long,
+            help = "Create and commit snapshot locally without replicating to remote operators"
+        )]
+        local: bool,
     },
 
     /// Display snapshot history DAG
@@ -246,7 +252,11 @@ enum Commands {
 
     /// Open the production cloud dashboard or launch an offline local inspector
     Ui {
-        #[arg(long, default_value = "127.0.0.1", help = "Host address to bind to in local mode")]
+        #[arg(
+            long,
+            default_value = "127.0.0.1",
+            help = "Host address to bind to in local mode"
+        )]
         host: String,
 
         #[arg(
@@ -538,7 +548,8 @@ async fn run(cli: Cli) -> Result<()> {
             message,
             touch,
             pos: _,
-        } => cmd_push(message, touch).await,
+            local,
+        } => cmd_push(message, touch, local).await,
         Commands::History => cmd_history(),
         Commands::Restore { snapshot, to } => cmd_restore(snapshot, to),
         Commands::Recover {
@@ -1346,7 +1357,7 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-pub async fn cmd_push(message: Option<String>, touch: bool) -> Result<()> {
+pub async fn cmd_push(message: Option<String>, touch: bool, local: bool) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (device_id, device_sk, counter, epoch) = store.get_device_state()?;
@@ -1489,6 +1500,14 @@ pub async fn cmd_push(message: Option<String>, touch: bool) -> Result<()> {
     println!("  Chunks created: {}", output.chunks.len());
     if let Some(msg) = message {
         println!("  Message:        \"{}\"", msg);
+    }
+
+    if local {
+        println!(
+            "  Durability:     {} (offline / local-only commit)",
+            "LocalOnly".yellow().bold()
+        );
+        return Ok(());
     }
 
     // Attempt multi-operator replication
@@ -2052,9 +2071,9 @@ pub fn generate_diff_report(
     };
 
     let get_head_cid = || -> Result<[u8; 32]> {
-        let head = store
-            .get_active_head()?
-            .context("Vault has no snapshots committed yet. Create a snapshot first with 'ciphervault push'")?;
+        let head = store.get_active_head()?.context(
+            "Vault has no snapshots committed yet. Create a snapshot first with 'ciphervault push'",
+        )?;
         if head.snapshot_id.len() != 32 {
             bail!("Invalid snapshot ID length in active head");
         }
@@ -2070,100 +2089,104 @@ pub fn generate_diff_report(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let (old_label, new_label, old_files, new_files) = match (snap_a_clean.as_deref(), snap_b_clean.as_deref()) {
-        (None, None) | (Some("head"), None) | (Some("head"), Some("working")) | (None, Some("working")) => {
-            let head_cid = get_head_cid()?;
-            let old_map = decrypt_snap(&head_cid)?;
-            let new_map = read_working_tree();
-            (
-                format!("head:{}", &hex::encode(head_cid)[..8]),
-                "working tree".to_string(),
-                old_map,
-                new_map,
-            )
-        }
-        (Some("working"), Some("head")) => {
-            let head_cid = get_head_cid()?;
-            let old_map = read_working_tree();
-            let new_map = decrypt_snap(&head_cid)?;
-            (
-                "working tree".to_string(),
-                format!("head:{}", &hex::encode(head_cid)[..8]),
-                old_map,
-                new_map,
-            )
-        }
-        (Some(a_str), None) | (Some(a_str), Some("working")) => {
-            let a_id = parse_snap_id(a_str)?;
-            let old_map = decrypt_snap(&a_id)?;
-            let new_map = read_working_tree();
-            (
-                format!("snapshot:{}", &hex::encode(a_id)[..8]),
-                "working tree".to_string(),
-                old_map,
-                new_map,
-            )
-        }
-        (Some("working"), Some(b_str)) => {
-            let b_id = parse_snap_id(b_str)?;
-            let old_map = read_working_tree();
-            let new_map = decrypt_snap(&b_id)?;
-            (
-                "working tree".to_string(),
-                format!("snapshot:{}", &hex::encode(b_id)[..8]),
-                old_map,
-                new_map,
-            )
-        }
-        (Some("head"), Some(b_str)) => {
-            let head_cid = get_head_cid()?;
-            let b_id = parse_snap_id(b_str)?;
-            let old_map = decrypt_snap(&head_cid)?;
-            let new_map = decrypt_snap(&b_id)?;
-            (
-                format!("head:{}", &hex::encode(head_cid)[..8]),
-                format!("snapshot:{}", &hex::encode(b_id)[..8]),
-                old_map,
-                new_map,
-            )
-        }
-        (Some(a_str), Some("head")) => {
-            let a_id = parse_snap_id(a_str)?;
-            let head_cid = get_head_cid()?;
-            let old_map = decrypt_snap(&a_id)?;
-            let new_map = decrypt_snap(&head_cid)?;
-            (
-                format!("snapshot:{}", &hex::encode(a_id)[..8]),
-                format!("head:{}", &hex::encode(head_cid)[..8]),
-                old_map,
-                new_map,
-            )
-        }
-        (Some(a_str), Some(b_str)) => {
-            let a_id = parse_snap_id(a_str)?;
-            let b_id = parse_snap_id(b_str)?;
-            let old_map = decrypt_snap(&a_id)?;
-            let new_map = decrypt_snap(&b_id)?;
-            (
-                format!("snapshot:{}", &hex::encode(a_id)[..8]),
-                format!("snapshot:{}", &hex::encode(b_id)[..8]),
-                old_map,
-                new_map,
-            )
-        }
-        (None, Some(b_str)) => {
-            let head_cid = get_head_cid()?;
-            let b_id = parse_snap_id(b_str)?;
-            let old_map = decrypt_snap(&head_cid)?;
-            let new_map = decrypt_snap(&b_id)?;
-            (
-                format!("head:{}", &hex::encode(head_cid)[..8]),
-                format!("snapshot:{}", &hex::encode(b_id)[..8]),
-                old_map,
-                new_map,
-            )
-        }
-    };
+    let (old_label, new_label, old_files, new_files) =
+        match (snap_a_clean.as_deref(), snap_b_clean.as_deref()) {
+            (None, None)
+            | (Some("head"), None)
+            | (Some("head"), Some("working"))
+            | (None, Some("working")) => {
+                let head_cid = get_head_cid()?;
+                let old_map = decrypt_snap(&head_cid)?;
+                let new_map = read_working_tree();
+                (
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    "working tree".to_string(),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some("working"), Some("head")) => {
+                let head_cid = get_head_cid()?;
+                let old_map = read_working_tree();
+                let new_map = decrypt_snap(&head_cid)?;
+                (
+                    "working tree".to_string(),
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some(a_str), None) | (Some(a_str), Some("working")) => {
+                let a_id = parse_snap_id(a_str)?;
+                let old_map = decrypt_snap(&a_id)?;
+                let new_map = read_working_tree();
+                (
+                    format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                    "working tree".to_string(),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some("working"), Some(b_str)) => {
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = read_working_tree();
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    "working tree".to_string(),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some("head"), Some(b_str)) => {
+                let head_cid = get_head_cid()?;
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = decrypt_snap(&head_cid)?;
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some(a_str), Some("head")) => {
+                let a_id = parse_snap_id(a_str)?;
+                let head_cid = get_head_cid()?;
+                let old_map = decrypt_snap(&a_id)?;
+                let new_map = decrypt_snap(&head_cid)?;
+                (
+                    format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some(a_str), Some(b_str)) => {
+                let a_id = parse_snap_id(a_str)?;
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = decrypt_snap(&a_id)?;
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (None, Some(b_str)) => {
+                let head_cid = get_head_cid()?;
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = decrypt_snap(&head_cid)?;
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+        };
 
     let mut report = diff::DiffReport::new(old_label, new_label);
 
@@ -3977,7 +4000,11 @@ async fn cmd_ui(
         let vault_info = get_vault_store().ok();
         let target_url = if let Some(ref store) = vault_info {
             if let Ok(vault_id) = store.get_vault_id() {
-                format!("{}/?vault={}", cloud_url.trim_end_matches('/'), hex::encode(vault_id))
+                format!(
+                    "{}/?vault={}",
+                    cloud_url.trim_end_matches('/'),
+                    hex::encode(vault_id)
+                )
             } else {
                 cloud_url.clone()
             }
@@ -4129,7 +4156,6 @@ async fn cmd_ui(
     Ok(())
 }
 
-
 async fn api_vault_handler() -> impl axum::response::IntoResponse {
     let store_res = get_vault_store();
     let store = match store_res {
@@ -4207,12 +4233,36 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     .chars()
                     .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
-                let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84") || safe_id.contains("operator-1") || safe_id.contains("8201") {
-                    ("us-central1", "us-central1-a", "Council Bluffs, Iowa, USA", true)
-                } else if endpoint.contains("34.9.157.167") || safe_id.contains("operator-2") || safe_id.contains("8202") {
-                    ("us-central1", "us-central1-b", "Council Bluffs, Iowa, USA", true)
-                } else if endpoint.contains("34.73.53.40") || safe_id.contains("operator-3") || safe_id.contains("8203") {
-                    ("us-east1", "us-east1-b", "Moncks Corner, South Carolina, USA", true)
+                let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84")
+                    || safe_id.contains("operator-1")
+                    || safe_id.contains("8201")
+                {
+                    (
+                        "us-central1",
+                        "us-central1-a",
+                        "Council Bluffs, Iowa, USA",
+                        true,
+                    )
+                } else if endpoint.contains("34.9.157.167")
+                    || safe_id.contains("operator-2")
+                    || safe_id.contains("8202")
+                {
+                    (
+                        "us-central1",
+                        "us-central1-b",
+                        "Council Bluffs, Iowa, USA",
+                        true,
+                    )
+                } else if endpoint.contains("34.73.53.40")
+                    || safe_id.contains("operator-3")
+                    || safe_id.contains("8203")
+                {
+                    (
+                        "us-east1",
+                        "us-east1-b",
+                        "Moncks Corner, South Carolina, USA",
+                        true,
+                    )
                 } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
                     ("local", "local-dev", "Local Container / Loopback", false)
                 } else {
@@ -4234,11 +4284,26 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
             }
             Err(e) => {
                 let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84") {
-                    ("us-central1", "us-central1-a", "Council Bluffs, Iowa, USA", true)
+                    (
+                        "us-central1",
+                        "us-central1-a",
+                        "Council Bluffs, Iowa, USA",
+                        true,
+                    )
                 } else if endpoint.contains("34.9.157.167") {
-                    ("us-central1", "us-central1-b", "Council Bluffs, Iowa, USA", true)
+                    (
+                        "us-central1",
+                        "us-central1-b",
+                        "Council Bluffs, Iowa, USA",
+                        true,
+                    )
                 } else if endpoint.contains("34.73.53.40") {
-                    ("us-east1", "us-east1-b", "Moncks Corner, South Carolina, USA", true)
+                    (
+                        "us-east1",
+                        "us-east1-b",
+                        "Moncks Corner, South Carolina, USA",
+                        true,
+                    )
                 } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
                     ("local", "local-dev", "Local Container / Loopback", false)
                 } else {
@@ -4326,7 +4391,7 @@ struct CreateSnapshotRequest {
 async fn api_create_snapshot_handler(
     axum::Json(payload): axum::Json<CreateSnapshotRequest>,
 ) -> impl axum::response::IntoResponse {
-    match cmd_push(payload.message, false).await {
+    match cmd_push(payload.message, false, false).await {
         Ok(_) => {
             let store_res = get_vault_store();
             let snap_id = if let Ok(store) = store_res {
@@ -5194,42 +5259,68 @@ async fn api_secrets_inspect_handler() -> impl axum::response::IntoResponse {
     let store_res = get_vault_store();
     let store = match store_res {
         Ok(s) => s,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let vault_id = match store.get_vault_id() {
         Ok(v) => v,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let (_, _, _, epoch) = match store.get_device_state() {
         Ok(s) => s,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let epoch_key = match store.get_epoch_key(epoch) {
         Ok(k) => k,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let head = match store.get_active_head() {
         Ok(Some(h)) => h,
-        _ => return axum::Json(serde_json::json!({ "status": "error", "error": "No active head found" })),
+        _ => {
+            return axum::Json(
+                serde_json::json!({ "status": "error", "error": "No active head found" }),
+            )
+        }
     };
     let mut head_cid = [0u8; 32];
     head_cid.copy_from_slice(&head.snapshot_id);
     let (record, encrypted_manifest) = match store.get_snapshot(&head_cid) {
         Ok(res) => res,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let manifest_key = match epoch_key.derive_manifest_key(record.epoch) {
         Ok(k) => k,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
-    let aad = [b"CipherVault-Manifest:", vault_id.as_slice(), &record.epoch.to_le_bytes()].concat();
-    let manifest_bytes = match ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad) {
-        Ok(b) => b,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
-    };
+    let aad = [
+        b"CipherVault-Manifest:",
+        vault_id.as_slice(),
+        &record.epoch.to_le_bytes(),
+    ]
+    .concat();
+    let manifest_bytes =
+        match ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad) {
+            Ok(b) => b,
+            Err(e) => {
+                return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+            }
+        };
     let manifest: SnapshotManifest = match from_canonical_cbor(&manifest_bytes) {
         Ok(m) => m,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let mut needed_cids = Vec::new();
     for file in &manifest.files {
@@ -5241,11 +5332,21 @@ async fn api_secrets_inspect_handler() -> impl axum::response::IntoResponse {
     }
     let chunks = match store.get_chunks(&needed_cids) {
         Ok(c) => c,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
-    let files = match decrypt_snapshot(&vault_id, &epoch_key, record.epoch, &encrypted_manifest, &chunks) {
+    let files = match decrypt_snapshot(
+        &vault_id,
+        &epoch_key,
+        record.epoch,
+        &encrypted_manifest,
+        &chunks,
+    ) {
         Ok(f) => f,
-        Err(e) => return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
+        }
     };
     let mut secrets_list = Vec::new();
     for file in files {

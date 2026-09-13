@@ -54,9 +54,19 @@ jobs:
       - name: Test Multi-Workstation Pull Synchronization
         run: cargo test -p ciphervault-cli --test pull_sync_test
 
+      - name: Test In-Memory Zero-Disk Execution Suite
+        run: cargo test -p ciphervault-cli --test run_injection_test
+
+      - name: Setup Local Test Vault for Zero-Disk Runner
+        run: |
+          ciphervault init --force
+          echo "ZERO_DISK_SECRET=verified_action_token_999" > .env.production
+          ciphervault track .env.production
+          ciphervault push --local -m "CI runner test snapshot"
+
       - name: Test Zero-Disk Injection Runner Action
         uses: ./.github/actions/ciphervault-run
         with:
-          command: "node -e 'console.log(\"Zero-disk test execution verified successfully!\")'"
+          command: "node -e 'if (process.env.ZERO_DISK_SECRET !== \"verified_action_token_999\") { throw new Error(\"Secret injection failed\"); } console.log(\"Zero-disk test execution verified successfully!\");'"
           dry-run: "false"
           install-binary: "false"
