@@ -311,7 +311,7 @@ function renderOperators(operators) {
 
           <div class="op-meta-row">
             <span class="op-meta-label">Endpoint</span>
-            <span class="op-meta-val">${escapeHtml(op.endpoint)}</span>
+            <span class="op-meta-val">${escapeHtml(op.endpoint)}${op.is_shielded || (op.endpoint && op.endpoint.includes('/op/')) ? ' <span class="shield-badge" style="color:var(--accent-cyan); font-size:0.75rem; margin-left:6px;">🔒 TLS Shielded</span>' : ''}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Public Key</span>

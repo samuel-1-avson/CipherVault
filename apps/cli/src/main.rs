@@ -1327,10 +1327,37 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
 }
 
 pub const DEFAULT_PRODUCTION_OPERATORS: &[&str] = &[
-    "http://136.65.43.84",
-    "http://34.9.157.167",
-    "http://34.73.53.40",
+    "https://vault.cipherv.online/op/1",
+    "https://vault.cipherv.online/op/2",
+    "https://vault.cipherv.online/op/3",
 ];
+
+pub fn mask_operator_endpoint(endpoint: &str) -> String {
+    let ep = endpoint.trim_end_matches('/');
+    if ep.ends_with("/op/1") || ep.contains("136.65.43.84") || ep.contains("10.128.0.39") {
+        "https://vault.cipherv.online/op/1 [Shielded Gateway - Iowa us-central1-a]".to_string()
+    } else if ep.ends_with("/op/2") || ep.contains("34.9.157.167") || ep.contains("10.128.0.40") {
+        "https://vault.cipherv.online/op/2 [Shielded Gateway - Iowa us-central1-b]".to_string()
+    } else if ep.ends_with("/op/3") || ep.contains("34.73.53.40") || ep.contains("10.142.0.2") {
+        "https://vault.cipherv.online/op/3 [Shielded Gateway - S. Carolina us-east1-b]".to_string()
+    } else if let Some(stripped) = ep.strip_prefix("http://").or_else(|| ep.strip_prefix("https://")) {
+        let host_port = stripped.split('/').next().unwrap_or(stripped);
+        let host = host_port.split(':').next().unwrap_or(host_port);
+        let parts: Vec<&str> = host.split('.').collect();
+        if parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            let port_suffix = if host_port.contains(':') {
+                format!(":{}", host_port.split(':').nth(1).unwrap_or(""))
+            } else {
+                String::new()
+            };
+            format!("Shielded Operator ({}.***.***.{}){}", parts[0], parts[3], port_suffix)
+        } else {
+            endpoint.to_string()
+        }
+    } else {
+        endpoint.to_string()
+    }
+}
 
 fn get_configured_operators() -> Vec<String> {
     if let Ok(env_ops) = std::env::var("CIPHERVAULT_OPERATORS") {
@@ -1738,7 +1765,7 @@ fn cmd_status() -> Result<()> {
 
     println!("\nConfigured Operators ({}):", operators.len());
     for op in operators {
-        println!("  - {}", op.dimmed());
+        println!("  - {}", mask_operator_endpoint(&op).cyan());
     }
 
     println!("\nTracked Confidential Files ({}):", tracked.len());
@@ -4896,7 +4923,7 @@ async fn api_vault_handler() -> impl axum::response::IntoResponse {
                 "chunks_count": (size_bytes as usize / (1024 * 1024)) + 1,
             })
         }).collect::<Vec<_>>(),
-        "operators": operators,
+        "operators": operators.iter().map(|op| mask_operator_endpoint(op)).collect::<Vec<_>>(),
         "recovery": recovery_info,
     }))
 }
@@ -4926,34 +4953,37 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     .chars()
                     .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
-                let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84")
+                let (region, zone, location, is_cloud) = if endpoint.contains("/op/1")
+                    || endpoint.contains("136.65.43.84")
                     || safe_id.contains("operator-1")
                     || safe_id.contains("8201")
                 {
                     (
                         "us-central1",
                         "us-central1-a",
-                        "Council Bluffs, Iowa, USA",
+                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
                         true,
                     )
-                } else if endpoint.contains("34.9.157.167")
+                } else if endpoint.contains("/op/2")
+                    || endpoint.contains("34.9.157.167")
                     || safe_id.contains("operator-2")
                     || safe_id.contains("8202")
                 {
                     (
                         "us-central1",
                         "us-central1-b",
-                        "Council Bluffs, Iowa, USA",
+                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
                         true,
                     )
-                } else if endpoint.contains("34.73.53.40")
+                } else if endpoint.contains("/op/3")
+                    || endpoint.contains("34.73.53.40")
                     || safe_id.contains("operator-3")
                     || safe_id.contains("8203")
                 {
                     (
                         "us-east1",
                         "us-east1-b",
-                        "Moncks Corner, South Carolina, USA",
+                        "Moncks Corner, South Carolina, USA (Shielded Gateway)",
                         true,
                     )
                 } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
@@ -4961,8 +4991,10 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                 } else {
                     ("custom", "cloud-vps", "Custom Storage Node", true)
                 };
+                let display_endpoint = mask_operator_endpoint(&endpoint);
                 results.push(serde_json::json!({
-                    "endpoint": endpoint,
+                    "endpoint": display_endpoint,
+                    "target_url": display_endpoint,
                     "status": "online",
                     "operator_id": safe_id,
                     "operator_signing_pk_hex": safe_pk,
@@ -4972,29 +5004,32 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     "zone": zone,
                     "location": location,
                     "is_cloud": is_cloud,
+                    "is_shielded": true,
                     "quorum_role": "Byzantine Quorum Validator (2-of-3 Required)",
                 }));
             }
             Err(e) => {
-                let (region, zone, location, is_cloud) = if endpoint.contains("136.65.43.84") {
+                let (region, zone, location, is_cloud) = if endpoint.contains("/op/1")
+                    || endpoint.contains("136.65.43.84")
+                {
                     (
                         "us-central1",
                         "us-central1-a",
-                        "Council Bluffs, Iowa, USA",
+                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
                         true,
                     )
-                } else if endpoint.contains("34.9.157.167") {
+                } else if endpoint.contains("/op/2") || endpoint.contains("34.9.157.167") {
                     (
                         "us-central1",
                         "us-central1-b",
-                        "Council Bluffs, Iowa, USA",
+                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
                         true,
                     )
-                } else if endpoint.contains("34.73.53.40") {
+                } else if endpoint.contains("/op/3") || endpoint.contains("34.73.53.40") {
                     (
                         "us-east1",
                         "us-east1-b",
-                        "Moncks Corner, South Carolina, USA",
+                        "Moncks Corner, South Carolina, USA (Shielded Gateway)",
                         true,
                     )
                 } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
@@ -5002,14 +5037,17 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                 } else {
                     ("custom", "cloud-vps", "Custom Storage Node", true)
                 };
+                let display_endpoint = mask_operator_endpoint(&endpoint);
                 results.push(serde_json::json!({
-                    "endpoint": endpoint,
+                    "endpoint": display_endpoint,
+                    "target_url": display_endpoint,
                     "status": "offline",
                     "error": e.to_string(),
                     "region": region,
                     "zone": zone,
                     "location": location,
                     "is_cloud": is_cloud,
+                    "is_shielded": true,
                     "quorum_role": "Byzantine Quorum Validator (2-of-3 Required)",
                 }));
             }
@@ -5567,7 +5605,7 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
             };
             serde_json::json!({
                 "operator_id": format!("Operator {}", i + 1),
-                "endpoint": n.endpoint,
+                "endpoint": mask_operator_endpoint(&n.endpoint),
                 "status": if n.is_healthy { "Online" } else { "Offline" },
                 "is_healthy": n.is_healthy,
                 "latency_ms": n.latency_ms,

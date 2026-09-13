@@ -38,12 +38,12 @@ Not established: clean Windows/macOS/Linux package installation, hosted CI resul
 
 ## Verified GCP progress
 
-| Resource | Zone | Region | Public address | Observed state |
+| Resource | Zone | Region | Shielded Gateway / Private VPC | Observed state |
 |---|---|---|---|---|
-| cv-operator-1 | us-central1-a | us-central1 | 136.65.43.84 | RUNNING; `/v1/info` HTTP 200 |
-| cv-operator-2 | us-central1-b | us-central1 | 34.9.157.167 | RUNNING; `/v1/info` HTTP 200 |
-| cv-operator-3 | us-east1-b | us-east1 | 34.73.53.40 | RUNNING; `/v1/info` HTTP 200 |
-| cv-web-ui | us-east1-b | us-east1 | 104.196.14.85 | RUNNING VM; web application inactive |
+| cv-operator-1 | us-central1-a | us-central1 | `https://vault.cipherv.online/op/1` (VPC 10.128.0.39) | RUNNING; TLS Shielded (`/v1/info` HTTP 200) |
+| cv-operator-2 | us-central1-b | us-central1 | `https://vault.cipherv.online/op/2` (VPC 10.128.0.40) | RUNNING; TLS Shielded (`/v1/info` HTTP 200) |
+| cv-operator-3 | us-east1-b | us-east1 | `https://vault.cipherv.online/op/3` (VPC 10.142.0.2) | RUNNING; TLS Shielded (`/v1/info` HTTP 200) |
+| cv-web-ui | us-east1-b | us-east1 | `https://vault.cipherv.online` (104.196.14.85) | RUNNING; Caddy TLS reverse-proxy active |
 
 These are **three zones in two regions within one GCP project**, not three independently administered providers. A central-region outage would leave one operator: recovery may remain possible from a complete surviving copy, while a three-receipt push cannot succeed. Shared project, billing, IAM, provider, and operational control remain common failure risks.
 
@@ -55,7 +55,7 @@ GCP rules allow public HTTP/HTTPS for CipherVault tags. Default-network rules al
 
 Public observations:
 
-- `http://136.65.43.84/v1/info`, `http://34.9.157.167/v1/info`, and `http://34.73.53.40/v1/info`: HTTP 200, correct operator names, three different signing keys.
+- `https://vault.cipherv.online/op/1/v1/info`, `https://vault.cipherv.online/op/2/v1/info`, and `https://vault.cipherv.online/op/3/v1/info`: HTTP 200, correct operator names, three different signing keys via TLS reverse-proxy gateway. Direct public internet access to raw operator IPs is firewalled and rejected.
 - Corresponding HTTPS addresses: TLS handshake errors under normal certificate validation. No TLS bypass was used.
 - `https://vault.cipherv.online/`: DNS resolution failure from the review environment.
 - `https://cipherv.online/`: TLS failure. Plain HTTP returned a page titled `cipherv.online`; that alone does not establish a deployed CipherVault dashboard.
@@ -175,10 +175,10 @@ Subsequent to the initial review snapshot, the following production deployment m
    - ACME HTTP-01 challenge verified: Let's Encrypt production certificate successfully issued for `vault.cipherv.online`.
    - Automatic HTTP-to-HTTPS redirect verified: Port 80 returns `308 Permanent Redirect` to `https://vault.cipherv.online/`.
 4. **Live Cluster Quorum Health**:
-   - Web container independently connected to all 3 GCP operators:
-     - `http://136.65.43.84` (cv-operator-1, us-central1-a, Iowa)
-     - `http://34.9.157.167` (cv-operator-2, us-central1-b, Iowa)
-     - `http://34.73.53.40` (cv-operator-3, us-east1-b, South Carolina)
+   - Web container independently connected to all 3 GCP operators via isolated internal VPC:
+     - `https://vault.cipherv.online/op/1` (cv-operator-1, us-central1-a, Iowa, VPC 10.128.0.39)
+     - `https://vault.cipherv.online/op/2` (cv-operator-2, us-central1-b, Iowa, VPC 10.128.0.40)
+     - `https://vault.cipherv.online/op/3` (cv-operator-3, us-east1-b, South Carolina, VPC 10.142.0.2)
    - `/api/audit` response verified: `3/3` healthy operators, 7/7 total objects replicated, 0 degraded, 0 lost.
 5. **Pre-Release Security Backup**:
    - Local vault snapshot captured and pushed across live operators:

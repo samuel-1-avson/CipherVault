@@ -343,14 +343,16 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   // =========================================================================
   vm.runInContext(`
     renderOperators([
-      { operator_id: 'cv-operator-1', endpoint: 'http://136.65.43.84', status: 'online', latency_ms: 12, region: 'us-central1', zone: 'us-central1-a' },
-      { operator_id: 'cv-operator-2', endpoint: 'http://34.9.157.167', status: 'online', latency_ms: 14, region: 'us-central1', zone: 'us-central1-b' },
-      { operator_id: 'cv-operator-3', endpoint: 'http://34.73.53.40', status: 'online', latency_ms: 32, region: 'us-east1', zone: 'us-east1-b' }
+      { operator_id: 'cv-operator-1', endpoint: 'https://vault.cipherv.online/op/1', status: 'online', latency_ms: 12, region: 'us-central1', zone: 'us-central1-a', is_shielded: true },
+      { operator_id: 'cv-operator-2', endpoint: 'https://vault.cipherv.online/op/2', status: 'online', latency_ms: 14, region: 'us-central1', zone: 'us-central1-b', is_shielded: true },
+      { operator_id: 'cv-operator-3', endpoint: 'https://vault.cipherv.online/op/3', status: 'online', latency_ms: 32, region: 'us-east1', zone: 'us-east1-b', is_shielded: true }
     ]);
   `, context);
   assert(getElementById('quorum-health-text').textContent.includes('Quorum 3/3 Healthy'), 'Quorum health must reflect 3/3 online nodes');
   assert(getElementById('ping-op1').innerHTML.includes('12 ms'), 'Ping op1 must reflect live latency');
   assert(getElementById('ping-op3').innerHTML.includes('32 ms'), 'Ping op3 must reflect live latency');
+  assert(getElementById('operators-grid').innerHTML.includes('TLS Shielded'), 'Operator card must display TLS Shielded badge');
+  assert(getElementById('operators-grid').innerHTML.includes('card-operator-1'), 'Operator card 1 must be rendered in grid');
 
   // =========================================================================
   // 9. Snapshot Deep Inspector Drawer Tests

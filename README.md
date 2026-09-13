@@ -65,8 +65,8 @@ Navigate to any project directory containing confidential files (`.env`, certifi
 ```bash
 cd ~/my-project
 
-# Connect to the live public multi-region GCP cluster
-ciphervault init --operators http://136.65.43.84 http://34.9.157.167 http://34.73.53.40 --import-gitignore
+# Connect to the live public multi-region GCP cluster (or run 'ciphervault init' for built-in defaults)
+ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cipherv.online/op/2 https://vault.cipherv.online/op/3 --import-gitignore
 ```
 
 > **CRITICAL**: CipherVault will display your **Offline Emergency Recovery Kit** (containing Master Secret $R$). Store this kit in two secure physical locations. In accordance with zero-disk recovery policy, $R$ is immediately zeroized from volatile RAM and never written unencrypted to disk.
@@ -122,10 +122,10 @@ ciphervault recover --shares share1.txt share2.txt share3.txt --to .
       │
       ├──> Web UI Dashboard:   https://vault.cipherv.online  (us-east1-b)
       │
-      └──> 3-Node Byzantine Quorum Storage Cluster (~1,000 Miles Physical Isolation):
-            ├── Operator 1:    http://136.65.43.84   [us-central1-a, Iowa, USA]
-            ├── Operator 2:    http://34.9.157.167   [us-central1-b, Iowa, USA]
-            └── Operator 3:    http://34.73.53.40    [us-east1-b, S. Carolina, USA]
+      └──> 3-Node Byzantine Quorum Cluster (~1,000 Miles Physical Isolation, TLS Shielded):
+            ├── Operator 1:    https://vault.cipherv.online/op/1   [us-central1-a, Iowa, USA]
+            ├── Operator 2:    https://vault.cipherv.online/op/2   [us-central1-b, Iowa, USA]
+            └── Operator 3:    https://vault.cipherv.online/op/3   [us-east1-b, S. Carolina, USA]
 
   [ Arbitrum One Rollup (L2) ]
       └── EIP-712 Sequencer Head Commitments & Public Inclusion Proofs

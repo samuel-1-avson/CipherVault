@@ -66,7 +66,7 @@ cp /opt/ciphervault-ui/repo/deploy/gcp/Caddyfile.web.gcp /opt/ciphervault-ui/Cad
 cat <<EOF > /opt/ciphervault-ui/.env
 WEB_DOMAIN=${WEB_DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
-CIPHERVAULT_OPERATORS=http://136.65.43.84 http://34.9.157.167 http://34.73.53.40
+CIPHERVAULT_OPERATORS=http://10.128.0.39 http://10.128.0.40 http://10.142.0.2
 EOF
 
 # 8. Build Production Dashboard Image
