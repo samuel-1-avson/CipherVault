@@ -36,6 +36,7 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 ciphervault-agent = { path = "../agent" }
 walkdir = { workspace = true }
+clap_complete = { workspace = true }
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }

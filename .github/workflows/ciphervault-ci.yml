@@ -1,0 +1,62 @@
+name: CipherVault CI & Zero-Disk Secret Runner Validation
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-developer-suite:
+    name: Developer Ergonomics & Synchronization Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-dev-suite-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-dev-suite-
+
+      - name: Compile CipherVault CLI
+        run: cargo build -p ciphervault-cli --release
+
+      - name: Add CipherVault to PATH
+        run: echo "$(pwd)/target/release" >> $GITHUB_PATH
+
+      - name: Test Shell Autocompletions Generation
+        run: |
+          ciphervault completions bash > /tmp/ciphervault.bash
+          ciphervault completions zsh > /tmp/ciphervault.zsh
+          ciphervault completions fish > /tmp/ciphervault.fish
+          ciphervault completions powershell > /tmp/ciphervault.ps1
+          ciphervault completions elvish > /tmp/ciphervault.elv
+          echo "Generated all 5 shell autocompletions successfully!"
+
+      - name: Test Encrypted Secret Diff Engine
+        run: cargo test -p ciphervault-cli --test diff_test
+
+      - name: Test Multi-Workstation Pull Synchronization
+        run: cargo test -p ciphervault-cli --test pull_sync_test
+
+      - name: Test Zero-Disk Injection Runner Action
+        uses: ./.github/actions/ciphervault-run
+        with:
+          command: "node -e 'console.log(\"Zero-disk test execution verified successfully!\")'"
+          dry-run: "false"
+          install-binary: "false"

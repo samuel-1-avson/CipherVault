@@ -1,0 +1,87 @@
+name: "CipherVault Secret Runner"
+description: "Executes CI/CD commands with zero-disk secret injection and memory zeroization via CipherVault"
+author: "CipherVault Team"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  command:
+    description: "The shell command or binary to execute under zero-disk secret injection"
+    required: true
+  snapshot:
+    description: "Specific 32-byte hex snapshot ID to inject secrets from (defaults to latest active head)"
+    required: false
+    default: ""
+  env-file:
+    description: "Optional specific secret file to inject (e.g. .env.production)"
+    required: false
+    default: ""
+  no-inherit:
+    description: "Do not inherit host runner environment variables (runs with isolated secret set only)"
+    required: false
+    default: "false"
+  dry-run:
+    description: "Print injected variable names without revealing secrets and without executing the command"
+    required: false
+    default: "false"
+  quiet:
+    description: "Suppress CipherVault execution header logs"
+    required: false
+    default: "false"
+  install-binary:
+    description: "Whether to install or compile CipherVault if not already present on PATH"
+    required: false
+    default: "true"
+  working-directory:
+    description: "Working directory containing the vault (.ciphervault/)"
+    required: false
+    default: "."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Ensure CipherVault CLI Available
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if command -v ciphervault &> /dev/null; then
+          echo "CipherVault binary found on PATH: $(command -v ciphervault)"
+        elif [ "${{ inputs.install-binary }}" = "true" ]; then
+          echo "Building / verifying local CipherVault binary..."
+          cargo build -p ciphervault-cli --release
+          CARGO_BIN_DIR="$(cargo metadata --format-version 1 | grep -o '\"target_directory\":\"[^\"]*' | cut -d'\"' -f4)/release"
+          if [ -d "$CARGO_BIN_DIR" ]; then
+            echo "$CARGO_BIN_DIR" >> $GITHUB_PATH
+          fi
+        else
+          echo "::error::CipherVault CLI is not installed and install-binary is false."
+          exit 1
+        fi
+
+    - name: Execute Zero-Disk Secret Injection Runner
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        CMD_ARGS=()
+        if [ -n "${{ inputs.snapshot }}" ]; then
+          CMD_ARGS+=("--snapshot" "${{ inputs.snapshot }}")
+        fi
+        if [ -n "${{ inputs.env-file }}" ]; then
+          CMD_ARGS+=("--env-file" "${{ inputs.env-file }}")
+        fi
+        if [ "${{ inputs.no-inherit }}" = "true" ]; then
+          CMD_ARGS+=("--no-inherit")
+        fi
+        if [ "${{ inputs.dry-run }}" = "true" ]; then
+          CMD_ARGS+=("--dry-run")
+        fi
+        if [ "${{ inputs.quiet }}" = "true" ]; then
+          CMD_ARGS+=("--quiet")
+        fi
+
+        echo "::group::CipherVault Zero-Disk Execution"
+        ciphervault run "${CMD_ARGS[@]}" -- ${{ inputs.command }}
+        EXIT_CODE=$?
+        echo "::endgroup::"
+        exit $EXIT_CODE

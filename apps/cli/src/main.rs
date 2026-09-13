@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use chrono::{TimeZone, Utc};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use colored::*;
 use rand::RngCore;
 use std::fs::{self, OpenOptions};
@@ -28,6 +28,7 @@ use ciphervault_snapshot::{
 };
 use ciphervault_storage::{MultiOperatorPool, OperatorClient};
 
+pub mod diff;
 pub mod dotenv;
 pub mod tui;
 
@@ -328,6 +329,52 @@ enum Commands {
         command: Vec<String>,
     },
 
+    /// Compare changes in confidential files across snapshots or against working tree
+    Diff {
+        #[arg(
+            help = "Old snapshot ID to compare (or compare working directory against latest head)"
+        )]
+        snapshot_a: Option<String>,
+
+        #[arg(help = "New snapshot ID to compare against snapshot_a")]
+        snapshot_b: Option<String>,
+
+        #[arg(short, long, help = "Limit diff to a specific relative file path")]
+        file: Option<String>,
+
+        #[arg(long, help = "Reveal full unmasked secret values in diff output")]
+        reveal: bool,
+
+        #[arg(long, help = "Output diff report in structured JSON format")]
+        json: bool,
+    },
+
+    /// Pull the latest snapshot from independent operators and update local files
+    Pull {
+        #[arg(
+            short,
+            long,
+            help = "Check for remote updates without modifying local working files"
+        )]
+        dry_run: bool,
+
+        #[arg(
+            short,
+            long,
+            help = "Overwrite modified local files with remote snapshot contents"
+        )]
+        force: bool,
+    },
+
+    /// Generate shell autocompletion script for your shell
+    Completions {
+        #[arg(
+            value_enum,
+            help = "Target shell (bash, elvish, fish, powershell, zsh)"
+        )]
+        shell: clap_complete::Shell,
+    },
+
     /// Manage physical hardware security tokens (YubiKey PIV / PC/SC)
     Token {
         #[command(subcommand)]
@@ -495,6 +542,18 @@ async fn run(cli: Cli) -> Result<()> {
             set,
             command,
         } => cmd_run(snapshot, env_file, no_inherit, dry_run, quiet, set, command).await,
+        Commands::Diff {
+            snapshot_a,
+            snapshot_b,
+            file,
+            reveal,
+            json,
+        } => cmd_diff(snapshot_a, snapshot_b, file, reveal, json),
+        Commands::Pull { dry_run, force } => cmd_pull(dry_run, force).await,
+        Commands::Completions { shell } => {
+            cmd_completions(shell);
+            Ok(())
+        }
     }
 }
 
@@ -1837,6 +1896,363 @@ async fn cmd_run(
     let exit_code = status.code().unwrap_or(1);
     if exit_code != 0 {
         std::process::exit(exit_code);
+    }
+
+    Ok(())
+}
+
+fn cmd_completions(shell: clap_complete::Shell) {
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "ciphervault", &mut std::io::stdout());
+}
+
+fn cmd_diff(
+    snapshot_a_opt: Option<String>,
+    snapshot_b_opt: Option<String>,
+    file_filter_opt: Option<String>,
+    reveal: bool,
+    json_output: bool,
+) -> Result<()> {
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (_, _, _, epoch) = store.get_device_state()?;
+    let epoch_key = store.get_epoch_key(epoch)?;
+
+    // Helper to decrypt snapshot files into a map of (relative_path -> Vec<u8>)
+    let decrypt_snap = |snap_id: &[u8; 32]| -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+        let (record, encrypted_manifest) = store.get_snapshot(snap_id)?;
+        let manifest_key = epoch_key.derive_manifest_key(record.epoch)?;
+        let aad = [
+            b"CipherVault-Manifest:",
+            vault_id.as_slice(),
+            &record.epoch.to_le_bytes(),
+        ]
+        .concat();
+        let manifest_bytes =
+            ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad)?;
+        let manifest: SnapshotManifest = from_canonical_cbor(&manifest_bytes)?;
+
+        let mut needed_cids = Vec::new();
+        for file in &manifest.files {
+            for cid_bytes in &file.chunk_cids {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(cid_bytes);
+                needed_cids.push(arr);
+            }
+        }
+        let chunks = store.get_chunks(&needed_cids)?;
+        let files = decrypt_snapshot(
+            &vault_id,
+            &epoch_key,
+            record.epoch,
+            &encrypted_manifest,
+            &chunks,
+        )?;
+
+        let mut map = std::collections::BTreeMap::new();
+        for f in files {
+            map.insert(f.relative_path.replace('\\', "/"), f.plaintext);
+        }
+        Ok(map)
+    };
+
+    let parse_snap_id = |s: &str| -> Result<[u8; 32]> {
+        let bytes = hex::decode(s.trim())?;
+        if bytes.len() != 32 {
+            bail!("Snapshot ID must be 32 bytes hex string (64 characters)");
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    };
+
+    let (old_label, new_label, old_files, new_files) = match (snapshot_a_opt, snapshot_b_opt) {
+        // Mode 1: Working directory vs latest head snapshot
+        (None, None) => {
+            let head = store
+                .get_active_head()?
+                .context("Vault has no snapshots committed yet. Create a snapshot first with 'ciphervault push'")?;
+            if head.snapshot_id.len() != 32 {
+                bail!("Invalid snapshot ID length in active head");
+            }
+            let mut head_cid = [0u8; 32];
+            head_cid.copy_from_slice(&head.snapshot_id);
+            let old_map = decrypt_snap(&head_cid)?;
+
+            let mut new_map = std::collections::BTreeMap::new();
+            if let Ok(tracked) = store.list_tracked_files() {
+                for (p, _) in tracked {
+                    let rel_str = p.display().to_string().replace('\\', "/");
+                    if p.exists() {
+                        if let Ok(data) = fs::read(&p) {
+                            new_map.insert(rel_str, data);
+                        }
+                    }
+                }
+            }
+            (
+                format!("head:{}", &hex::encode(head_cid)[..8]),
+                "working tree".to_string(),
+                old_map,
+                new_map,
+            )
+        }
+        // Mode 2: Working directory vs specific snapshot_a
+        (Some(a_str), None) => {
+            let a_id = parse_snap_id(&a_str)?;
+            let old_map = decrypt_snap(&a_id)?;
+
+            let mut new_map = std::collections::BTreeMap::new();
+            if let Ok(tracked) = store.list_tracked_files() {
+                for (p, _) in tracked {
+                    let rel_str = p.display().to_string().replace('\\', "/");
+                    if p.exists() {
+                        if let Ok(data) = fs::read(&p) {
+                            new_map.insert(rel_str, data);
+                        }
+                    }
+                }
+            }
+            (
+                format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                "working tree".to_string(),
+                old_map,
+                new_map,
+            )
+        }
+        // Mode 3: Snapshot A vs Snapshot B
+        (Some(a_str), Some(b_str)) => {
+            let a_id = parse_snap_id(&a_str)?;
+            let b_id = parse_snap_id(&b_str)?;
+            let old_map = decrypt_snap(&a_id)?;
+            let new_map = decrypt_snap(&b_id)?;
+            (
+                format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                old_map,
+                new_map,
+            )
+        }
+        (None, Some(_)) => unreachable!(),
+    };
+
+    let mut report = diff::DiffReport::new(old_label, new_label);
+
+    // Collect union of file paths
+    let mut all_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for p in old_files.keys() {
+        all_paths.insert(p.clone());
+    }
+    for p in new_files.keys() {
+        all_paths.insert(p.clone());
+    }
+
+    for path in all_paths {
+        if let Some(ref filter) = file_filter_opt {
+            let norm_filter = filter.replace('\\', "/");
+            if path != norm_filter && !path.ends_with(&format!("/{}", norm_filter)) {
+                continue;
+            }
+        }
+
+        let old_bytes = old_files.get(&path).cloned().unwrap_or_default();
+        let new_bytes = new_files.get(&path).cloned().unwrap_or_default();
+
+        let is_dotenv_file = {
+            let name = path.rsplit('/').next().unwrap_or(&path);
+            name == ".env" || name.starts_with(".env.") || name.ends_with(".env")
+        };
+
+        if is_dotenv_file {
+            let old_vars = dotenv::parse_dotenv_bytes(&old_bytes).unwrap_or_default();
+            let new_vars = dotenv::parse_dotenv_bytes(&new_bytes).unwrap_or_default();
+            let file_rep = diff::diff_dotenv(&path, &old_vars, &new_vars, reveal);
+            report.add_file_report(file_rep);
+        } else {
+            let old_str = String::from_utf8_lossy(&old_bytes);
+            let new_str = String::from_utf8_lossy(&new_bytes);
+            let file_rep = diff::diff_text(&path, &old_str, &new_str, reveal);
+            report.add_file_report(file_rep);
+        }
+    }
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        diff::print_diff_report(&report);
+    }
+
+    Ok(())
+}
+
+async fn cmd_pull(dry_run: bool, force: bool) -> Result<()> {
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (_, _, _, local_epoch) = store.get_device_state()?;
+    let epoch_key = store.get_epoch_key(local_epoch)?;
+    let (recovery_signing_pk, _, locator) = store.get_recovery_descriptors()?;
+
+    let operators = get_configured_operators();
+    if operators.is_empty() {
+        bail!("No operators configured. Cannot pull from remote federation.");
+    }
+
+    println!(
+        "Connecting to {} independent storage operator(s)...",
+        operators.len()
+    );
+    let pool = MultiOperatorPool::new(operators);
+
+    let raw_records = pool.query_recovery_records(&locator).await;
+    if raw_records.is_empty() {
+        bail!("No recovery records found on any surviving operator for this vault locator.");
+    }
+
+    let (chosen_head, certificate) =
+        ciphervault_recovery::trust::select_head(&raw_records, &vault_id, &recovery_signing_pk)?;
+
+    let local_head = store.get_active_head()?;
+    if let Some(lh) = &local_head {
+        if lh.snapshot_id == chosen_head.snapshot_id {
+            println!(
+                "{}",
+                format!(
+                    "✓ Already up to date with operator cluster (Head: {})",
+                    hex::encode(&lh.snapshot_id)[..12].yellow()
+                )
+                .green()
+            );
+            return Ok(());
+        }
+    }
+
+    let mut snap_cid = [0u8; 32];
+    snap_cid.copy_from_slice(&chosen_head.snapshot_id);
+
+    println!(
+        "Found newer remote snapshot: {}",
+        hex::encode(snap_cid)[..12].yellow()
+    );
+
+    if dry_run {
+        println!(
+            "{}",
+            "✓ Dry run complete: updates are available from operators. Run 'ciphervault pull' to apply."
+                .green()
+        );
+        return Ok(());
+    }
+
+    // Safety guard against uncommitted local modifications unless --force
+    if !force {
+        let tracked = store.list_tracked_files()?;
+        let mut dirty_files = Vec::new();
+        for (rel_path, orig_hash) in &tracked {
+            if rel_path.exists() {
+                if let Ok(bytes) = fs::read(rel_path) {
+                    use sha2::Digest;
+                    let cur_hash = sha2::Sha256::digest(&bytes);
+                    if cur_hash.as_slice() != orig_hash.as_slice() {
+                        dirty_files.push(rel_path.display().to_string());
+                    }
+                }
+            }
+        }
+        if !dirty_files.is_empty() {
+            bail!(
+                "Local tracked file(s) have uncommitted modifications: {}\nCommit changes with 'ciphervault push' or discard with 'ciphervault pull --force'",
+                dirty_files.join(", ")
+            );
+        }
+    }
+
+    // Fetch and authenticate snapshot record object
+    let snap_record_bytes = pool.fetch_object_from_any(&snap_cid).await?;
+    let record: SnapshotRecord = from_canonical_cbor(&snap_record_bytes)?;
+    ciphervault_recovery::trust::verify_snapshot(&record, &chosen_head, &certificate)?;
+
+    // Fetch encrypted manifest
+    let mut manifest_cid = [0u8; 32];
+    manifest_cid.copy_from_slice(&record.encrypted_manifest_cid);
+    let encrypted_manifest = pool.fetch_object_from_any(&manifest_cid).await?;
+
+    let manifest_key = epoch_key.derive_manifest_key(record.epoch)?;
+    let aad = [
+        b"CipherVault-Manifest:",
+        vault_id.as_slice(),
+        &record.epoch.to_le_bytes(),
+    ]
+    .concat();
+    let manifest_bytes =
+        ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad)?;
+    let manifest: SnapshotManifest = from_canonical_cbor(&manifest_bytes)?;
+
+    // Download any missing chunk objects from operators
+    let mut all_chunks = Vec::new();
+    let mut missing_cids = Vec::new();
+
+    for file in &manifest.files {
+        if file.is_deleted {
+            continue;
+        }
+        for cid_bytes in &file.chunk_cids {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(cid_bytes);
+            missing_cids.push(arr);
+        }
+    }
+
+    let local_chunks = store.get_chunks(&missing_cids).unwrap_or_default();
+    let local_chunk_map: std::collections::HashMap<[u8; 32], ChunkWireObject> = local_chunks
+        .into_iter()
+        .filter_map(|c| c.compute_cid().ok().map(|cid| (cid, c)))
+        .collect();
+
+    for cid in &missing_cids {
+        if let Some(local_c) = local_chunk_map.get(cid) {
+            all_chunks.push(local_c.clone());
+        } else {
+            let chunk_bytes = pool.fetch_object_from_any(cid).await?;
+            let chunk: ChunkWireObject = from_canonical_cbor(&chunk_bytes)?;
+            all_chunks.push(chunk);
+        }
+    }
+
+    // Atomically restore the updated files into the current workspace
+    println!("Applying updated confidential files into workspace...");
+    let restored = restore_snapshot(
+        &PathBuf::from("."),
+        &vault_id,
+        &epoch_key,
+        record.epoch,
+        &encrypted_manifest,
+        &all_chunks,
+    )?;
+
+    // Ensure pulled files are tracked in local store
+    for file in &manifest.files {
+        if !file.is_deleted {
+            let _ = store.track_file(&file.relative_path);
+        }
+    }
+
+    // Persist snapshot record, encrypted manifest, and chunks in local database
+    store.save_snapshot(&record, &encrypted_manifest, &all_chunks)?;
+
+    // Advance local head to the verified remote head
+    store.set_head(&chosen_head)?;
+
+    println!(
+        "{}",
+        format!(
+            "✓ Successfully synchronized with operator cluster (Head: {})",
+            hex::encode(snap_cid)[..12].yellow()
+        )
+        .bold()
+        .green()
+    );
+    for p in restored {
+        println!("  - Updated: {}", p.display().to_string().cyan());
     }
 
     Ok(())

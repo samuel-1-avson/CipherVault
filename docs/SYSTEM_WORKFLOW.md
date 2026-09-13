@@ -432,6 +432,99 @@ sequenceDiagram
 
 ---
 
+### Workflow 8: Encrypted Secret Diffing & Shoulder-Surfing Defense (`ciphervault diff`)
+
+Developers and security engineers can inspect changes between secret revisions without exposing plaintext values to screen recorders or shoulder surfers:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / Security Auditor
+    participant CLI as ciphervault diff
+    participant Store as Local Store (vault.db)
+    participant FS as Working Filesystem (.env)
+
+    Dev->>CLI: ciphervault diff [--reveal] [--file <path>] [--json]
+    CLI->>Store: Fetch active head manifest & decrypt in RAM
+    CLI->>FS: Read tracked secret files from disk
+    CLI->>CLI: Parse dotenv/plain key-values & compute diff set
+    alt Default Mode (No --reveal)
+        CLI->>CLI: Apply mask_value(k, v) -> "sk_live_***...a8f"
+        CLI-->>Dev: Display colorized diff with masked secret values
+    else Explicit --reveal
+        CLI-->>Dev: Display colorized diff with unmasked plaintext values
+    end
+    CLI->>CLI: Zeroize in-memory secret buffers
+```
+
+* **Default Shoulder-Surfing Mask**: All secret values display as `***...` with leading and trailing hint characters unless `--reveal` is explicitly passed.
+* **Revision Modes**: Compares working tree vs head (`ciphervault diff`), working tree vs specific snapshot (`ciphervault diff <snap_id>`), or between two snapshots (`ciphervault diff <snap_a> <snap_b>`).
+* **Format-Aware**: Performs semantic key-level diffing for `.env` files (added, removed, modified, unchanged) and line-level diffing for general confidential files.
+
+---
+
+### Workflow 9: Multi-Workstation Synchronization (`ciphervault pull`)
+
+When collaborating across team laptops or updating build servers, `ciphervault pull` updates secrets securely:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer on Workstation B
+    participant CLI as ciphervault pull
+    participant Store as Local Store (vault.db)
+    participant Ops as Storage Operator Federation
+    participant FS as Working Filesystem
+
+    Dev->>CLI: ciphervault pull [--dry-run] [--force]
+    CLI->>Store: Load vault locator & recovery signing public key
+    CLI->>Ops: POST /v1/recovery/:locator/query
+    Ops-->>CLI: Quorum of signed head records
+    CLI->>CLI: Cryptographically select authentic latest head
+    alt Local Head == Remote Head
+        CLI-->>Dev: ✓ Already up to date with operator cluster
+    else Newer Remote Head Found
+        CLI->>FS: Check for uncommitted local modifications
+        alt Uncommitted dirty files exist and !force
+            CLI-->>Dev: ✗ Abort: Local tracked files modified (use --force)
+        else Clean or --force
+            CLI->>Ops: Fetch missing chunk objects by CID
+            Ops-->>CLI: Encrypted chunk wire objects
+            CLI->>CLI: Decrypt manifest & verify closure integrity
+            CLI->>FS: Atomically restore updated secrets into workspace
+            CLI->>Store: Save snapshot, chunks, and advance local active head
+            CLI-->>Dev: ✓ Successfully synchronized with operator cluster
+        end
+    end
+```
+
+---
+
+### Workflow 10: Zero-Disk Secret Execution in CI/CD Runners
+
+Automated build and release pipelines inject secrets dynamically without persistent disk writes:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CI as GitHub / GitLab CI Runner
+    participant Action as Composite Action (ciphervault-run)
+    participant CLI as ciphervault run
+    participant Child as Build Subprocess (e.g. docker build)
+
+    CI->>Action: uses: ./.github/actions/ciphervault-run
+    Action->>CLI: ciphervault run --quiet -- <command>
+    CLI->>CLI: Decrypt snapshot secrets into volatile RAM
+    CLI->>Child: Spawn child process with injected environment block
+    Note over CLI,Child: Zero secrets ever written to runner disk!
+    Child-->>CLI: Subprocess completes execution
+    CLI->>CLI: Overwrite secret memory buffers with zeroes (Zeroize)
+    CLI-->>Action: Forward child process exit code
+    Action-->>CI: Build pipeline step succeeds cleanly
+```
+
+---
+
 ## 6. Security Invariants Matrix
 
 | Attack / Failure Vector | Mitigating Subsystem | Cryptographic / Architectural Guarantee |
@@ -444,6 +537,9 @@ sequenceDiagram
 | **Key Extraction via Debugger / Memory Dump** | `ZeroizeOnDrop` Hygiene | `RecoverySecret`, `VaultEpochKey`, and `FileVersionKey` wipe stack and heap buffers immediately upon falling out of scope. |
 | **Corrupted Download During Restore** | Atomic Staging Directory | Chunks are assembled in `.ciphervault_staging_*` and validated against declared SHA-256 digests before touching working directories. |
 | **Unauthorized Snapshot Commit** | Hardware Token (YubiKey PIV) | Enforces physical capacitive touch confirmation (`Slot 9C`) before signing snapshot head records. |
+| **Shoulder Surfing / Visual Secret Leakage** | Encrypted Diff Engine | Secret values in `ciphervault diff` masked with `***` unless `--reveal` is explicitly supplied. |
+| **Accidental Overwrite on Remote Pull** | Working Tree Dirty Guard | `ciphervault pull` aborts if local tracked files have uncommitted edits unless `--force` is given. |
+| **CI/CD Plaintext Disk Persistence** | Zero-Disk Secret Injection | `ciphervault run` passes decrypted secrets strictly via in-memory process environment blocks. |
 
 ---
 

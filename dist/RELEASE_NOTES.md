@@ -100,6 +100,29 @@
   - **Memory Scrubbing**: Immediate compiler-fence zeroization of all intermediate secret buffers and plaintexts prior to child process execution.
   - **Transparent Process Lifecycle**: Inherits standard I/O streams and accurately propagates child process exit codes.
 
+* **Encrypted Secret Comparison & Revision History (`ciphervault diff`)**:
+  - **Shoulder-Surfing Defense by Default**: Compares confidential files while masking secret values (`***...`) preventing visual exposure in open offices or shared screens.
+  - **Multi-Mode Revision Inspection**: Diffs uncommitted working tree secrets against active head (`ciphervault diff`), against a specific snapshot (`ciphervault diff <snapshot_id>`), or between any two historical snapshots (`ciphervault diff <snapshot_a> <snapshot_b>`).
+  - **Structured Key-Value & Line-Level Diffing**: Automatically identifies added (`+`), removed (`-`), modified (`~`), and unchanged (`=`) keys for `.env` files, and line-level changes for certs/keys/JSON.
+  - **Flags**: `--reveal` displays plaintext values, `--file <path>` filters by file, and `--json` produces machine-readable audit reports.
+
+* **Multi-Workstation Synchronization (`ciphervault pull`)**:
+  - **Authenticated Remote Head Selection**: Queries the independent storage operator federation using the vault's locator and selects the newest cryptographically authentic head via `select_head`.
+  - **Automatic Chunk Replication**: Downloads missing encrypted chunk objects and manifests, saving them directly to the local SQLite database.
+  - **Safety Guard Against Uncommitted Changes**: Refuses to overwrite dirty working tree files unless `--force` is specified.
+  - **Atomic Working Tree Update**: Automatically restores updated confidential files into the current workspace and advances the local active head.
+  - **Dry-Run Inspection**: `--dry-run` queries the federation and reports remote updates without altering any local files.
+
+* **Native Shell Tab Autocompletions (`ciphervault completions`)**:
+  - Direct shell script generation via `clap_complete` supporting 5 major shells: Bash, Zsh, PowerShell, Fish, and Elvish.
+  - Subcommands, arguments, and flags are automatically auto-completed on `<TAB>`.
+
+* **CI/CD Zero-Disk Secret Runner Action**:
+  - **Composite GitHub Action (`.github/actions/ciphervault-run`)**: Zero-disk execution wrapper for GitHub Actions jobs (`npm test`, `cargo build`, `docker build`).
+  - **GitHub Actions Workflow (`.github/workflows/ciphervault-ci.yml`)**: Automated CI validation covering the developer ergonomics suite and zero-disk runner.
+  - **GitLab CI Pipeline (`.gitlab-ci.yml`)**: Complete configuration for GitLab CI runners with zero secret persistence.
+  - **Comprehensive Guide (`docs/CICD_INTEGRATION.md`)**: In-depth documentation covering security paradigms, CI/CD setup, log masking, and hardening.
+
 ---
 
 ## 2. Benchmark & Performance Metrics
@@ -118,7 +141,7 @@ Benchmarked on Windows x86_64:
 
 | Binary | Size | SHA-256 Checksum |
 |---|---|---|
-| `ciphervault.exe` | 9.81 MB | `7d39eb023605d0de6ada257ee43c5bba48b78f9fa6f544a53fd78b5953c645aa` |
+| `ciphervault.exe` | 10.90 MB | `879bf3e1354d273b701bc818b300c1df434e608f1a22543424e71db59cee4e0f` |
 | `ciphervault-operator.exe` | 2.74 MB | `7dcf22f9cae9e987f8aad9fd1bf6d602cda6fedf71d1c10571770d5e7f6df210` |
 | `ciphervault-agent.exe` | 6.58 MB | `3f659c2c567e9afb98f65031f412691c88ff24773f6d4d264e256a9b658d5dba` |
 | `ciphervault-maintenance.exe` | 5.66 MB | `95f0bce0030dff747da0c72b457b990b2c9f27793b8c719aac893d1b65f01ee5` |

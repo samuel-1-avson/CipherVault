@@ -205,6 +205,81 @@ ciphervault run --no-inherit -- python main.py
 ciphervault run --set PORT=8080 DEBUG=true -- npm start
 ```
 
+### 11. Encrypted Secret Diffing (`ciphervault diff`)
+
+Compare encrypted secrets with built-in **shoulder-surfing protection** (secrets are masked by default):
+
+```sh
+# Compare uncommitted working tree secrets against active head (masked by default)
+ciphervault diff
+
+# Reveal plaintext values in a secure private terminal
+ciphervault diff --reveal
+
+# Diff against a specific historical snapshot revision
+ciphervault diff <snapshot_id>
+
+# Diff between two historical snapshots
+ciphervault diff <snapshot_a> <snapshot_b>
+
+# Restrict diff to a specific confidential file
+ciphervault diff --file .env
+
+# Export machine-readable JSON for CI auditing
+ciphervault diff --json
+```
+
+### 12. Multi-Workstation Synchronization (`ciphervault pull`)
+
+Synchronize confidential snapshots across multiple developer workstations, build servers, or laptops:
+
+```sh
+# Pull and apply latest verified snapshots from storage operators
+ciphervault pull
+
+# Dry-run inspection without altering any local files
+ciphervault pull --dry-run
+
+# Force sync and overwrite local uncommitted modifications
+ciphervault pull --force
+```
+
+### 13. Shell Tab Autocompletions (`ciphervault completions`)
+
+Generate native, high-performance autocompletion scripts for your shell:
+
+```sh
+# PowerShell (add to $PROFILE)
+ciphervault completions powershell | Out-String | Invoke-Expression
+
+# Bash
+eval "$(ciphervault completions bash)"
+
+# Zsh
+eval "$(ciphervault completions zsh)"
+
+# Fish
+ciphervault completions fish > ~/.config/fish/completions/ciphervault.fish
+
+# Elvish
+eval (ciphervault completions elvish | slurp)
+```
+
+### 14. CI/CD Zero-Disk Runner Action
+
+Inject encrypted secrets into automated CI/CD pipelines without ever writing credentials to runner disks or persisting them in container layers:
+
+```yaml
+# In .github/workflows/deploy.yml
+- name: Zero-Disk Secret Injection Runner
+  uses: ./.github/actions/ciphervault-run
+  with:
+    command: "npm run deploy"
+    env-file: ".env.production"
+    quiet: "true"
+```
+*(See [docs/CICD_INTEGRATION.md](docs/CICD_INTEGRATION.md) for full GitHub Actions, GitLab CI, and CircleCI guides)*
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
