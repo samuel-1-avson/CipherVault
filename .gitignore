@@ -1,4 +1,6 @@
-# Rust build artifacts
+# ==============================================================================
+# Rust Build Artifacts & Intermediate Files
+# ==============================================================================
 target/
 .cargo-targets/
 .cargo/config.toml
@@ -6,36 +8,81 @@ dist/*.zip
 dist/*.tar.gz
 **/*.rs.bk
 
-# CipherVault local keys, database, and cache
+# ==============================================================================
+# CipherVault Security Invariants: Local Vaults, Keys & Credentials
+# ==============================================================================
+# Local encrypted SQLite vault database and device identity keys
 .ciphervault/
 secrets/
+secrets.env
+*.env
 .env*
 !deploy/docker/.env.example
+
+# Cryptographic private keys, certificates, and identity files
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cer
+*.der
+*.private
+
+# Cloud credentials, tokens, and service accounts
+*credentials*.json
+*service-account*.json
+google-creds*.json
+client_secret*.json
+
+# Disaster recovery paper kits and threshold guardian shares
+*recovery*.txt
+*recovery_kit*.txt
+emergency_recovery*.txt
+guardian_sheets/
+*guardian*.txt
+*share*.txt
+threshold_shares/
+
+# Databases, SQLite storage, and WAL journals
 *.db
 *.db-shm
 *.db-wal
-*.log
-recovery_kit_backup.txt
-emergency_recovery_kit.txt
-guardian_sheets/
+*.sqlite
+*.sqlite3
 
-# Operator runtime data
+# Operator runtime state & replicated chunks
 data/
 operator-data*/
 
-# Node.js
+# Diagnostics, logs & review evidence
+*.log
+readiness-*.log
+docs/review-evidence/
+
+# ==============================================================================
+# Node.js & Tooling
+# ==============================================================================
 node_modules/
 npm-debug.log*
 
-# Foundry build artifacts
+# ==============================================================================
+# Foundry / Solidity Artifacts
+# ==============================================================================
 out/
 cache/
 broadcast/
 
-# IDE & OS
+# ==============================================================================
+# IDE, OS & Agent Scratch
+# ==============================================================================
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 .agents/
-secrets.env
+scratch/
+test-scratch/
+tmp/
+secrets/.env.production
+secrets/credentials.json

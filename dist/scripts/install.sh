@@ -57,10 +57,14 @@ if curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${PKG_NAME}"; then
     tar -xzf "${TMP_DIR}/${PKG_NAME}" -C "${TMP_DIR}"
     cp "${TMP_DIR}"/bin/ciphervault* "${INSTALL_DIR}/"
     chmod +x "${INSTALL_DIR}"/ciphervault*
-else
-    echo "Pre-built binary not found for ${TAG}. Attempting cargo install..."
-    cargo install --path apps/cli --force --root "${INSTALL_DIR}/.."
-fi
+    echo "Pre-built binary not found for ${TAG}. Attempting cargo install from GitHub..."
+    if command -v cargo >/dev/null 2>&1; then
+        cargo install --git "https://github.com/${REPO}.git" ciphervault-cli --root "${INSTALL_DIR}/.."
+    else
+        echo "Error: Could not download pre-built binary and cargo is not installed." >&2
+        echo "Please install Rust (https://rustup.rs) or download a release from https://github.com/${REPO}/releases" >&2
+        exit 1
+    fi
 
 echo ""
 echo "✓ CipherVault installed successfully to ${INSTALL_DIR}!"

@@ -27,15 +27,28 @@ if (Test-Path $LocalBin) {
     Write-Host "Local binaries found in workspace. Copying..." -ForegroundColor Yellow
     Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) "bin\*.exe") -Destination $BinDir -Force
 } else {
-    Write-Host "Downloading $DownloadUrl..." -ForegroundColor Cyan
+    $RawBinaryUrl = "https://raw.githubusercontent.com/$Repo/main/dist/bin/ciphervault.exe"
+    $TargetExe = Join-Path $BinDir "ciphervault.exe"
+
+    Write-Host "Downloading CipherVault..." -ForegroundColor Cyan
     try {
         Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempZip -UseBasicParsing
         Expand-Archive -Path $TempZip -DestinationPath $InstallDir -Force
         Remove-Item $TempZip -Force
     } catch {
-        Write-Host "GitHub release asset not yet uploaded. Compiling locally..." -ForegroundColor Yellow
-        cargo build --release -p ciphervault-cli -p ciphervault-operator -p ciphervault-agent -p ciphervault-maintenance
-        Copy-Item "target\release\*.exe" -Destination $BinDir -Force
+        Write-Host "Release archive not yet published on GitHub Releases. Fetching standalone binary..." -ForegroundColor Yellow
+        try {
+            Invoke-WebRequest -Uri $RawBinaryUrl -OutFile $TargetExe -UseBasicParsing
+            Write-Host "Downloaded standalone binary from repository." -ForegroundColor Green
+        } catch {
+            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+                Write-Host "Compiling locally via cargo..." -ForegroundColor Yellow
+                cargo build --release -p ciphervault-cli -p ciphervault-operator -p ciphervault-agent -p ciphervault-maintenance
+                Copy-Item "target\release\*.exe" -Destination $BinDir -Force
+            } else {
+                throw "Could not download CipherVault executable. Please check internet connection or visit https://github.com/$Repo"
+            }
+        }
     }
 }
 

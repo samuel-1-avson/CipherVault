@@ -2,25 +2,140 @@
 
 <div align="center">
 
+[![Live Web Dashboard](https://img.shields.io/badge/Live%20Web%20Dashboard-vault.cipherv.online-00f0ff.svg?style=for-the-badge&logo=googlecloud)](https://vault.cipherv.online)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Audit: Evidence-Based](https://img.shields.io/badge/Security%20Audit-Specification%20Hardened-blue.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
-[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(Workspace%20Suite)-success.svg)](dist/RELEASE_NOTES.md)
-[![Status: Production Ready](https://img.shields.io/badge/Status-Production%20Ready%20(v1.0.0)-success.svg)](dist/RELEASE_NOTES.md)
-[![Report: Master Architecture](https://img.shields.io/badge/Architecture-Master%20System%20Report-blue.svg)](docs/SYSTEM_WORKFLOW.md)
-
+[![Security Audit](https://img.shields.io/badge/Security%20Audit-Hardened%20v1.0.0-emerald.svg)](dist/SECURITY_AUDIT_REPORT.md)
+[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(28%20Suites)-success.svg)](dist/RELEASE_NOTES.md)
+[![Status: Production Ready](https://img.shields.io/badge/Status-Production%20Ready-success.svg)](dist/RELEASE_NOTES.md)
 
 **Decentralized, zero-knowledge version control and disaster recovery system for confidential development secrets.**
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
-[Quickstart](#-3-minute-quickstart) • [Architecture](docs/SYSTEM_WORKFLOW.md) • [Terminal UI](#-interactive-terminal-user-interface-tui) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Hardware Tokens](#-hardware-security-tokens--yubikey-piv) • [Deployment Runbook](docs/DEPLOYMENT_RUNBOOK.md) • [CI/CD Guide](docs/CICD_INTEGRATION.md) • [Docs Hub](docs/README.md)
+[Live Web Dashboard](https://vault.cipherv.online) • [1-Minute Install](#-1-minute-installation) • [Quickstart](#-quickstart-guide) • [Architecture](docs/SYSTEM_WORKFLOW.md) • [Terminal UI](#-interactive-terminal-user-interface-tui) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Docs Hub](docs/README.md)
 
 </div>
 
 ---
 
+## 🌐 Live Web Dashboard & Visual Secrets Explorer
+
+The official multi-region cluster dashboard is publicly accessible with live telemetry:
+
+👉 **[https://vault.cipherv.online](https://vault.cipherv.online)**
+
+* **Visual Secrets Explorer**: Browse confidential files, Merkle manifest CIDs, and byte-level FastCDC chunk distributions.
+* **Live Geographic Quorum**: Real-time roundtrip latency monitoring across Iowa (`us-central1`) and South Carolina (`us-east1`).
+* **Format-Aware Secret Diff**: Inspect key additions, removals, and mutations across snapshot commits with sensitive value masking.
+* **Shamir M-of-N Ceremony**: In-browser threshold guardian share generator and zero-knowledge recombination simulator.
+* **Arbitrum One Checkpoints**: Immutable L2 sequencer receipts and verified Arbiscan explorer links.
+
+---
+
+## 📦 1-Minute Installation
+
+Install the standalone `ciphervault` CLI binary on any operating system with a single terminal command:
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
+```
+*(Or via Winget: `winget install CipherVault.CipherVault`)*
+
+### macOS & Linux (Bash)
+```bash
+curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+```
+*(Or via Homebrew: `brew install samuel-1-avson/tap/ciphervault`)*
+
+### Rust Developers (Cargo)
+```bash
+cargo install --git https://github.com/samuel-1-avson/CipherVault.git ciphervault-cli
+```
+
+---
+
+## ⚡ Quickstart Guide
+
+### 1. Initialize Vault in Any Project
+
+Navigate to any project directory containing confidential files (`.env`, certificates, tokens):
+
+```bash
+cd ~/my-project
+
+# Connect to the live public multi-region GCP cluster
+ciphervault init --operators http://136.65.43.84 http://34.9.157.167 http://34.73.53.40 --import-gitignore
+```
+
+> **CRITICAL**: CipherVault will display your **Offline Emergency Recovery Kit** (containing Master Secret $R$). Store this kit in two secure physical locations. In accordance with zero-disk recovery policy, $R$ is immediately zeroized from volatile RAM and never written unencrypted to disk.
+
+### 2. Track Secrets & Capture Encrypted Snapshot
+
+```bash
+# Add confidential files to tracking (CipherVault automatically updates .gitignore)
+ciphervault track .env config/credentials.json
+
+# Capture, chunk (FastCDC), encrypt (XChaCha20-Poly1305), and replicate across all 3 operators
+ciphervault push -m "Initial production environment" --pos
+```
+
+### 3. Zero-Disk In-Memory Execution (`ciphervault run`)
+
+Run your applications with decrypted secrets directly injected into their process environment in volatile RAM **without ever writing plaintext `.env` files to disk**:
+
+```bash
+# Node.js
+ciphervault run -- npm start
+
+# Python
+ciphervault run -- python main.py
+
+# Docker Compose
+ciphervault run -- docker compose up
+```
+
+### 4. Clean-Machine Disaster Recovery
+
+If your laptop is lost, damaged, or stolen, restore all confidential files on a brand-new clean machine:
+
+```bash
+# Using your offline recovery kit
+ciphervault recover --kit recovery_kit.txt --to .
+
+# Or using M-of-N threshold guardian shares (e.g. 3 of 5 leads approve)
+ciphervault recover --shares share1.txt share2.txt share3.txt --to .
+```
+
+---
+
+## 🏛 Live GCP Multi-Region Architecture
+
+```text
+========================================================================================
+                         CIPHERVAULT MULTI-REGION TOPOLOGY
+========================================================================================
+
+  [ Developer Workstations / CI/CD ]
+      │ (Local AES-256 / XChaCha20-Poly1305 AEAD Client Encryption)
+      │
+      ├──> Web UI Dashboard:   https://vault.cipherv.online  (us-east1-b)
+      │
+      └──> 3-Node Byzantine Quorum Storage Cluster (~1,000 Miles Physical Isolation):
+            ├── Operator 1:    http://136.65.43.84   [us-central1-a, Iowa, USA]
+            ├── Operator 2:    http://34.9.157.167   [us-central1-b, Iowa, USA]
+            └── Operator 3:    http://34.73.53.40    [us-east1-b, S. Carolina, USA]
+
+  [ Arbitrum One Rollup (L2) ]
+      └── EIP-712 Sequencer Head Commitments & Public Inclusion Proofs
+========================================================================================
+```
+
+---
+
 ## 📖 Overview
+
 
 **CipherVault** is a developer-first secret backup, version control, and clean-machine disaster recovery system engineered in pure Rust. It guarantees that critical development secrets—such as `.env` files, API keys, private signing keys, TLS certificates, and database credentials—can be reliably recovered onto a clean replacement workstation using only an offline paper recovery kit or distributed threshold shares and direct storage operators.
 
