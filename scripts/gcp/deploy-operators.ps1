@@ -8,7 +8,7 @@
 [CmdletBinding()]
 param(
     [string]$Project = "",
-    [string]$MachineType = "e2-small",
+    [string]$MachineType = "e2-micro",
     [string]$DiskSize = "20GB",
     [string[]]$Zones = @("us-central1-a", "us-central1-b", "us-east1-b"),
     [string]$Prefix = "cv-operator"

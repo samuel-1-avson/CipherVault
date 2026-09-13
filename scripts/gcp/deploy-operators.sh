@@ -8,10 +8,10 @@
 set -euo pipefail
 
 PROJECT="${1:-$(gcloud config get-value project 2>/dev/null || echo '')}"
-MACHINE_TYPE="${MACHINE_TYPE:-e2-small}"
+MACHINE_TYPE="${MACHINE_TYPE:-e2-micro}"
 DISK_SIZE="${DISK_SIZE:-20GB}"
 PREFIX="${PREFIX:-cv-operator}"
-ZONES=("us-central1-a" "us-central1-b" "us-central1-c")
+ZONES=("us-central1-a" "us-central1-b" "us-east1-b")
 
 echo "======================================================="
 echo "  CipherVault GCP VPS Storage Operator Provisioner"
