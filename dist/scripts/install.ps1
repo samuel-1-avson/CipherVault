@@ -3,6 +3,11 @@
 
 $ErrorActionPreference = "Stop"
 
+# Enforce TLS 1.2 for legacy Windows PowerShell hosts
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
+
 $Repo = "samuel-1-avson/CipherVault"
 $Tag = "v1.0.0"
 $Target = "x86_64-pc-windows-msvc"
@@ -77,7 +82,14 @@ if (Test-Path -Path $LocalCandidate -PathType Leaf) {
 $UserPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
 if ($UserPath -notlike "*$BinDir*") {
     Write-Host "Adding $BinDir to User PATH..." -ForegroundColor Cyan
-    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$BinDir", [EnvironmentVariableTarget]::User)
+    $NewUserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) {
+        $BinDir
+    } elseif ($UserPath.TrimEnd().EndsWith(";")) {
+        "$UserPath$BinDir"
+    } else {
+        "$UserPath;$BinDir"
+    }
+    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, [EnvironmentVariableTarget]::User)
     $env:Path = "$env:Path;$BinDir"
 }
 
