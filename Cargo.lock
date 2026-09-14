@@ -405,6 +405,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "crossterm",
+ "ed25519-dalek",
  "futures-util",
  "hex",
  "rand 0.8.8",

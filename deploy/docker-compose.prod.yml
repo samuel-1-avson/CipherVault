@@ -29,6 +29,8 @@ services:
         condition: service_healthy
       operator-3:
         condition: service_healthy
+      dashboard:
+        condition: service_healthy
     restart: unless-stopped
 
   operator-1:
@@ -120,6 +122,8 @@ services:
     container_name: ciphervault-dashboard
     environment:
       - CIPHERVAULT_OPERATORS=http://operator-1:8201 http://operator-2:8202 http://operator-3:8203
+      - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}
+      - CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=${CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE:-/var/lib/ciphervault-ui/operator-telemetry.json}
     volumes:
       - dashboard_prod_data:/var/lib/ciphervault-ui
     depends_on:
@@ -129,6 +133,33 @@ services:
         condition: service_healthy
       operator-3:
         condition: service_healthy
+    networks:
+      - ciphervault-prod-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/vault || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # Enable with `docker compose --profile public-feed up` after setting the
+  # publisher key and pointing CIPHERVAULT_PUBLIC_CHECKPOINT_FEED at the
+  # generated file in the shared volume.
+  public-feed-publisher:
+    profiles: ["public-feed"]
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.dashboard
+    container_name: ciphervault-public-feed-publisher
+    entrypoint: ["/usr/local/bin/entrypoint-public-feed-publisher.sh"]
+    environment:
+      - CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX=${CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX:-}
+      - CIPHERVAULT_PUBLIC_FEED_OUTPUT=${CIPHERVAULT_PUBLIC_FEED_OUTPUT:-/var/lib/ciphervault-ui/public-checkpoint-feed.json}
+      - CIPHERVAULT_PUBLIC_FEED_NETWORK=${CIPHERVAULT_PUBLIC_FEED_NETWORK:-Arbitrum One}
+      - CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS=${CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS:-60}
+    volumes:
+      - dashboard_prod_data:/var/lib/ciphervault-ui
     networks:
       - ciphervault-prod-net
     restart: unless-stopped

@@ -39,6 +39,12 @@ pub struct AnchorVerificationReport {
     pub current_chain_block: u64,
     pub finality_stage: AnchorFinalityStage,
     pub on_chain_confirmed: bool,
+    /// True only when an independent RPC receipt exists, succeeded, and is
+    /// consistent with the contract's first-seen block for this commitment.
+    #[serde(default)]
+    pub receipt_verified: bool,
+    #[serde(default)]
+    pub receipt_block_number: Option<u64>,
     pub tx_hash_hex: String,
 }
 
@@ -328,12 +334,35 @@ impl ArbitrumAnchorClient {
             .await
             .unwrap_or(evidence.block_number);
 
-        // Query contract for existing registration
+        // Query contract for existing registration.
         let contract_block = self
             .query_first_seen_block(&commitment_arr)
             .await
             .unwrap_or(None);
-        let on_chain_confirmed = contract_block.is_some();
+
+        // A relayer-supplied block/tx pair is not evidence by itself. When a
+        // transaction hash is present, independently query the chain receipt
+        // and require a successful receipt at the same block as the registry
+        // inclusion. Pre-submission evidence (all-zero tx hash) can still be
+        // confirmed from the contract query alone.
+        let tx_hash_present =
+            evidence.tx_hash.len() == 32 && evidence.tx_hash.iter().any(|byte| *byte != 0);
+        let receipt = if tx_hash_present {
+            let mut tx_hash = [0u8; 32];
+            tx_hash.copy_from_slice(&evidence.tx_hash);
+            self.get_transaction_receipt(&tx_hash).await.ok().flatten()
+        } else {
+            None
+        };
+        let receipt_verified = match (tx_hash_present, receipt.as_ref(), contract_block) {
+            (true, Some(receipt), Some(contract_block)) => {
+                receipt.status && receipt.block_number == contract_block
+            }
+            (false, _, Some(_)) => true,
+            _ => false,
+        };
+        let receipt_block_number = receipt.as_ref().map(|receipt| receipt.block_number);
+        let on_chain_confirmed = contract_block.is_some() && receipt_verified;
         let effective_block = contract_block.unwrap_or(evidence.block_number);
 
         let finality_stage = if !preimage_valid || !on_chain_confirmed {
@@ -364,6 +393,8 @@ impl ArbitrumAnchorClient {
             current_chain_block: current_block,
             finality_stage,
             on_chain_confirmed,
+            receipt_verified,
+            receipt_block_number,
             tx_hash_hex: hex::encode(&evidence.tx_hash),
         })
     }

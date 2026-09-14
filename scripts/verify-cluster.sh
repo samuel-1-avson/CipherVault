@@ -21,9 +21,8 @@ done
 
 echo
 echo "Probing containerized Web Dashboard endpoints (http://127.0.0.1:8080)..."
-curl -sf "http://127.0.0.1:8080/api/vault" > /dev/null && echo "  [ONLINE] /api/vault"
-curl -sf "http://127.0.0.1:8080/api/token" > /dev/null && echo "  [ONLINE] /api/token"
-curl -sf "http://127.0.0.1:8080/api/fleet" > /dev/null && echo "  [ONLINE] /api/fleet"
+curl -sf "http://127.0.0.1:8080/api/vault" > /dev/null && echo "  [ONLINE] /api/vault (public explorer readiness)"
+curl -sf "http://127.0.0.1:8080/api/operators" > /dev/null && echo "  [ONLINE] /api/operators (public telemetry)"
 curl -sf "http://127.0.0.1:8080/api/relayer/checkpoints" > /dev/null && echo "  [ONLINE] /api/relayer/checkpoints"
 
 echo

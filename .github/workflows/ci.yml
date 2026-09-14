@@ -53,6 +53,7 @@ jobs:
         run: |
           node --check apps/ui/app.js
           node apps/ui/audit.test.cjs
+          node tests/dashboard_container_contract.cjs
 
   contracts:
     name: Foundry Solidity Test Suite

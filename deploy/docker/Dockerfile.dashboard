@@ -41,12 +41,17 @@ RUN mkdir -p /var/lib/ciphervault-ui && \
 
 COPY --from=builder /workspace/target/release/ciphervault /usr/local/bin/ciphervault
 COPY deploy/docker/entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+COPY deploy/docker/entrypoint-public-feed-publisher.sh /usr/local/bin/entrypoint-public-feed-publisher.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint-dashboard.sh && \
-    chmod +x /usr/local/bin/entrypoint-dashboard.sh
+    sed -i 's/\r$//' /usr/local/bin/entrypoint-public-feed-publisher.sh && \
+    chmod +x /usr/local/bin/entrypoint-dashboard.sh /usr/local/bin/entrypoint-public-feed-publisher.sh
 
 USER ciphervault
 WORKDIR /var/lib/ciphervault-ui
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl --fail --silent --show-error http://127.0.0.1:8080/api/vault || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

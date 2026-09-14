@@ -96,6 +96,8 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       - CIPHERVAULT_OPERATORS=http://operator-1:8201 http://operator-2:8202 http://operator-3:8203
+      - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}
+      - CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=${CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE:-/var/lib/ciphervault-ui/operator-telemetry.json}
     volumes:
       - dashboard_data:/var/lib/ciphervault-ui
     depends_on:
@@ -113,6 +115,26 @@ services:
       timeout: 3s
       retries: 10
       start_period: 30s
+    restart: unless-stopped
+
+  # Optional publisher profile. It shares the vault/feed volume with the
+  # dashboard but keeps the signing secret out of the public explorer process.
+  public-feed-publisher:
+    profiles: ["public-feed"]
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.dashboard
+    container_name: ciphervault-public-feed-publisher
+    entrypoint: ["/usr/local/bin/entrypoint-public-feed-publisher.sh"]
+    environment:
+      - CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX=${CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX:-}
+      - CIPHERVAULT_PUBLIC_FEED_OUTPUT=${CIPHERVAULT_PUBLIC_FEED_OUTPUT:-/var/lib/ciphervault-ui/public-checkpoint-feed.json}
+      - CIPHERVAULT_PUBLIC_FEED_NETWORK=${CIPHERVAULT_PUBLIC_FEED_NETWORK:-Arbitrum One}
+      - CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS=${CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS:-60}
+    volumes:
+      - dashboard_data:/var/lib/ciphervault-ui
+    networks:
+      - ciphervault-net
     restart: unless-stopped
 
 volumes:

@@ -5,7 +5,13 @@ const state = {
   audit: null,
   fetching: false,
   operators: [],
+  operatorObservedAt: null,
   snapshots: [],
+  context: null,
+  // Treat an unrecognized server as public until it explicitly identifies a
+  // loopback private workspace. This prevents private controls from flashing
+  // while the context request is pending or unavailable.
+  accessMode: 'restricted',
   anchors: [],
   guardians: null,
   relayerCheckpoints: [],
@@ -18,12 +24,15 @@ const state = {
   pollTimer: null,
   sseStream: null,
   fastCdcResult: null,
+  fastCdcVaultFilesLoaded: false,
   selectedChunkIndex: null,
   diffReveal: false,
   terminalEventsCount: 0,
+  drawerSnapshotId: null,
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  applyAccessContext({ mode: state.accessMode });
   initTabs();
   initModals();
   initCopyActions();
@@ -31,10 +40,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initSearchFilters();
   initQuickActions();
   initMathVerifier();
-  initGuardianActions();
   initRelayerActions();
   initFleetActions();
-  initSseStream();
   initFastCdcInspector();
   initDiffViewer();
   initFileManagement();
@@ -46,7 +53,16 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Initial data load and periodic polling
   fetchAllData();
-  state.pollTimer = setInterval(fetchAllData, 8000);
+  state.pollTimer = setInterval(() => {
+    if (!document.hidden) fetchAllData();
+  }, 30000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      closeSseStream();
+    } else {
+      fetchAllData();
+    }
+  });
 });
 
 // -------------------------------------------------------------
@@ -56,42 +72,150 @@ document.addEventListener('DOMContentLoaded', () => {
 async function fetchAllData() {
   if (state.fetching) return;
   state.fetching = true;
+  captureSearchFilters();
   const refreshIcon = document.getElementById('icon-refresh');
   if (refreshIcon) refreshIcon.classList.add('rotating');
 
   try {
-    await Promise.all([
+    // Resolve the serving context before asking for any private vault state.
+    await fetchContext();
+    if (!document.hidden) initSseStream();
+
+    const requests = [
       fetchVault(),
       fetchOperators(),
-      fetchSnapshots(),
       fetchAnchors(),
-      fetchAudit(),
-      fetchGuardians(),
       fetchRelayerCheckpoints(),
-      fetchFleet(),
-      fetchActivity(),
-      fetchWorkspaces(),
-    ]);
+    ];
+
+    if (canAccessPrivateFeature('snapshot_history')) requests.push(fetchSnapshots());
+    if (canAccessPrivateFeature('vault_workspace')) requests.push(fetchGuardians(), fetchActivity(), fetchFleet());
+    if (canAccessPrivateFeature('workspace_switching')) requests.push(fetchWorkspaces());
+
+    await Promise.all(requests);
   } catch (err) {
     console.error("Data synchronization error:", err);
   } finally {
     state.fetching = false;
+    restoreSearchFilters();
     if (refreshIcon) {
       setTimeout(() => refreshIcon.classList.remove('rotating'), 600);
     }
   }
 }
 
+async function fetchContext() {
+  try {
+    const response = await fetch('/api/context');
+    if (!response.ok) return;
+    const context = await response.json();
+    if (!context || typeof context !== 'object') return;
+
+    state.context = context;
+    if (typeof context.mode !== 'string') return;
+    state.accessMode = context.mode;
+    applyAccessContext(context);
+  } catch (error) {
+    console.debug('Dashboard context unavailable; private controls remain unavailable:', error);
+  }
+}
+
+function isPublicExplorer() {
+  return state.accessMode !== 'local_private';
+}
+
+function canAccessPrivateFeature(feature) {
+  if (isPublicExplorer()) return false;
+  const capabilities = state.context && state.context.capabilities;
+  if (!capabilities || !Object.prototype.hasOwnProperty.call(capabilities, feature)) return true;
+  return capabilities[feature] === true;
+}
+
+function operatorResponded(operator) {
+  return Boolean(operator && (operator.status === 'online' || operator.status === 'reachable'));
+}
+
+function applyAccessContext(context) {
+  const publicExplorer = !context || context.mode !== 'local_private';
+  if (document.body && document.body.classList) {
+    document.body.classList.toggle('public-explorer', publicExplorer);
+    document.body.classList.toggle('local-private-explorer', !publicExplorer);
+  }
+
+  const publicNotice = document.getElementById('public-explorer-notice');
+  if (publicNotice) publicNotice.hidden = !publicExplorer;
+
+  const vaultIdentityLabel = document.getElementById('vault-identity-label');
+  if (vaultIdentityLabel) vaultIdentityLabel.textContent = publicExplorer ? 'EXPLORER' : 'VAULT';
+  const copyVaultId = document.getElementById('btn-copy-vault-id');
+  if (copyVaultId) {
+    copyVaultId.disabled = publicExplorer;
+    copyVaultId.setAttribute('aria-disabled', publicExplorer ? 'true' : 'false');
+    copyVaultId.title = publicExplorer ? 'Public explorer has no connected vault ID' : 'Copy Vault ID';
+  }
+
+  if (typeof document.querySelectorAll === 'function') {
+    document.querySelectorAll('[data-private-surface]').forEach(element => {
+      const isDialog = element.getAttribute && element.getAttribute('role') === 'dialog';
+      if (publicExplorer) {
+        element.hidden = true;
+        element.setAttribute('aria-hidden', 'true');
+      } else {
+        element.hidden = false;
+        // A closed modal or drawer owns its own aria-hidden state. Reopening a
+        // local workspace must not make an already-open dialog disappear from
+        // assistive technology on the next poll.
+        if (!isDialog) element.setAttribute('aria-hidden', 'false');
+      }
+    });
+    document.querySelectorAll('[data-private-action]').forEach(element => {
+      element.hidden = publicExplorer;
+      element.disabled = publicExplorer;
+      element.setAttribute('aria-hidden', publicExplorer ? 'true' : 'false');
+    });
+  }
+
+  if (publicExplorer) {
+    if (activeModal) closeModal(activeModal);
+    state.snapshots = [];
+    state.audit = null;
+    state.guardians = null;
+    state.activity = [];
+    closeSnapshotDrawer();
+    const activeTab = typeof document.querySelector === 'function'
+      ? document.querySelector('.tab-btn.active[hidden]')
+      : null;
+    const publicTab = document.getElementById('tab-btn-operators');
+    if (activeTab && publicTab && typeof publicTab.click === 'function') publicTab.click();
+  }
+}
+
+function captureSearchFilters() {
+  const dagSearch = document.getElementById('input-search-dag');
+  const filesSearch = document.getElementById('input-search-files');
+  if (dagSearch && typeof dagSearch.value === 'string') state.searchQueryDag = dagSearch.value;
+  if (filesSearch && typeof filesSearch.value === 'string') state.searchQueryFiles = filesSearch.value;
+}
+
+function restoreSearchFilters() {
+  const dagSearch = document.getElementById('input-search-dag');
+  const filesSearch = document.getElementById('input-search-files');
+  if (dagSearch && dagSearch.value !== state.searchQueryDag) dagSearch.value = state.searchQueryDag;
+  if (filesSearch && filesSearch.value !== state.searchQueryFiles) filesSearch.value = state.searchQueryFiles;
+  applyDagFilter();
+  applyFilesFilter();
+}
+
 async function fetchVault() {
   try {
     const res = await fetch('/api/vault');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Vault request failed (${res.status})`);
     const data = await res.json();
     state.vault = data;
 
     if (!data.initialized) {
       const vElem = document.getElementById('vault-id-display');
-      if (vElem) vElem.textContent = "Uninitialized";
+      if (vElem) vElem.textContent = isPublicExplorer() ? "Public Explorer" : "Uninitialized";
       return;
     }
 
@@ -124,9 +248,7 @@ async function fetchVault() {
     renderTrackedFiles(data.tracked_files || []);
 
     // Render Recovery Sheet
-    if (data.recovery && data.recovery.available) {
-      renderRecoveryKit(data.recovery, data.vault_id_hex);
-    }
+    renderRecoveryKit(data.recovery && data.recovery.available ? data.recovery : {}, data.vault_id_hex || '');
 
     // Update Modal files summary tags
     const modalFilesList = document.getElementById('modal-files-list');
@@ -136,6 +258,17 @@ async function fetchVault() {
       ).join('') || '<span style="color: var(--text-muted); font-size: 0.8rem;">No files currently tracked</span>';
     }
   } catch (e) {
+    state.vault = null;
+    const vElem = document.getElementById('vault-id-display');
+    if (vElem) vElem.textContent = isPublicExplorer() ? 'Public Explorer' : 'Unavailable';
+    const valFilesElem = document.getElementById('val-files-count');
+    if (valFilesElem) valFilesElem.textContent = '--';
+    const badgeFiles = document.getElementById('badge-tab-files');
+    if (badgeFiles) badgeFiles.textContent = '--';
+    const subInventoryElem = document.getElementById('sub-metric-inventory');
+    if (subInventoryElem) subInventoryElem.textContent = 'Inventory unavailable';
+    renderTrackedFiles([]);
+    renderRecoveryKit({}, '');
     console.warn("fetchVault error:", e);
   }
 }
@@ -143,15 +276,18 @@ async function fetchVault() {
 async function fetchOperators() {
   try {
     const res = await fetch('/api/operators');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Operator telemetry request failed (${res.status})`);
     const data = await res.json();
     state.operators = data;
+    state.operatorObservedAt = Array.isArray(data)
+      ? (data.find(operator => typeof operator?.observed_at === 'string')?.observed_at || null)
+      : null;
 
     renderOperators(data);
 
     // Update Cluster Status Pill
-    const onlineCount = data.filter(op => op.status === 'online').length;
-    const totalCount = data.length || 3;
+    const onlineCount = data.filter(operatorResponded).length;
+    const totalCount = data.length;
     const statusText = document.getElementById('cluster-status-text');
     const pulseDot = document.getElementById('pulse-dot');
     const badgeTabOp = document.getElementById('badge-tab-operators');
@@ -160,16 +296,23 @@ async function fetchOperators() {
     if (badgeTabOp) badgeTabOp.textContent = totalCount;
 
     if (statusText) {
-      statusText.textContent = `${onlineCount}/${totalCount} Operators Online`;
+      statusText.textContent = totalCount > 0
+        ? (isPublicExplorer()
+          ? `${onlineCount}/${totalCount} operators responding (identity unverified)`
+          : `${onlineCount}/${totalCount} Operators Online`)
+        : 'No operators reported';
     }
 
     if (pulseDot) {
-      pulseDot.style.backgroundColor = onlineCount > 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-      pulseDot.style.boxShadow = `0 0 10px ${onlineCount > 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)'}`;
+      const pulseColor = isPublicExplorer()
+        ? (onlineCount > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)')
+        : (onlineCount > 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)');
+      pulseDot.style.backgroundColor = pulseColor;
+      pulseDot.style.boxShadow = onlineCount > 0 ? `0 0 10px ${pulseColor}` : 'none';
     }
 
     // Update Average Latency
-    const onlineOps = data.filter(op => op.status === 'online' && typeof op.latency_ms === 'number');
+    const onlineOps = data.filter(op => operatorResponded(op) && typeof op.latency_ms === 'number');
     const avgLatencyElem = document.getElementById('avg-latency-display');
     if (avgLatencyElem) {
       if (onlineOps.length > 0) {
@@ -184,6 +327,19 @@ async function fetchOperators() {
     // Render Latency Comparison Bars
     renderLatencyBars(data);
   } catch (e) {
+    state.operators = [];
+    state.operatorObservedAt = null;
+    renderOperators([]);
+    const statusText = document.getElementById('cluster-status-text');
+    const pulseDot = document.getElementById('pulse-dot');
+    const avgLatencyElem = document.getElementById('avg-latency-display');
+    if (statusText) statusText.textContent = 'Operator telemetry unavailable';
+    if (pulseDot) {
+      pulseDot.style.backgroundColor = 'var(--text-muted)';
+      pulseDot.style.boxShadow = 'none';
+    }
+    if (avgLatencyElem) avgLatencyElem.textContent = '-- ms';
+    renderLatencyBars([]);
     console.warn("fetchOperators error:", e);
   }
 }
@@ -192,7 +348,7 @@ async function fetchAudit() {
   state.audit = null;
   renderAudit(null);
   try {
-    const response = await fetch('/api/audit');
+    const response = await fetch('/api/audit', { method: 'POST' });
     if (!response.ok) throw new Error('Audit unavailable');
     const data = await response.json();
     state.audit = data.report || null;
@@ -201,31 +357,51 @@ async function fetchAudit() {
 }
 
 function renderAudit(audit) {
-  const count = audit ? audit.recoverable_operators.length : 0;
+  const count = audit && Array.isArray(audit.recoverable_operators)
+    ? audit.recoverable_operators.length
+    : 0;
+  const totalOperators = Array.isArray(state.operators) && state.operators.length > 0
+    ? state.operators.length
+    : null;
   const label = audit ? (audit.healthy ? 'Verified' : 'Degraded') : 'Unverified';
   const color = audit && audit.healthy ? 'var(--accent-emerald)' : 'var(--accent-amber)';
   const badge = document.getElementById('badge-durability-state');
   if (badge) { badge.textContent = label; badge.style.color = color; }
   const ratio = document.getElementById('durability-ratio');
-  if (ratio) ratio.textContent = audit ? `${count}/3` : '--/3';
+  if (ratio) ratio.textContent = audit ? `${count}/${totalOperators ?? '--'}` : `--/${totalOperators ?? '--'}`;
   const detail = document.getElementById('sub-metric-durability');
-  if (detail) detail.textContent = audit ? `Last checked snapshot: ${count} complete recovery sets; ${audit.objects.lost_count} lost objects` : 'No completed recovery verification';
+  const lostCount = audit && audit.objects && Number.isFinite(Number(audit.objects.lost_count))
+    ? Number(audit.objects.lost_count)
+    : null;
+  if (detail) {
+    detail.textContent = audit
+      ? `Last checked snapshot: ${count} complete recovery sets; ${lostCount == null ? 'lost-object count unavailable' : `${lostCount} lost objects`}`
+      : 'No completed recovery verification';
+  }
   const bar = document.getElementById('bar-durability');
-  if (bar) { bar.style.width = `${Math.min(count / 3 * 100, 100)}%`; bar.style.background = color; }
+  if (bar) {
+    bar.style.width = totalOperators && audit ? `${Math.min(count / totalOperators * 100, 100)}%` : '0%';
+    bar.style.background = color;
+  }
 }
 
 async function fetchSnapshots() {
   try {
     const res = await fetch('/api/snapshots');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Snapshot request failed (${res.status})`);
     const data = await res.json();
-    state.snapshots = data;
+    const snapshots = dedupeSnapshots(Array.isArray(data) ? data : (data && data.snapshots));
+    state.snapshots = snapshots;
 
     const badgeSnaps = document.getElementById('badge-tab-snapshots');
-    if (badgeSnaps) badgeSnaps.textContent = data.length;
+    if (badgeSnaps) badgeSnaps.textContent = snapshots.length;
 
-    renderSnapshots(data);
+    renderSnapshots(snapshots);
   } catch (e) {
+    state.snapshots = [];
+    const badgeSnaps = document.getElementById('badge-tab-snapshots');
+    if (badgeSnaps) badgeSnaps.textContent = '--';
+    renderSnapshots([]);
     console.warn("fetchSnapshots error:", e);
   }
 }
@@ -233,12 +409,14 @@ async function fetchSnapshots() {
 async function fetchAnchors() {
   try {
     const res = await fetch('/api/anchors');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Anchor telemetry request failed (${res.status})`);
     const data = await res.json();
     state.anchors = data;
 
     renderAnchors(data);
   } catch (e) {
+    state.anchors = [];
+    renderAnchors([]);
     console.warn("fetchAnchors error:", e);
   }
 }
@@ -246,11 +424,22 @@ async function fetchAnchors() {
 async function fetchGuardians() {
   try {
     const res = await fetch('/api/guardians');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Guardian request failed (${res.status})`);
     const data = await res.json();
     state.guardians = data;
     renderGuardians(data);
   } catch (e) {
+    state.guardians = null;
+    const badgeTab = document.getElementById('badge-tab-guardians');
+    if (badgeTab) badgeTab.textContent = '--';
+    const circleBadge = document.getElementById('quorum-circle-badge');
+    if (circleBadge) circleBadge.textContent = '-- / --';
+    const quorumTitle = document.getElementById('quorum-title');
+    if (quorumTitle) quorumTitle.textContent = 'Guardian policy unavailable';
+    const locatorElem = document.getElementById('guardian-vault-locator');
+    if (locatorElem) locatorElem.textContent = '--';
+    const grid = document.getElementById('guardians-grid');
+    if (grid) grid.innerHTML = '<div class="loading-placeholder">Guardian descriptors are unavailable.</div>';
     console.warn("fetchGuardians error:", e);
   }
 }
@@ -258,11 +447,19 @@ async function fetchGuardians() {
 async function fetchRelayerCheckpoints() {
   try {
     const res = await fetch('/api/relayer/checkpoints');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Checkpoint telemetry request failed (${res.status})`);
     const data = await res.json();
     state.relayerCheckpoints = data.checkpoints || [];
     renderRelayerCheckpoints(data);
   } catch (e) {
+    state.relayerCheckpoints = [];
+    renderRelayerCheckpoints({
+      relayer_status: {
+        public_read_only: isPublicExplorer(),
+        target_network: 'Network not reported',
+      },
+      checkpoints: [],
+    });
     console.warn("fetchRelayerCheckpoints error:", e);
   }
 }
@@ -270,11 +467,28 @@ async function fetchRelayerCheckpoints() {
 async function fetchFleet() {
   try {
     const res = await fetch('/api/fleet');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Fleet request failed (${res.status})`);
     const data = await res.json();
     state.fleet = data;
     renderFleet(data);
   } catch (e) {
+    state.fleet = null;
+    const kpiVaults = document.getElementById('fleet-kpi-vaults');
+    if (kpiVaults) kpiVaults.textContent = '--';
+    const kpiOps = document.getElementById('fleet-kpi-operators');
+    if (kpiOps) kpiOps.textContent = '-- / --';
+    const kpiLat = document.getElementById('fleet-kpi-latency');
+    if (kpiLat) kpiLat.textContent = '-- ms';
+    const kpiAudits = document.getElementById('fleet-kpi-audits');
+    if (kpiAudits) kpiAudits.textContent = '--';
+    const badgeFleet = document.getElementById('badge-tab-fleet');
+    if (badgeFleet) badgeFleet.textContent = '--';
+    const opGrid = document.getElementById('fleet-operators-grid');
+    if (opGrid) opGrid.innerHTML = '<div class="loading-placeholder">Fleet telemetry is unavailable.</div>';
+    const vBody = document.getElementById('table-fleet-vaults-body');
+    if (vBody) vBody.innerHTML = '<tr><td colspan="4" class="loading-placeholder">Fleet vault inventory is unavailable.</td></tr>';
+    const aBody = document.getElementById('table-fleet-audits-body');
+    if (aBody) aBody.innerHTML = '<tr><td colspan="7" class="loading-placeholder">Fleet audit history is unavailable.</td></tr>';
     console.warn("fetchFleet error:", e);
   }
 }
@@ -284,19 +498,62 @@ async function fetchFleet() {
 // -------------------------------------------------------------
 
 function renderOperators(operators) {
+  const currentOperators = Array.isArray(operators) ? operators : [];
   const container = document.getElementById('operators-grid');
+  renderRetentionStatus(currentOperators);
+
+  const onlineCount = currentOperators.filter(operatorResponded).length;
+  const totalCount = currentOperators.length;
+  const observedAt = currentOperators.find(operator => typeof operator?.observed_at === 'string')?.observed_at
+    || state.operatorObservedAt;
+  const observedLabel = observedAt && Number.isFinite(Date.parse(observedAt))
+    ? ` Last observed ${new Date(observedAt).toLocaleTimeString()}.`
+    : '';
+  const responseSummary = document.getElementById('operator-response-summary');
+  const quorumElem = document.getElementById('quorum-health-text');
+  const quorumPill = document.getElementById('quorum-status-pill');
+  if (responseSummary) {
+    responseSummary.textContent = totalCount > 0
+      ? `${onlineCount}/${totalCount} configured operators responded to the latest probe.${observedLabel} This is not a durability or quorum verification.`
+      : 'No configured operator response is available.';
+  }
+  if (quorumElem) {
+    quorumElem.textContent = totalCount > 0
+      ? `${onlineCount}/${totalCount} operators responding`
+      : 'Operator status not reported';
+    quorumElem.style.color = onlineCount > 0
+      ? (isPublicExplorer() ? 'var(--accent-cyan)' : 'var(--accent-emerald)')
+      : 'var(--text-muted)';
+  }
+  if (quorumPill) {
+    const dot = quorumPill.querySelector ? quorumPill.querySelector('.pulse-dot') : null;
+    if (dot) {
+      const dotColor = onlineCount > 0
+        ? (isPublicExplorer() ? 'var(--accent-cyan)' : 'var(--accent-emerald)')
+        : 'var(--text-muted)';
+      dot.style.backgroundColor = dotColor;
+      dot.style.boxShadow = onlineCount > 0 ? `0 0 10px ${dotColor}` : 'none';
+    }
+  }
   if (!container) return;
 
-  if (!operators || operators.length === 0) {
-    container.innerHTML = `<div class="loading-placeholder">No operator nodes registered in vault configuration.</div>`;
+  if (totalCount === 0) {
+    container.innerHTML = `<div class="loading-placeholder">No configured operator response is available.</div>`;
     return;
   }
 
-  container.innerHTML = operators.map((op, idx) => {
-    const isOnline = op.status === 'online';
-    const latencyDisplay = isOnline ? `${op.latency_ms ?? 1} ms` : 'Unreachable';
-    const pkDisplay = op.operator_signing_pk_hex ? truncateHash(op.operator_signing_pk_hex, 8, 6) : 'Unknown';
+  container.innerHTML = currentOperators.map((op, idx) => {
+    const isOnline = operatorResponded(op);
+    const statusLabel = isPublicExplorer()
+      ? (isOnline ? 'RESPONDED' : 'UNREACHABLE')
+      : (isOnline ? 'ONLINE' : 'OFFLINE');
+    const latencyDisplay = isOnline
+      ? (typeof op.latency_ms === 'number' ? `${op.latency_ms} ms` : 'Latency not reported')
+      : 'Unreachable';
+    const pkDisplay = op.operator_signing_pk_hex ? truncateHash(op.operator_signing_pk_hex, 8, 6) : 'Not reported';
     const opId = op.operator_id || `operator_${idx + 1}`;
+    const retentionTerms = op.retention_terms || 'Not reported';
+    const transportLabel = op.transport_security === 'https' ? 'HTTPS configured' : 'Transport not reported';
 
     return `
       <article class="operator-card" id="card-operator-${idx + 1}">
@@ -304,14 +561,14 @@ function renderOperators(operators) {
           <div class="op-header">
             <div class="op-title-wrap">
               <span class="op-id">${escapeHtml(opId)}</span>
-              <span class="${isOnline ? 'badge-online' : 'badge-offline'}">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+              <span class="${isOnline ? 'badge-online' : 'badge-offline'}">${statusLabel}</span>
             </div>
             <span style="font-size: 0.8rem; color: ${isOnline ? 'var(--accent-cyan)' : 'var(--accent-rose)'}; font-family: var(--font-mono);">${latencyDisplay}</span>
           </div>
 
           <div class="op-meta-row">
             <span class="op-meta-label">Endpoint</span>
-            <span class="op-meta-val">${escapeHtml(op.endpoint)}${op.is_shielded || (op.endpoint && op.endpoint.includes('/op/')) ? ' <span class="shield-badge" style="color:var(--accent-cyan); font-size:0.75rem; margin-left:6px;">🔒 TLS Shielded</span>' : ''}</span>
+            <span class="op-meta-val">${escapeHtml(op.endpoint || 'Not reported')}${op.transport_security === 'https' ? ' <span class="shield-badge" style="color:var(--accent-cyan); font-size:0.75rem; margin-left:6px;">🔒 HTTPS configured</span>' : ''}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Public Key</span>
@@ -329,59 +586,97 @@ function renderOperators(operators) {
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Retention Policy</span>
-            <span class="op-meta-val" style="color: var(--accent-emerald);">${escapeHtml(op.retention_terms || "90-Day Immutable")}</span>
+            <span class="op-meta-val" style="color: ${op.retention_terms ? 'var(--text-secondary)' : 'var(--text-muted)'};">${escapeHtml(retentionTerms)}</span>
           </div>
           <div class="op-meta-row">
-            <span class="op-meta-label">Region / Zone</span>
-            <span class="op-meta-val" style="color: var(--accent-cyan); font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(op.location || (op.region ? `${op.region} (${op.zone})` : 'Multi-Region'))}</span>
+            <span class="op-meta-label">Location</span>
+            <span class="op-meta-val" style="color: var(--accent-cyan); font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(op.location || (op.region ? `${op.region} (${op.zone || 'zone not reported'})` : 'Not reported'))}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Quorum Role</span>
-            <span class="op-meta-val" style="color: var(--accent-purple); font-size: 0.78rem;">${escapeHtml(op.quorum_role || "Validator (2-of-3)")}</span>
+            <span class="op-meta-val" style="color: var(--accent-purple); font-size: 0.78rem;">${escapeHtml(op.quorum_role || 'Policy not reported')}</span>
           </div>
         </div>
         <div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
           <span style="font-size: 0.75rem; color: var(--text-muted);">Replication Transport</span>
-          <span style="font-size: 0.75rem; color: var(--accent-emerald); font-weight: 600;">ACTIVE</span>
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">${transportLabel}</span>
         </div>
       </article>
     `;
   }).join('');
 
-  // Update Geographic Topology Visualizer
-  const onlineCount = (operators || []).filter(o => o.status === 'online').length;
-  const quorumElem = document.getElementById('quorum-health-text');
-  if (quorumElem) {
-    quorumElem.textContent = onlineCount >= 2
-      ? `Quorum ${onlineCount}/3 Healthy (2-of-3 Required)`
-      : `Quorum Degraded (${onlineCount}/3 Online)`;
-    quorumElem.style.color = onlineCount >= 2 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+}
+
+function timestampToMilliseconds(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1e12 ? value : value * 1000;
+  }
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && value.trim() !== '') return timestampToMilliseconds(numeric);
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function renderRetentionStatus(operators) {
+  const expiryKeys = [
+    'retention_receipt_expires_at_utc',
+    'retention_expires_at_utc',
+    'lease_expires_at_utc',
+    'retention_expires_at',
+    'lease_expires_at',
+  ];
+  const reportedExpiries = (operators || [])
+    .flatMap(operator => expiryKeys.map(key => timestampToMilliseconds(operator && operator[key])))
+    .filter(expiry => expiry !== null);
+
+  const badge = document.getElementById('badge-retention-state');
+  const value = document.getElementById('val-retention-days');
+  const unit = document.getElementById('val-retention-unit');
+  const detail = document.getElementById('sub-metric-runway');
+  const bar = document.getElementById('bar-runway');
+
+  if (reportedExpiries.length === 0) {
+    if (badge) badge.textContent = 'Not reported';
+    if (value) value.textContent = '--';
+    if (unit) unit.textContent = 'days';
+    if (detail) detail.textContent = 'No retention receipt expiry is available';
+    if (bar) bar.style.width = '0%';
+    return;
   }
 
-  // Update ping elements for GCP nodes
-  (operators || []).forEach((op, i) => {
-    const pingElem = document.getElementById(`ping-op${i + 1}`);
-    if (pingElem) {
-      const isOnline = op.status === 'online';
-      pingElem.innerHTML = `Ping: <span class="ping-val" style="color: ${isOnline ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${isOnline ? `${op.latency_ms ?? 1} ms` : 'Offline'}</span>`;
-    }
-  });
+  const earliestExpiry = Math.min(...reportedExpiries);
+  const remainingDays = Math.max(0, Math.ceil((earliestExpiry - Date.now()) / 86_400_000));
+  if (badge) badge.textContent = earliestExpiry <= Date.now() ? 'Expired' : 'Expiry reported';
+  if (value) value.textContent = String(remainingDays);
+  if (unit) unit.textContent = remainingDays === 1 ? 'day' : 'days';
+  if (detail) detail.textContent = `${earliestExpiry <= Date.now() ? 'Earliest reported expiry elapsed' : 'Earliest reported expiry'}: ${new Date(earliestExpiry).toLocaleString()}`;
+  // A receipt expiry has no meaningful percentage without a receipt start
+  // time, so do not render a decorative progress value.
+  if (bar) bar.style.width = '0%';
 }
 
 function renderLatencyBars(operators) {
   const container = document.getElementById('latency-bars-container');
   if (!container) return;
 
-  const onlineOps = (operators || []).filter(o => o.status === 'online');
+  const onlineOps = (operators || []).filter(o => (
+    operatorResponded(o)
+    && typeof o.latency_ms === 'number'
+    && Number.isFinite(o.latency_ms)
+    && o.latency_ms >= 0
+  ));
   if (onlineOps.length === 0) {
-    container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">No online operators to measure latency.</div>`;
+    container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">No operator response latency is reported.</div>`;
     return;
   }
 
-  const maxLatency = Math.max(...onlineOps.map(o => o.latency_ms || 1), 20);
+  const maxLatency = Math.max(...onlineOps.map(o => o.latency_ms), 20);
 
   container.innerHTML = onlineOps.map(op => {
-    const lat = op.latency_ms || 1;
+    const lat = op.latency_ms;
     const pct = Math.max(8, Math.min(100, Math.round((lat / maxLatency) * 100)));
     const color = lat < 5 ? 'var(--accent-emerald)' : lat < 25 ? 'var(--accent-cyan)' : 'var(--accent-amber)';
 
@@ -397,27 +692,70 @@ function renderLatencyBars(operators) {
   }).join('');
 }
 
+function snapshotIdentity(snapshot, index) {
+  if (!snapshot || typeof snapshot !== 'object') return `unkeyed-snapshot-${index}`;
+  const identity = snapshot.logical_snapshot_id_hex
+    || snapshot.snapshot_id_hex
+    || snapshot.snapshot_id
+    || snapshot.record_cid_hex
+    || snapshot.record_cid;
+  return identity ? String(identity).toLowerCase() : `unkeyed-snapshot-${index}`;
+}
+
+function snapshotTimestamp(snapshot) {
+  const raw = snapshot && (snapshot.timestamp_utc ?? snapshot.created_at_utc);
+  const timestamp = Number(raw);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function preferSnapshot(candidate, current) {
+  if (Boolean(candidate && candidate.is_head) !== Boolean(current && current.is_head)) {
+    return Boolean(candidate && candidate.is_head);
+  }
+  const candidateTimestamp = snapshotTimestamp(candidate);
+  const currentTimestamp = snapshotTimestamp(current);
+  if (candidateTimestamp !== currentTimestamp) return candidateTimestamp > currentTimestamp;
+  // Prefer a record with a CID when aliases have otherwise identical data.
+  return Boolean(candidate && candidate.record_cid_hex) && !Boolean(current && current.record_cid_hex);
+}
+
+function dedupeSnapshots(snapshots) {
+  if (!Array.isArray(snapshots)) return [];
+  const canonical = new Map();
+  snapshots.forEach((snapshot, index) => {
+    const identity = snapshotIdentity(snapshot, index);
+    const existing = canonical.get(identity);
+    if (!existing || preferSnapshot(snapshot, existing)) canonical.set(identity, snapshot);
+  });
+  return Array.from(canonical.values());
+}
+
 function renderSnapshots(snapshots) {
   const container = document.getElementById('dag-list');
   if (!container) return;
 
-  if (!snapshots || snapshots.length === 0) {
+  const canonicalSnapshots = dedupeSnapshots(snapshots);
+  if (canonicalSnapshots.length === 0) {
     container.innerHTML = `<div class="loading-placeholder">No snapshots captured yet. Click "Push Snapshot" to create the initial snapshot.</div>`;
     return;
   }
 
-  // Reverse sort so HEAD appears at top
-  const sorted = [...snapshots].reverse();
+  // APIs normally return chronological records, but sort defensively so the
+  // newest known timestamp is listed first without relying on alias order.
+  const sorted = [...canonicalSnapshots].sort((a, b) => snapshotTimestamp(b) - snapshotTimestamp(a));
+  const markedHeads = sorted.filter(snapshot => Boolean(snapshot.is_head));
+  const hasSingleCanonicalHead = markedHeads.length === 1;
 
   container.innerHTML = sorted.map((snap, idx) => {
-    const isHead = Boolean(snap.is_head);
+    const isHead = hasSingleCanonicalHead && Boolean(snap.is_head);
+    const hasHeadConflict = markedHeads.length > 1 && Boolean(snap.is_head);
     const snapIdTrunc = truncateHash(snap.snapshot_id_hex, 10, 8);
     const manifestTrunc = truncateHash(snap.manifest_cid_hex, 10, 8);
     const deviceTrunc = truncateHash(snap.device_id_hex, 8, 6);
     const timeDisplay = snap.timestamp_utc ? formatTimestamp(snap.timestamp_utc) : "Recorded";
 
     return `
-      <div class="dag-node" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" style="cursor: pointer;">
+      <div class="dag-node" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" role="button" tabindex="0" aria-label="Inspect snapshot ${escapeHtml(snapIdTrunc)}" style="cursor: pointer;">
         <div class="dag-timeline-track">
           <div class="dag-node-dot ${isHead ? 'head' : ''}"></div>
           ${idx < sorted.length - 1 ? '<div class="dag-timeline-line"></div>' : ''}
@@ -427,6 +765,7 @@ function renderSnapshots(snapshots) {
             <div style="display: flex; align-items: center; gap: 10px;">
               <span class="dag-message">Snapshot #${snap.device_counter || (sorted.length - idx)}</span>
               ${isHead ? '<span class="badge-online" style="background: rgba(0, 240, 255, 0.12); color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.4);">ACTIVE HEAD</span>' : ''}
+              ${hasHeadConflict ? '<span class="badge-status-subtle" style="color: var(--accent-amber); border-color: rgba(255, 179, 0, 0.35);">HEAD CONFLICT</span>' : ''}
               <span style="font-size: 0.75rem; color: var(--text-muted);">(Epoch #${snap.epoch || 1})</span>
             </div>
             <span class="dag-time">${timeDisplay}</span>
@@ -449,16 +788,23 @@ function renderSnapshots(snapshots) {
   // Attach click listeners to dag-nodes for drawer deep inspection
   container.querySelectorAll('.dag-node').forEach(node => {
     node.addEventListener('click', (e) => {
-      if (e.target.closest('.hash-click')) return; // let copy happen
+      if (e.target.closest('.hash-click, .btn-drawer-inspect, button, a, input, select, textarea')) return;
       const snapId = node.getAttribute('data-snap-id');
-      const snap = snapshots.find(s => s.snapshot_id_hex === snapId);
+      const snap = canonicalSnapshots.find(s => s.snapshot_id_hex === snapId);
+      if (snap) openSnapshotDrawer(snap);
+    });
+    node.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      const snapId = node.getAttribute('data-snap-id');
+      const snap = canonicalSnapshots.find(s => s.snapshot_id_hex === snapId);
       if (snap) openSnapshotDrawer(snap);
     });
   });
 
   // Synchronize Diff selector dropdowns with latest snapshot list
   if (typeof updateDiffSelects === 'function') {
-    updateDiffSelects(snapshots);
+    updateDiffSelects(canonicalSnapshots);
   }
 
   if (typeof applyDagFilter === 'function') {
@@ -478,7 +824,7 @@ function renderTrackedFiles(files) {
   tbody.innerHTML = files.map(file => {
     const fileIdTrunc = truncateHash(file.file_id_hex, 8, 6);
     const sizeStr = file.size_bytes !== undefined ? formatBytes(file.size_bytes) : "Unknown";
-    const chunks = file.chunks_count || 1;
+    const chunks = typeof file.chunks_count === 'number' ? file.chunks_count : null;
 
     const replicaBadge = '<span class="badge-status-subtle">See latest snapshot audit</span>';
 
@@ -497,7 +843,7 @@ function renderTrackedFiles(files) {
           ${fileIdTrunc}
         </td>
         <td>${sizeStr}</td>
-        <td>${chunks} chunk (${formatBytes(chunks * 1024 * 1024)} padded)</td>
+        <td>${chunks === null ? 'Not reported' : `${chunks} chunk${chunks === 1 ? '' : 's'} (recorded)`}</td>
         <td>${replicaBadge}</td>
         <td>
           <div style="display: flex; align-items: center; gap: 6px;">
@@ -521,47 +867,175 @@ function renderTrackedFiles(files) {
   }
 }
 
-function renderAnchors(anchors) {
-  if (!anchors || anchors.length === 0) return;
+function normalizeTransactionHash(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const hex = raw.replace(/^0x/i, '');
+  return /^[0-9a-f]{64}$/i.test(hex) ? `0x${hex}` : '';
+}
 
-  const latest = anchors[anchors.length - 1];
+function isZeroTransactionHash(value) {
+  const normalized = normalizeTransactionHash(value);
+  return !normalized || /^0x0{64}$/i.test(normalized);
+}
+
+function isMeaningfulHex(value) {
+  return typeof value === 'string' && /[1-9a-f]/i.test(value.replace(/^0x/i, ''));
+}
+
+function checkpointDisplayState(record, transactionHash) {
+  if (isZeroTransactionHash(transactionHash)) {
+    return { label: 'Not submitted', tone: 'var(--text-muted)', confirmed: false };
+  }
+
+  const verificationStatus = record && typeof record.verification_status === 'string'
+    ? record.verification_status.toLowerCase()
+    : '';
+  const supplied = record && (record.finality_status || record.verification_status || record.status);
+  const rawLabel = supplied ? String(supplied) : 'receipt_unverified';
+  const normalized = rawLabel.toLowerCase();
+  const label = normalized === 'receipt_unverified'
+    ? 'Receipt unverified'
+    : (normalized === 'submitted' ? 'Submitted — receipt unverified' : rawLabel);
+  if (normalized.includes('fail') || normalized.includes('revert')) {
+    return { label, tone: 'var(--accent-rose)', confirmed: false };
+  }
+  if (record && (verificationStatus === 'verified' || record.inclusion_verified === true || record.verified === true)) {
+    return { label, tone: 'var(--accent-emerald)', confirmed: true };
+  }
+  return { label, tone: 'var(--accent-amber)', confirmed: false };
+}
+
+function checkpointExplorerUrl(record, transactionHash) {
+  const hash = normalizeTransactionHash(transactionHash);
+  if (!hash || isZeroTransactionHash(hash)) return '';
+
+  const suppliedUrl = record && (record.explorer_url || record.arbiscan_url);
+  if (typeof suppliedUrl === 'string' && /^https:\/\/(?:[a-z0-9-]+\.)?arbiscan\.io\/tx\/0x[0-9a-f]{64}(?:[/?#].*)?$/i.test(suppliedUrl)) {
+    return suppliedUrl;
+  }
+
+  const chainId = Number(record && record.chain_id);
+  if (chainId === 42161) return `https://arbiscan.io/tx/${hash}`;
+  if (chainId === 421614) return `https://sepolia.arbiscan.io/tx/${hash}`;
+  return '';
+}
+
+function chainLabel(chainId) {
+  const numericChainId = Number(chainId);
+  if (numericChainId === 42161) return 'Arbitrum One (Chain ID 42161)';
+  if (numericChainId === 421614) return 'Arbitrum Sepolia (Chain ID 421614)';
+  return Number.isFinite(numericChainId) && numericChainId > 0
+    ? `Chain ID ${numericChainId}`
+    : 'Network not reported';
+}
+
+function renderAnchorUnavailable() {
+  const elements = {
+    block: document.getElementById('val-anchor-block'),
+    contract: document.getElementById('anchor-contract-addr'),
+    chain: document.getElementById('anchor-chain-id'),
+    inclusionBlock: document.getElementById('anchor-block-num'),
+    status: document.getElementById('anchor-finality-status'),
+    salt: document.getElementById('anchor-salt-preimage'),
+    commitment: document.getElementById('anchor-commitment-val'),
+    transaction: document.getElementById('anchor-tx-hash'),
+    stage: document.getElementById('badge-anchor-stage'),
+    detail: document.getElementById('sub-metric-anchor'),
+    bar: document.getElementById('bar-anchor'),
+  };
+  if (elements.block) elements.block.textContent = '#--';
+  if (elements.contract) elements.contract.textContent = 'Not reported';
+  if (elements.chain) elements.chain.textContent = 'Network not reported';
+  if (elements.inclusionBlock) elements.inclusionBlock.textContent = '#--';
+  if (elements.status) {
+    elements.status.textContent = 'Not submitted';
+    elements.status.style.color = 'var(--text-muted)';
+  }
+  if (elements.salt) elements.salt.textContent = '--';
+  if (elements.commitment) elements.commitment.textContent = '--';
+  if (elements.transaction) {
+    elements.transaction.textContent = '--';
+    elements.transaction.title = '';
+  }
+  if (elements.stage) elements.stage.textContent = 'No verified receipt';
+  if (elements.detail) elements.detail.textContent = 'No checkpoint evidence recorded';
+  if (elements.bar) elements.bar.style.width = '0%';
+
+  const copyButton = document.getElementById('btn-copy-anchor-tx');
+  if (copyButton) {
+    copyButton.disabled = true;
+    copyButton.setAttribute('aria-disabled', 'true');
+    copyButton.setAttribute('data-copy', '');
+  }
+  const explorerLink = document.getElementById('anchor-arbiscan-link');
+  if (explorerLink) explorerLink.style.display = 'none';
+}
+
+function renderAnchors(anchors) {
+  if (!Array.isArray(anchors) || anchors.length === 0) {
+    renderAnchorUnavailable();
+    return;
+  }
+
+  const latest = anchors[anchors.length - 1] || {};
+  const transactionHash = normalizeTransactionHash(latest.tx_hash_hex || latest.tx_hash);
+  const transactionIsUsable = !isZeroTransactionHash(transactionHash);
+  const stateLabel = checkpointDisplayState(latest, transactionHash);
+  const blockNumber = Number(latest.reported_block_number ?? latest.block_number);
+  const hasBlockNumber = transactionIsUsable && Number.isFinite(blockNumber) && blockNumber > 0;
 
   const valAnchorBlock = document.getElementById('val-anchor-block');
-  if (valAnchorBlock) valAnchorBlock.textContent = `#${latest.block_number.toLocaleString()}`;
+  if (valAnchorBlock) valAnchorBlock.textContent = hasBlockNumber ? `#${blockNumber.toLocaleString()}` : '#--';
 
   const contractElem = document.getElementById('anchor-contract-addr');
-  if (contractElem) contractElem.textContent = latest.contract_address_hex;
+  if (contractElem) contractElem.textContent = isMeaningfulHex(latest.contract_address_hex) ? latest.contract_address_hex : 'Not reported';
+
+  const chainElem = document.getElementById('anchor-chain-id');
+  if (chainElem) chainElem.textContent = chainLabel(latest.chain_id);
 
   const blockElem = document.getElementById('anchor-block-num');
-  if (blockElem) blockElem.textContent = `#${latest.block_number.toLocaleString()}`;
+  if (blockElem) blockElem.textContent = hasBlockNumber ? `#${blockNumber.toLocaleString()}` : '#--';
+
+  const finalityElem = document.getElementById('anchor-finality-status');
+  if (finalityElem) {
+    finalityElem.textContent = stateLabel.label;
+    finalityElem.style.color = stateLabel.tone;
+  }
 
   const saltElem = document.getElementById('anchor-salt-preimage');
-  if (saltElem) saltElem.textContent = truncateHash(latest.salt_hex, 10, 8);
+  if (saltElem) saltElem.textContent = isMeaningfulHex(latest.salt_hex) ? truncateHash(latest.salt_hex, 10, 8) : '--';
 
   const commitElem = document.getElementById('anchor-commitment-val');
-  if (commitElem) commitElem.textContent = truncateHash(latest.commitment_hex, 10, 8);
+  if (commitElem) commitElem.textContent = isMeaningfulHex(latest.commitment_hex) ? truncateHash(latest.commitment_hex, 10, 8) : '--';
 
   const txElem = document.getElementById('anchor-tx-hash');
   if (txElem) {
-    txElem.textContent = truncateHash(latest.tx_hash_hex, 14, 10);
-    txElem.title = latest.tx_hash_hex;
+    txElem.textContent = transactionIsUsable ? truncateHash(transactionHash, 14, 10) : '--';
+    txElem.title = transactionIsUsable ? transactionHash : '';
   }
 
   const copyTxBtn = document.getElementById('btn-copy-anchor-tx');
   if (copyTxBtn) {
-    copyTxBtn.setAttribute('data-copy', latest.tx_hash_hex);
+    copyTxBtn.disabled = !transactionIsUsable;
+    copyTxBtn.setAttribute('aria-disabled', transactionIsUsable ? 'false' : 'true');
+    copyTxBtn.setAttribute('data-copy', transactionIsUsable ? transactionHash : '');
   }
+
+  const stageElem = document.getElementById('badge-anchor-stage');
+  if (stageElem) stageElem.textContent = stateLabel.confirmed ? 'Receipt reported' : (transactionIsUsable ? 'Receipt unverified' : 'No on-chain receipt');
+  const detailElem = document.getElementById('sub-metric-anchor');
+  if (detailElem) detailElem.textContent = stateLabel.confirmed ? `Reported status: ${stateLabel.label}` : stateLabel.label;
+  const bar = document.getElementById('bar-anchor');
+  if (bar) bar.style.width = '0%';
 
   const arbiscanLink = document.getElementById('anchor-arbiscan-link');
   if (arbiscanLink) {
-    if (latest.tx_hash_hex) {
-      const isSepolia = (latest.contract_address_hex || "").toLowerCase().includes("sepolia") || latest.chain_id === 421614;
-      const baseExplorer = isSepolia ? "https://sepolia.arbiscan.io/tx/" : "https://arbiscan.io/tx/";
-      const cleanTx = latest.tx_hash_hex.startsWith("0x") ? latest.tx_hash_hex : `0x${latest.tx_hash_hex}`;
-      arbiscanLink.href = `${baseExplorer}${cleanTx}`;
-      arbiscanLink.style.display = "inline-flex";
+    const explorerUrl = checkpointExplorerUrl(latest, transactionHash);
+    if (explorerUrl) {
+      arbiscanLink.href = explorerUrl;
+      arbiscanLink.style.display = 'inline-flex';
     } else {
-      arbiscanLink.style.display = "none";
+      arbiscanLink.style.display = 'none';
     }
   }
 }
@@ -585,15 +1059,16 @@ function renderGuardians(data) {
   }
 
   const locatorElem = document.getElementById('guardian-vault-locator');
-  if (locatorElem && data.sheets && data.sheets.length > 0) {
-    locatorElem.textContent = data.sheets[0].recovery_locator || "--";
+  if (locatorElem) {
+    const sheetLocator = data.sheets && data.sheets.length > 0 ? data.sheets[0].recovery_locator : null;
+    locatorElem.textContent = sheetLocator || data.recovery_locator_hex || "--";
   }
 
   const grid = document.getElementById('guardians-grid');
   if (!grid) return;
 
   if (!data.sheets || data.sheets.length === 0) {
-    grid.innerHTML = '<div class="loading-placeholder">No guardian sheets generated yet. Select a threshold above and click "Split Recovery Secret".</div>';
+    grid.innerHTML = `<div class="loading-placeholder">${escapeHtml(data.message || 'No non-secret guardian policy descriptors are recorded for this workspace.')}</div>`;
     return;
   }
 
@@ -688,39 +1163,59 @@ function openGuardianSheetModal(sheet) {
     };
   }
 
-  modal.classList.add('open');
+  openModal(modal, document.activeElement);
 }
 
 function renderRelayerCheckpoints(data) {
   if (!data) return;
+  const response = Array.isArray(data) ? { checkpoints: data } : data;
 
   const modeDisplay = document.getElementById('relayer-mode-display');
-  if (modeDisplay && data.relayer_status) {
-    const st = data.relayer_status;
-    modeDisplay.textContent = `Automated L2 Relayer: ${st.operational ? 'Active' : 'Standby'}`;
+  if (modeDisplay && response.relayer_status) {
+    const st = response.relayer_status;
+    modeDisplay.textContent = st.public_read_only
+      ? 'Public checkpoint feed: read-only'
+      : `Automated L2 Relayer: ${st.operational === true ? 'Active' : 'Status unverified'}`;
   }
 
   const networkTag = document.getElementById('relayer-target-network');
-  if (networkTag && data.relayer_status && data.relayer_status.target_network) {
-    networkTag.textContent = data.relayer_status.target_network;
+  if (networkTag && response.relayer_status && response.relayer_status.target_network) {
+    networkTag.textContent = response.relayer_status.target_network;
+  }
+
+  const relayerPulse = document.getElementById('relayer-pulse-dot');
+  if (relayerPulse) {
+    const status = response.relayer_status || {};
+    const isPublicFeed = status.public_read_only === true;
+    const isVerifiedOperational = status.operational === true && !isPublicFeed;
+    const color = isVerifiedOperational ? 'var(--accent-emerald)' : 'var(--text-muted)';
+    relayerPulse.style.backgroundColor = color;
+    relayerPulse.style.boxShadow = isVerifiedOperational ? `0 0 10px ${color}` : 'none';
   }
 
   const tbody = document.getElementById('table-checkpoints-body');
   if (!tbody) return;
 
-  const checkpoints = data.checkpoints || [];
+  const checkpoints = Array.isArray(response.checkpoints) ? response.checkpoints : [];
   if (checkpoints.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="loading-placeholder">No relayer checkpoints recorded yet. Click "Auto-Relay Latest Head" to submit first L2 commitment.</td></tr>';
+    const message = isPublicExplorer()
+      ? 'No published checkpoint receipts are available.'
+      : 'No relayer checkpoints recorded yet. Submit a checkpoint from the local workspace.';
+    tbody.innerHTML = `<tr><td colspan="5" class="loading-placeholder">${message}</td></tr>`;
     return;
   }
 
   tbody.innerHTML = checkpoints.slice().reverse().map(cp => {
-    const blockStr = cp.block_number ? `#${cp.block_number.toLocaleString()}` : '#--';
-    const txHash = cp.tx_hash || cp.tx_hash_hex || '';
-    const isZeroTx = !txHash || txHash.startsWith('0x00000000') || txHash === '0000000000000000000000000000000000000000000000000000000000000000';
-    const txTrunc = txHash && !isZeroTx ? truncateHash(txHash, 10, 8) : '--';
-    const commitTrunc = truncateHash(cp.commitment || '', 10, 8);
-    const explorerUrl = cp.explorer_url || (!isZeroTx && txHash ? `https://sepolia.arbiscan.io/tx/${txHash}` : '');
+    const txHash = normalizeTransactionHash(cp.tx_hash || cp.tx_hash_hex);
+    const usableTransaction = !isZeroTransactionHash(txHash);
+    const blockNumber = Number(cp.reported_block_number ?? cp.block_number);
+    const blockStr = usableTransaction && Number.isFinite(blockNumber) && blockNumber > 0
+      ? `#${blockNumber.toLocaleString()}`
+      : '#--';
+    const txTrunc = usableTransaction ? truncateHash(txHash, 10, 8) : '--';
+    const commitTrunc = isMeaningfulHex(cp.commitment || cp.commitment_hex) ? truncateHash(cp.commitment || cp.commitment_hex, 10, 8) : '--';
+    const displayState = checkpointDisplayState(cp, txHash);
+    const explorerUrl = checkpointExplorerUrl(cp, txHash);
 
     return `
       <tr>
@@ -728,7 +1223,7 @@ function renderRelayerCheckpoints(data) {
         <td>
           <div style="display: flex; align-items: center; gap: 6px;">
             <code style="font-family: var(--font-mono); font-size: 0.8rem;">${txTrunc}</code>
-            ${txHash && !isZeroTx ? `
+            ${usableTransaction ? `
               <button class="btn-copy" data-copy="${escapeHtml(txHash)}" title="Copy Tx Hash">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -739,11 +1234,11 @@ function renderRelayerCheckpoints(data) {
           </div>
         </td>
         <td>
-          <span style="color: ${cp.status === 'Failed' ? 'var(--accent-rose)' : 'var(--accent-emerald)'}; font-size: 0.78rem; font-weight: 600;">
-            ${escapeHtml(cp.status || 'SequencerConfirmed')}
+          <span style="color: ${displayState.tone}; font-size: 0.78rem; font-weight: 600;">
+            ${escapeHtml(displayState.label)}
           </span>
         </td>
-        <td style="font-family: var(--font-mono); color: var(--accent-cyan);" title="${escapeHtml(cp.commitment)}">
+        <td style="font-family: var(--font-mono); color: var(--accent-cyan);" title="${escapeHtml(cp.commitment || cp.commitment_hex || '')}">
           ${commitTrunc}
         </td>
         <td>
@@ -751,7 +1246,7 @@ function renderRelayerCheckpoints(data) {
             <a href="${escapeHtml(explorerUrl)}" target="_blank" rel="noopener noreferrer" class="arbiscan-link">
               Arbiscan ↗
             </a>
-          ` : '<span style="color: var(--text-muted); font-size: 0.78rem;">Local</span>'}
+          ` : '<span style="color: var(--text-muted); font-size: 0.78rem;">No verified explorer link</span>'}
         </td>
       </tr>
     `;
@@ -765,10 +1260,14 @@ function renderFleet(data) {
   if (data.fleet_summary) {
     const fs = data.fleet_summary;
     const kpiVaults = document.getElementById('fleet-kpi-vaults');
-    if (kpiVaults) kpiVaults.textContent = String(fs.total_tracked_vaults ?? 1);
+    if (kpiVaults) kpiVaults.textContent = fs.total_tracked_vaults == null ? '--' : String(fs.total_tracked_vaults);
 
     const kpiOps = document.getElementById('fleet-kpi-operators');
-    if (kpiOps) kpiOps.textContent = `${fs.active_operators ?? 3} / 3`;
+    if (kpiOps) {
+      const active = fs.active_operators ?? fs.online_operators;
+      const total = fs.total_operators;
+      kpiOps.textContent = active == null && total == null ? '-- / --' : `${active ?? '--'} / ${total ?? '--'}`;
+    }
 
     const kpiLat = document.getElementById('fleet-kpi-latency');
     if (kpiLat) kpiLat.textContent = fs.avg_latency_ms != null ? `${fs.avg_latency_ms} ms` : '-- ms';
@@ -828,9 +1327,9 @@ function renderFleet(data) {
             ${truncateHash(v.vault_id, 10, 8)}
           </td>
           <td style="font-family: var(--font-mono); color: var(--text-secondary);">
-            ${v.head_cid ? truncateHash(v.head_cid, 10, 8) : '<em>Genesis</em>'}
+            ${v.head_cid ? truncateHash(v.head_cid, 10, 8) : '<em>Not reported</em>'}
           </td>
-          <td>${formatBytes(v.storage_allowance_bytes || 0)}</td>
+          <td>${v.storage_allowance_bytes == null ? 'Not reported' : formatBytes(v.storage_allowance_bytes)}</td>
           <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(v.registered_at)}</td>
         </tr>
       `).join('');
@@ -851,10 +1350,10 @@ function renderFleet(data) {
             <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(a.timestamp)}</td>
             <td style="font-family: var(--font-mono);">${truncateHash(a.vault_id, 8, 6)}</td>
             <td><strong style="color: ${color};">${escapeHtml(a.status)}</strong></td>
-            <td style="color: var(--accent-emerald); font-family: var(--font-mono);">${a.healthy_objects}</td>
-            <td style="color: var(--accent-rose); font-family: var(--font-mono);">${a.degraded_objects}</td>
-            <td style="color: var(--accent-cyan); font-family: var(--font-mono);">${a.repaired_objects}</td>
-            <td style="font-family: var(--font-mono);">${a.duration_ms} ms</td>
+            <td style="color: var(--accent-emerald); font-family: var(--font-mono);">${a.healthy_objects ?? '--'}</td>
+            <td style="color: var(--accent-rose); font-family: var(--font-mono);">${a.degraded_objects ?? '--'}</td>
+            <td style="color: var(--accent-cyan); font-family: var(--font-mono);">${a.repaired_objects ?? '--'}</td>
+            <td style="font-family: var(--font-mono);">${a.duration_ms == null ? 'Not reported' : `${a.duration_ms} ms`}</td>
           </tr>
         `;
       }).join('');
@@ -867,7 +1366,19 @@ function renderRecoveryKit(recovery, vaultIdHex) {
   if (recVaultId) recVaultId.textContent = vaultIdHex || "";
 
   const recCrc32 = document.getElementById('rec-crc32');
-  if (recCrc32 && recovery.crc32) recCrc32.textContent = `CRC32: ${recovery.crc32} (PASSED)`;
+  if (recCrc32) {
+    const checksum = recovery.crc32 || recovery.checksum_hex;
+    const verified = recovery.crc32_verified === true || recovery.checksum_verified === true;
+    if (checksum) {
+      recCrc32.textContent = verified
+        ? `CRC32: ${checksum} (verified)`
+        : `CRC32: ${checksum} (reported; not rechecked)`;
+      recCrc32.style.color = verified ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+    } else {
+      recCrc32.textContent = 'Checksum not available';
+      recCrc32.style.color = 'var(--text-muted)';
+    }
+  }
 
   const recSigningPk = document.getElementById('rec-signing-pk');
   if (recSigningPk) recSigningPk.textContent = recovery.recovery_signing_pk_hex || "";
@@ -923,6 +1434,7 @@ function initTabs() {
   const tabContents = Array.from(document.querySelectorAll('.tab-content'));
 
   const activateTab = (btn, shouldFocus = false) => {
+    if (!btn || btn.hidden) return;
     const targetId = btn.getAttribute('data-target');
 
     tabButtons.forEach(b => {
@@ -947,6 +1459,9 @@ function initTabs() {
     if (targetContent) {
       targetContent.classList.add('active');
       targetContent.setAttribute('tabindex', '0');
+      if (targetId === 'tab-fastcdc' && canAccessPrivateFeature('plaintext_inspection')) {
+        loadVaultFilesForFastCdc();
+      }
     }
   };
 
@@ -960,21 +1475,24 @@ function initTabs() {
     btn.addEventListener('click', () => activateTab(btn));
 
     btn.addEventListener('keydown', (e) => {
-      let nextIdx = idx;
+      const visibleTabs = tabButtons.filter(tab => !tab.hidden);
+      const visibleIndex = visibleTabs.indexOf(btn);
+      if (visibleIndex < 0 || visibleTabs.length === 0) return;
+      let nextIdx = visibleIndex;
       if (e.key === 'ArrowRight') {
-        nextIdx = (idx + 1) % tabButtons.length;
+        nextIdx = (visibleIndex + 1) % visibleTabs.length;
         e.preventDefault();
-        activateTab(tabButtons[nextIdx], true);
+        activateTab(visibleTabs[nextIdx], true);
       } else if (e.key === 'ArrowLeft') {
-        nextIdx = (idx - 1 + tabButtons.length) % tabButtons.length;
+        nextIdx = (visibleIndex - 1 + visibleTabs.length) % visibleTabs.length;
         e.preventDefault();
-        activateTab(tabButtons[nextIdx], true);
+        activateTab(visibleTabs[nextIdx], true);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        activateTab(tabButtons[0], true);
+        activateTab(visibleTabs[0], true);
       } else if (e.key === 'End') {
         e.preventDefault();
-        activateTab(tabButtons[tabButtons.length - 1], true);
+        activateTab(visibleTabs[visibleTabs.length - 1], true);
       }
     });
   });
@@ -1251,9 +1769,9 @@ function initQuickActions() {
         const result = await res.json();
 
         if (result.success) {
-          showToast("✓ Snapshot captured & replicated across 3 operators!");
+          showToast("Snapshot captured. Check the local activity log for replica audit results.");
           const modal = document.getElementById('modal-create-snapshot');
-          if (modal) modal.classList.remove('open');
+          if (modal) closeModal(modal);
           await fetchAllData();
         } else {
           showToast(`Error: ${result.error || 'Failed to capture snapshot'}`);
@@ -1275,7 +1793,7 @@ function initQuickActions() {
       const res = await fetch('/api/anchors', { method: 'POST' });
       const result = await res.json();
       if (result.success || result.status === 'ok') {
-        showToast("✓ Checkpoint commitment anchored to Arbitrum One!");
+        showToast("Checkpoint commitment prepared locally. No on-chain receipt has been verified yet.");
         await Promise.all([fetchAllData(), fetchRelayerCheckpoints()]);
       } else {
         showToast(`Anchor error: ${result.error || 'Failed'}`);
@@ -1295,12 +1813,19 @@ function initQuickActions() {
   const btnAudit = document.getElementById('btn-trigger-audit');
   if (btnAudit) {
     btnAudit.addEventListener('click', async () => {
-      showToast("Auditing replica closures across 3 operators...");
+      showToast("Running an explicit local recovery audit...");
       try {
         const res = await fetch('/api/audit', { method: 'POST' });
         const result = await res.json();
         if (result.success) {
-          showToast("✓ Replica audit passed: All chunks durable (3/3)");
+          state.audit = result.report || null;
+          renderAudit(state.audit);
+          const recoverable = Array.isArray(state.audit?.recoverable_operators)
+            ? state.audit.recoverable_operators.length
+            : null;
+          showToast(recoverable == null
+            ? 'Recovery audit reported a healthy result.'
+            : `Recovery audit reported ${recoverable} recoverable operator response(s).`);
           await fetchOperators();
         } else {
           state.audit = result.report || null;
@@ -1355,12 +1880,12 @@ function initMathVerifier() {
 
         outputBox.innerHTML = `
           <div style="font-weight: 700; color: ${matches ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; margin-bottom: 6px;">
-            ${matches ? '✓ MATHEMATICAL PROOF CONFIRMED (100% MATCH)' : '✗ COMMITMENT MISMATCH'}
+            ${matches ? '✓ COMMITMENT PREIMAGE MATCHES' : '✗ COMMITMENT MISMATCH'}
           </div>
-          <div>Target On-Chain: <code>0x${latest.commitment_hex}</code></div>
+          <div>Recorded commitment: <code>0x${latest.commitment_hex}</code></div>
           <div>Browser Computed:  <code>0x${computedHex}</code></div>
           <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 6px;">
-            Zero-knowledge invariant: Verified on-chain inclusion without leaking plaintext file contents or paths.
+            This verifies the local commitment preimage only. It does not verify transaction inclusion or chain finality.
           </div>
         `;
       } catch (err) {
@@ -1368,137 +1893,6 @@ function initMathVerifier() {
       }
     });
   }
-}
-
-function initGuardianActions() {
-  const btnGenerate = document.getElementById('btn-generate-guardians');
-  if (btnGenerate) {
-    btnGenerate.addEventListener('click', async () => {
-      const selectM = document.getElementById('select-threshold-m');
-      const selectN = document.getElementById('select-total-n');
-      const secretInput = document.getElementById('input-split-recovery-secret');
-      const m = selectM ? parseInt(selectM.value, 10) : 3;
-      const n = selectN ? parseInt(selectN.value, 10) : 5;
-      const recoverySecretHex = secretInput ? secretInput.value.trim() : "";
-
-      if (m > n) {
-        showToast("Threshold (M) cannot exceed Total Guardians (N)", "error");
-        return;
-      }
-
-      if (!recoverySecretHex) {
-        showToast("Authentic ceremony: enter 64-char master recovery secret (R).", "warning");
-      }
-
-      showToast(`Partitioning recovery secret into ${m}-of-${n} threshold shares...`);
-      try {
-        const res = await fetch('/api/guardians/split', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            threshold: m,
-            total_shares: n,
-            recovery_secret_hex: recoverySecretHex || null
-          })
-        });
-        const result = await res.json();
-        if (result.status === 'ok' || result.success) {
-          state.guardians = result;
-          renderGuardians(result);
-          showToast(`✓ Generated ${result.sheets.length} authentic guardian shares (${m}-of-${n})`);
-        } else if (result.status === 'requires_secret') {
-          showToast(`Authentic ceremony: ${result.message}`, "warning");
-        } else {
-          showToast(`Error: ${result.error || result.message || 'Failed to split secret'}`, "error");
-        }
-
-      } catch (err) {
-        showToast("Network error generating guardian shares", "error");
-      }
-    });
-  }
-
-  const btnRecombine = document.getElementById('btn-simulate-recombine');
-  const simSharesInput = document.getElementById('input-simulation-shares');
-  const simResult = document.getElementById('simulation-result');
-
-  if (btnRecombine && simSharesInput && simResult) {
-    btnRecombine.addEventListener('click', async () => {
-      const rawText = simSharesInput.value.trim();
-      if (!rawText) {
-        showToast("Please paste at least 1 guardian share to simulate reconstruction.");
-        return;
-      }
-
-      const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-      const shares = [];
-      lines.forEach(l => {
-        if (l.includes('CIPHERVAULT-THRESHOLD-RECOVERY-V1:')) {
-          const match = l.match(/CIPHERVAULT-THRESHOLD-RECOVERY-V1:[A-Za-z0-9+/=]+/);
-          if (match) shares.push(match[0]);
-          else shares.push(l);
-        } else if (l.length > 20 && !l.startsWith('#') && !l.startsWith('---') && !l.startsWith('===')) {
-          shares.push(l);
-        }
-      });
-
-      if (shares.length === 0) {
-        showToast("No valid threshold recovery shares found in input text.");
-        return;
-      }
-
-      simResult.style.display = "block";
-      simResult.className = "simulation-result";
-      simResult.innerHTML = "Computing Shamir polynomial interpolation in zeroized memory...";
-
-      try {
-        const res = await fetch('/api/guardians/reconstruct', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shares })
-        });
-        const data = await res.json();
-
-        if (data.verified_signing_pk_matches || data.matches_vault) {
-          simResult.className = "simulation-result success";
-
-          simResult.innerHTML = `
-            <div style="font-weight: 700; color: var(--accent-emerald); margin-bottom: 6px;">
-              ✓ SHAMIR POLYNOMIAL RECONSTRUCTION VERIFIED (100% MATCH)
-            </div>
-            <div>Shares Provided: <strong>${data.shares_provided}</strong> (Quorum Met)</div>
-            <div>Recovered Signing PK: <code style="color: var(--accent-cyan); font-size: 0.78rem;">${escapeHtml(data.recovery_signing_pk)}</code></div>
-            <div style="color: var(--accent-emerald); font-size: 0.78rem; margin-top: 6px;">
-              ✓ Mathematical reconstruction matches registered vault recovery key. Master recovery secret R was validated in volatile RAM and immediately zeroized.
-            </div>
-          `;
-          showToast("✓ Threshold reconstruction verified!");
-        } else {
-          simResult.className = "simulation-result error";
-          simResult.innerHTML = `
-            <div style="font-weight: 700; color: var(--accent-rose); margin-bottom: 6px;">
-              ✗ RECONSTRUCTION FAILED
-            </div>
-            <div>${escapeHtml(data.message || 'Shares could not reconstruct matching recovery key')}</div>
-            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 6px;">
-              Shares provided: ${data.shares_provided || 0}. Ensure you have at least M distinct, non-corrupted shares.
-            </div>
-          `;
-          showToast("Simulation failed: Incomplete or mismatched shares");
-        }
-      } catch (err) {
-        simResult.className = "simulation-result error";
-        simResult.textContent = `Simulation error: ${err.message}`;
-      }
-    });
-  }
-
-  // Modal close handlers for guardian sheet modal
-  const modal = document.getElementById('modal-guardian-sheet');
-  const closeBtn = document.getElementById('btn-close-modal-guardian');
-  const closeFooter = document.getElementById('btn-close-guardian-footer');
-  if (closeBtn && modal) closeBtn.addEventListener('click', () => modal.classList.remove('open'));
-  if (closeFooter && modal) closeFooter.addEventListener('click', () => modal.classList.remove('open'));
 }
 
 function initRelayerActions() {
@@ -1633,7 +2027,7 @@ function showToast(message, type = 'info') {
 // -------------------------------------------------------------
 
 function initSseStream() {
-  if (typeof EventSource === 'undefined') return;
+  if (typeof EventSource === 'undefined' || state.sseStream || document.hidden) return;
   try {
     const sse = new EventSource('/api/stream');
     state.sseStream = sse;
@@ -1650,14 +2044,14 @@ function initSseStream() {
     sse.onopen = () => {
       const sseText = document.getElementById('sse-stream-text');
       const sseDot = document.getElementById('sse-pulse-dot');
-      if (sseText) sseText.textContent = "SSE Stream: Active";
+      if (sseText) sseText.textContent = "Telemetry stream: Active";
       if (sseDot) sseDot.style.backgroundColor = "var(--accent-cyan)";
     };
 
     sse.onerror = () => {
       const sseText = document.getElementById('sse-stream-text');
       const sseDot = document.getElementById('sse-pulse-dot');
-      if (sseText) sseText.textContent = "SSE Stream: Reconnecting";
+      if (sseText) sseText.textContent = "Telemetry stream: Reconnecting";
       if (sseDot) sseDot.style.backgroundColor = "var(--accent-amber)";
     };
   } catch (e) {
@@ -1681,10 +2075,14 @@ function handleTelemetryPacket(data) {
       const elem = document.getElementById(`sse-op${idx + 1}-lat`);
       if (elem) {
         if (op.online) {
-          elem.textContent = `${op.latency_ms} ms`;
+          elem.textContent = typeof op.latency_ms === 'number' && Number.isFinite(op.latency_ms)
+            ? `${op.latency_ms} ms`
+            : 'Not reported';
           elem.style.color = "var(--accent-emerald)";
-          totalLat += op.latency_ms;
-          onlineCount++;
+          if (typeof op.latency_ms === 'number' && Number.isFinite(op.latency_ms)) {
+            totalLat += op.latency_ms;
+            onlineCount++;
+          }
         } else {
           elem.textContent = "OFFLINE";
           elem.style.color = "#ef4444";
@@ -1692,10 +2090,12 @@ function handleTelemetryPacket(data) {
       }
     });
 
+    const avgElem = document.getElementById('avg-latency-display');
     if (onlineCount > 0) {
       const avg = Math.round(totalLat / onlineCount);
-      const avgElem = document.getElementById('avg-latency-display');
       if (avgElem) avgElem.textContent = `${avg} ms`;
+    } else if (avgElem) {
+      avgElem.textContent = '-- ms';
     }
   }
 
@@ -1717,7 +2117,7 @@ function handleTelemetryPacket(data) {
 
 async function loadVaultFilesForFastCdc() {
   const selectElem = document.getElementById('select-vault-file');
-  if (!selectElem) return;
+  if (!selectElem || !canAccessPrivateFeature('plaintext_inspection') || state.fastCdcVaultFilesLoaded) return;
 
   try {
     const res = await fetch('/api/fastcdc/vault-files');
@@ -1743,11 +2143,7 @@ async function loadVaultFilesForFastCdc() {
           selectElem.appendChild(opt);
         });
 
-        // Automatically select the first real tracked file and auto-inspect it
-        if (data.files.length > 0) {
-          selectElem.selectedIndex = 1;
-          runFastCdcInspection({ file_path: data.files[0].path });
-        }
+        state.fastCdcVaultFilesLoaded = true;
       }
     }
   } catch (err) {
@@ -1776,13 +2172,8 @@ function initFastCdcInspector() {
 
   contentInput.addEventListener('input', updateByteCount);
 
-  if (selectVaultFile) {
-    selectVaultFile.addEventListener('change', () => {
-      if (selectVaultFile.value) {
-        runFastCdcInspection({ file_path: selectVaultFile.value });
-      }
-    });
-  }
+  // Selecting a vault file never sends its path or content by itself. The
+  // explicit inspect/run buttons are the only way to start an inspection.
 
   if (btnInspectVault) {
     btnInspectVault.addEventListener('click', () => {
@@ -1805,7 +2196,6 @@ function initFastCdcInspector() {
           contentInput.value = text;
           updateByteCount();
           showToast(`Loaded '${file.name}' (${formatBytes(file.size)})`);
-          runFastCdcInspection({ content: text });
         };
         reader.readAsText(file);
       }
@@ -1861,8 +2251,34 @@ function initFastCdcInspector() {
     });
   }
 
-  // Load real tracked files from active vault pipeline
-  loadVaultFilesForFastCdc();
+}
+
+function closeSseStream() {
+  if (state.sseStream && typeof state.sseStream.close === 'function') {
+    state.sseStream.close();
+  }
+  state.sseStream = null;
+  const sseText = document.getElementById('sse-stream-text');
+  const sseDot = document.getElementById('sse-pulse-dot');
+  if (sseText) sseText.textContent = 'Telemetry stream: Paused';
+  if (sseDot) sseDot.style.backgroundColor = 'var(--text-muted)';
+}
+
+function cycleFocusWithin(container, event) {
+  if (!container || event.key !== 'Tab') return;
+  const focusables = Array.from(container.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter(element => !(element.hasAttribute && element.hasAttribute('disabled')));
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function resetFastCdcMetrics() {
@@ -1874,9 +2290,18 @@ function resetFastCdcMetrics() {
     const el = document.getElementById(id);
     if (el) el.textContent = '--';
   });
+  const boundaryStatus = document.getElementById('f-metric-boundary-status');
+  if (boundaryStatus) {
+    boundaryStatus.textContent = 'Not measured';
+    boundaryStatus.style.color = 'var(--text-muted)';
+  }
 }
 
 async function runFastCdcInspection(opts) {
+  if (!canAccessPrivateFeature('plaintext_inspection')) {
+    showToast('FastCDC inspection is available only in a local private workspace.', 'warning');
+    return;
+  }
   const minSize = parseInt(document.getElementById('fastcdc-min-size')?.value || "4096", 10);
   const avgSize = parseInt(document.getElementById('fastcdc-avg-size')?.value || "16384", 10);
   const maxSize = parseInt(document.getElementById('fastcdc-max-size')?.value || "65536", 10);
@@ -1942,10 +2367,23 @@ function renderFastCdcResults(data) {
   if (totalChunksElem) totalChunksElem.textContent = String(m.total_chunks);
   if (uniqueRatioElem) uniqueRatioElem.textContent = `${m.unique_chunks} unique (${m.duplicate_chunks} dups)`;
   if (savingsPctElem) savingsPctElem.textContent = `${m.dedup_savings_pct.toFixed(1)}%`;
-  if (savedBytesElem) savedBytesElem.textContent = `${formatBytes(m.saved_bytes)} pruned`;
+  if (savedBytesElem) savedBytesElem.textContent = `${formatBytes(m.saved_bytes)} estimated duplicate bytes`;
   if (totalBytesElem) totalBytesElem.textContent = formatBytes(m.total_bytes);
-  if (uniqueBytesElem) uniqueBytesElem.textContent = `${formatBytes(m.unique_bytes)} wire size`;
+  if (uniqueBytesElem) uniqueBytesElem.textContent = `${formatBytes(m.unique_bytes)} unique bytes`;
   if (fixedCountElem) fixedCountElem.textContent = `${m.fixed_chunks_count} blocks`;
+  const boundaryStatusElem = document.getElementById('f-metric-boundary-status');
+  if (boundaryStatusElem) {
+    if (m.boundary_shift_resilient === true) {
+      boundaryStatusElem.textContent = 'Measured: resilient';
+      boundaryStatusElem.style.color = 'var(--accent-emerald)';
+    } else if (m.boundary_shift_resilient === false) {
+      boundaryStatusElem.textContent = 'Measured: changes detected';
+      boundaryStatusElem.style.color = 'var(--accent-amber)';
+    } else {
+      boundaryStatusElem.textContent = 'Not measured';
+      boundaryStatusElem.style.color = 'var(--text-muted)';
+    }
+  }
 
   const badgeTab = document.getElementById('badge-tab-fastcdc');
   if (badgeTab) badgeTab.textContent = `${m.total_chunks} Chunks`;
@@ -2022,11 +2460,11 @@ function selectChunk(index) {
   if (idxElem) idxElem.textContent = String(chunk.index);
   if (badgeElem) {
     if (chunk.is_duplicate) {
-      badgeElem.textContent = "Duplicate / Reused Chunk (0 Wire Bytes)";
+      badgeElem.textContent = "Duplicate chunk in this inspection";
       badgeElem.style.color = "#f87171";
       badgeElem.style.borderColor = "rgba(239, 68, 68, 0.4)";
     } else {
-      badgeElem.textContent = "Unique Chunk (Stored with Retention Lease)";
+      badgeElem.textContent = "Unique chunk in this inspection";
       badgeElem.style.color = "var(--accent-emerald)";
       badgeElem.style.borderColor = "rgba(0, 230, 118, 0.4)";
     }
@@ -2044,7 +2482,7 @@ function selectChunk(index) {
   }
   if (gearElem) gearElem.textContent = chunk.gear_fingerprint;
   if (cidElem) cidElem.textContent = chunk.cid_hex;
-  if (prevElem) prevElem.textContent = chunk.preview;
+  if (prevElem) prevElem.textContent = 'Content previews are disabled.';
 }
 
 // -------------------------------------------------------------
@@ -2446,6 +2884,7 @@ function openSnapshotDrawer(snap) {
   if (!drawer || !snap) return;
 
   state.lastActiveElement = document.activeElement;
+  state.drawerSnapshotId = snap.snapshot_id_hex;
 
   if (titleId) titleId.textContent = truncateHash(snap.snapshot_id_hex, 8, 6);
 
@@ -2528,15 +2967,22 @@ function openSnapshotDrawer(snap) {
       <div class="drawer-section">
         <span class="drawer-sec-title">Quorum Replicas</span>
         <div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
-          Snapshot is pinned across 3 independent Byzantine operators (Council Bluffs, IA & Berkeley County, SC) with tamper-evident Ed25519 signatures.
+          No snapshot-scoped replica proof is loaded here. Run an explicit local recovery audit before treating this snapshot as recoverable.
         </div>
       </div>
     `;
 
-    // Fetch snapshot-specific manifest (F07)
-    fetch(`/api/snapshots/${encodeURIComponent(snap.snapshot_id_hex)}/manifest`)
-      .then(r => r.json())
+    // Fetch only the manifest belonging to this snapshot. A failed request must
+    // never fall back to the current vault inventory, because that inventory can
+    // describe a different point in history.
+    const requestedSnapshotId = snap.snapshot_id_hex;
+    fetch(`/api/snapshots/${encodeURIComponent(requestedSnapshotId)}/manifest`)
+      .then(response => {
+        if (!response.ok) throw new Error(`Manifest request failed (${response.status})`);
+        return response.json();
+      })
       .then(data => {
+        if (state.drawerSnapshotId !== requestedSnapshotId) return;
         const filesListElem = document.getElementById('drawer-files-list');
         const badgeElem = document.getElementById('drawer-files-count-badge');
         if (!filesListElem) return;
@@ -2544,7 +2990,7 @@ function openSnapshotDrawer(snap) {
         if (data && data.status === 'ok' && Array.isArray(data.files)) {
           if (badgeElem) badgeElem.textContent = `${data.files_count} files (${formatBytes(data.total_bytes)})`;
           if (data.files.length === 0) {
-            filesListElem.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No confidential files registered in snapshot manifest.</div>';
+            filesListElem.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No confidential files registered in this snapshot manifest.</div>';
           } else {
             filesListElem.innerHTML = data.files.map(f => `
               <div class="drawer-file-item ${f.is_deleted ? 'deleted' : ''}">
@@ -2560,40 +3006,19 @@ function openSnapshotDrawer(snap) {
             `).join('');
           }
         } else {
-          if (badgeElem) badgeElem.textContent = 'Zero-Knowledge';
-          const fallbackFiles = state.vault && state.vault.tracked_files ? state.vault.tracked_files : [];
-          filesListElem.innerHTML = `
-            <div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 8px;">
-              <span style="color: var(--accent-amber);">🔒 Zero-Knowledge Proof:</span> Manifest is encrypted under epoch keys. Decryption is available in local authenticated workspace (<code>ciphervault ui --local</code>).
-            </div>
-            ${fallbackFiles.map(f => `
-              <div class="drawer-file-item">
-                <div class="file-top">
-                  <span class="file-name font-mono">${escapeHtml(f.path)}</span>
-                  <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
-                </div>
-                <div class="file-sub font-mono text-muted">Tracked Descriptor · ${truncateHash(f.file_id_hex, 8, 6)}</div>
-              </div>
-            `).join('')}
-          `;
+          if (badgeElem) badgeElem.textContent = 'Unavailable';
+          filesListElem.innerHTML = '<div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">This snapshot manifest is unavailable or cannot be decoded locally. Current vault files are intentionally not shown here because they may belong to a different snapshot.</div>';
         }
       })
       .catch(() => {
+        if (state.drawerSnapshotId !== requestedSnapshotId) return;
         const filesListElem = document.getElementById('drawer-files-list');
+        const badgeElem = document.getElementById('drawer-files-count-badge');
+        if (badgeElem) badgeElem.textContent = 'Unavailable';
         if (filesListElem) {
-          const fallbackFiles = state.vault && state.vault.tracked_files ? state.vault.tracked_files : [];
-          filesListElem.innerHTML = fallbackFiles.map(f => `
-            <div class="drawer-file-item">
-              <div class="file-top">
-                <span class="file-name font-mono">${escapeHtml(f.path)}</span>
-                <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
-              </div>
-              <div class="file-sub font-mono text-muted">File ID: ${truncateHash(f.file_id_hex, 8, 6)}</div>
-            </div>
-          `).join('') || '<div style="color: var(--text-muted); font-size: 0.85rem;">No files registered</div>';
+          filesListElem.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">Historical manifest could not be loaded. Current vault files are intentionally not substituted.</div>';
         }
       });
-
     // Safe restore prompt with target folder selection (F12)
     const btnRestore = document.getElementById('btn-drawer-restore-action');
     if (btnRestore) {
@@ -2645,7 +3070,9 @@ function openSnapshotDrawer(snap) {
 
   drawer.classList.add('drawer-open');
   drawer.classList.add('open');
+  drawer.removeAttribute('inert');
   drawer.setAttribute('aria-hidden', 'false');
+  if (document.body && document.body.classList) document.body.classList.add('snapshot-drawer-open');
   if (backdrop) {
     backdrop.classList.add('active');
     backdrop.classList.add('open');
@@ -2663,8 +3090,11 @@ function closeSnapshotDrawer() {
   if (drawer) {
     drawer.classList.remove('drawer-open');
     drawer.classList.remove('open');
+    drawer.setAttribute('inert', '');
     drawer.setAttribute('aria-hidden', 'true');
   }
+  state.drawerSnapshotId = null;
+  if (document.body && document.body.classList) document.body.classList.remove('snapshot-drawer-open');
   if (backdrop) {
     backdrop.classList.remove('active');
     backdrop.classList.remove('open');
@@ -2755,8 +3185,9 @@ function handleTerminalCommand(cmd) {
       break;
     case 'status':
       const vId = state.vault ? truncateHash(state.vault.vault_id_hex, 8, 6) : 'Uninitialized';
-      const onlineOps = (state.operators || []).filter(o => o.status === 'online').length;
-      appendTerminalLog('STATUS', `Vault: ${vId} | Operators: ${onlineOps}/3 online | Files: ${(state.vault?.tracked_files || []).length}`, 'var(--accent-cyan)');
+      const onlineOps = (state.operators || []).filter(operatorResponded).length;
+      const totalOps = (state.operators || []).length;
+      appendTerminalLog('STATUS', `Vault: ${vId} | Operators: ${onlineOps}/${totalOps || '--'} responding | Files: ${(state.vault?.tracked_files || []).length}`, 'var(--accent-cyan)');
       break;
     case 'diff':
       const tabDiffBtn = document.getElementById('tab-btn-diff');
@@ -2807,17 +3238,23 @@ function initKeyboardShortcuts() {
     const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
 
     if (e.key === 'Escape') {
-      if (modalShortcuts && modalShortcuts.classList.contains('open')) {
-        closeModal(modalShortcuts);
+      if (activeModal) {
+        closeModal(activeModal);
         return;
       }
-      const modalTrack = document.getElementById('modal-track-file');
-      if (modalTrack && modalTrack.classList.contains('open')) {
-        closeModal(modalTrack);
-        return;
-      }
-      closeSnapshotDrawer();
+      const drawer = document.getElementById('snapshot-drawer');
+      if (drawer && drawer.classList.contains('open')) closeSnapshotDrawer();
       if (isInput) e.target.blur();
+      return;
+    }
+
+    if (activeModal) {
+      cycleFocusWithin(activeModal, e);
+      return;
+    }
+    const drawer = document.getElementById('snapshot-drawer');
+    if (drawer && drawer.classList.contains('open')) {
+      cycleFocusWithin(drawer, e);
       return;
     }
 
@@ -2826,7 +3263,7 @@ function initKeyboardShortcuts() {
     // Number keys 1-9 for tab switching
     if (e.key >= '1' && e.key <= '9') {
       const idx = parseInt(e.key, 10) - 1;
-      const tabButtons = document.querySelectorAll('.tab-btn');
+      const tabButtons = Array.from(document.querySelectorAll('.tab-btn')).filter(tab => !tab.hidden);
       if (tabButtons[idx]) {
         tabButtons[idx].click();
       }
@@ -2835,7 +3272,9 @@ function initKeyboardShortcuts() {
 
     // '/' to focus search input
     if (e.key === '/') {
-      const searchInput = document.getElementById('input-filter-files') || document.getElementById('terminal-cmd-input');
+      const searchInput = document.getElementById('input-search-files')
+        || document.getElementById('input-search-dag')
+        || document.getElementById('terminal-cmd-input');
       if (searchInput) {
         e.preventDefault();
         searchInput.focus();
@@ -2883,7 +3322,7 @@ function initActivityFeed() {
 async function fetchActivity() {
   try {
     const res = await fetch('/api/activity?limit=50');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Activity request failed (${res.status})`);
     const data = await res.json();
     if (data && Array.isArray(data.events)) {
       state.activity = data.events;
@@ -2892,6 +3331,10 @@ async function fetchActivity() {
       renderActivity(data.events);
     }
   } catch (err) {
+    state.activity = [];
+    const badge = document.getElementById('badge-tab-activity');
+    if (badge) badge.textContent = '--';
+    renderActivity([]);
     console.warn("fetchActivity error:", err);
   }
 }
@@ -2947,13 +3390,20 @@ function renderActivity(events) {
 async function fetchWorkspaces() {
   try {
     const res = await fetch('/api/workspaces');
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`Workspace request failed (${res.status})`);
     const data = await res.json();
     if (data.status === 'ok' && data.workspaces) {
       state.workspaces = data.workspaces;
       renderWorkspaces(data.workspaces, data.active_workspace_db);
     }
   } catch (err) {
+    state.workspaces = [];
+    const badge = document.getElementById('workspace-count-badge');
+    if (badge) badge.textContent = '--';
+    const name = document.getElementById('active-workspace-name');
+    if (name) name.textContent = 'Workspace unavailable';
+    const list = document.getElementById('workspace-dropdown-list');
+    if (list) list.innerHTML = '<div class="loading-placeholder">Workspace discovery is unavailable.</div>';
     console.debug("Workspaces fetch notice:", err);
   }
 }

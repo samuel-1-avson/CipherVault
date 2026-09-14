@@ -44,6 +44,10 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   font-family: var(--font-sans);
   background-color: var(--bg-base);
@@ -56,6 +60,10 @@ body {
     linear-gradient(to bottom, #080b11, #0c1018);
   background-attachment: fixed;
   overflow-x: hidden;
+}
+
+body.snapshot-drawer-open {
+  overflow: hidden;
 }
 
 /* Accessibility Skip Link */
@@ -121,6 +129,42 @@ header.app-header {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   margin-bottom: 24px;
+}
+
+.public-explorer-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: -8px 0 24px;
+  padding: 13px 16px;
+  border: 1px solid rgba(0, 240, 255, 0.28);
+  border-radius: var(--radius-md);
+  background: rgba(0, 240, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+.public-explorer-notice strong {
+  flex: 0 0 auto;
+  color: var(--accent-cyan);
+}
+
+.guardian-local-guidance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 179, 0, 0.32);
+  border-radius: var(--radius-md);
+  background: rgba(255, 179, 0, 0.07);
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+.guardian-local-guidance strong {
+  color: var(--accent-amber);
 }
 
 .header-left {
@@ -1849,6 +1893,14 @@ header.app-header {
    Real-Time SSE Stream & FastCDC Visual Inspector Styles
    ========================================================================== */
 
+/* Private workspace surfaces stay hidden until the server explicitly declares
+   this page a loopback-bound local workspace. This prevents a public page from
+   flashing vault controls while its context request is still pending. */
+body:not(.local-private-explorer) [data-private-surface],
+body:not(.local-private-explorer) [data-private-action] {
+  display: none !important;
+}
+
 .sse-live-badge {
   background: rgba(0, 240, 255, 0.08);
   border-color: rgba(0, 240, 255, 0.25);
@@ -2723,7 +2775,8 @@ header.app-header {
 }
 
 .drawer-backdrop.active,
-.drawer-backdrop.open {
+.drawer-backdrop.open,
+.drawer-backdrop.is-open {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2745,11 +2798,21 @@ header.app-header {
   transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   flex-direction: column;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .drawer.drawer-open,
-.drawer.open {
+.drawer.open,
+.drawer.is-open {
   transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.drawer[aria-hidden="true"] {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .drawer-header {

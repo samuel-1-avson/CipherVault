@@ -13,8 +13,9 @@ const getElementById = id => {
       innerHTML: '',
       querySelectorAll: () => [],
       querySelector: () => null,
-      getAttribute: (k) => attrs.get(k) || null,
+      getAttribute: (k) => attrs.has(k) ? attrs.get(k) : null,
       setAttribute: (k, v) => attrs.set(k, String(v)),
+      removeAttribute: (k) => attrs.delete(k),
       addEventListener: () => {},
       focus: () => {},
       classList: {
@@ -76,11 +77,13 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   vm.runInContext(`renderRelayerCheckpoints({
     relayer_status: { operational: true, mode: 'auto_relayer', target_network: 'Arbitrum One / Sepolia' },
     checkpoints: [{
-      block_number: 123456,
-      tx_hash: '0xdeadbeef1234567890abcdef',
-      status: 'SequencerConfirmed',
+      reported_block_number: 123456,
+      tx_hash: '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      status: 'verified',
+      verification_status: 'verified',
+      chain_id: 421614,
       commitment: '0x112233445566778899aabbcc',
-      explorer_url: 'https://sepolia.arbiscan.io/tx/0xdeadbeef1234567890abcdef'
+      explorer_url: 'https://sepolia.arbiscan.io/tx/0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
     }]
   })`, context);
   assert.equal(getElementById('relayer-mode-display').textContent, 'Automated L2 Relayer: Active');
@@ -89,7 +92,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
 
   // Regression tests for Maintenance Fleet
   vm.runInContext(`renderFleet({
-    fleet_summary: { total_tracked_vaults: 2, active_operators: 3, avg_latency_ms: 14, audits_completed: 7 },
+    fleet_summary: { total_tracked_vaults: 2, active_operators: 3, total_operators: 3, avg_latency_ms: 14, audits_completed: 7 },
     vaults: [{ vault_id: 'vault_alpha', head_cid: 'cid_123', storage_allowance_bytes: 1048576, registered_at: '2026-09-12' }],
     operator_nodes: [{ operator_id: 'op-1', endpoint: 'http://127.0.0.1:8081', status: 'Online', latency_ms: 12, last_heartbeat: '2026-09-12' }],
     audit_history: [{ id: 1, vault_id: 'vault_alpha', status: 'Healthy', healthy_objects: 5, degraded_objects: 0, repaired_objects: 0, duration_ms: 18, timestamp: '2026-09-12' }]
@@ -140,7 +143,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
         gear_fingerprint: '0x1234567890abcdef',
         entropy: 5.432,
         is_duplicate: false,
-        preview: '{"timestamp":"2026-09-12T12:00:00Z"}'
+        preview: 'Content previews are disabled.'
       },
       {
         index: 1,
@@ -150,7 +153,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
         gear_fingerprint: '0xabcdef1234567890',
         entropy: 7.891,
         is_duplicate: false,
-        preview: 'data_stream_high_entropy'
+        preview: 'Content previews are disabled.'
       }
     ]
   })`, context);
@@ -164,6 +167,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert.equal(getElementById('detail-chunk-index').textContent, '1');
   assert.equal(getElementById('detail-chunk-gear').textContent, '0xabcdef1234567890');
   assert.equal(getElementById('detail-chunk-cid').textContent, 'b2c3d4e5f6a100112233445566778899aabbccddeeff00112233445566778899');
+  assert.equal(getElementById('detail-chunk-preview').textContent, 'Content previews are disabled.');
 
   // Regression tests for backend-emitted Guardian Split and Fleet responses (Contract reconciliation)
   vm.runInContext(`renderGuardians({
@@ -262,8 +266,18 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
     }]
   })`, context);
   const checkpointHtml = getElementById('table-checkpoints-body').innerHTML;
-  assert(checkpointHtml.includes('QueuedForRelay'), 'Unmined checkpoint must truthfully report QueuedForRelay');
+  assert(checkpointHtml.includes('Not submitted'), 'A checkpoint without a valid transaction hash must not claim relay progress');
   assert(!checkpointHtml.includes('arbiscan.io/tx/'), 'Unmined checkpoint must not fabricate explorer link');
+  assert.equal(
+    vm.runInContext("checkpointDisplayState({ status: 'SequencerConfirmed' }, '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef').confirmed", context),
+    false,
+    'A display status alone must not be treated as chain verification',
+  );
+  assert.equal(
+    vm.runInContext("checkpointDisplayState({ verification_status: 'verified' }, '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef').confirmed", context),
+    true,
+    'Only explicit verification evidence may produce a confirmed checkpoint state',
+  );
 
   // =========================================================================
   // 7. Secret Revision Diff Engine Tests
@@ -339,19 +353,18 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(getElementById('diff-results-container').innerHTML.includes('postgres://admin:old'), 'Diff must show revealed plaintext when toggle is activated');
 
   // =========================================================================
-  // 8. Geographic Multi-Region Quorum Topology Tests
+  // 8. Operator response summary tests
   // =========================================================================
   vm.runInContext(`
     renderOperators([
-      { operator_id: 'cv-operator-1', endpoint: 'https://vault.cipherv.online/op/1', status: 'online', latency_ms: 12, region: 'us-central1', zone: 'us-central1-a', is_shielded: true },
-      { operator_id: 'cv-operator-2', endpoint: 'https://vault.cipherv.online/op/2', status: 'online', latency_ms: 14, region: 'us-central1', zone: 'us-central1-b', is_shielded: true },
-      { operator_id: 'cv-operator-3', endpoint: 'https://vault.cipherv.online/op/3', status: 'online', latency_ms: 32, region: 'us-east1', zone: 'us-east1-b', is_shielded: true }
+      { operator_id: 'cv-operator-1', endpoint: 'https://vault.cipherv.online/op/1', status: 'online', latency_ms: 12, transport_security: 'https' },
+      { operator_id: 'cv-operator-2', endpoint: 'https://vault.cipherv.online/op/2', status: 'online', latency_ms: 14, transport_security: 'https' },
+      { operator_id: 'cv-operator-3', endpoint: 'https://vault.cipherv.online/op/3', status: 'online', latency_ms: 32, transport_security: 'https' }
     ]);
   `, context);
-  assert(getElementById('quorum-health-text').textContent.includes('Quorum 3/3 Healthy'), 'Quorum health must reflect 3/3 online nodes');
-  assert(getElementById('ping-op1').innerHTML.includes('12 ms'), 'Ping op1 must reflect live latency');
-  assert(getElementById('ping-op3').innerHTML.includes('32 ms'), 'Ping op3 must reflect live latency');
-  assert(getElementById('operators-grid').innerHTML.includes('TLS Shielded'), 'Operator card must display TLS Shielded badge');
+  assert.equal(getElementById('quorum-health-text').textContent, '3/3 operators responding', 'Response summary must reflect configured operators');
+  assert(getElementById('operator-response-summary').textContent.includes('3/3 configured operators responded'), 'Response summary must disclose the probe scope');
+  assert(getElementById('operators-grid').innerHTML.includes('HTTPS configured'), 'Operator card must display observed transport security');
   assert(getElementById('operators-grid').innerHTML.includes('card-operator-1'), 'Operator card 1 must be rendered in grid');
 
   // =========================================================================
@@ -372,6 +385,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(getElementById('snapshot-drawer').classList.contains('open'), 'Drawer must open upon inspect trigger');
   assert(getElementById('snapshot-drawer').classList.contains('drawer-open'), 'Drawer must have drawer-open class');
   assert.equal(getElementById('snapshot-drawer').getAttribute('aria-hidden'), 'false', 'Open drawer must have aria-hidden="false"');
+  assert.equal(getElementById('snapshot-drawer').getAttribute('inert'), null, 'Open drawer must be available to assistive technology');
   assert(getElementById('snapshot-drawer-backdrop').classList.contains('active'), 'Drawer backdrop must have active class');
   assert(getElementById('drawer-snap-id').textContent.includes('e63584c0'), 'Drawer must display snapshot ID');
   assert(getElementById('drawer-body').innerHTML.includes('Restore Snapshot to Disk'), 'Drawer must provide one-click restore action');
@@ -380,6 +394,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   vm.runInContext('closeSnapshotDrawer()', context);
   assert(!getElementById('snapshot-drawer').classList.contains('drawer-open'), 'Closed drawer must not have drawer-open');
   assert.equal(getElementById('snapshot-drawer').getAttribute('aria-hidden'), 'true', 'Closed drawer must have aria-hidden="true"');
+  assert.equal(getElementById('snapshot-drawer').getAttribute('inert'), '', 'Closed drawer must be inert');
   assert(!getElementById('snapshot-drawer-backdrop').classList.contains('active'), 'Closed backdrop must not have active class');
 
   // =========================================================================
@@ -391,7 +406,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   `, context);
   assert.equal(getElementById('terminal-event-counter').textContent, '2 events');
   assert(getElementById('terminal-logs').innerHTML.includes('Testing terminal event emission'), 'Terminal log must include emitted message');
-  assert(getElementById('terminal-logs').innerHTML.includes('Operators: 3/3 online'), 'Terminal status command must output live cluster summary');
+  assert(getElementById('terminal-logs').innerHTML.includes('Operators: 3/3 responding'), 'Terminal status command must output live cluster summary');
 
   // =========================================================================
   // 11. Truthful Active Head & Snapshot History Tests (F06)

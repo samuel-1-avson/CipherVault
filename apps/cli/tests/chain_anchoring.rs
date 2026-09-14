@@ -257,5 +257,7 @@ async fn test_live_arbitrum_rpc_send_raw_transaction_and_receipt() {
     let report = client.verify_evidence(&evidence).await.unwrap();
     assert!(report.preimage_valid);
     assert!(report.on_chain_confirmed);
+    assert!(report.receipt_verified);
+    assert_eq!(report.receipt_block_number, Some(0x12345));
     assert_eq!(report.recorded_block_number, 0x12345);
 }

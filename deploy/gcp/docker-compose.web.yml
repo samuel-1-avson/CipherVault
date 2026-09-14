@@ -6,14 +6,30 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       - CIPHERVAULT_OPERATORS=http://10.128.0.39 http://10.128.0.40 http://10.142.0.2
+      - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}
+      - CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=${CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE:-/var/lib/ciphervault-ui/operator-telemetry.json}
       - RUST_LOG=info
     volumes:
       - vault_data:/var/lib/ciphervault-ui
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/vault"]
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:8080/api/vault"]
       interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 10s
+
+  public-feed-publisher:
+    profiles: ["public-feed"]
+    image: ciphervault-ui:gcp
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/entrypoint-public-feed-publisher.sh"]
+    environment:
+      - CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX=${CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX:-}
+      - CIPHERVAULT_PUBLIC_FEED_OUTPUT=${CIPHERVAULT_PUBLIC_FEED_OUTPUT:-/var/lib/ciphervault-ui/public-checkpoint-feed.json}
+      - CIPHERVAULT_PUBLIC_FEED_NETWORK=${CIPHERVAULT_PUBLIC_FEED_NETWORK:-Arbitrum One}
+      - CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS=${CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS:-60}
+    volumes:
+      - vault_data:/var/lib/ciphervault-ui
 
   caddy:
     image: caddy:2-alpine
@@ -27,7 +43,8 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - ciphervault-ui
+      ciphervault-ui:
+        condition: service_healthy
 
 volumes:
   vault_data:

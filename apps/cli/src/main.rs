@@ -2,15 +2,20 @@ use anyhow::{bail, Context, Result};
 use chrono::{TimeZone, Utc};
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::*;
+use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use std::fs::{self, OpenOptions};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 use zeroize::Zeroize;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures_util::stream::{self, Stream};
+use futures_util::{
+    future::join_all,
+    stream::{self, Stream},
+};
 
 use ciphervault_crypto::{
     generate_signing_key, HardwareSecurityModule, RecoverySecret, VaultEpochKey,
@@ -21,7 +26,7 @@ use ciphervault_format::{
 };
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_maintenance::MaintenanceDb;
-use ciphervault_recovery::{OfflineRecoveryKit, ThresholdRecoveryKit};
+use ciphervault_recovery::OfflineRecoveryKit;
 use ciphervault_snapshot::{
     create_snapshot, create_snapshot_with_signer, decrypt_snapshot, fastcdc_chunk,
     restore_snapshot, DeviceSigner, FastCdcConfig,
@@ -275,6 +280,19 @@ enum Commands {
         rpc: Option<String>,
     },
 
+    /// Publish a signed public checkpoint feed from local vault evidence
+    PublishPublicFeed {
+        #[arg(short, long, help = "Output JSON path consumed by the public explorer")]
+        output: PathBuf,
+
+        #[arg(
+            long,
+            default_value = "Arbitrum One",
+            help = "Human-readable network label included in each checkpoint"
+        )]
+        network: String,
+    },
+
     /// Manage Git pre-commit hooks and secret leak prevention
     Hook {
         #[command(subcommand)]
@@ -298,7 +316,7 @@ enum Commands {
         #[arg(
             long,
             default_value = "127.0.0.1",
-            help = "Host address to bind to in local mode"
+            help = "Host address to bind when serving (a loopback address is required with --local)"
         )]
         host: String,
 
@@ -315,13 +333,15 @@ enum Commands {
 
         #[arg(
             long,
+            conflicts_with = "serve",
             help = "Run an isolated local offline server instead of opening the production cloud dashboard"
         )]
         local: bool,
 
         #[arg(
             long,
-            help = "Start the web dashboard HTTP server directly without opening browser (for containers/cloud)"
+            conflicts_with = "local",
+            help = "Start the public read-only explorer HTTP server (private vault APIs remain disabled)"
         )]
         serve: bool,
 
@@ -764,6 +784,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
         Commands::VerifyAnchor { head, rpc } => cmd_verify_anchor(head, rpc).await,
+        Commands::PublishPublicFeed { output, network } => cmd_publish_public_feed(output, network),
         Commands::Hook { sub } => match sub {
             HookSubcommand::Install => cmd_hook_install(),
             HookSubcommand::Check => cmd_hook_check(),
@@ -1335,22 +1356,32 @@ pub const DEFAULT_PRODUCTION_OPERATORS: &[&str] = &[
 pub fn mask_operator_endpoint(endpoint: &str) -> String {
     let ep = endpoint.trim_end_matches('/');
     if ep.ends_with("/op/1") || ep.contains("136.65.43.84") || ep.contains("10.128.0.39") {
-        "https://vault.cipherv.online/op/1 [Shielded Gateway - Iowa us-central1-a]".to_string()
+        "https://vault.cipherv.online/op/1".to_string()
     } else if ep.ends_with("/op/2") || ep.contains("34.9.157.167") || ep.contains("10.128.0.40") {
-        "https://vault.cipherv.online/op/2 [Shielded Gateway - Iowa us-central1-b]".to_string()
+        "https://vault.cipherv.online/op/2".to_string()
     } else if ep.ends_with("/op/3") || ep.contains("34.73.53.40") || ep.contains("10.142.0.2") {
-        "https://vault.cipherv.online/op/3 [Shielded Gateway - S. Carolina us-east1-b]".to_string()
-    } else if let Some(stripped) = ep.strip_prefix("http://").or_else(|| ep.strip_prefix("https://")) {
+        "https://vault.cipherv.online/op/3".to_string()
+    } else if let Some(stripped) = ep
+        .strip_prefix("http://")
+        .or_else(|| ep.strip_prefix("https://"))
+    {
         let host_port = stripped.split('/').next().unwrap_or(stripped);
         let host = host_port.split(':').next().unwrap_or(host_port);
         let parts: Vec<&str> = host.split('.').collect();
-        if parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+        if parts.len() == 4
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
             let port_suffix = if host_port.contains(':') {
                 format!(":{}", host_port.split(':').nth(1).unwrap_or(""))
             } else {
                 String::new()
             };
-            format!("Shielded Operator ({}.***.***.{}){}", parts[0], parts[3], port_suffix)
+            format!(
+                "Operator ({}.***.***.{}){}",
+                parts[0], parts[3], port_suffix
+            )
         } else {
             endpoint.to_string()
         }
@@ -2397,36 +2428,37 @@ async fn cmd_run(
         return Ok(());
     }
 
-#[cfg(target_os = "windows")]
-fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
-    let p = Path::new(exe);
-    if p.extension().is_some() || exe.contains('\\') || exe.contains('/') {
-        return (exe.to_string(), Vec::new());
-    }
+    #[cfg(target_os = "windows")]
+    fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
+        let p = Path::new(exe);
+        if p.extension().is_some() || exe.contains('\\') || exe.contains('/') {
+            return (exe.to_string(), Vec::new());
+        }
 
-    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    let extensions: Vec<&str> = pathext.split(';').filter(|s| !s.is_empty()).collect();
+        let pathext =
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        let extensions: Vec<&str> = pathext.split(';').filter(|s| !s.is_empty()).collect();
 
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            for ext in &extensions {
-                let candidate = dir.join(format!("{}{}", exe, ext));
-                if candidate.is_file() {
-                    let ext_upper = ext.to_uppercase();
-                    if ext_upper == ".CMD" || ext_upper == ".BAT" {
-                        return (
-                            "cmd.exe".to_string(),
-                            vec!["/c".to_string(), candidate.to_string_lossy().to_string()],
-                        );
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                for ext in &extensions {
+                    let candidate = dir.join(format!("{}{}", exe, ext));
+                    if candidate.is_file() {
+                        let ext_upper = ext.to_uppercase();
+                        if ext_upper == ".CMD" || ext_upper == ".BAT" {
+                            return (
+                                "cmd.exe".to_string(),
+                                vec!["/c".to_string(), candidate.to_string_lossy().to_string()],
+                            );
+                        }
+                        return (candidate.to_string_lossy().to_string(), Vec::new());
                     }
-                    return (candidate.to_string_lossy().to_string(), Vec::new());
                 }
             }
         }
-    }
 
-    (exe.to_string(), Vec::new())
-}
+        (exe.to_string(), Vec::new())
+    }
 
     // Configure Child Command
     let exe = &command[0];
@@ -4200,6 +4232,14 @@ async fn cmd_verify_anchor(head_hex_opt: Option<String>, rpc_opt: Option<String>
             "Unsubmitted / Pending On-Chain".yellow()
         }
     );
+    println!(
+        "  Receipt Verified:  {}",
+        if report.receipt_verified {
+            "Yes (independent RPC receipt)".green()
+        } else {
+            "No (receipt unavailable or inconsistent)".yellow()
+        }
+    );
 
     let stage_str = match report.finality_stage {
         ciphervault_storage::AnchorFinalityStage::Pending => "Pending".yellow(),
@@ -4221,6 +4261,145 @@ async fn cmd_verify_anchor(head_hex_opt: Option<String>, rpc_opt: Option<String>
     };
     println!("  Finality Stage:    {}", stage_str);
 
+    Ok(())
+}
+
+fn load_public_feed_signing_key() -> Result<SigningKey> {
+    let raw = std::env::var("CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX").map_err(|_| {
+        anyhow::anyhow!(
+            "CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX is required to publish the public feed"
+        )
+    })?;
+    let decoded = hex::decode(raw.trim().trim_start_matches("0x"))
+        .context("Public checkpoint signing key is not valid hex")?;
+    if decoded.len() != 32 {
+        bail!("Public checkpoint signing key must be exactly 32 bytes");
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&decoded);
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn build_public_checkpoint_feed(
+    evidence: Vec<ciphervault_format::CheckpointEvidence>,
+    network: String,
+    signing_key: &SigningKey,
+    issued_at_utc: u64,
+) -> Result<PublicCheckpointFeedEnvelope> {
+    if network.trim().is_empty() {
+        bail!("Public checkpoint feed network label cannot be empty");
+    }
+    if evidence.len() > 1_000 {
+        bail!("Public checkpoint feed cannot contain more than 1,000 records");
+    }
+
+    let checkpoints = evidence
+        .into_iter()
+        .map(|record| {
+            if record.version != ciphervault_format::PROTOCOL_VERSION {
+                bail!("Checkpoint evidence uses an unsupported protocol version");
+            }
+            if !record.verify_commitment() {
+                bail!("Checkpoint evidence contains an invalid commitment preimage");
+            }
+            if record.chain_id == 0
+                || record.contract_address.len() != 20
+                || record.commitment.len() != 32
+                || record.head_record_cid.len() != 32
+            {
+                bail!("Checkpoint evidence contains invalid chain or digest lengths");
+            }
+
+            let tx_present =
+                record.tx_hash.len() == 32 && record.tx_hash.iter().any(|byte| *byte != 0);
+            if !record.tx_hash.is_empty() && record.tx_hash.len() != 32 {
+                bail!("Checkpoint evidence contains an invalid transaction hash");
+            }
+
+            Ok(PublicCheckpointFeedEntry {
+                network: network.clone(),
+                chain_id: record.chain_id,
+                contract_address_hex: hex::encode(record.contract_address),
+                commitment_hex: hex::encode(record.commitment),
+                head_record_cid_hex: hex::encode(record.head_record_cid),
+                tx_hash_hex: tx_present.then(|| hex::encode(record.tx_hash)),
+                block_number: (record.block_number > 0).then_some(record.block_number),
+                published_at_utc: record.timestamp_utc,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let unsigned = PublicCheckpointFeedUnsigned {
+        version: 1,
+        issued_at_utc,
+        checkpoints,
+    };
+    let message = ciphervault_format::to_canonical_cbor(&unsigned)
+        .context("Unable to canonicalize public checkpoint feed")?;
+    let signature = ciphervault_crypto::signatures::sign_with_domain(
+        signing_key,
+        b"public_checkpoint_feed",
+        &message,
+    );
+    Ok(PublicCheckpointFeedEnvelope {
+        version: unsigned.version,
+        issued_at_utc: unsigned.issued_at_utc,
+        checkpoints: unsigned.checkpoints,
+        publisher_key_hex: hex::encode(signing_key.verifying_key().as_bytes()),
+        signature_hex: hex::encode(signature),
+    })
+}
+
+fn cmd_publish_public_feed(output: PathBuf, network: String) -> Result<()> {
+    let signing_key = load_public_feed_signing_key()?;
+    let store = get_vault_store()?;
+    let evidence = store
+        .list_checkpoint_evidence()
+        .context("Unable to read checkpoint evidence from the active vault")?;
+    let feed = build_public_checkpoint_feed(
+        evidence,
+        network,
+        &signing_key,
+        Utc::now().timestamp().max(0) as u64,
+    )?;
+    let encoded = serde_json::to_vec_pretty(&feed).context("Unable to encode public feed JSON")?;
+
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let temp_path = output.with_file_name(format!(
+        ".{}.tmp-{}",
+        output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("public-checkpoint-feed.json"),
+        std::process::id()
+    ));
+    fs::write(&temp_path, &encoded)?;
+    let write_result = (|| -> Result<()> {
+        if output.exists() {
+            fs::remove_file(&output)?;
+        }
+        fs::rename(&temp_path, &output)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    write_result?;
+
+    println!(
+        "Published {} signed checkpoint record(s) to {}",
+        feed.checkpoints.len(),
+        output.display()
+    );
+    println!(
+        "Publisher verification key: {}",
+        feed.publisher_key_hex.cyan()
+    );
+    println!(
+        "Receipt and finality fields remain independently unverified until a chain verifier confirms them."
+    );
     Ok(())
 }
 
@@ -4677,80 +4856,124 @@ const UI_INDEX_HTML: &str = include_str!("../../ui/index.html");
 const UI_STYLES_CSS: &str = include_str!("../../ui/styles.css");
 const UI_APP_JS: &str = include_str!("../../ui/app.js");
 
-fn open_browser(url: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("powershell")
-            .args(["-Command", &format!("Start-Process '{}'", url)])
-            .spawn();
+/// The embedded UI has two deliberately separate serving contexts. The local
+/// workspace has access to a vault's private data and actions, while the
+/// hosted server is a public explorer and must never acquire those routes by
+/// accident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UiServerMode {
+    LocalPrivate,
+    PublicExplorer,
+}
+
+impl UiServerMode {
+    fn access_mode(self) -> &'static str {
+        match self {
+            Self::LocalPrivate => "private",
+            Self::PublicExplorer => "public",
+        }
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::LocalPrivate => "local_private",
+            Self::PublicExplorer => "public_explorer",
+        }
     }
 }
 
-async fn cmd_ui(
-    host: String,
-    port: u16,
-    no_browser: bool,
-    local: bool,
-    serve: bool,
-    cloud_url: String,
-) -> Result<()> {
-    if !local && !serve {
-        let vault_info = get_vault_store().ok();
-        let target_url = if let Some(ref store) = vault_info {
-            if let Ok(vault_id) = store.get_vault_id() {
-                format!(
-                    "{}/?vault={}",
-                    cloud_url.trim_end_matches('/'),
-                    hex::encode(vault_id)
-                )
-            } else {
-                cloud_url.clone()
-            }
-        } else {
-            cloud_url.clone()
-        };
+#[derive(Clone)]
+struct PrivateUiSessionState {
+    token: String,
+    vault_binding: Option<String>,
+    issued_at: Instant,
+}
 
-        println!(
-            "{}",
-            "=======================================================".cyan()
-        );
-        println!(
-            "{}",
-            "  CipherVault Cloud Dashboard & Visual Secrets Explorer"
-                .bold()
-                .green()
-        );
-        println!(
-            "{}",
-            "=======================================================".cyan()
-        );
-        println!("  Dashboard URL:  {}", target_url.bold().yellow());
-        if let Some(ref store) = vault_info {
-            if let Ok(vault_id) = store.get_vault_id() {
-                println!("  Active Vault:   {}", hex::encode(vault_id).cyan());
-            }
-        }
-        println!("  Cluster Status: 3 Live GCP Multi-Region Operators (Iowa & S. Carolina)");
-        println!("  Offline Mode:   Pass '--local' to run an isolated offline server instead.\n");
+static PRIVATE_UI_SESSION: OnceLock<RwLock<PrivateUiSessionState>> = OnceLock::new();
+const PRIVATE_UI_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 
-        if !no_browser {
-            println!("Opening {} in default web browser...", target_url.cyan());
-            open_browser(&target_url);
-        }
-        return Ok(());
+fn current_private_vault_binding() -> Option<String> {
+    get_vault_store()
+        .ok()
+        .and_then(|store| store.get_vault_id().ok())
+        .map(hex::encode)
+}
+
+fn new_private_ui_session(vault_binding: Option<String>) -> PrivateUiSessionState {
+    let mut token_bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut token_bytes);
+    PrivateUiSessionState {
+        token: hex::encode(token_bytes),
+        vault_binding,
+        issued_at: Instant::now(),
     }
+}
 
+fn private_ui_session_should_rotate(
+    state: &PrivateUiSessionState,
+    current_binding: &Option<String>,
+) -> bool {
+    state.vault_binding != *current_binding || state.issued_at.elapsed() >= PRIVATE_UI_SESSION_TTL
+}
+
+fn private_ui_session_snapshot() -> PrivateUiSessionState {
+    let current_binding = current_private_vault_binding();
+    let session = PRIVATE_UI_SESSION
+        .get_or_init(|| RwLock::new(new_private_ui_session(current_binding.clone())));
+    let mut state = session
+        .write()
+        .expect("private UI session lock must not be poisoned");
+    if private_ui_session_should_rotate(&state, &current_binding) {
+        *state = new_private_ui_session(current_binding);
+    }
+    state.clone()
+}
+
+fn revoke_private_ui_session() {
+    let current_binding = current_private_vault_binding();
+    let session = PRIVATE_UI_SESSION
+        .get_or_init(|| RwLock::new(new_private_ui_session(current_binding.clone())));
+    let mut state = session
+        .write()
+        .expect("private UI session lock must not be poisoned");
+    *state = new_private_ui_session(current_binding);
+}
+
+fn ui_capabilities(mode: UiServerMode) -> serde_json::Value {
+    let private = mode == UiServerMode::LocalPrivate;
+    let public_feed_configured = std::env::var("CIPHERVAULT_PUBLIC_CHECKPOINT_FEED")
+        .ok()
+        .is_some_and(|path| !path.trim().is_empty());
+    serde_json::json!({
+        "public_operator_telemetry": true,
+        // A public checkpoint publisher is opt-in. Never use a local vault
+        // database as an implicit public feed.
+        "public_checkpoint_metadata": !private && public_feed_configured,
+        "vault_workspace": private,
+        "snapshot_history": private,
+        "file_inventory": private,
+        "snapshot_mutation": private,
+        "restore": private,
+        "file_management": private,
+        "recovery_ceremony": private,
+        "plaintext_inspection": private,
+        "workspace_switching": private,
+        "fleet_audit": private,
+    })
+}
+
+fn ui_context(mode: UiServerMode) -> serde_json::Value {
+    serde_json::json!({
+        "mode": mode.name(),
+        "access_mode": mode.access_mode(),
+        "capabilities": ui_capabilities(mode),
+    })
+}
+
+fn ui_shell_router() -> axum::Router {
     use axum::{http::header, response::Html, routing::get, Router};
 
-    let app = Router::new()
+    Router::new()
         .route("/", get(|| async { Html(UI_INDEX_HTML) }))
         .route(
             "/styles.css",
@@ -4764,6 +4987,17 @@ async fn cmd_ui(
                     UI_APP_JS,
                 )
             }),
+        )
+}
+
+fn private_ui_router() -> axum::Router {
+    use axum::routing::get;
+
+    ui_shell_router()
+        .route("/api/context", get(api_private_context_handler))
+        .route(
+            "/api/session/revoke",
+            axum::routing::post(api_private_session_revoke_handler),
         )
         .route("/api/vault", get(api_vault_handler))
         .route("/api/operators", get(api_operators_handler))
@@ -4780,16 +5014,8 @@ async fn cmd_ui(
             "/api/anchors",
             get(api_anchors_handler).post(api_create_anchor_handler),
         )
-        .route("/api/audit", get(api_audit_handler).post(api_audit_handler))
+        .route("/api/audit", axum::routing::post(api_audit_handler))
         .route("/api/guardians", get(api_guardians_handler))
-        .route(
-            "/api/guardians/split",
-            axum::routing::post(api_guardians_split_handler),
-        )
-        .route(
-            "/api/guardians/reconstruct",
-            axum::routing::post(api_guardians_reconstruct_handler),
-        )
         .route(
             "/api/relayer/checkpoints",
             get(api_relayer_checkpoints_handler),
@@ -4826,7 +5052,6 @@ async fn cmd_ui(
             "/api/snapshots/restore",
             axum::routing::post(api_snapshots_restore_handler),
         )
-        .route("/api/secrets/inspect", get(api_secrets_inspect_handler))
         .route("/api/workspaces", get(api_workspaces_handler))
         .route(
             "/api/workspaces/switch",
@@ -4835,13 +5060,136 @@ async fn cmd_ui(
         .route(
             "/api/workspaces/scan",
             axum::routing::post(api_workspaces_scan_handler),
-        );
+        )
+        .layer(axum::middleware::from_fn(private_ui_request_guard))
+}
 
-    let host_ip: std::net::IpAddr = host
-        .parse()
-        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+fn public_ui_router() -> axum::Router {
+    use axum::routing::get;
+
+    ui_shell_router()
+        .route("/api/context", get(api_public_context_handler))
+        .route("/api/vault", get(api_public_vault_handler))
+        .route("/api/operators", get(api_public_operators_handler))
+        .route("/api/anchors", get(api_public_anchors_handler))
+        .route(
+            "/api/relayer/checkpoints",
+            get(api_public_relayer_checkpoints_handler),
+        )
+        .route("/api/fleet", get(api_public_fleet_handler))
+        .route("/api/stream", get(api_public_stream_handler))
+        .fallback(api_public_fallback_handler)
+}
+
+fn ui_router(mode: UiServerMode) -> axum::Router {
+    match mode {
+        UiServerMode::LocalPrivate => private_ui_router(),
+        UiServerMode::PublicExplorer => public_ui_router(),
+    }
+}
+
+fn parse_ui_host(host: &str) -> Result<std::net::IpAddr> {
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+
+    host.parse::<std::net::IpAddr>().with_context(|| {
+        format!(
+            "Invalid UI bind address '{}'. Use a literal IP address or localhost.",
+            host
+        )
+    })
+}
+
+fn ui_browser_url(host: std::net::IpAddr, port: u16) -> String {
+    let browser_host = if host.is_unspecified() {
+        if host.is_ipv4() {
+            "127.0.0.1".to_string()
+        } else {
+            "[::1]".to_string()
+        }
+    } else if host.is_ipv6() {
+        format!("[{}]", host)
+    } else {
+        host.to_string()
+    };
+    format!("http://{}:{}", browser_host, port)
+}
+
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("powershell")
+            .args(["-Command", &format!("Start-Process '{}'", url)])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+async fn cmd_ui(
+    host: String,
+    port: u16,
+    no_browser: bool,
+    local: bool,
+    serve: bool,
+    cloud_url: String,
+) -> Result<()> {
+    if !local && !serve {
+        let target_url = cloud_url.trim_end_matches('/').to_string();
+
+        println!(
+            "{}",
+            "=======================================================".cyan()
+        );
+        println!(
+            "{}",
+            "  CipherVault Cloud Dashboard & Visual Secrets Explorer"
+                .bold()
+                .green()
+        );
+        println!(
+            "{}",
+            "=======================================================".cyan()
+        );
+        println!("  Dashboard URL:  {}", target_url.bold().yellow());
+        println!("  Cluster Status: Open the explorer for live operator status");
+        println!("  Explorer Scope: Public cluster telemetry and published checkpoints only");
+        println!("  Private Vault:  Pass '--local' to open this machine's private workspace.\n");
+
+        if !no_browser {
+            println!("Opening {} in default web browser...", target_url.cyan());
+            open_browser(&target_url);
+        }
+        return Ok(());
+    }
+
+    let mode = if local {
+        UiServerMode::LocalPrivate
+    } else {
+        UiServerMode::PublicExplorer
+    };
+    let host_ip = parse_ui_host(&host)?;
+    if mode == UiServerMode::LocalPrivate && !host_ip.is_loopback() {
+        bail!(
+            "Refusing to expose the private local dashboard on {}. Use a loopback address such as 127.0.0.1 or ::1, or use '--serve' for the public read-only explorer.",
+            host_ip
+        );
+    }
+
+    let app = ui_router(mode);
+    if mode == UiServerMode::PublicExplorer {
+        spawn_public_operator_collector();
+    }
     let addr = std::net::SocketAddr::new(host_ip, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let browser_url = ui_browser_url(host_ip, port);
 
     println!(
         "{}",
@@ -4849,23 +5197,34 @@ async fn cmd_ui(
     );
     println!(
         "{}",
-        "  CipherVault Local Web Dashboard & Vault Inspector"
-            .bold()
-            .green()
+        match mode {
+            UiServerMode::LocalPrivate => {
+                "  CipherVault Local Web Dashboard & Vault Inspector"
+            }
+            UiServerMode::PublicExplorer => "  CipherVault Public Cluster Explorer",
+        }
+        .bold()
+        .green()
     );
     println!(
         "{}",
         "=======================================================".cyan()
     );
-    println!(
-        "  Dashboard URL:  {}",
-        format!("http://{}:{}", host, port).bold().yellow()
-    );
-    println!("  Serving Mode:   Isolated Local Offline Server");
+    println!("  Dashboard URL:  {}", browser_url.bold().yellow());
+    match mode {
+        UiServerMode::LocalPrivate => {
+            println!("  Serving Mode:   Private local workspace (loopback only)");
+            println!("  Private APIs:   Enabled for this local process");
+        }
+        UiServerMode::PublicExplorer => {
+            println!("  Serving Mode:   Public read-only explorer");
+            println!("  Private APIs:   Disabled (use 'ciphervault ui --local' on the vault host)");
+        }
+    }
     println!("  Press Ctrl+C to stop server.\n");
 
     if !no_browser {
-        let local_url = format!("http://127.0.0.1:{}", port);
+        let local_url = browser_url;
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             open_browser(&local_url);
@@ -4876,6 +5235,669 @@ async fn cmd_ui(
     Ok(())
 }
 
+async fn api_private_context_handler() -> axum::response::Response {
+    use axum::{http::header, response::IntoResponse};
+
+    let session = private_ui_session_snapshot();
+    let mut context = ui_context(UiServerMode::LocalPrivate);
+    if let Some(object) = context.as_object_mut() {
+        object.insert(
+            "session".to_string(),
+            serde_json::json!({
+                "scheme": "http_only_cookie",
+                "vault_bound": session.vault_binding.is_some(),
+                "ttl_seconds": PRIVATE_UI_SESSION_TTL.as_secs(),
+                "revocation_endpoint": "/api/session/revoke",
+            }),
+        );
+    }
+    let mut response = axum::Json(context).into_response();
+    let cookie = format!(
+        "ciphervault_private_session={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
+        session.token,
+        PRIVATE_UI_SESSION_TTL.as_secs()
+    );
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        axum::http::HeaderValue::from_str(&cookie)
+            .expect("generated private session cookie must be valid"),
+    );
+    response
+}
+
+async fn api_private_session_revoke_handler() -> axum::response::Response {
+    use axum::{http::header, response::IntoResponse};
+
+    revoke_private_ui_session();
+    let mut response = axum::Json(serde_json::json!({
+        "status": "ok",
+        "revoked": true,
+        "message": "The current private dashboard session was revoked. Open /api/context to establish a new session.",
+    }))
+    .into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        axum::http::HeaderValue::from_static(
+            "ciphervault_private_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict",
+        ),
+    );
+    response
+}
+
+async fn api_public_context_handler() -> axum::Json<serde_json::Value> {
+    axum::Json(ui_context(UiServerMode::PublicExplorer))
+}
+
+async fn api_public_vault_handler() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "mode": UiServerMode::PublicExplorer.name(),
+        "access_mode": UiServerMode::PublicExplorer.access_mode(),
+        "capabilities": ui_capabilities(UiServerMode::PublicExplorer),
+        "service": "CipherVault public cluster explorer",
+        "private_vault_access": false,
+        "message": "This public explorer does not expose vault identity, files, snapshots, recovery descriptors, or private actions.",
+    }))
+}
+
+async fn api_public_fallback_handler(uri: axum::http::Uri) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    if uri.path().starts_with("/api/") {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "PRIVATE_API_DISABLED",
+                "error": "This API is available only from a loopback-bound local private workspace.",
+            })),
+        )
+            .into_response();
+    }
+
+    StatusCode::NOT_FOUND.into_response()
+}
+
+fn local_host_name(value: &str) -> Option<String> {
+    if value.eq_ignore_ascii_case("localhost") {
+        return Some("localhost".to_string());
+    }
+    let address = value.parse::<std::net::IpAddr>().ok()?;
+    if address.is_loopback() {
+        Some(address.to_string().to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn local_authority(value: &str) -> Option<(String, u16)> {
+    let authority = value.trim();
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let host = &rest[..end];
+        let port = rest[end + 1..]
+            .strip_prefix(':')
+            .and_then(|raw| raw.parse::<u16>().ok())
+            .unwrap_or(80);
+        (host, port)
+    } else if let Some((host, raw_port)) = authority.rsplit_once(':') {
+        if let Ok(port) = raw_port.parse::<u16>() {
+            (host, port)
+        } else {
+            (authority, 80)
+        }
+    } else {
+        (authority, 80)
+    };
+    Some((local_host_name(host)?, port))
+}
+
+async fn private_ui_request_guard(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    let headers = request.headers();
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(local_authority);
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            let url = reqwest::Url::parse(value).ok()?;
+            if url.scheme() != "http" || url.username() != "" || url.password().is_some() {
+                return None;
+            }
+            let host = local_host_name(url.host_str()?)?;
+            Some((host, url.port_or_known_default().unwrap_or(80)))
+        });
+    let origin_header_present = headers.contains_key(axum::http::header::ORIGIN);
+    let is_mutation = matches!(
+        request.method(),
+        &axum::http::Method::POST
+            | &axum::http::Method::PUT
+            | &axum::http::Method::PATCH
+            | &axum::http::Method::DELETE
+    );
+    let origin_matches_host = origin
+        .as_ref()
+        .zip(host.as_ref())
+        .is_some_and(|(origin, host)| origin == host);
+
+    let path = request.uri().path();
+    let is_api = path.starts_with("/api/");
+    let is_context = path == "/api/context";
+    let session_valid = if is_api && !is_context {
+        let session = private_ui_session_snapshot();
+        headers
+            .get(axum::http::header::COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|cookies| {
+                cookies.split(';').find_map(|cookie| {
+                    let (name, value) = cookie.trim().split_once('=')?;
+                    (name == "ciphervault_private_session").then_some(value)
+                })
+            })
+            .is_some_and(|value| value == session.token)
+    } else {
+        true
+    };
+
+    if host.is_none()
+        || (origin_header_present && (origin.is_none() || !origin_matches_host))
+        || (is_mutation && (origin.is_none() || !origin_matches_host))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "LOCAL_ORIGIN_REQUIRED",
+                "error": "Private dashboard requests must originate from the loopback dashboard address.",
+            })),
+        )
+            .into_response();
+    }
+
+    if is_api && !is_context && !session_valid {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "PRIVATE_SESSION_REQUIRED",
+                "error": "Open the loopback private dashboard context before calling private APIs.",
+            })),
+        )
+            .into_response();
+    }
+
+    let mut response = next.run(request).await;
+    let response_headers = response.headers_mut();
+    response_headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response_headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    response_headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    response
+}
+
+fn public_operator_id(operator_id: &str, index: usize) -> String {
+    let safe_id = operator_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect::<String>();
+    if safe_id.is_empty() {
+        format!("operator-{}", index + 1)
+    } else {
+        safe_id
+    }
+}
+
+const PUBLIC_OPERATOR_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const PUBLIC_OPERATOR_CACHE_TTL: Duration = Duration::from_secs(30);
+const PUBLIC_OPERATOR_PERSISTED_MAX_AGE: Duration = Duration::from_secs(90);
+
+#[derive(Clone)]
+struct PublicOperatorTelemetry {
+    observed_at: chrono::DateTime<Utc>,
+    cached_at: Instant,
+    operators: Vec<serde_json::Value>,
+}
+
+static PUBLIC_OPERATOR_TELEMETRY_CACHE: OnceLock<
+    tokio::sync::Mutex<Option<PublicOperatorTelemetry>>,
+> = OnceLock::new();
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedPublicOperatorTelemetry {
+    observed_at_utc: String,
+    operators: Vec<serde_json::Value>,
+}
+
+fn public_operator_telemetry_path() -> Option<PathBuf> {
+    std::env::var("CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn load_persisted_public_operator_telemetry() -> Option<PublicOperatorTelemetry> {
+    let path = public_operator_telemetry_path()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let persisted: PersistedPublicOperatorTelemetry = serde_json::from_str(&contents).ok()?;
+    let observed_at = chrono::DateTime::parse_from_rfc3339(&persisted.observed_at_utc)
+        .ok()?
+        .with_timezone(&Utc);
+    let now = Utc::now();
+    if observed_at > now + chrono::Duration::minutes(5)
+        || now.signed_duration_since(observed_at).to_std().ok()? > PUBLIC_OPERATOR_PERSISTED_MAX_AGE
+    {
+        return None;
+    }
+    Some(PublicOperatorTelemetry {
+        observed_at,
+        cached_at: Instant::now(),
+        operators: persisted.operators,
+    })
+}
+
+fn persist_public_operator_telemetry(snapshot: &PublicOperatorTelemetry) -> Result<()> {
+    let path = public_operator_telemetry_path()
+        .context("public operator telemetry persistence path is not configured")?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let payload = serde_json::to_vec_pretty(&PersistedPublicOperatorTelemetry {
+        observed_at_utc: snapshot.observed_at.to_rfc3339(),
+        operators: snapshot.operators.clone(),
+    })?;
+    let temp_path = path.with_file_name(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("operator-telemetry.json"),
+        std::process::id()
+    ));
+    fs::write(&temp_path, payload)?;
+    let result = (|| -> Result<()> {
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
+        fs::rename(&temp_path, &path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn spawn_public_operator_collector() {
+    if public_operator_telemetry_path().is_none() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(PUBLIC_OPERATOR_CACHE_TTL);
+        loop {
+            interval.tick().await;
+            let snapshot = PublicOperatorTelemetry {
+                observed_at: Utc::now(),
+                cached_at: Instant::now(),
+                operators: probe_public_operators_uncached().await,
+            };
+            if let Err(error) = persist_public_operator_telemetry(&snapshot) {
+                eprintln!("Public operator telemetry persistence failed: {error}");
+            }
+        }
+    });
+}
+
+async fn probe_public_operators_uncached() -> Vec<serde_json::Value> {
+    let probes =
+        get_configured_operators()
+            .into_iter()
+            .enumerate()
+            .map(|(index, endpoint)| async move {
+                let client = OperatorClient::new(endpoint);
+                let start = std::time::Instant::now();
+                match tokio::time::timeout(PUBLIC_OPERATOR_PROBE_TIMEOUT, client.get_info()).await {
+                    Ok(Ok(info)) => serde_json::json!({
+                        "display_name": format!("Operator {}", index + 1),
+                        "operator_id": public_operator_id(&info.operator_id, index),
+                        "status": "reachable",
+                        "identity_verification": "unverified",
+                        "latency_ms": start.elapsed().as_millis(),
+                    }),
+                    Ok(Err(_)) | Err(_) => serde_json::json!({
+                        "display_name": format!("Operator {}", index + 1),
+                        "operator_id": format!("operator-{}", index + 1),
+                        "status": "unreachable",
+                        "identity_verification": "not_observed",
+                        "latency_ms": serde_json::Value::Null,
+                    }),
+                }
+            });
+
+    join_all(probes).await
+}
+
+async fn public_operator_telemetry() -> PublicOperatorTelemetry {
+    if let Some(snapshot) = load_persisted_public_operator_telemetry() {
+        let cache = PUBLIC_OPERATOR_TELEMETRY_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
+        *cache.lock().await = Some(snapshot.clone());
+        return snapshot;
+    }
+    let cache = PUBLIC_OPERATOR_TELEMETRY_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut cached = cache.lock().await;
+    if let Some(snapshot) = cached.as_ref() {
+        if snapshot.cached_at.elapsed() < PUBLIC_OPERATOR_CACHE_TTL {
+            return snapshot.clone();
+        }
+    }
+
+    // Hold this lock while probing so a burst of browser requests has one
+    // shared measurement instead of fanning out requests to every operator.
+    let snapshot = PublicOperatorTelemetry {
+        observed_at: Utc::now(),
+        cached_at: Instant::now(),
+        operators: probe_public_operators_uncached().await,
+    };
+    *cached = Some(snapshot.clone());
+    snapshot
+}
+
+async fn api_public_operators_handler() -> axum::Json<serde_json::Value> {
+    let telemetry = public_operator_telemetry().await;
+    let observed_at = telemetry.observed_at.to_rfc3339();
+    let operators = telemetry
+        .operators
+        .into_iter()
+        .map(|mut operator| {
+            if let Some(object) = operator.as_object_mut() {
+                object.insert(
+                    "observed_at".to_string(),
+                    serde_json::Value::String(observed_at.clone()),
+                );
+            }
+            operator
+        })
+        .collect::<Vec<_>>();
+    axum::Json(serde_json::json!(operators))
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct PublicCheckpointFeedEntry {
+    network: String,
+    chain_id: u64,
+    contract_address_hex: String,
+    commitment_hex: String,
+    head_record_cid_hex: String,
+    #[serde(default)]
+    tx_hash_hex: Option<String>,
+    #[serde(default)]
+    block_number: Option<u64>,
+    published_at_utc: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct PublicCheckpointFeedUnsigned {
+    version: u32,
+    issued_at_utc: u64,
+    checkpoints: Vec<PublicCheckpointFeedEntry>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct PublicCheckpointFeedEnvelope {
+    version: u32,
+    issued_at_utc: u64,
+    checkpoints: Vec<PublicCheckpointFeedEntry>,
+    publisher_key_hex: String,
+    signature_hex: String,
+}
+
+fn verify_public_checkpoint_feed(
+    feed: &PublicCheckpointFeedEnvelope,
+) -> Result<Vec<serde_json::Value>, String> {
+    const MAX_PUBLIC_CHECKPOINTS: usize = 1_000;
+    const MAX_PUBLIC_FEED_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+    const MAX_PUBLIC_FEED_FUTURE_SKEW_SECS: u64 = 5 * 60;
+    if feed.version != 1 {
+        return Err("Unsupported public checkpoint feed version".to_string());
+    }
+    if feed.checkpoints.len() > MAX_PUBLIC_CHECKPOINTS {
+        return Err("Public checkpoint feed exceeds the 1,000 record limit".to_string());
+    }
+    let now = Utc::now().timestamp().max(0) as u64;
+    if feed.issued_at_utc > now.saturating_add(MAX_PUBLIC_FEED_FUTURE_SKEW_SECS) {
+        return Err("Public checkpoint feed timestamp is too far in the future".to_string());
+    }
+    if now.saturating_sub(feed.issued_at_utc) > MAX_PUBLIC_FEED_AGE_SECS {
+        return Err("Public checkpoint feed is stale".to_string());
+    }
+
+    let publisher_key = hex::decode(feed.publisher_key_hex.trim_start_matches("0x"))
+        .map_err(|_| "Public checkpoint publisher key is not valid hex".to_string())?;
+    if publisher_key.len() != 32 {
+        return Err("Public checkpoint publisher key must be 32 bytes".to_string());
+    }
+    let mut publisher_key_arr = [0u8; 32];
+    publisher_key_arr.copy_from_slice(&publisher_key);
+
+    let signature = hex::decode(feed.signature_hex.trim_start_matches("0x"))
+        .map_err(|_| "Public checkpoint feed signature is not valid hex".to_string())?;
+    if signature.len() != 64 {
+        return Err("Public checkpoint feed signature must be 64 bytes".to_string());
+    }
+    let mut signature_arr = [0u8; 64];
+    signature_arr.copy_from_slice(&signature);
+
+    let unsigned = PublicCheckpointFeedUnsigned {
+        version: feed.version,
+        issued_at_utc: feed.issued_at_utc,
+        checkpoints: feed.checkpoints.clone(),
+    };
+    let message = ciphervault_format::to_canonical_cbor(&unsigned)
+        .map_err(|e| format!("Unable to canonicalize public checkpoint feed: {e}"))?;
+    ciphervault_crypto::signatures::verify_with_domain(
+        &publisher_key_arr,
+        b"public_checkpoint_feed",
+        &message,
+        &signature_arr,
+    )
+    .map_err(|_| "Public checkpoint feed signature verification failed".to_string())?;
+
+    feed.checkpoints
+        .iter()
+        .map(|checkpoint| {
+            if checkpoint.network.trim().is_empty() || checkpoint.chain_id == 0 {
+                return Err("Public checkpoint feed contains an incomplete network record".to_string());
+            }
+            for (label, value, expected_len) in [
+                ("contract address", checkpoint.contract_address_hex.as_str(), 40usize),
+                ("commitment", checkpoint.commitment_hex.as_str(), 64usize),
+                ("head record CID", checkpoint.head_record_cid_hex.as_str(), 64usize),
+            ] {
+                let decoded = hex::decode(value.trim_start_matches("0x"))
+                    .map_err(|_| format!("Public checkpoint {label} is not valid hex"))?;
+                if decoded.len() != expected_len / 2 {
+                    return Err(format!("Public checkpoint {label} has an invalid length"));
+                }
+            }
+            if let Some(tx_hash) = checkpoint.tx_hash_hex.as_deref() {
+                let decoded = hex::decode(tx_hash.trim_start_matches("0x"))
+                    .map_err(|_| "Public checkpoint transaction hash is not valid hex".to_string())?;
+                if decoded.len() != 32 {
+                    return Err("Public checkpoint transaction hash has an invalid length".to_string());
+                }
+            }
+
+            let tx_hash = checkpoint.tx_hash_hex.clone().unwrap_or_default();
+            let has_transaction = !tx_hash.is_empty();
+            Ok(serde_json::json!({
+                "network": &checkpoint.network,
+                "chain_id": checkpoint.chain_id,
+                "contract_address_hex": &checkpoint.contract_address_hex,
+                "commitment_hex": &checkpoint.commitment_hex,
+                "head_record_cid_hex": &checkpoint.head_record_cid_hex,
+                "tx_hash_hex": if has_transaction { serde_json::Value::String(tx_hash) } else { serde_json::Value::Null },
+                "reported_block_number": checkpoint.block_number,
+                "published_at_utc": checkpoint.published_at_utc,
+                "status": if has_transaction { "Published" } else { "QueuedForRelay" },
+                "verification_status": "publisher_signed",
+                "finality_status": "unverified",
+                "publisher_key_hex": &feed.publisher_key_hex,
+            }))
+        })
+        .collect()
+}
+
+fn load_public_checkpoint_feed() -> Result<Option<Vec<serde_json::Value>>, String> {
+    let path = match std::env::var("CIPHERVAULT_PUBLIC_CHECKPOINT_FEED") {
+        Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => return Ok(None),
+    };
+    let contents = fs::read_to_string(&path)
+        .map_err(|_| "Configured public checkpoint feed could not be read".to_string())?;
+    let feed: PublicCheckpointFeedEnvelope = serde_json::from_str(&contents)
+        .map_err(|_| "Configured public checkpoint feed is not valid JSON".to_string())?;
+    verify_public_checkpoint_feed(&feed).map(Some)
+}
+
+async fn api_public_anchors_handler() -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    match load_public_checkpoint_feed() {
+        Ok(Some(checkpoints)) => axum::Json(checkpoints).into_response(),
+        Ok(None) => axum::Json(serde_json::json!([])).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "verification_status": "invalid",
+                "error": error,
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    match load_public_checkpoint_feed() {
+        Ok(Some(checkpoints)) => {
+            let checkpoint_count = checkpoints.len();
+            let network = checkpoints
+                .first()
+                .and_then(|checkpoint| checkpoint.get("network"))
+                .and_then(|network| network.as_str())
+                .unwrap_or("Published checkpoint feed");
+            axum::Json(serde_json::json!({
+                "status": "ok",
+                "access_mode": "public",
+                "relayer_status": {
+                    "public_read_only": true,
+                    "target_network": network,
+                    "verification_status": "publisher_signed",
+                    "finality_status": "unverified",
+                },
+                "checkpoints": checkpoints,
+                "count": checkpoint_count,
+                "message": "Checkpoint records are signed by the configured publisher; chain receipt and finality remain independently unverified.",
+            }))
+            .into_response()
+        }
+        Ok(None) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "access_mode": "public",
+            "relayer_status": {
+                "public_read_only": true,
+                "target_network": "No public checkpoint feed configured",
+                "verification_status": "unavailable",
+            },
+            "checkpoints": [],
+            "count": 0,
+            "message": "A signed public checkpoint feed has not been configured. Private vault checkpoint evidence remains available only in a loopback workspace.",
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "access_mode": "public",
+                "relayer_status": {
+                    "public_read_only": true,
+                    "target_network": "Public checkpoint feed unavailable",
+                    "verification_status": "invalid",
+                },
+                "checkpoints": [],
+                "count": 0,
+                "error": error,
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_public_fleet_handler() -> axum::Json<serde_json::Value> {
+    let operator_count = get_configured_operators().len();
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "access_mode": "public",
+        "fleet_summary": {
+            "total_operators": operator_count,
+        },
+        "operator_nodes": [],
+        "vaults": [],
+        "audit_history": [],
+        "message": "Vault fleet inventory and audit history are available only in a private local workspace.",
+    }))
+}
+
+async fn api_public_stream_handler(
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let stream = stream::unfold((), |_| async {
+        let telemetry = public_operator_telemetry().await;
+        let observed_at = telemetry.observed_at;
+        let operators = telemetry
+            .operators
+            .into_iter()
+            .map(|operator| {
+                let reachable = operator["status"] == "reachable";
+                serde_json::json!({
+                    "operator": operator["operator_id"],
+                    "online": reachable,
+                    "identity_verification": operator["identity_verification"],
+                    "latency_ms": operator["latency_ms"],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let event = Event::default().event("telemetry").data(
+            serde_json::json!({
+                "timestamp": observed_at.to_rfc3339(),
+                "operators": operators,
+            })
+            .to_string(),
+        );
+        tokio::time::sleep(PUBLIC_OPERATOR_CACHE_TTL).await;
+        Some((Ok(event), ()))
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 async fn api_vault_handler() -> impl axum::response::IntoResponse {
     let store_res = get_vault_store();
     let store = match store_res {
@@ -4883,7 +5905,10 @@ async fn api_vault_handler() -> impl axum::response::IntoResponse {
         Err(_) => {
             return axum::Json(serde_json::json!({
                 "initialized": false,
-                "message": "No vault initialized in current directory"
+                "message": "No vault initialized in current directory",
+                "mode": UiServerMode::LocalPrivate.name(),
+                "access_mode": UiServerMode::LocalPrivate.access_mode(),
+                "capabilities": ui_capabilities(UiServerMode::LocalPrivate),
             }));
         }
     };
@@ -4909,6 +5934,9 @@ async fn api_vault_handler() -> impl axum::response::IntoResponse {
 
     axum::Json(serde_json::json!({
         "initialized": true,
+        "mode": UiServerMode::LocalPrivate.name(),
+        "access_mode": UiServerMode::LocalPrivate.access_mode(),
+        "capabilities": ui_capabilities(UiServerMode::LocalPrivate),
         "vault_id_hex": hex::encode(vault_id),
         "device_id_hex": hex::encode(device_id),
         "device_counter": device_counter,
@@ -4935,6 +5963,15 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
     for endpoint in operators {
         let client = OperatorClient::new(endpoint.clone());
         let start = std::time::Instant::now();
+        let transport_security = if endpoint
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("https://")
+        {
+            "https"
+        } else {
+            "http_or_unknown"
+        };
         match client.get_info().await {
             Ok(info) => {
                 let latency_ms = start.elapsed().as_millis();
@@ -4953,102 +5990,28 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     .chars()
                     .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
-                let (region, zone, location, is_cloud) = if endpoint.contains("/op/1")
-                    || endpoint.contains("136.65.43.84")
-                    || safe_id.contains("operator-1")
-                    || safe_id.contains("8201")
-                {
-                    (
-                        "us-central1",
-                        "us-central1-a",
-                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
-                        true,
-                    )
-                } else if endpoint.contains("/op/2")
-                    || endpoint.contains("34.9.157.167")
-                    || safe_id.contains("operator-2")
-                    || safe_id.contains("8202")
-                {
-                    (
-                        "us-central1",
-                        "us-central1-b",
-                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
-                        true,
-                    )
-                } else if endpoint.contains("/op/3")
-                    || endpoint.contains("34.73.53.40")
-                    || safe_id.contains("operator-3")
-                    || safe_id.contains("8203")
-                {
-                    (
-                        "us-east1",
-                        "us-east1-b",
-                        "Moncks Corner, South Carolina, USA (Shielded Gateway)",
-                        true,
-                    )
-                } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
-                    ("local", "local-dev", "Local Container / Loopback", false)
-                } else {
-                    ("custom", "cloud-vps", "Custom Storage Node", true)
-                };
                 let display_endpoint = mask_operator_endpoint(&endpoint);
                 results.push(serde_json::json!({
                     "endpoint": display_endpoint,
                     "target_url": display_endpoint,
                     "status": "online",
-                    "operator_id": safe_id,
+                    "operator_id": if safe_id.is_empty() { "operator" } else { &safe_id },
                     "operator_signing_pk_hex": safe_pk,
                     "latency_ms": latency_ms,
                     "retention_terms": info.retention_terms,
-                    "region": region,
-                    "zone": zone,
-                    "location": location,
-                    "is_cloud": is_cloud,
-                    "is_shielded": true,
-                    "quorum_role": "Byzantine Quorum Validator (2-of-3 Required)",
+                    "transport_security": transport_security,
+                    "identity_verification": "unverified",
                 }));
             }
-            Err(e) => {
-                let (region, zone, location, is_cloud) = if endpoint.contains("/op/1")
-                    || endpoint.contains("136.65.43.84")
-                {
-                    (
-                        "us-central1",
-                        "us-central1-a",
-                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
-                        true,
-                    )
-                } else if endpoint.contains("/op/2") || endpoint.contains("34.9.157.167") {
-                    (
-                        "us-central1",
-                        "us-central1-b",
-                        "Council Bluffs, Iowa, USA (Shielded Gateway)",
-                        true,
-                    )
-                } else if endpoint.contains("/op/3") || endpoint.contains("34.73.53.40") {
-                    (
-                        "us-east1",
-                        "us-east1-b",
-                        "Moncks Corner, South Carolina, USA (Shielded Gateway)",
-                        true,
-                    )
-                } else if endpoint.contains("127.0.0.1") || endpoint.contains("localhost") {
-                    ("local", "local-dev", "Local Container / Loopback", false)
-                } else {
-                    ("custom", "cloud-vps", "Custom Storage Node", true)
-                };
+            Err(_) => {
                 let display_endpoint = mask_operator_endpoint(&endpoint);
                 results.push(serde_json::json!({
                     "endpoint": display_endpoint,
                     "target_url": display_endpoint,
                     "status": "offline",
-                    "error": e.to_string(),
-                    "region": region,
-                    "zone": zone,
-                    "location": location,
-                    "is_cloud": is_cloud,
-                    "is_shielded": true,
-                    "quorum_role": "Byzantine Quorum Validator (2-of-3 Required)",
+                    "error": "Operator did not respond",
+                    "transport_security": transport_security,
+                    "identity_verification": "not_observed",
                 }));
             }
         }
@@ -5211,219 +6174,8 @@ async fn api_guardians_handler() -> impl axum::response::IntoResponse {
         "recovery_encrypt_pk_hex": hex::encode(encrypt_pk),
         "recovery_locator_hex": hex::encode(locator),
         "operator_endpoints": operators,
-        "default_threshold": 3,
-        "default_total_shares": 5,
-        "mode": "Pure-Rust GF(2^8) Shamir Secret Sharing",
+        "message": "No guardian ceremony status is stored in the dashboard. Use the local CLI and approved offline procedure for guardian recovery material.",
     }))
-}
-
-#[derive(serde::Deserialize)]
-struct SplitGuardiansRequest {
-    threshold: Option<u8>,
-    total_shares: Option<u8>,
-    recovery_secret_hex: Option<String>,
-}
-
-async fn api_guardians_split_handler(
-    axum::Json(payload): axum::Json<SplitGuardiansRequest>,
-) -> impl axum::response::IntoResponse {
-    let threshold = payload.threshold.unwrap_or(3);
-    let total_shares = payload.total_shares.unwrap_or(5);
-
-    if threshold < 2 || threshold > total_shares || total_shares > 10 {
-        return axum::Json(serde_json::json!({
-            "status": "error",
-            "success": false,
-            "error": "Threshold parameters must satisfy: 2 <= threshold <= total_shares <= 10"
-        }));
-    }
-
-    let store_res = get_vault_store();
-    let (vault_id, operators) = match store_res {
-        Ok(ref s) => {
-            let vid = s.get_vault_id().unwrap_or([0u8; 32]);
-            (vid, get_configured_operators())
-        }
-        Err(_) => {
-            return axum::Json(serde_json::json!({
-                "status": "error",
-                "success": false,
-                "error": "No initialized CipherVault found in workspace. Run 'ciphervault init' first."
-            }));
-        }
-    };
-
-    let secret_str = payload.recovery_secret_hex.as_deref().unwrap_or("").trim();
-    if secret_str.is_empty() {
-        return axum::Json(serde_json::json!({
-            "status": "requires_secret",
-            "success": false,
-            "requires_secret": true,
-            "error": "Master Recovery Secret (R) is required to perform an authentic guardian split ceremony for this active vault."
-        }));
-    }
-
-    let clean_secret = secret_str.trim_start_matches("0x");
-    let mut secret_bytes = match hex::decode(clean_secret) {
-        Ok(b) if b.len() == 32 => b,
-        _ => {
-            return axum::Json(serde_json::json!({
-                "status": "error",
-                "success": false,
-                "error": "Master recovery secret must be exactly 32 bytes (64 hex characters)."
-            }));
-        }
-    };
-
-    let mut secret_arr = [0u8; 32];
-    secret_arr.copy_from_slice(&secret_bytes);
-    secret_bytes.zeroize();
-    let real_secret = RecoverySecret::from_bytes(secret_arr);
-
-    // Cryptographically verify secret against registered vault public recovery key
-    if let Ok(ref store) = store_res {
-        if let Ok((registered_sig_pk, _, _)) = store.get_recovery_descriptors() {
-            let derived_sig = match real_secret.derive_recovery_signing_key() {
-                Ok(k) => k,
-                Err(e) => {
-                    return axum::Json(serde_json::json!({
-                        "status": "error",
-                        "success": false,
-                        "error": format!("Failed to derive keys from secret: {}", e)
-                    }));
-                }
-            };
-            if derived_sig.verifying_key().as_bytes() != &registered_sig_pk {
-                return axum::Json(serde_json::json!({
-                    "status": "error",
-                    "success": false,
-                    "error": "Provided master secret does not match this active vault's registered recovery public key."
-                }));
-            }
-        }
-    }
-
-    match OfflineRecoveryKit::create(&vault_id, &real_secret, operators) {
-        Ok(kit) => match ThresholdRecoveryKit::split_kit(&kit, threshold, total_shares) {
-            Ok(shares) => {
-                let sheets_json: Vec<_> = shares
-                    .iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "share_index": s.guardian_index,
-                            "guardian_index": s.guardian_index,
-                            "guardian_name": format!("Guardian {}", s.guardian_index),
-                            "threshold": s.threshold,
-                            "total_shares": s.total_shares,
-                            "vault_id_hex": s.vault_id_hex,
-                            "recovery_signing_pk": s.recovery_signing_pk_hex,
-                            "recovery_encrypt_pk": s.recovery_encryption_pk_hex,
-                            "recovery_locator": s.recovery_locator_hex,
-                            "crc32": format!("0x{:08X}", s.checksum),
-                            "checksum_hex": format!("0x{:08X}", s.checksum),
-                            "sheet_text": s.format_guardian_sheet(),
-                            "printable_sheet": s.format_guardian_sheet(),
-                        })
-                    })
-                    .collect();
-
-                axum::Json(serde_json::json!({
-                    "status": "ok",
-                    "success": true,
-                    "is_drill_demo": false,
-                    "active_threshold": threshold,
-                    "total_guardians": total_shares,
-                    "threshold": threshold,
-                    "total_shares": total_shares,
-                    "shares_count": sheets_json.len(),
-                    "sheets": sheets_json,
-                    "notice": "AUTHENTIC ACTIVE VAULT GUARDIAN SHARES: Derived from genuine recovery secret R. Store each sheet securely with an independent trusted guardian."
-                }))
-            }
-            Err(e) => axum::Json(serde_json::json!({
-                "status": "error",
-                "success": false,
-                "error": format!("Failed to split guardian kit: {}", e)
-            })),
-        },
-        Err(e) => axum::Json(serde_json::json!({
-            "status": "error",
-            "success": false,
-            "error": format!("Failed to create kit: {}", e)
-        })),
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct ReconstructGuardiansRequest {
-    shares: Vec<String>,
-}
-
-async fn api_guardians_reconstruct_handler(
-    axum::Json(payload): axum::Json<ReconstructGuardiansRequest>,
-) -> impl axum::response::IntoResponse {
-    if payload.shares.is_empty() {
-        return axum::Json(serde_json::json!({
-            "status": "error",
-            "success": false,
-            "error": "No guardian shares provided"
-        }));
-    }
-
-    let mut parsed_kits = Vec::new();
-    for (i, sheet_text) in payload.shares.iter().enumerate() {
-        match ThresholdRecoveryKit::parse_from_printable(sheet_text) {
-            Ok(k) => parsed_kits.push(k),
-            Err(e) => {
-                return axum::Json(serde_json::json!({
-                    "status": "error",
-                    "success": false,
-                    "error": format!("Share #{} invalid format or checksum: {}", i + 1, e)
-                }));
-            }
-        }
-    }
-
-    match ThresholdRecoveryKit::combine_kits(&parsed_kits) {
-        Ok(reconstructed) => {
-            let store_res = get_vault_store();
-            let mut matches_vault = false;
-            if let Ok(store) = store_res {
-                if let Ok((signing_pk, _, _)) = store.get_recovery_descriptors() {
-                    if let Ok(reconstructed_pk) =
-                        hex::decode(&reconstructed.recovery_signing_pk_hex)
-                    {
-                        matches_vault = reconstructed_pk == signing_pk;
-                    }
-                }
-            }
-
-            let threshold = parsed_kits[0].threshold;
-            let total = parsed_kits[0].total_shares;
-
-            axum::Json(serde_json::json!({
-                "status": "ok",
-                "success": true,
-                "threshold_met": true,
-                "shares_provided": parsed_kits.len(),
-                "threshold": threshold,
-                "total_shares": total,
-                "vault_id_hex": reconstructed.vault_id_hex,
-                "matches_vault": matches_vault,
-                "verified_signing_pk_matches": matches_vault,
-                "recovery_signing_pk": reconstructed.recovery_signing_pk_hex,
-                "message": format!("Successfully recombined {} valid guardian shares via GF(2^8) Lagrange interpolation in zeroized RAM", parsed_kits.len())
-            }))
-        }
-        Err(e) => axum::Json(serde_json::json!({
-            "status": "error",
-            "success": false,
-            "threshold_met": false,
-            "shares_provided": parsed_kits.len(),
-            "threshold": if !parsed_kits.is_empty() { parsed_kits[0].threshold } else { 0 },
-            "error": format!("Insufficient or conflicting shares: {}", e)
-        })),
-    }
 }
 
 async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse {
@@ -5434,8 +6186,10 @@ async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse 
             return axum::Json(serde_json::json!({
                 "status": "ok",
                 "relayer_status": {
-                    "operational": true,
-                    "target_network": "Arbitrum One (Chain ID 42161)"
+                    "operational": null,
+                    "status": "not_configured",
+                    "target_network": null,
+                    "verification_status": "unavailable"
                 },
                 "checkpoints": [],
                 "count": 0
@@ -5449,21 +6203,21 @@ async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse 
         .map(|ev| {
             let tx_hex = format!("0x{}", hex::encode(&ev.tx_hash));
             let is_empty_tx = ev.tx_hash == [0u8; 32];
-            let is_confirmed = !is_empty_tx && ev.block_number > 0;
             let arbiscan_url = if is_empty_tx {
                 String::new()
             } else if ev.chain_id == 42161 {
                 format!("https://arbiscan.io/tx/{}", tx_hex)
-            } else {
+            } else if ev.chain_id == 421614 {
                 format!("https://sepolia.arbiscan.io/tx/{}", tx_hex)
+            } else {
+                String::new()
             };
 
-            let status_str = if is_empty_tx {
-                "Unsubmitted"
-            } else if is_confirmed {
-                "SequencerConfirmed"
+            let status_str = if is_empty_tx { "not_submitted" } else { "submitted" };
+            let verification_status = if is_empty_tx {
+                "not_submitted"
             } else {
-                "PendingBroadcast"
+                "receipt_unverified"
             };
 
             serde_json::json!({
@@ -5477,10 +6231,12 @@ async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse 
                 "tx_hash_hex": tx_hex,
                 "explorer_url": arbiscan_url.clone(),
                 "arbiscan_url": arbiscan_url,
-                "block_number": ev.block_number,
+                "reported_block_number": if ev.block_number > 0 { Some(ev.block_number) } else { None },
                 "timestamp_utc": ev.timestamp_utc,
                 "is_relayed": !is_empty_tx,
-                "confirmed": is_confirmed,
+                "confirmed": false,
+                "inclusion_verified": false,
+                "verification_status": verification_status,
                 "status": status_str,
             })
         })
@@ -5489,8 +6245,10 @@ async fn api_relayer_checkpoints_handler() -> impl axum::response::IntoResponse 
     axum::Json(serde_json::json!({
         "status": "ok",
         "relayer_status": {
-            "operational": true,
-            "target_network": "Arbitrum One (Chain ID 42161)"
+            "operational": null,
+            "status": "unverified",
+            "target_network": "Arbitrum checkpoint metadata",
+            "verification_status": "unavailable"
         },
         "checkpoints": json_anchors,
         "count": anchors.len()
@@ -5502,7 +6260,8 @@ async fn api_relayer_anchor_handler() -> impl axum::response::IntoResponse {
         Ok(_) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,
-            "message": "Snapshot head commitment successfully submitted to automated Arbitrum L2 relayer with sequencer receipt"
+            "verification_status": "unverified",
+            "message": "Checkpoint processing completed. The dashboard has not independently verified a sequencer receipt."
         })),
         Err(e) => axum::Json(serde_json::json!({
             "status": "error",
@@ -5514,8 +6273,26 @@ async fn api_relayer_anchor_handler() -> impl axum::response::IntoResponse {
 
 async fn api_fleet_handler() -> impl axum::response::IntoResponse {
     let fleet_db_path = PathBuf::from(".ciphervault").join("fleet.db");
-    if let Some(parent) = fleet_db_path.parent() {
-        let _ = fs::create_dir_all(parent);
+    if !fleet_db_path.exists() {
+        return axum::Json(serde_json::json!({
+            "status": "ok",
+            "success": true,
+            "fleet_summary": {
+                "total_tracked_vaults": null,
+                "healthy_vaults": null,
+                "degraded_vaults": null,
+                "total_audits_recorded": null,
+                "audits_completed": null,
+                "online_operators": null,
+                "active_operators": null,
+                "total_operators": null,
+                "avg_latency_ms": null,
+            },
+            "vaults": [],
+            "operator_nodes": [],
+            "audit_history": [],
+            "message": "No maintenance history is available yet. Run an explicit local audit to create it.",
+        }));
     }
 
     let db_res = MaintenanceDb::open(&fleet_db_path);
@@ -5529,40 +6306,11 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
         }
     };
 
-    // Auto-register current vault if initialized
-    if let Ok(store) = get_vault_store() {
-        if let Ok((_, _, locator)) = store.get_recovery_descriptors() {
-            let locator_hex = hex::encode(locator);
-            let _ = db.register_vault(&locator_hex, Some("Active Project Vault"));
-        }
-    }
-
-    // Ping operators and update operator nodes in fleet database
-    let operators = get_configured_operators();
-    for endpoint in &operators {
-        let client = OperatorClient::new(endpoint.clone());
-        let start = std::time::Instant::now();
-        match client.get_info().await {
-            Ok(_) => {
-                let latency = start.elapsed().as_millis() as u64;
-                let _ = db.update_operator_health(endpoint, latency, true);
-            }
-            Err(_) => {
-                let _ = db.update_operator_health(endpoint, 999, false);
-            }
-        }
-    }
-
-    let summary = db
-        .get_fleet_summary()
-        .unwrap_or(ciphervault_maintenance::FleetSummary {
-            total_tracked_vaults: 1,
-            healthy_vaults: 1,
-            degraded_vaults: 0,
-            total_audits_recorded: 0,
-            online_operators: operators.len(),
-            total_operators: operators.len(),
-        });
+    // This read route intentionally does not register vaults, probe operators,
+    // or write maintenance state. Collection happens during an explicit audit
+    // or through the maintenance service, preventing page refreshes from
+    // becoming a background mutation and probe loop.
+    let summary = db.get_fleet_summary().ok();
 
     let vaults = db.list_vaults().unwrap_or_default();
     let nodes = db.list_operator_nodes().unwrap_or_default();
@@ -5571,23 +6319,24 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
     let avg_latency = {
         let healthy_nodes: Vec<_> = nodes.iter().filter(|n| n.is_healthy).collect();
         if !healthy_nodes.is_empty() {
-            healthy_nodes.iter().map(|n| n.latency_ms).sum::<u64>() / healthy_nodes.len() as u64
-        } else if !nodes.is_empty() {
-            nodes.iter().map(|n| n.latency_ms).sum::<u64>() / nodes.len() as u64
+            Some(
+                healthy_nodes.iter().map(|n| n.latency_ms).sum::<u64>()
+                    / healthy_nodes.len() as u64,
+            )
         } else {
-            0
+            None
         }
     };
 
     let fleet_summary = serde_json::json!({
-        "total_tracked_vaults": summary.total_tracked_vaults,
-        "healthy_vaults": summary.healthy_vaults,
-        "degraded_vaults": summary.degraded_vaults,
-        "total_audits_recorded": summary.total_audits_recorded,
-        "audits_completed": summary.total_audits_recorded,
-        "online_operators": summary.online_operators,
-        "active_operators": summary.online_operators,
-        "total_operators": summary.total_operators,
+        "total_tracked_vaults": summary.as_ref().map(|s| s.total_tracked_vaults),
+        "healthy_vaults": summary.as_ref().map(|s| s.healthy_vaults),
+        "degraded_vaults": summary.as_ref().map(|s| s.degraded_vaults),
+        "total_audits_recorded": summary.as_ref().map(|s| s.total_audits_recorded),
+        "audits_completed": summary.as_ref().map(|s| s.total_audits_recorded),
+        "online_operators": summary.as_ref().map(|s| s.online_operators),
+        "active_operators": summary.as_ref().map(|s| s.online_operators),
+        "total_operators": summary.as_ref().map(|s| s.total_operators),
         "avg_latency_ms": avg_latency,
     });
 
@@ -5608,7 +6357,7 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
                 "endpoint": mask_operator_endpoint(&n.endpoint),
                 "status": if n.is_healthy { "Online" } else { "Offline" },
                 "is_healthy": n.is_healthy,
-                "latency_ms": n.latency_ms,
+                "latency_ms": if n.is_healthy { Some(n.latency_ms) } else { None },
                 "last_heartbeat": last_hb,
                 "last_seen_utc": n.last_seen_utc,
             })
@@ -5624,7 +6373,7 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
                     .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| "Recent".to_string())
             } else {
-                "Genesis".to_string()
+                "Not reported".to_string()
             };
             serde_json::json!({
                 "vault_id": v.locator_hex,
@@ -5634,7 +6383,7 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
                 "status": v.last_status,
                 "replica_count": v.replica_count,
                 "registered_at": reg_str,
-                "storage_allowance_bytes": 1073741824u64,
+                "storage_allowance_bytes": null,
             })
         })
         .collect();
@@ -5654,9 +6403,9 @@ async fn api_fleet_handler() -> impl axum::response::IntoResponse {
                 "healthy": a.healthy,
                 "healthy_objects": a.total_objects.saturating_sub(a.degraded_objects),
                 "degraded_objects": a.degraded_objects,
-                "repaired_objects": 0,
+                "repaired_objects": null,
                 "timestamp": audit_time,
-                "duration_ms": 32,
+                "duration_ms": null,
             })
         })
         .collect();
@@ -5692,6 +6441,7 @@ async fn api_fleet_audit_handler() -> impl axum::response::IntoResponse {
                 };
 
                 let details = serde_json::to_string(&report).unwrap_or_default();
+                let _ = db.register_vault(&locator_hex, Some("Active Project Vault"));
                 let _ = db.record_audit(
                     &locator_hex,
                     report.healthy,
@@ -5790,6 +6540,83 @@ struct FastCdcInspectRequest {
     max_size: Option<usize>,
 }
 
+const FASTCDC_MAX_INSPECTION_BYTES: usize = 2 * 1024 * 1024;
+const FASTCDC_MAX_RESULT_CHUNKS: usize = 512;
+const FASTCDC_MAX_CHUNK_SIZE: usize = 1024 * 1024;
+
+fn fastcdc_workspace_root() -> std::result::Result<PathBuf, String> {
+    std::env::current_dir()
+        .map_err(|_| "Unable to determine the local workspace root.".to_string())?
+        .canonicalize()
+        .map_err(|_| "Unable to resolve the local workspace root.".to_string())
+}
+
+fn canonical_tracked_inspection_file(
+    workspace_root: &Path,
+    tracked_path: &Path,
+) -> std::result::Result<PathBuf, String> {
+    let candidate = if tracked_path.is_absolute() {
+        tracked_path.to_path_buf()
+    } else {
+        workspace_root.join(tracked_path)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| "The selected tracked file is unavailable.".to_string())?;
+
+    if !canonical.starts_with(workspace_root) {
+        return Err("The selected tracked file is outside the local workspace.".to_string());
+    }
+
+    let metadata = fs::metadata(&canonical)
+        .map_err(|_| "The selected tracked file is unavailable.".to_string())?;
+    if !metadata.is_file() {
+        return Err("The selected tracked path is not a regular file.".to_string());
+    }
+
+    Ok(canonical)
+}
+
+fn resolve_tracked_inspection_file(requested_path: &str) -> std::result::Result<PathBuf, String> {
+    let normalized_request = requested_path.trim().replace('\\', "/");
+    if normalized_request.is_empty() {
+        return Err("Select a tracked vault file before inspecting it.".to_string());
+    }
+
+    let store = get_vault_store()
+        .map_err(|_| "No initialized local vault is available for file inspection.".to_string())?;
+    let tracked = store
+        .list_tracked_files()
+        .map_err(|_| "Unable to read the tracked-file registry.".to_string())?;
+    let selected = tracked
+        .iter()
+        .find(|(path, _)| path.to_string_lossy().replace('\\', "/") == normalized_request)
+        .map(|(path, _)| path)
+        .ok_or_else(|| {
+            "Select an exact tracked vault file from the local workspace.".to_string()
+        })?;
+
+    let workspace_root = fastcdc_workspace_root()?;
+    canonical_tracked_inspection_file(&workspace_root, selected)
+}
+
+fn fastcdc_config_from_request(
+    payload: &FastCdcInspectRequest,
+) -> std::result::Result<FastCdcConfig, String> {
+    match (payload.min_size, payload.avg_size, payload.max_size) {
+        (None, None, None) => Ok(FastCdcConfig::default()),
+        (Some(min), Some(avg), Some(max))
+            if min >= 64 && min <= avg && avg <= max && max <= FASTCDC_MAX_CHUNK_SIZE =>
+        {
+            Ok(FastCdcConfig::new(min, avg, max))
+        }
+        _ => Err(format!(
+            "Chunk sizes must satisfy 64 <= min <= average <= max <= {} bytes.",
+            FASTCDC_MAX_CHUNK_SIZE
+        )),
+    }
+}
+
 fn compute_shannon_entropy(data: &[u8]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -5823,38 +6650,22 @@ fn compute_gear_fingerprint(chunk: &[u8]) -> u64 {
     hash
 }
 
-fn format_preview(data: &[u8]) -> String {
-    let take_len = data.len().min(48);
-    let slice = &data[..take_len];
-    if slice
-        .iter()
-        .all(|&b| b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n')
-    {
-        String::from_utf8_lossy(slice).trim().to_string()
-    } else {
-        format!("hex:{}", hex::encode(slice))
-    }
-}
-
 async fn api_fastcdc_vault_files_handler() -> impl axum::response::IntoResponse {
+    let workspace_root = fastcdc_workspace_root().ok();
     let files = match get_vault_store() {
         Ok(store) => match store.list_tracked_files() {
             Ok(list) => list
                 .into_iter()
-                .map(|(p, file_id)| {
-                    let path_str = p.to_string_lossy().replace('\\', "/");
-                    let exists = p.exists();
-                    let size = if exists {
-                        fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    serde_json::json!({
-                        "path": path_str,
-                        "exists": exists,
+                .filter_map(|(path, file_id)| {
+                    let root = workspace_root.as_ref()?;
+                    let canonical = canonical_tracked_inspection_file(root, &path).ok()?;
+                    let size = fs::metadata(&canonical).ok()?.len();
+                    Some(serde_json::json!({
+                        "path": path.to_string_lossy().replace('\\', "/"),
+                        "exists": true,
                         "size_bytes": size,
                         "file_id": hex::encode(&file_id[0..4]),
-                    })
+                    }))
                 })
                 .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
@@ -5871,94 +6682,80 @@ async fn api_fastcdc_vault_files_handler() -> impl axum::response::IntoResponse 
 async fn api_fastcdc_inspect_handler(
     axum::Json(payload): axum::Json<FastCdcInspectRequest>,
 ) -> impl axum::response::IntoResponse {
-    let config = if let (Some(min), Some(avg), Some(max)) =
-        (payload.min_size, payload.avg_size, payload.max_size)
-    {
-        if min > 0 && min <= avg && avg <= max {
-            FastCdcConfig::new(min, avg, max)
-        } else {
-            FastCdcConfig::default()
+    let config = match fastcdc_config_from_request(&payload) {
+        Ok(config) => config,
+        Err(error) => {
+            return axum::Json(serde_json::json!({
+                "success": false,
+                "error": error,
+            }));
         }
-    } else {
-        FastCdcConfig::default()
     };
 
-    let (raw_data, source_label) = if let Some(ref rel_path) = payload.file_path {
-        let clean_path = rel_path.trim().replace('\\', "/");
-        if clean_path.contains("..")
-            || clean_path.starts_with('/')
-            || clean_path.contains(':')
-            || clean_path.contains("//")
-        {
-            return axum::Json(serde_json::json!({
-                "success": false,
-                "error": "Invalid file path: path traversal is not permitted."
-            }));
-        }
+    if payload.file_path.is_some() && payload.content.is_some() {
+        return axum::Json(serde_json::json!({
+            "success": false,
+            "error": "Provide either direct text or one tracked vault file, not both.",
+        }));
+    }
 
-        let is_tracked = get_vault_store()
-            .ok()
-            .and_then(|s| s.list_tracked_files().ok())
-            .map(|list| {
-                list.iter()
-                    .any(|(p, _)| p.to_string_lossy().replace('\\', "/") == clean_path)
-            })
-            .unwrap_or(false);
-
-        if !is_tracked {
-            return axum::Json(serde_json::json!({
-                "success": false,
-                "error": format!("Access denied: '{}' is not a registered tracked vault file.", clean_path)
-            }));
-        }
-
-        let target = PathBuf::from(&clean_path);
-        match fs::read(&target) {
-            Ok(bytes) => (bytes, format!("Vault File: {}", clean_path)),
-            Err(e) => {
+    let (raw_data, source_label) = if let Some(ref requested_path) = payload.file_path {
+        let target = match resolve_tracked_inspection_file(requested_path) {
+            Ok(target) => target,
+            Err(error) => {
                 return axum::Json(serde_json::json!({
                     "success": false,
-                    "error": format!("Failed to read vault file '{}': {}", clean_path, e)
+                    "error": error,
+                }));
+            }
+        };
+        match fs::read(&target) {
+            Ok(bytes) => (bytes, "Selected tracked vault file".to_string()),
+            Err(_) => {
+                return axum::Json(serde_json::json!({
+                    "success": false,
+                    "error": "The selected tracked file is unavailable.",
                 }));
             }
         }
     } else if let Some(ref txt) = payload.content {
         if !txt.trim().is_empty() {
-            (txt.as_bytes().to_vec(), "Direct Text Input".to_string())
+            (txt.as_bytes().to_vec(), "Direct text input".to_string())
         } else {
             return axum::Json(serde_json::json!({
                 "success": false,
-                "error": "Provided input is empty. Select a tracked vault file or enter content."
+                "error": "Provided text input is empty. Enter text or select a tracked vault file."
             }));
         }
     } else {
-        // Default to reading the first tracked file in the vault
-        let default_vault_file = get_vault_store()
-            .ok()
-            .and_then(|s| s.list_tracked_files().ok())
-            .and_then(|files| {
-                for (p, _) in files {
-                    if p.exists() {
-                        if let Ok(bytes) = fs::read(&p) {
-                            return Some((bytes, p.to_string_lossy().replace('\\', "/")));
-                        }
-                    }
-                }
-                None
-            });
-
-        match default_vault_file {
-            Some((bytes, name)) => (bytes, format!("Vault File: {}", name)),
-            None => {
-                return axum::Json(serde_json::json!({
-                    "success": false,
-                    "error": "No tracked files found in vault and no input provided. Track a file with 'ciphervault track <path>' or upload content."
-                }));
-            }
-        }
+        return axum::Json(serde_json::json!({
+            "success": false,
+            "error": "Enter text or explicitly select a tracked vault file before inspecting chunks.",
+        }));
     };
 
+    let max_input_bytes =
+        FASTCDC_MAX_INSPECTION_BYTES.min(config.min_size.saturating_mul(FASTCDC_MAX_RESULT_CHUNKS));
+    if raw_data.len() > max_input_bytes {
+        return axum::Json(serde_json::json!({
+            "success": false,
+            "error": format!(
+                "Inspection input exceeds the {} byte limit for this chunk-size configuration.",
+                max_input_bytes
+            ),
+        }));
+    }
+
     let chunks = fastcdc_chunk(&raw_data, &config);
+    if chunks.len() > FASTCDC_MAX_RESULT_CHUNKS {
+        return axum::Json(serde_json::json!({
+            "success": false,
+            "error": format!(
+                "Inspection would return more than {} chunk records. Increase the minimum chunk size or reduce the input.",
+                FASTCDC_MAX_RESULT_CHUNKS
+            ),
+        }));
+    }
 
     let mut offset = 0usize;
     let mut chunk_records = Vec::new();
@@ -5983,7 +6780,7 @@ async fn api_fastcdc_inspect_handler(
             "gear_fingerprint": format!("0x{:016x}", gear),
             "entropy": (entropy * 1000.0).round() / 1000.0,
             "is_duplicate": is_dup,
-            "preview": format_preview(chunk_slice),
+            "preview": "Content previews are disabled.",
         }));
 
         offset += chunk_slice.len();
@@ -6292,126 +7089,6 @@ async fn api_activity_handler() -> impl axum::response::IntoResponse {
     }))
 }
 
-async fn api_secrets_inspect_handler() -> impl axum::response::IntoResponse {
-    let store_res = get_vault_store();
-    let store = match store_res {
-        Ok(s) => s,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let vault_id = match store.get_vault_id() {
-        Ok(v) => v,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let (_, _, _, epoch) = match store.get_device_state() {
-        Ok(s) => s,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let epoch_key = match store.get_epoch_key(epoch) {
-        Ok(k) => k,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let head = match store.get_active_head() {
-        Ok(Some(h)) => h,
-        _ => {
-            return axum::Json(
-                serde_json::json!({ "status": "error", "error": "No active head found" }),
-            )
-        }
-    };
-    let mut head_cid = [0u8; 32];
-    head_cid.copy_from_slice(&head.snapshot_id);
-    let (record, encrypted_manifest) = match store.get_snapshot(&head_cid) {
-        Ok(res) => res,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let manifest_key = match epoch_key.derive_manifest_key(record.epoch) {
-        Ok(k) => k,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let aad = [
-        b"CipherVault-Manifest:",
-        vault_id.as_slice(),
-        &record.epoch.to_le_bytes(),
-    ]
-    .concat();
-    let manifest_bytes =
-        match ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad) {
-            Ok(b) => b,
-            Err(e) => {
-                return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-            }
-        };
-    let manifest: SnapshotManifest = match from_canonical_cbor(&manifest_bytes) {
-        Ok(m) => m,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let mut needed_cids = Vec::new();
-    for file in &manifest.files {
-        for cid_bytes in &file.chunk_cids {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(cid_bytes);
-            needed_cids.push(arr);
-        }
-    }
-    let chunks = match store.get_chunks(&needed_cids) {
-        Ok(c) => c,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let files = match decrypt_snapshot(
-        &vault_id,
-        &epoch_key,
-        record.epoch,
-        &encrypted_manifest,
-        &chunks,
-    ) {
-        Ok(f) => f,
-        Err(e) => {
-            return axum::Json(serde_json::json!({ "status": "error", "error": e.to_string() }))
-        }
-    };
-    let mut secrets_list = Vec::new();
-    for file in files {
-        if file.relative_path.ends_with(".env") || file.relative_path.contains(".env") {
-            if let Ok(vars) = dotenv::parse_dotenv_bytes(&file.plaintext) {
-                for (k, v) in vars {
-                    let masked = if v.len() <= 6 {
-                        "******".to_string()
-                    } else {
-                        format!("{}***{}", &v[..2], &v[v.len() - 3..])
-                    };
-                    secrets_list.push(serde_json::json!({
-                        "file": file.relative_path,
-                        "key": k,
-                        "masked_value": masked,
-                    }));
-                }
-            }
-        }
-    }
-    axum::Json(serde_json::json!({
-        "status": "ok",
-        "snapshot_id_hex": hex::encode(head_cid),
-        "secrets_count": secrets_list.len(),
-        "secrets": secrets_list
-    }))
-}
-
 async fn api_workspaces_handler() -> impl axum::response::IntoResponse {
     let vaults = discover_workspace_vaults();
     let active_path = get_active_vault_path().display().to_string();
@@ -6474,4 +7151,376 @@ async fn api_workspaces_scan_handler() -> impl axum::response::IntoResponse {
         "count": vaults.len(),
         "workspaces": vaults
     }))
+}
+
+#[cfg(test)]
+mod ui_router_tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    async fn start_public_test_server() -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, public_ui_router()).await.unwrap();
+        });
+        (server, format!("http://{}", address))
+    }
+
+    async fn start_private_test_server() -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, private_ui_router()).await.unwrap();
+        });
+        (server, format!("http://{}", address))
+    }
+
+    #[tokio::test]
+    async fn public_router_allows_only_explicit_public_api_routes() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+
+        let context = client
+            .get(format!("{base_url}/api/context"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(context.status(), StatusCode::OK);
+
+        let context: serde_json::Value = context.json().await.unwrap();
+        assert_eq!(context["mode"], "public_explorer");
+        assert_eq!(context["access_mode"], "public");
+        assert_eq!(context["capabilities"]["vault_workspace"], false);
+        assert_eq!(context["capabilities"]["plaintext_inspection"], false);
+
+        let public_vault: serde_json::Value = client
+            .get(format!("{base_url}/api/vault"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(public_vault.get("vault_id_hex").is_none());
+        assert_eq!(public_vault["private_vault_access"], false);
+
+        let anchors: serde_json::Value = client
+            .get(format!("{base_url}/api/anchors"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(anchors.as_array().is_some_and(Vec::is_empty));
+
+        let checkpoints: serde_json::Value = client
+            .get(format!("{base_url}/api/relayer/checkpoints"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoints["relayer_status"]["verification_status"],
+            "unavailable"
+        );
+        assert!(checkpoints["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("signed public checkpoint feed")));
+
+        for uri in [
+            "/api/secrets/inspect",
+            "/api/guardians",
+            "/api/fastcdc/vault-files",
+            "/api/snapshots/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/manifest",
+            "/api/workspaces",
+        ] {
+            let response = client
+                .get(format!("{base_url}{uri}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "public explorer unexpectedly exposed {uri}"
+            );
+        }
+
+        let mutation = client
+            .post(format!("{base_url}/api/snapshots"))
+            .json(&serde_json::json!({ "message": "must not be accepted" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            mutation.status(),
+            StatusCode::FORBIDDEN,
+            "public explorer unexpectedly accepted a snapshot mutation"
+        );
+
+        for uri in [
+            "/api/guardians/split",
+            "/api/guardians/reconstruct",
+            "/api/fastcdc/inspect",
+            "/api/files/track",
+            "/api/files/untrack",
+            "/api/snapshots/restore",
+        ] {
+            let response = client
+                .post(format!("{base_url}{uri}"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "public explorer unexpectedly exposed private mutation {uri}"
+            );
+        }
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn private_router_requires_loopback_origin_for_mutations() {
+        let (server, base_url) = start_private_test_server().await;
+        let client = reqwest::Client::new();
+
+        let read = client
+            .get(format!("{base_url}/api/context"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+        let set_cookie = read
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(set_cookie.starts_with("ciphervault_private_session="));
+        assert!(set_cookie.contains("Max-Age=1800"));
+        let private_context: serde_json::Value = read.json().await.unwrap();
+        assert_eq!(private_context["mode"], "local_private");
+        assert_eq!(private_context["session"]["scheme"], "http_only_cookie");
+        assert_eq!(private_context["session"]["ttl_seconds"], 1800);
+        assert_eq!(
+            private_context["session"]["revocation_endpoint"],
+            "/api/session/revoke"
+        );
+
+        let cross_origin_read = client
+            .get(format!("{base_url}/api/context"))
+            .header("Origin", "http://evil.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(cross_origin_read.status(), StatusCode::FORBIDDEN);
+
+        let missing_origin_mutation = client
+            .post(format!("{base_url}/api/unknown"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing_origin_mutation.status(), StatusCode::FORBIDDEN);
+
+        let missing_session = client
+            .get(format!("{base_url}/api/unknown"))
+            .header("Origin", &base_url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing_session.status(), StatusCode::UNAUTHORIZED);
+
+        let session_token = private_ui_session_snapshot().token;
+        let same_origin_mutation = client
+            .post(format!("{base_url}/api/unknown"))
+            .header("Origin", &base_url)
+            .header(
+                "Cookie",
+                format!("ciphervault_private_session={session_token}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(same_origin_mutation.status(), StatusCode::NOT_FOUND);
+
+        let revoke = client
+            .post(format!("{base_url}/api/session/revoke"))
+            .header("Origin", &base_url)
+            .header(
+                "Cookie",
+                format!("ciphervault_private_session={session_token}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::OK);
+        assert_eq!(
+            revoke
+                .headers()
+                .get(axum::http::header::SET_COOKIE)
+                .and_then(|value| value.to_str().ok()),
+            Some("ciphervault_private_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
+        );
+
+        let revoked_session = client
+            .get(format!("{base_url}/api/unknown"))
+            .header("Origin", &base_url)
+            .header(
+                "Cookie",
+                format!("ciphervault_private_session={session_token}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoked_session.status(), StatusCode::UNAUTHORIZED);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn signed_public_checkpoint_feed_is_verified_before_publication() {
+        let signing_key = ciphervault_crypto::generate_signing_key();
+        let checkpoint = PublicCheckpointFeedEntry {
+            network: "Arbitrum Sepolia".to_string(),
+            chain_id: 421614,
+            contract_address_hex: "11".repeat(20),
+            commitment_hex: "22".repeat(32),
+            head_record_cid_hex: "33".repeat(32),
+            tx_hash_hex: Some(format!("0x{}", "44".repeat(32))),
+            block_number: Some(123),
+            published_at_utc: 1_789_250_000,
+        };
+        let unsigned = PublicCheckpointFeedUnsigned {
+            version: 1,
+            issued_at_utc: 1_789_250_001,
+            checkpoints: vec![checkpoint.clone()],
+        };
+        let message = ciphervault_format::to_canonical_cbor(&unsigned).unwrap();
+        let signature = ciphervault_crypto::signatures::sign_with_domain(
+            &signing_key,
+            b"public_checkpoint_feed",
+            &message,
+        );
+        let feed = PublicCheckpointFeedEnvelope {
+            version: unsigned.version,
+            issued_at_utc: unsigned.issued_at_utc,
+            checkpoints: unsigned.checkpoints,
+            publisher_key_hex: hex::encode(signing_key.verifying_key().as_bytes()),
+            signature_hex: hex::encode(signature),
+        };
+
+        let records = verify_public_checkpoint_feed(&feed).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["verification_status"], "publisher_signed");
+        assert_eq!(records[0]["finality_status"], "unverified");
+
+        let mut tampered = feed.clone();
+        tampered.checkpoints[0].block_number = Some(124);
+        assert!(verify_public_checkpoint_feed(&tampered).is_err());
+    }
+
+    #[test]
+    fn public_feed_publisher_converts_verified_local_evidence() {
+        let signing_key = ciphervault_crypto::generate_signing_key();
+        let evidence = ciphervault_format::CheckpointEvidence::new(
+            [1u8; 32],
+            [2u8; 32],
+            42161,
+            [3u8; 20],
+            [4u8; 32],
+            987,
+            Utc::now().timestamp().max(0) as u64,
+        );
+        let feed = build_public_checkpoint_feed(
+            vec![evidence],
+            "Arbitrum One".to_string(),
+            &signing_key,
+            Utc::now().timestamp().max(0) as u64,
+        )
+        .unwrap();
+        let records = verify_public_checkpoint_feed(&feed).unwrap();
+        assert_eq!(records[0]["status"], "Published");
+        assert_eq!(records[0]["chain_id"], 42161);
+        assert_eq!(records[0]["reported_block_number"], 987);
+        assert_eq!(records[0]["verification_status"], "publisher_signed");
+    }
+
+    #[test]
+    fn local_ui_bind_addresses_are_distinguished_from_public_ones() {
+        assert!(parse_ui_host("127.0.0.1").unwrap().is_loopback());
+        assert!(parse_ui_host("localhost").unwrap().is_loopback());
+        assert!(parse_ui_host("::1").unwrap().is_loopback());
+        assert!(!parse_ui_host("0.0.0.0").unwrap().is_loopback());
+    }
+
+    #[test]
+    fn private_session_rotation_covers_expiry_and_vault_binding() {
+        let mut expired = new_private_ui_session(Some("vault-a".to_string()));
+        expired.issued_at = Instant::now()
+            .checked_sub(PRIVATE_UI_SESSION_TTL + Duration::from_secs(1))
+            .expect("test instant should be representable");
+        assert!(private_ui_session_should_rotate(
+            &expired,
+            &Some("vault-a".to_string())
+        ));
+
+        let active = new_private_ui_session(Some("vault-a".to_string()));
+        assert!(!private_ui_session_should_rotate(
+            &active,
+            &Some("vault-a".to_string())
+        ));
+        assert!(private_ui_session_should_rotate(
+            &active,
+            &Some("vault-b".to_string())
+        ));
+    }
+
+    #[test]
+    fn fastcdc_rejects_oversized_or_invalid_chunk_configuration() {
+        let invalid = FastCdcInspectRequest {
+            content: Some("sample".to_string()),
+            file_path: None,
+            min_size: Some(4_096),
+            avg_size: Some(2_048),
+            max_size: Some(65_536),
+        };
+        assert!(fastcdc_config_from_request(&invalid).is_err());
+
+        let oversized = FastCdcInspectRequest {
+            content: Some("sample".to_string()),
+            file_path: None,
+            min_size: Some(4_096),
+            avg_size: Some(16_384),
+            max_size: Some(FASTCDC_MAX_CHUNK_SIZE + 1),
+        };
+        assert!(fastcdc_config_from_request(&oversized).is_err());
+    }
+
+    #[test]
+    fn fastcdc_rejects_files_outside_the_workspace() {
+        let base = std::env::temp_dir().join(format!(
+            "ciphervault-fastcdc-boundary-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = base.join("workspace");
+        let outside = base.join("outside.txt");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(&outside, "private").unwrap();
+
+        let workspace_root = workspace.canonicalize().unwrap();
+        assert!(canonical_tracked_inspection_file(&workspace_root, &outside).is_err());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
 }

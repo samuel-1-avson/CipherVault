@@ -55,22 +55,20 @@ foreach ($port in $ports) {
     }
 }
 
-Write-Host "`nAll 3 container operators are healthy, cryptographically unique, and P2P/Auth enabled!" -ForegroundColor Green
+Write-Host "`nAll 3 container operator endpoints responded; key uniqueness and P2P/Auth probes completed." -ForegroundColor Green
 
 # 2. Probe the containerized Web Dashboard APIs
 Write-Host "`nProbing containerized Web Dashboard endpoints (http://127.0.0.1:8080)..." -ForegroundColor Cyan
 try {
     $vaultInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/vault" -Method Get -TimeoutSec 5
-    Write-Host " [ONLINE] /api/vault: Tracked files count = $($vaultInfo.tracked_files.Count)" -ForegroundColor Green
+    Write-Host " [ONLINE] /api/vault: Public explorer readiness confirmed" -ForegroundColor Green
 
-    $tokenInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/token" -Method Get -TimeoutSec 5
-    Write-Host " [ONLINE] /api/token: Hardware Token driver active (Simulated/Physical)" -ForegroundColor Green
-
-    $fleetInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/fleet" -Method Get -TimeoutSec 5
-    Write-Host " [ONLINE] /api/fleet: Tracked Vaults = $($fleetInfo.summary.total_tracked_vaults), Online Operators = $($fleetInfo.summary.online_operators)/$($fleetInfo.summary.total_operators)" -ForegroundColor Green
+    $operators = @(Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/operators" -Method Get -TimeoutSec 5)
+    $respondingOperators = @($operators | Where-Object { $_.status -eq "reachable" }).Count
+    Write-Host " [ONLINE] /api/operators: $respondingOperators/$($operators.Count) public operator probes responded (identity is not verified by this probe)" -ForegroundColor Green
 
     $relayerInfo = Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/relayer/checkpoints" -Method Get -TimeoutSec 5
-    Write-Host " [ONLINE] /api/relayer/checkpoints: L2 Relayer ready" -ForegroundColor Green
+    Write-Host " [ONLINE] /api/relayer/checkpoints: endpoint reachable; verification status is $($relayerInfo.relayer_status.verification_status)" -ForegroundColor Green
 } catch {
     Write-Host " [WARNING] Dashboard endpoint probe encountered an error: $_" -ForegroundColor Yellow
 }
@@ -148,7 +146,7 @@ $info1 = Invoke-RestMethod -Uri "http://127.0.0.1:8201/v1/info" -Method Get
 Write-Host "Operator 1 revived with same ID: $($info1.operator_id)" -ForegroundColor Green
 
 Write-Host "`n=======================================================" -ForegroundColor Cyan
-Write-Host "  DOCKER STAGING CLUSTER DRILL: 100% SUCCESS!" -ForegroundColor Green
+Write-Host "  DOCKER STAGING CLUSTER DRILL: COMPLETED" -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Cyan
 
 Set-Location $OriginalLocation

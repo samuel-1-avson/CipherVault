@@ -33,7 +33,7 @@
         </div>
 
         <div class="vault-identity-pill" id="vault-identity-pill" title="Click to copy full Vault ID">
-          <span class="pill-label">VAULT</span>
+          <span class="pill-label" id="vault-identity-label">VAULT</span>
           <span class="vault-id-text" id="vault-id-display">Loading...</span>
           <button class="btn-copy" id="btn-copy-vault-id" title="Copy Vault ID" aria-label="Copy Vault ID">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -44,7 +44,7 @@
         </div>
 
         <!-- Multi-Vault Workspace Explorer Switcher -->
-        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap">
+        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap" data-private-surface>
           <button class="workspace-switcher-btn" id="btn-workspace-switcher" aria-haspopup="true" aria-expanded="false" title="Switch active local vault workspace">
             <span class="workspace-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -82,14 +82,14 @@
         </div>
 
         <!-- Live Real-Time SSE Indicator -->
-        <div class="cluster-status-indicator sse-live-badge" id="sse-stream-indicator" role="status" aria-live="polite" title="Axum SSE Stream: Continuous Telemetry & PIV Token Status">
+        <div class="cluster-status-indicator sse-live-badge" id="sse-stream-indicator" role="status" aria-live="polite" title="Continuous operator telemetry">
           <span class="pulse-dot sse-dot" id="sse-pulse-dot"></span>
           <span id="sse-stream-text">SSE Stream: Connecting...</span>
         </div>
 
         <!-- Quick Action Buttons Toolbar -->
         <div class="header-actions">
-          <button class="btn-action primary" id="btn-open-create-snapshot" title="Capture and replicate an encrypted snapshot">
+          <button class="btn-action primary" id="btn-open-create-snapshot" data-private-action title="Capture and replicate an encrypted snapshot">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
               <circle cx="12" cy="13" r="4"></circle>
@@ -97,7 +97,7 @@
             <span>Push Snapshot</span>
           </button>
 
-          <button class="btn-action secondary" id="btn-trigger-anchor" title="Anchor current head commitment to Arbitrum One">
+          <button class="btn-action secondary" id="btn-trigger-anchor" data-private-action title="Anchor current head commitment to Arbitrum One">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
               <polyline points="2 17 12 22 22 17"></polyline>
@@ -106,7 +106,7 @@
             <span>Anchor Head</span>
           </button>
 
-          <button class="btn-action secondary" id="btn-trigger-audit" title="Audit replica health across all 3 operators">
+          <button class="btn-action secondary" id="btn-trigger-audit" data-private-action title="Run an explicit local recovery audit">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
               <path d="M9 12l2 2 4-4"></path>
@@ -125,11 +125,16 @@
       </div>
     </header>
 
+    <section class="public-explorer-notice" id="public-explorer-notice" role="status" aria-live="polite" hidden>
+      <strong>Public cluster explorer</strong>
+      <span>This view shows sanitized operator health and checkpoint evidence. Vault files, history, recovery material, and administrative actions are available only from a local private workspace.</span>
+    </section>
+
     <!-- Key Metrics Ribbon -->
     <section class="metrics-ribbon" aria-label="Vault Overview Metrics">
       
       <!-- Metric 1: Cluster Durability -->
-      <article class="metric-card" id="card-metric-durability">
+      <article class="metric-card" id="card-metric-durability" data-private-surface>
         <div class="metric-header-row">
           <div class="metric-label">Cluster Durability</div>
           <span class="badge-status-subtle" id="badge-durability-state">Unverified</span>
@@ -148,15 +153,15 @@
       <article class="metric-card" id="card-metric-runway">
         <div class="metric-header-row">
           <div class="metric-label">Retention Runway</div>
-          <span class="badge-status-subtle">Immutable</span>
+          <span class="badge-status-subtle" id="badge-retention-state">Not reported</span>
         </div>
         <div class="metric-value" id="val-metric-runway">
-          <span style="color: var(--accent-cyan);">90</span>
-          <span class="metric-unit">Days Min</span>
+          <span id="val-retention-days" style="color: var(--accent-cyan);">--</span>
+          <span class="metric-unit" id="val-retention-unit">days</span>
         </div>
-        <div class="metric-subtext" id="sub-metric-runway">Automated Lease Self-Repair Active</div>
+        <div class="metric-subtext" id="sub-metric-runway">No retention receipt expiry is available</div>
         <div class="progress-bar-container">
-          <div class="progress-bar-fill" style="width: 100%; background: var(--accent-cyan);"></div>
+          <div class="progress-bar-fill" id="bar-runway" style="width: 0%; background: var(--accent-cyan);"></div>
         </div>
       </article>
 
@@ -164,19 +169,19 @@
       <article class="metric-card" id="card-metric-anchor">
         <div class="metric-header-row">
           <div class="metric-label">Arbitrum Checkpoint</div>
-          <span class="badge-status-subtle" id="badge-anchor-stage">L2 Inclusion</span>
+          <span class="badge-status-subtle" id="badge-anchor-stage">No verified receipt</span>
         </div>
         <div class="metric-value" id="val-metric-anchor">
           <span id="val-anchor-block" style="color: var(--accent-purple); font-size: 1.25rem; font-family: var(--font-mono);">#--</span>
         </div>
-        <div class="metric-subtext" id="sub-metric-anchor">Sequencer Confirmed</div>
+        <div class="metric-subtext" id="sub-metric-anchor">No checkpoint evidence recorded</div>
         <div class="progress-bar-container">
-          <div class="progress-bar-fill" id="bar-anchor" style="width: 100%; background: var(--accent-purple);"></div>
+          <div class="progress-bar-fill" id="bar-anchor" style="width: 0%; background: var(--accent-purple);"></div>
         </div>
       </article>
 
       <!-- Metric 4: Secret Inventory -->
-      <article class="metric-card" id="card-metric-inventory">
+      <article class="metric-card" id="card-metric-inventory" data-private-surface>
         <div class="metric-header-row">
           <div class="metric-label">Protected Secrets</div>
           <span class="badge-status-subtle">Encrypted</span>
@@ -206,10 +211,10 @@
           <line x1="6" y1="18" x2="6.01" y2="18"></line>
         </svg>
         Storage Operators
-        <span class="tab-badge" id="badge-tab-operators">3</span>
+        <span class="tab-badge" id="badge-tab-operators">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="18" cy="18" r="3"></circle>
           <circle cx="6" cy="6" r="3"></circle>
@@ -220,7 +225,7 @@
         <span class="tab-badge" id="badge-tab-snapshots">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="20" x2="18" y2="10"></line>
           <line x1="12" y1="20" x2="12" y2="4"></line>
@@ -233,7 +238,7 @@
         <span class="tab-badge" id="badge-tab-diff">Compare</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-files" data-target="tab-files" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-files" data-target="tab-files" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
           <polyline points="14 2 14 8 20 8"></polyline>
@@ -242,13 +247,13 @@
         <span class="tab-badge" id="badge-tab-files">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
           <circle cx="12" cy="11" r="3"></circle>
         </svg>
         Threshold Guardians
-        <span class="tab-badge" id="badge-tab-guardians">3-of-5</span>
+        <span class="tab-badge" id="badge-tab-guardians">--</span>
       </button>
 
       <button class="tab-btn" id="tab-btn-anchor" data-target="tab-anchor" role="tab" aria-selected="false" aria-controls="tab-anchor" tabindex="-1">
@@ -260,24 +265,24 @@
         Arbitrum Relayer
       </button>
 
-      <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"></circle>
           <line x1="2" y1="12" x2="22" y2="12"></line>
           <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
         </svg>
         Maintenance Fleet
-        <span class="tab-badge" id="badge-tab-fleet">1</span>
+        <span class="tab-badge" id="badge-tab-fleet">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery" role="tab" aria-selected="false" aria-controls="tab-recovery" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery" role="tab" aria-selected="false" aria-controls="tab-recovery" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
         </svg>
         Recovery Readiness
       </button>
 
-      <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
           <line x1="8" y1="21" x2="16" y2="21"></line>
@@ -290,7 +295,7 @@
         <span class="tab-badge" id="badge-tab-fastcdc">Live</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
+      <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
         </svg>
@@ -303,8 +308,8 @@
     <section class="tab-content active" id="tab-operators" role="tabpanel" aria-labelledby="tab-btn-operators" tabindex="0">
       <div class="tab-header-row">
         <div>
-          <h2 class="section-heading">Independent Storage Operators</h2>
-          <p class="section-subheading">Three-way Byzantine replica topology with signed challenge-response authentication and immutable leases.</p>
+          <h2 class="section-heading">Storage Operator Telemetry</h2>
+          <p class="section-subheading">Current response status from configured operator gateways. Reachability and latency do not establish storage durability or recovery readiness.</p>
         </div>
         <div class="latency-summary-pill" id="latency-summary-pill">
           <span>Avg Cluster Latency:</span>
@@ -312,72 +317,15 @@
         </div>
       </div>
 
-      <!-- Live Multi-Region GCP Quorum Topology Visualizer -->
       <div class="quorum-topology-card" id="quorum-topology-card">
         <div class="topology-header">
           <div>
-            <h3 class="card-subheading">Live Geographic Quorum Topology (GCP Multi-Region)</h3>
-            <p class="topology-subtext">3-Node Byzantine Fault Tolerant Cluster across Iowa and South Carolina (~1,000 miles physical isolation).</p>
+            <h3 class="card-subheading">Operator Response Summary</h3>
+            <p class="topology-subtext" id="operator-response-summary">Waiting for current operator response probes.</p>
           </div>
           <div class="quorum-pill" id="quorum-status-pill">
             <span class="pulse-dot"></span>
-            <span id="quorum-health-text">Quorum 3/3 Healthy (2-of-3 Required)</span>
-          </div>
-        </div>
-
-        <div class="topology-grid">
-          <!-- Region 1: Iowa us-central1 -->
-          <div class="region-card" id="region-card-iowa">
-            <div class="region-badge">
-              <span class="flag-icon">🇺🇸</span>
-              <span>us-central1 (Iowa, USA)</span>
-            </div>
-            <div class="region-instances">
-              <div class="instance-item" id="instance-op1">
-                <div class="instance-name">
-                  <span class="status-indicator-dot online"></span>
-                  <strong>cv-operator-1</strong>
-                  <span class="zone-tag">us-central1-a</span>
-                </div>
-                <div class="instance-ip">Gateway: /op/1 <span style="color:var(--accent-cyan); font-size:0.75rem;">🔒 TLS Shielded</span></div>
-                <div class="instance-ping" id="ping-op1">Ping: <span class="ping-val">-- ms</span></div>
-              </div>
-              <div class="instance-item" id="instance-op2">
-                <div class="instance-name">
-                  <span class="status-indicator-dot online"></span>
-                  <strong>cv-operator-2</strong>
-                  <span class="zone-tag">us-central1-b</span>
-                </div>
-                <div class="instance-ip">Gateway: /op/2 <span style="color:var(--accent-cyan); font-size:0.75rem;">🔒 TLS Shielded</span></div>
-                <div class="instance-ping" id="ping-op2">Ping: <span class="ping-val">-- ms</span></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Network Connection Pipe -->
-          <div class="topology-pipe">
-            <div class="pipe-line"></div>
-            <div class="pipe-badge">~1,000 Miles Physical Isolation</div>
-            <div class="pipe-line"></div>
-          </div>
-
-          <!-- Region 2: South Carolina us-east1 -->
-          <div class="region-card" id="region-card-sc">
-            <div class="region-badge">
-              <span class="flag-icon">🇺🇸</span>
-              <span>us-east1 (South Carolina, USA)</span>
-            </div>
-            <div class="region-instances">
-              <div class="instance-item" id="instance-op3">
-                <div class="instance-name">
-                  <span class="status-indicator-dot online"></span>
-                  <strong>cv-operator-3</strong>
-                  <span class="zone-tag">us-east1-b</span>
-                </div>
-                <div class="instance-ip">Gateway: /op/3 <span style="color:var(--accent-cyan); font-size:0.75rem;">🔒 TLS Shielded</span></div>
-                <div class="instance-ping" id="ping-op3">Ping: <span class="ping-val">-- ms</span></div>
-              </div>
-            </div>
+            <span id="quorum-health-text">Operator status not reported</span>
           </div>
         </div>
       </div>
@@ -397,7 +345,7 @@
     </section>
 
     <!-- Tab 2: Snapshot DAG Explorer -->
-    <section class="tab-content" id="tab-dag" role="tabpanel" aria-labelledby="tab-btn-dag" tabindex="0">
+    <section class="tab-content" id="tab-dag" role="tabpanel" aria-labelledby="tab-btn-dag" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Snapshot DAG & History Timeline</h2>
@@ -421,7 +369,7 @@
     </section>
 
     <!-- Tab: Secret Revision Diff Engine -->
-    <section class="tab-content" id="tab-diff" role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0">
+    <section class="tab-content" id="tab-diff" role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Secret Revision Diff Engine</h2>
@@ -486,11 +434,11 @@
     </section>
 
     <!-- Tab 3: Tracked Secrets Explorer -->
-    <section class="tab-content" id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0">
+    <section class="tab-content" id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Protected Confidential Inventory</h2>
-          <p class="section-subheading">Tracked secret files chunked into 1 MiB blocks with PKCS#7 zero-leak padding and XChaCha20-Poly1305 AEAD.</p>
+          <p class="section-subheading">Local inventory metadata for tracked confidential files. Snapshot chunking and padding details are shown only when backed by snapshot evidence.</p>
         </div>
         <div class="header-actions">
           <button class="btn-action primary" id="btn-open-track-modal" title="Add a confidential file to vault tracking">
@@ -548,13 +496,13 @@
       <div class="relayer-status-banner" id="relayer-status-banner">
         <div class="relayer-status-info">
           <div class="relayer-status-pill">
-            <span class="pulse-dot active" id="relayer-pulse-dot"></span>
-            <span id="relayer-mode-display">Automated L2 Relayer: Active</span>
+            <span class="pulse-dot" id="relayer-pulse-dot"></span>
+            <span id="relayer-mode-display">Relayer status not reported</span>
           </div>
-          <div class="relayer-network-tag" id="relayer-target-network">Arbitrum One / Sepolia</div>
+          <div class="relayer-network-tag" id="relayer-target-network">Network not reported</div>
         </div>
         <div class="relayer-actions">
-          <button class="btn-action primary small" id="btn-trigger-relayer-anchor" title="Submit latest head commitment via automated relayer">
+        <button class="btn-action primary small" id="btn-trigger-relayer-anchor" data-private-action title="Submit latest head commitment via automated relayer">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
               <polyline points="2 17 12 22 22 17"></polyline>
@@ -570,7 +518,7 @@
           <h2 class="section-heading">Arbitrum One Checkpoint Verification</h2>
           <p class="section-subheading">Opaque on-chain commitments anchoring snapshot heads without leaking secret plaintexts or tree structures.</p>
         </div>
-        <button class="btn-action primary" id="btn-anchor-from-tab">
+        <button class="btn-action primary" id="btn-anchor-from-tab" data-private-action>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
             <polyline points="2 17 12 22 22 17"></polyline>
@@ -594,10 +542,10 @@
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Target Chain</span>
-              <span class="op-meta-val" id="anchor-chain-id">Arbitrum One (Chain ID 42161)</span>
+              <span class="op-meta-val" id="anchor-chain-id">Network not reported</span>
             </div>
             <div class="op-meta-row">
-              <span class="op-meta-label">Inclusion Block</span>
+              <span class="op-meta-label">Reported Block</span>
               <span class="op-meta-val" id="anchor-block-num" style="color: var(--accent-purple); font-weight: 600;">--</span>
             </div>
           </div>
@@ -605,9 +553,9 @@
           <div>
             <div class="op-meta-row">
               <span class="op-meta-label">Finality Status</span>
-              <span class="op-meta-val" id="anchor-finality-status" style="color: var(--accent-emerald); font-weight: 600;">SequencerConfirmed</span>
+              <span class="op-meta-val" id="anchor-finality-status" style="color: var(--text-muted); font-weight: 600;">Not submitted</span>
             </div>
-            <div class="op-meta-row">
+            <div class="op-meta-row" data-private-surface>
               <span class="op-meta-label">Salt Preimage (Hex)</span>
               <span class="op-meta-val" id="anchor-salt-preimage">--</span>
             </div>
@@ -622,7 +570,7 @@
           <span class="op-meta-label">Transaction Hash</span>
           <span class="op-meta-val" id="anchor-tx-hash-wrap">
             <span id="anchor-tx-hash" style="font-family: var(--font-mono); color: var(--accent-purple);">--</span>
-            <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash">
+            <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash" disabled aria-disabled="true">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -635,13 +583,13 @@
         </div>
 
         <!-- Interactive Cryptographic Verifier Box -->
-        <div class="math-verifier-box" id="math-verifier-box">
+        <div class="math-verifier-box" id="math-verifier-box" data-private-surface>
           <div class="math-verifier-header">
             <h4>Live Cryptographic Proof Verifier</h4>
             <button class="btn-action secondary small" id="btn-run-math-verify">Run Browser SHA-256 Proof</button>
           </div>
           <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
-            Verify client-side in WebCrypto that the local salt preimage and head record CID independently compute the exact 32-byte Arbitrum commitment without relying on external trust.
+            Verify client-side in WebCrypto that the local salt preimage and head record CID compute the recorded 32-byte commitment. This calculation does not verify an on-chain transaction or finality.
           </p>
           <div class="verify-result-output" id="verify-result-output" style="display: none;">
             <!-- Output calculated dynamically -->
@@ -653,14 +601,14 @@
       <div class="table-card" style="margin-top: 24px;">
         <div class="table-header-title">
           <h3 style="font-size: 1.05rem; font-weight: 600;">Arbitrum Relayed Checkpoints Ledger</h3>
-          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Immutable ledger of L2 anchored heads with verified Arbiscan explorer links.</p>
+          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Recorded checkpoint receipts. A transaction link is not proof of current inclusion or finality.</p>
         </div>
         <table class="data-table" id="table-relayer-checkpoints" style="margin-top: 12px;">
           <thead>
             <tr>
-              <th>Block #</th>
+              <th>Reported block</th>
               <th>Sequencer Tx Hash</th>
-              <th>Finality Status</th>
+              <th>Receipt status</th>
               <th>Opaque Commitment</th>
               <th>Explorer</th>
             </tr>
@@ -673,48 +621,26 @@
     </section>
 
     <!-- Tab 5: Threshold Guardian Recovery (M-of-N Shamir) -->
-    <section class="tab-content" id="tab-guardians" role="tabpanel" aria-labelledby="tab-btn-guardians" tabindex="0">
+    <section class="tab-content" id="tab-guardians" role="tabpanel" aria-labelledby="tab-btn-guardians" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
-          <h2 class="section-heading">Threshold Guardian Ceremony & Distributed Recovery</h2>
-          <p class="section-subheading">Shamir M-of-N threshold secret sharing over GF(2⁸). Master recovery secret is partitioned into isolated guardian shares with zero plaintext leakage.</p>
+          <h2 class="section-heading">Guardian Recovery Readiness</h2>
+          <p class="section-subheading">Review non-secret guardian policy descriptors. Do not enter recovery secrets or guardian shares into this dashboard.</p>
         </div>
-        <div class="threshold-controls-wrap">
-          <div class="threshold-input-group">
-            <label for="select-threshold-m">Threshold (M):</label>
-            <select id="select-threshold-m" class="select-compact">
-              <option value="2">2</option>
-              <option value="3" selected>3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-            </select>
-          </div>
-          <div class="threshold-input-group">
-            <label for="select-total-n">Total Guardians (N):</label>
-            <select id="select-total-n" class="select-compact">
-              <option value="3">3</option>
-              <option value="5" selected>5</option>
-              <option value="7">7</option>
-              <option value="9">9</option>
-            </select>
-          </div>
-          <div class="threshold-input-group">
-            <label for="input-split-recovery-secret">Master Secret (R):</label>
-            <input type="password" id="input-split-recovery-secret" class="form-input select-compact" style="width: 220px;" placeholder="64-char hex secret (R)" title="Enter master secret R from offline paper kit to perform authentic split">
-          </div>
-          <button class="btn-action primary small" id="btn-generate-guardians" title="Partition master recovery kit into M-of-N threshold shares">
-            <span>Split Recovery Secret</span>
-          </button>
-        </div>
+      </div>
+
+      <div class="guardian-local-guidance" role="note">
+        <strong>Use a trusted local terminal for recovery ceremonies.</strong>
+        <span>Run the relevant CipherVault CLI recovery command on the device that holds the offline material. Browser forms never receive the master recovery secret or guardian shares.</span>
       </div>
 
       <!-- Active Threshold Quorum Banner -->
       <div class="quorum-banner-card" id="quorum-banner">
         <div class="quorum-visual">
-          <div class="quorum-circle-badge" id="quorum-circle-badge">3 / 5</div>
+          <div class="quorum-circle-badge" id="quorum-circle-badge">-- / --</div>
           <div>
-            <h3 class="quorum-title" id="quorum-title">Active Quorum Policy: 3-of-5 Guardians Required</h3>
-            <p class="quorum-desc">Any 3 distinct guardian descriptor shares can mathematically reconstruct the recovery signing key. Fewer than 3 shares yield zero information about the secret.</p>
+            <h3 class="quorum-title" id="quorum-title">Guardian policy not reported</h3>
+            <p class="quorum-desc">Descriptors identify a configured policy. They do not prove that recovery material is held, usable, or recently tested.</p>
           </div>
         </div>
         <div class="quorum-meta-pill">
@@ -725,36 +651,30 @@
 
       <!-- Guardian Sheets Grid -->
       <div class="guardians-grid" id="guardians-grid">
-        <div class="loading-placeholder">Loading threshold guardian sheets...</div>
+        <div class="loading-placeholder">Loading guardian policy descriptors...</div>
       </div>
 
-      <!-- Zero-Knowledge In-Memory Reconstruction Simulator -->
+      <!-- Local recovery guidance -->
       <div class="simulator-card" id="simulator-card">
         <div class="simulator-header">
           <div>
-            <h3 class="card-subheading">Zero-Knowledge In-Memory Share Recombination Simulator</h3>
+            <h3 class="card-subheading">Recovery Ceremony Stays Local</h3>
             <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
-              Paste M or more printable guardian share blocks below to mathematically verify polynomial reconstruction against the registered recovery signing key. Reconstruction is computed in zeroized volatile RAM; the master recovery secret R is never displayed or stored.
+              Use the local CLI with the approved offline procedure to create, distribute, or verify guardian material. This dashboard only presents non-secret readiness metadata.
             </p>
           </div>
-          <button class="btn-action secondary small" id="btn-simulate-recombine">Verify & Recombine</button>
-        </div>
-
-        <div class="simulator-body">
-          <textarea id="input-simulation-shares" class="simulator-textarea" rows="4" placeholder="Paste printable guardian shares here (e.g. CIPHERVAULT-THRESHOLD-RECOVERY-V1:...) separated by blank lines or paste share text..."></textarea>
-          <div class="simulation-result" id="simulation-result" style="display: none;"></div>
         </div>
       </div>
     </section>
 
     <!-- Tab 6: Maintenance Fleet Daemon -->
-    <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tab-btn-fleet" tabindex="0">
+    <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tab-btn-fleet" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Maintenance Fleet & Self-Repair Monitor</h2>
           <p class="section-subheading">Autonomous heartbeat monitoring, operator latency tracking, and SQLite-backed self-repair audit history.</p>
         </div>
-        <button class="btn-action primary" id="btn-run-fleet-audit" title="Trigger immediate self-repair audit across all replicas">
+        <button class="btn-action primary" id="btn-run-fleet-audit" data-private-action title="Trigger immediate self-repair audit across all replicas">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
             <path d="M9 12l2 2 4-4"></path>
@@ -767,13 +687,13 @@
       <div class="fleet-kpi-ribbon" id="fleet-kpi-ribbon">
         <div class="fleet-kpi-card">
           <div class="kpi-title">Tracked Vaults</div>
-          <div class="kpi-value" id="fleet-kpi-vaults" style="color: var(--accent-cyan);">1</div>
+          <div class="kpi-value" id="fleet-kpi-vaults" style="color: var(--accent-cyan);">--</div>
           <div class="kpi-subtext">Active in fleet registry</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Active Operators</div>
-          <div class="kpi-value" id="fleet-kpi-operators" style="color: var(--accent-emerald);">3 / 3</div>
-          <div class="kpi-subtext">Replica quorum intact</div>
+          <div class="kpi-value" id="fleet-kpi-operators" style="color: var(--accent-emerald);">-- / --</div>
+          <div class="kpi-subtext">Operator response counts not reported</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Cluster Latency (Avg)</div>
@@ -843,7 +763,7 @@
 
     <!-- Tab 7: Offline Emergency Recovery Kit -->
     <!-- Tab: Recovery Readiness -->
-    <section class="tab-content" id="tab-recovery" role="tabpanel" aria-labelledby="tab-btn-recovery" tabindex="0">
+    <section class="tab-content" id="tab-recovery" role="tabpanel" aria-labelledby="tab-btn-recovery" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Recovery Readiness & Public Bootstrap Descriptors</h2>
@@ -855,7 +775,7 @@
             <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
             <rect x="6" y="14" width="12" height="8"></rect>
           </svg>
-          <span>Print Physical Kit</span>
+          <span>Print Descriptor Reference</span>
         </button>
       </div>
 
@@ -877,28 +797,28 @@
           <div class="readiness-card">
             <div class="readiness-card-header">
               <span class="readiness-card-title">Offline Paper Kit</span>
-              <span class="readiness-status-badge passed">Exported</span>
+              <span class="readiness-status-badge recommended">Not recorded</span>
             </div>
             <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
-              Root entropy R printed and stored in secure offline physical locations. Never exposed to browser or network.
+              This dashboard cannot confirm possession of an offline recovery kit. Record and test recovery material through the approved local procedure.
             </p>
           </div>
           <div class="readiness-card">
             <div class="readiness-card-header">
               <span class="readiness-card-title">Threshold Quorum</span>
-              <span class="readiness-status-badge passed">3-of-5 Ready</span>
+              <span class="readiness-status-badge recommended">Not configured here</span>
             </div>
             <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
-              Shamir polynomial shares distributed across 5 isolated guardians. Any 3 reconstruct vault access.
+              Guardian metadata may describe a policy, but it is not proof that usable recovery shares are held or have been tested.
             </p>
           </div>
           <div class="readiness-card">
             <div class="readiness-card-header">
               <span class="readiness-card-title">Replication Quorum</span>
-              <span class="readiness-status-badge passed">3/3 Verified</span>
+              <span class="readiness-status-badge recommended">No audit evidence</span>
             </div>
             <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
-              FastCDC chunk leases verified across Council Bluffs & Berkeley County operators with PoS challenges.
+              Remote recovery coverage is shown only when a snapshot-scoped audit provides evidence.
             </p>
           </div>
         </div>
@@ -910,7 +830,7 @@
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Checksum Verification</span>
-            <span class="op-meta-val" id="rec-crc32" style="color: var(--accent-emerald); font-weight: 600;">CRC32: Verified</span>
+            <span class="op-meta-val" id="rec-crc32" style="color: var(--text-muted); font-weight: 600;">Checksum not available</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Signing PK</span>
@@ -958,7 +878,7 @@
     </section>
 
     <!-- Tab 8: FastCDC Inspector -->
-    <section class="tab-content" id="tab-fastcdc" role="tabpanel" aria-labelledby="tab-btn-fastcdc" tabindex="0">
+    <section class="tab-content" id="tab-fastcdc" role="tabpanel" aria-labelledby="tab-btn-fastcdc" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">FastCDC Content-Defined Chunking & Deduplication Inspector</h2>
@@ -1042,8 +962,8 @@
               </svg>
               <span>Slice & Inspect Chunks</span>
             </button>
-            <button class="btn-action secondary" id="btn-simulate-shift" title="Inject bytes at offset 0 and verify that only 1 chunk changes boundary">
-              <span>Test Boundary-Shift Resilience</span>
+            <button class="btn-action secondary" id="btn-simulate-shift" title="Prepend test input and rerun the local inspection">
+              <span>Prepend Test Input & Rerun</span>
             </button>
           </div>
         </div>
@@ -1059,18 +979,18 @@
         <div class="fastcdc-metric-box">
           <div class="f-metric-label">Deduplication Savings</div>
           <div class="f-metric-val highlight-emerald" id="f-metric-savings-pct">--%</div>
-          <div class="f-metric-sub" id="f-metric-saved-bytes">-- bytes pruned</div>
+          <div class="f-metric-sub" id="f-metric-saved-bytes">-- estimated duplicate bytes</div>
         </div>
         <div class="fastcdc-metric-box">
           <div class="f-metric-label">Content Payload</div>
           <div class="f-metric-val" id="f-metric-total-bytes">-- KB</div>
-          <div class="f-metric-sub" id="f-metric-unique-bytes">-- KB wire transfer</div>
+          <div class="f-metric-sub" id="f-metric-unique-bytes">-- unique bytes</div>
         </div>
-        <div class="fastcdc-metric-box">
-          <div class="f-metric-label">Boundary Shift Resilience</div>
-          <div class="f-metric-val highlight-cyan">100% Normalized</div>
-          <div class="f-metric-sub">Fixed-chunk failure: 0%</div>
-        </div>
+          <div class="fastcdc-metric-box">
+            <div class="f-metric-label">Boundary Shift Resilience</div>
+            <div class="f-metric-val highlight-cyan" id="f-metric-boundary-status">Not measured</div>
+            <div class="f-metric-sub">Run an explicit comparison to measure boundary changes.</div>
+          </div>
         <div class="fastcdc-metric-box">
           <div class="f-metric-label">Fixed Chunks (16 KiB)</div>
           <div class="f-metric-val" id="f-metric-fixed-count">--</div>
@@ -1136,15 +1056,15 @@
             <span class="detail-val font-mono highlight-cyan" id="detail-chunk-cid">--</span>
           </div>
           <div class="detail-cell full-width">
-            <span class="detail-label">Boundary Content Preview (First 48 Bytes)</span>
-            <pre class="detail-preview-box" id="detail-chunk-preview">--</pre>
+            <span class="detail-label">Content Preview Policy</span>
+            <pre class="detail-preview-box" id="detail-chunk-preview">Content previews are disabled.</pre>
           </div>
         </div>
       </div>
     </section>
 
     <!-- Tab: Durable Activity Log -->
-    <section class="tab-content" id="tab-activity" role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0">
+    <section class="tab-content" id="tab-activity" role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0" data-private-surface>
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Durable Vault Activity & Provenance Journal</h2>
@@ -1171,7 +1091,7 @@
   </div> <!-- .app-container -->
 
   <!-- Modal: Create Snapshot -->
-  <div class="modal-backdrop" id="modal-create-snapshot" role="dialog" aria-modal="true" aria-labelledby="modal-snapshot-title">
+  <div class="modal-backdrop" id="modal-create-snapshot" role="dialog" aria-modal="true" aria-labelledby="modal-snapshot-title" data-private-surface>
     <div class="modal-card">
       <div class="modal-header">
         <h3 id="modal-snapshot-title" class="modal-title">Capture & Replicate Snapshot</h3>
@@ -1179,7 +1099,7 @@
       </div>
       <div class="modal-body">
         <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
-          All tracked confidential files will be coherently read, padded to 1 MiB chunks, encrypted under ephemeral session keys, and verified across all 3 independent storage operators.
+          CipherVault uses content-defined FastCDC chunks with 4 KiB, 16 KiB, and 64 KiB boundaries. Small files may receive 4 KiB bucket padding. Capture and remote recovery verification are reported as separate stages.
         </p>
         <div class="form-group">
           <label for="input-snapshot-message" class="form-label">Commit Message (Optional)</label>
@@ -1203,7 +1123,7 @@
   </div>
 
   <!-- Modal: Snapshot Inspector Details -->
-  <div class="modal-backdrop" id="modal-snapshot-inspector" role="dialog" aria-modal="true" aria-labelledby="modal-inspector-title">
+  <div class="modal-backdrop" id="modal-snapshot-inspector" role="dialog" aria-modal="true" aria-labelledby="modal-inspector-title" data-private-surface>
     <div class="modal-card">
       <div class="modal-header">
         <h3 id="modal-inspector-title" class="modal-title">Snapshot Node Details</h3>
@@ -1220,7 +1140,7 @@
   </div>
 
   <!-- Modal: Guardian Sheet Inspector -->
-  <div class="modal-backdrop" id="modal-guardian-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-guardian-title">
+  <div class="modal-backdrop" id="modal-guardian-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-guardian-title" data-private-surface>
     <div class="modal-card" style="max-width: 680px;">
       <div class="modal-header">
         <h3 id="modal-guardian-title" class="modal-title">Guardian Descriptor Sheet</h3>
@@ -1237,8 +1157,8 @@
   </div>
 
   <!-- Slide-out Snapshot Deep Inspector Drawer -->
-  <div class="drawer-backdrop" id="snapshot-drawer-backdrop"></div>
-  <aside class="drawer" id="snapshot-drawer" aria-labelledby="drawer-title" role="dialog" aria-modal="true">
+  <div class="drawer-backdrop" id="snapshot-drawer-backdrop" aria-hidden="true" data-private-surface></div>
+  <aside class="drawer" id="snapshot-drawer" aria-labelledby="drawer-title" role="dialog" aria-modal="true" aria-hidden="true" inert data-private-surface>
     <div class="drawer-header">
       <div>
         <span class="drawer-tag">Snapshot Deep Inspector</span>
@@ -1252,7 +1172,7 @@
   </aside>
 
   <!-- Collapsible Cyberpunk Live Terminal Console -->
-  <div class="terminal-bar" id="terminal-bar">
+  <div class="terminal-bar" id="terminal-bar" data-private-surface>
     <div class="terminal-bar-header" id="terminal-toggle-btn">
       <div class="terminal-bar-left">
         <span class="terminal-icon">❯_</span>
@@ -1277,7 +1197,7 @@
   </div>
 
   <!-- Modal: Track Confidential File -->
-  <div class="modal-backdrop" id="modal-track-file" role="dialog" aria-modal="true" aria-labelledby="modal-track-title">
+  <div class="modal-backdrop" id="modal-track-file" role="dialog" aria-modal="true" aria-labelledby="modal-track-title" data-private-surface>
     <div class="modal-card">
       <div class="modal-header">
         <h3 id="modal-track-title" class="modal-title">Track Confidential Secret File</h3>
