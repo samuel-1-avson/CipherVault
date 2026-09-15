@@ -1,4 +1,5 @@
 use ciphervault_crypto::hsm::list_pcsc_readers;
+use ciphervault_local_store::AccountStore;
 use ciphervault_snapshot::fastcdc::{fastcdc_chunk, FastCdcConfig, GEAR_MATRIX};
 use std::fs;
 use std::path::PathBuf;
@@ -132,6 +133,15 @@ pub struct TuiApp {
     pub recovery_signing_pk_hex: String,
     pub recovery_locator_hex: String,
 
+    // Optional account/session identity. The TUI never handles hosted vault
+    // plaintext; it only reports and controls the local OS-protected account
+    // session used by device-bound vault operations.
+    pub account_configured: bool,
+    pub account_id: String,
+    pub account_authenticated: bool,
+    pub account_session_device_id: Option<String>,
+    pub account_session_expires_at_utc: Option<u64>,
+
     // Collections
     pub tracked_files: Vec<TrackedFileItem>,
     pub file_table_index: usize,
@@ -176,6 +186,12 @@ impl TuiApp {
             head_cid_hex: "None".into(),
             recovery_signing_pk_hex: "None".into(),
             recovery_locator_hex: "None".into(),
+
+            account_configured: false,
+            account_id: "Not configured".into(),
+            account_authenticated: false,
+            account_session_device_id: None,
+            account_session_expires_at_utc: None,
 
             tracked_files: Vec::new(),
             file_table_index: 0,
@@ -232,6 +248,7 @@ impl TuiApp {
     }
 
     pub fn refresh_local_state(&mut self) {
+        self.refresh_account_state();
         let store_result = crate::get_vault_store();
         match store_result {
             Ok(store) => {
@@ -350,6 +367,71 @@ impl TuiApp {
 
         // Inspect first real tracked file for FastCDC
         self.run_fastcdc_inspection();
+    }
+
+    fn refresh_account_state(&mut self) {
+        let Ok(account) = AccountStore::open(None) else {
+            self.account_configured = false;
+            self.account_id = "Not configured".into();
+            self.account_authenticated = false;
+            self.account_session_device_id = None;
+            self.account_session_expires_at_utc = None;
+            return;
+        };
+        let session = account.session_status();
+        self.account_configured = true;
+        self.account_id = account.account_id().to_string();
+        self.account_authenticated = session.authenticated;
+        self.account_session_device_id = session.device_id_hex;
+        self.account_session_expires_at_utc = session.expires_at_utc;
+    }
+
+    /// Unlock the local account key and establish a short-lived session. A
+    /// linked vault binds the session to its current device identity; an
+    /// unlinked account remains account-only until the vault is linked.
+    pub fn login_local_account(&mut self) {
+        let result = AccountStore::open(None).and_then(|account| {
+            let device = crate::current_device_identity().ok();
+            let device_id = device
+                .as_ref()
+                .and_then(|(vault_id, device_id, device_pk)| {
+                    (account.is_vault_linked(vault_id)
+                        && account.is_device_active(device_id, device_pk))
+                    .then_some(device_id.as_str())
+                });
+            account.login(device_id)
+        });
+        match result {
+            Ok(session) => {
+                self.refresh_account_state();
+                let binding = if session.device_id_hex.is_some() {
+                    "device-bound"
+                } else {
+                    "account-only"
+                };
+                self.set_status(
+                    format!("✓ Local account session established ({binding})."),
+                    StatusLevel::Success,
+                );
+            }
+            Err(error) => self.set_status(
+                format!("Account sign-in failed: {error}"),
+                StatusLevel::Error,
+            ),
+        }
+    }
+
+    pub fn logout_local_account(&mut self) {
+        match AccountStore::open(None).and_then(|account| account.logout()) {
+            Ok(()) => {
+                self.refresh_account_state();
+                self.set_status("✓ Local account session revoked.", StatusLevel::Success);
+            }
+            Err(error) => self.set_status(
+                format!("Account sign-out failed: {error}"),
+                StatusLevel::Error,
+            ),
+        }
     }
 
     pub fn run_fastcdc_inspection(&mut self) {

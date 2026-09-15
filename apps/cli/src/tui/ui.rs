@@ -269,6 +269,29 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 }),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("Account Session:  ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                if !app.account_configured {
+                    "Not configured"
+                } else if app.account_authenticated {
+                    if app.account_session_device_id.is_some() {
+                        "Authenticated (device-bound)"
+                    } else {
+                        "Authenticated (account-only)"
+                    }
+                } else {
+                    "Signed out"
+                },
+                Style::default().fg(if app.account_authenticated {
+                    Color::Green
+                } else if app.account_configured {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+        ]),
     ];
 
     let health_block = Paragraph::new(health_text).block(
@@ -985,6 +1008,14 @@ fn render_help_modal(frame: &mut Frame) {
             Span::raw("Force immediate refresh of local state & operator pings"),
         ]),
         Line::from(vec![
+            Span::styled("l          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Sign in to the local account with the OS-protected account key"),
+        ]),
+        Line::from(vec![
+            Span::styled("o          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Sign out of the local account session"),
+        ]),
+        Line::from(vec![
             Span::styled("Up / Down  ", Style::default().fg(Color::Yellow)),
             Span::raw("Select previous / next row in tables"),
         ]),
@@ -998,7 +1029,7 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Press [Esc] or [?] to close this help overlay",
+            "Hosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nPress [Esc] or [?] to close this help overlay",
             Style::default().fg(Color::Gray),
         )),
     ];

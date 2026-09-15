@@ -150,6 +150,12 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             app.set_status("✓ Local state and operators updated.", StatusLevel::Success);
         }
 
+        // Account session actions. Hosted TOTP login remains a browser
+        // ceremony; the TUI uses the local OS-protected account key so it can
+        // never require users to paste vault secrets into the terminal.
+        KeyCode::Char('l') => app.login_local_account(),
+        KeyCode::Char('o') => app.logout_local_account(),
+
         // Action: Track Modal
         KeyCode::Char('t') => {
             app.show_track_modal = true;
