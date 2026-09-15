@@ -6435,9 +6435,7 @@ fn trusted_public_operator_identity_from_registry(
             .map_or((None, entry), |(id, key)| (Some(id.trim()), key.trim()));
         let entry_key = entry_key.trim_start_matches("0x").to_ascii_lowercase();
         entry_key == key
-            && entry_id.map_or(true, |id| {
-                !id.is_empty() && id.eq_ignore_ascii_case(operator_id)
-            })
+            && entry_id.is_none_or(|id| !id.is_empty() && id.eq_ignore_ascii_case(operator_id))
     })
 }
 

@@ -177,11 +177,8 @@ impl OperatorState {
                 && hex::decode(&record.public_key_hex).map(|b| b.len()) == Ok(32)
                 && record.vault_id_hex == record.vault_id_hex.to_ascii_lowercase()
                 && record.public_key_hex == record.public_key_hex.to_ascii_lowercase()
-                && record.account_id.as_deref().map_or(true, valid_account_id)
-                && record
-                    .device_id_hex
-                    .as_deref()
-                    .map_or(true, valid_device_id)
+                && record.account_id.as_deref().is_none_or(valid_account_id)
+                && record.device_id_hex.as_deref().is_none_or(valid_device_id)
                 && record.account_id.is_some() == record.device_id_hex.is_some()
         }));
     }
@@ -256,11 +253,11 @@ impl OperatorState {
                     && identity
                         .account_id
                         .as_deref()
-                        .map_or(true, |bound| account_id.as_deref() == Some(bound))
+                        .is_none_or(|bound| account_id.as_deref() == Some(bound))
                     && identity
                         .device_id_hex
                         .as_deref()
-                        .map_or(true, |bound| device_id_hex.as_deref() == Some(bound))
+                        .is_none_or(|bound| device_id_hex.as_deref() == Some(bound))
             })
     }
 

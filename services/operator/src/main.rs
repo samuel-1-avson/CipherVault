@@ -94,7 +94,7 @@ fn validate_security_configuration() -> io::Result<()> {
     if strict_auth_enabled()
         && std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN")
             .ok()
-            .map_or(true, |token| token.trim().is_empty())
+            .is_none_or(|token| token.trim().is_empty())
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -69,7 +69,7 @@ fn require_service_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)
         || headers
             .get("X-CipherVault-Service-Token")
             .and_then(|value| value.to_str().ok())
-            .map_or(true, |provided| provided != expected)
+            .is_none_or(|provided| provided != expected)
     {
         return Err((StatusCode::UNAUTHORIZED, "Invalid service token".into()));
     }
@@ -114,11 +114,7 @@ fn require_session<'a>(
             "X-CipherVault-Id must be 32-byte hex".into(),
         ));
     }
-    let valid = if write {
-        state.validate_session_for_vault(token, vault_id)
-    } else {
-        state.validate_session_for_vault(token, vault_id)
-    };
+    let valid = state.validate_session_for_vault(token, vault_id);
     if !valid {
         return Err((
             StatusCode::UNAUTHORIZED,

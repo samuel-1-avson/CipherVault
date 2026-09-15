@@ -465,7 +465,7 @@ impl AccountStore {
         };
         let active = session.account_id == self.record.account_id
             && session.expires_at_utc > now_utc()
-            && session.device_id_hex.as_deref().map_or(true, |device_id| {
+            && session.device_id_hex.as_deref().is_none_or(|device_id| {
                 self.record.devices.iter().any(|device| {
                     device.device_id_hex.eq_ignore_ascii_case(device_id)
                         && device.revoked_at_utc.is_none()

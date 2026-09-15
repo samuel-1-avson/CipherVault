@@ -3,7 +3,8 @@ use axum::http::{Request, StatusCode};
 use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
 use ciphervault_operator::{create_router, OperatorState};
 use serde_json::json;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Mutex;
 use tower05::ServiceExt;
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -17,7 +18,7 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
 
 #[tokio::test]
 async fn challenge_and_object_routes_enforce_vault_scope() {
-    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await;
     std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
     std::env::remove_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN");
     let root = std::env::temp_dir().join(format!("cv-http-auth-{}", rand::random::<u128>()));
@@ -114,7 +115,7 @@ async fn challenge_and_object_routes_enforce_vault_scope() {
 
 #[tokio::test]
 async fn strict_control_routes_require_a_session_or_service_token() {
-    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await;
     std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "true");
     let root = std::env::temp_dir().join(format!("cv-http-control-{}", rand::random::<u128>()));
     let state = Arc::new(OperatorState::new(
@@ -149,7 +150,7 @@ async fn strict_control_routes_require_a_session_or_service_token() {
 
 #[tokio::test]
 async fn strict_challenges_require_persisted_enrollment() {
-    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await;
     std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "true");
     std::env::set_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN", "identity-admin-token");
     let root = std::env::temp_dir().join(format!("cv-http-enrollment-{}", rand::random::<u128>()));
