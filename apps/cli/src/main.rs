@@ -4,6 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use colored::*;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
+use reqwest::Client as HttpClient;
 use std::fs::{self, OpenOptions};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +12,7 @@ use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use zeroize::Zeroize;
 
+use axum::body::Bytes;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::{
     future::join_all,
@@ -24,7 +26,7 @@ use ciphervault_format::{
     from_canonical_cbor, to_canonical_cbor, ChunkWireObject, DeviceCertificate, GenesisRecord,
     HeadRecord, SnapshotManifest, SnapshotRecord, PROTOCOL_VERSION,
 };
-use ciphervault_local_store::LocalVaultStore;
+use ciphervault_local_store::{AccountStore, LocalVaultStore};
 use ciphervault_maintenance::MaintenanceDb;
 use ciphervault_recovery::OfflineRecoveryKit;
 use ciphervault_snapshot::{
@@ -54,6 +56,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Manage the optional CipherVault control-plane account on this device
+    Auth {
+        #[command(subcommand)]
+        sub: AuthSubcommand,
+    },
+
+    /// Manage devices enrolled in the local CipherVault account
+    Device {
+        #[command(subcommand)]
+        sub: DeviceSubcommand,
+    },
+
+    /// Link the current local vault to the optional CipherVault account
+    Vault {
+        #[command(subcommand)]
+        sub: VaultSubcommand,
+    },
+
     /// Initialize a new CipherVault in the current directory
     Init {
         #[arg(short, long, help = "Overwrite existing vault if present")]
@@ -497,6 +517,49 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum AuthSubcommand {
+    /// Create a local account identity; no vault keys leave this device
+    Init {
+        #[arg(long, help = "Human-readable account display name")]
+        name: Option<String>,
+    },
+
+    /// Unlock the local account key and create a short-lived device-bound session
+    Login,
+
+    /// Revoke the local account session
+    Logout,
+
+    /// Show account, device, vault-link, and session state
+    Status,
+}
+
+#[derive(Subcommand)]
+enum DeviceSubcommand {
+    /// List devices registered to the local account
+    List,
+
+    /// Revoke a device by its 32-byte hex device ID
+    Revoke { device_id: String },
+}
+
+#[derive(Subcommand)]
+enum VaultSubcommand {
+    /// Link the current local vault and its device identity to the account
+    Link {
+        #[arg(
+            long,
+            default_value = "Local vault",
+            help = "Display alias for the vault"
+        )]
+        alias: String,
+    },
+
+    /// Remove the current local vault from the account registry
+    Unlink,
+}
+
+#[derive(Subcommand)]
 enum ApproveSubcommand {
     /// List pending out-of-band authorization challenges across the cluster
     List,
@@ -632,6 +695,20 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Auth { sub } => match sub {
+            AuthSubcommand::Init { name } => cmd_auth_init(name),
+            AuthSubcommand::Login => cmd_auth_login(),
+            AuthSubcommand::Logout => cmd_auth_logout(),
+            AuthSubcommand::Status => cmd_auth_status(),
+        },
+        Commands::Device { sub } => match sub {
+            DeviceSubcommand::List => cmd_device_list(),
+            DeviceSubcommand::Revoke { device_id } => cmd_device_revoke(&device_id).await,
+        },
+        Commands::Vault { sub } => match sub {
+            VaultSubcommand::Link { alias } => cmd_vault_link(&alias),
+            VaultSubcommand::Unlink => cmd_vault_unlink(),
+        },
         Commands::Init {
             force,
             operators,
@@ -980,6 +1057,292 @@ fn save_token_reader_preference(reader: &str) -> Result<()> {
         });
         fs::write(&cfg_path, serde_json::to_string_pretty(&payload)?)?;
     }
+    Ok(())
+}
+
+fn current_device_identity() -> Result<(String, String, String)> {
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (device_id, device_key, _, _) = store.get_device_state()?;
+    Ok((
+        hex::encode(vault_id),
+        hex::encode(device_id),
+        hex::encode(device_key.verifying_key().as_bytes()),
+    ))
+}
+
+/// Creates an operator pool and, when this vault is linked to the optional
+/// account registry, propagates the same account/device identifiers into every
+/// operator client. Accountless vaults retain the legacy protocol.
+fn configured_operator_pool(endpoints: Vec<String>) -> MultiOperatorPool {
+    let pool = MultiOperatorPool::new(endpoints);
+    if let (Ok(account), Ok((vault_id, device_id, device_pk))) =
+        (AccountStore::open(None), current_device_identity())
+    {
+        if account.is_vault_linked(&vault_id) && account.is_device_active(&device_id, &device_pk) {
+            pool.set_account_identity(account.account_id(), &device_id);
+        }
+    }
+    pool
+}
+
+fn cmd_auth_init(name: Option<String>) -> Result<()> {
+    let account = AccountStore::create(name.as_deref(), None)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!("{}", "CipherVault account created.".bold().green());
+    println!("  Account ID:   {}", account.account_id().yellow());
+    println!("  Display name: {}", account.record().display_name);
+    println!("  Public key:   {}", account.public_key_hex().cyan());
+    println!("  Metadata:     {}", AccountStore::default_path().display());
+    println!(
+        "\nThe account is a control-plane identity. Vault keys and the offline recovery secret remain local to each vault."
+    );
+    Ok(())
+}
+
+fn cmd_auth_login() -> Result<()> {
+    let account = AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let device = current_device_identity().ok();
+    // An account can be logged in before any vault is linked. Bind the
+    // session to a device only when that device is already enrolled for the
+    // current vault; `vault link` performs the enrollment step.
+    let device_id = device
+        .as_ref()
+        .and_then(|(vault_id, device_id, device_pk)| {
+            (account.is_vault_linked(vault_id) && account.is_device_active(device_id, device_pk))
+                .then_some(device_id.as_str())
+        });
+    let status = account
+        .login(device_id)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!(
+        "{}",
+        "CipherVault account session established.".bold().green()
+    );
+    println!("  Account ID: {}", status.account_id.yellow());
+    if let Some(device_id) = status.device_id_hex {
+        println!("  Device:     {}", device_id.cyan());
+        println!("  Session:    device-bound (30 minutes)");
+    } else {
+        println!("  Session:    account-only (link a vault to bind this device)");
+    }
+    if let Ok(endpoint) = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT") {
+        if !endpoint.trim().is_empty() {
+            println!(
+                "  Hosted endpoint: {} (remote exchange remains deployment work)",
+                endpoint
+            );
+        }
+    } else {
+        println!("  Hosted endpoint: not configured; this is a local account session");
+    }
+    Ok(())
+}
+
+fn cmd_auth_logout() -> Result<()> {
+    let account = AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    account
+        .logout()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!("{}", "CipherVault account session revoked.".green());
+    Ok(())
+}
+
+fn cmd_auth_status() -> Result<()> {
+    let account = AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let session = account.session_status();
+    println!("{}", "CipherVault account".bold().cyan());
+    println!("  Account ID:   {}", account.account_id().yellow());
+    println!("  Display name: {}", account.record().display_name);
+    println!("  Public key:   {}", account.public_key_hex());
+    println!("  Metadata:     {}", AccountStore::default_path().display());
+    println!("  Devices:      {}", account.record().devices.len());
+    println!("  Vault links:  {}", account.record().vaults.len());
+    println!(
+        "  Session:      {}",
+        if session.authenticated {
+            "authenticated"
+        } else {
+            "signed out"
+        }
+    );
+    if let Some(expires) = session.expires_at_utc {
+        println!("  Session expiry: {}", expires);
+    }
+    Ok(())
+}
+
+fn cmd_device_list() -> Result<()> {
+    let account = AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if account.record().devices.is_empty() {
+        println!(
+            "No devices are enrolled in account {}.",
+            account.account_id()
+        );
+        return Ok(());
+    }
+    println!("Devices for {}:", account.account_id().yellow());
+    for device in &account.record().devices {
+        let state = if device.revoked_at_utc.is_some() {
+            "REVOKED"
+        } else {
+            "ACTIVE"
+        };
+        println!(
+            "  {}  {}  {}  {}",
+            device.device_id_hex.cyan(),
+            state,
+            device.label,
+            device.public_key_hex
+        );
+    }
+    Ok(())
+}
+
+async fn sync_hosted_device_revocation(account: &AccountStore, device_id: &str) -> Result<()> {
+    let endpoint = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT")
+        .context("CIPHERVAULT_ACCOUNT_ENDPOINT is not configured")?;
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    if endpoint.is_empty() {
+        bail!("CIPHERVAULT_ACCOUNT_ENDPOINT is empty");
+    }
+
+    // The hosted service only accepts a short-lived bearer session. Obtain it
+    // with the account key without persisting or transmitting the private key.
+    // If a current vault device is available, bind the session to that device;
+    // otherwise use an account-only session for administrative revocation.
+    let current_device = current_device_identity().ok().map(|(_, id, _)| id);
+    let challenge_response = HttpClient::new()
+        .post(format!("{endpoint}/v1/sessions/challenge"))
+        .json(&serde_json::json!({
+            "account_id": account.account_id(),
+            "device_id_hex": current_device,
+        }))
+        .send()
+        .await
+        .context("requesting hosted account login challenge")?
+        .error_for_status()
+        .context("hosted account login challenge was rejected")?;
+    let challenge: serde_json::Value = challenge_response
+        .json()
+        .await
+        .context("decoding hosted account login challenge")?;
+    let challenge_id = challenge
+        .get("challenge_id")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted login challenge did not include challenge_id")?;
+    let nonce_hex = challenge
+        .get("nonce_hex")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted login challenge did not include nonce_hex")?;
+    let signing_bytes = serde_json::to_vec(&(
+        account.account_id(),
+        current_device.as_deref(),
+        Option::<&str>::None,
+        challenge_id,
+        nonce_hex,
+    ))?;
+    let signature = account
+        .sign_challenge(b"account_login", &signing_bytes)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let session_response = HttpClient::new()
+        .post(format!("{endpoint}/v1/sessions"))
+        .json(&serde_json::json!({
+            "challenge_id": challenge_id,
+            "signature_hex": hex::encode(signature),
+        }))
+        .send()
+        .await
+        .context("requesting hosted account session")?
+        .error_for_status()
+        .context("hosted account session was rejected")?;
+    let session: serde_json::Value = session_response
+        .json()
+        .await
+        .context("decoding hosted account session")?;
+    let token = session
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted account session did not include a token")?;
+    HttpClient::new()
+        .post(format!(
+            "{endpoint}/v1/accounts/{}/devices/{}/revoke",
+            account.account_id(),
+            device_id
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("requesting hosted device revocation")?
+        .error_for_status()
+        .context("hosted device revocation was rejected")?;
+    Ok(())
+}
+
+async fn cmd_device_revoke(device_id: &str) -> Result<()> {
+    let mut account =
+        AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let changed = account
+        .revoke_device(device_id)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if !changed {
+        bail!(
+            "Device '{}' is not enrolled or is already revoked.",
+            device_id
+        );
+    }
+    println!(
+        "{}",
+        "Device revoked and local account session invalidated.".green()
+    );
+    if std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT").is_some() {
+        match sync_hosted_device_revocation(&account, device_id).await {
+            Ok(()) => println!("Hosted account session and operator bindings revoked."),
+            Err(error) => eprintln!(
+                "{} Hosted revocation could not be confirmed: {error}",
+                "Warning:".yellow()
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn cmd_vault_link(alias: &str) -> Result<()> {
+    let mut account =
+        AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let (vault_id, device_id, device_pk) = current_device_identity()?;
+    account
+        .register_device(&device_id, &device_pk, alias)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    account
+        .link_vault(&vault_id, alias, "owner")
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    // Linking a vault establishes the device binding for the local account
+    // session. This does not transmit vault keys or plaintext.
+    account
+        .login(Some(&device_id))
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!("{}", "Vault linked to CipherVault account.".bold().green());
+    println!("  Vault ID: {}", vault_id.yellow());
+    println!("  Device:   {}", device_id.cyan());
+    println!("  Role:     owner");
+    Ok(())
+}
+
+fn cmd_vault_unlink() -> Result<()> {
+    let mut account =
+        AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let (vault_id, _, _) = current_device_identity()?;
+    let changed = account
+        .unlink_vault(&vault_id)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if !changed {
+        bail!("Vault '{}' is not linked to this account.", vault_id);
+    }
+    account
+        .logout()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!("{}", "Vault unlinked from CipherVault account.".green());
     Ok(())
 }
 
@@ -1413,6 +1776,46 @@ fn get_configured_operators() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+/// Returns the public collector's endpoint/region pairs. Operators can be
+/// grouped with `CIPHERVAULT_OPERATOR_REGIONS` using
+/// `region=url1,url2;other-region=url3`. When unset, the legacy operator list
+/// remains in a single `default` region.
+fn get_configured_operator_regions() -> Vec<(String, String)> {
+    if let Ok(raw) = std::env::var("CIPHERVAULT_OPERATOR_REGIONS") {
+        let mut pairs = Vec::new();
+        for entry in raw.split(';') {
+            let Some((region, endpoints)) = entry.split_once('=') else {
+                continue;
+            };
+            let region = region.trim();
+            if region.is_empty() {
+                continue;
+            }
+            for endpoint in endpoints
+                .split([',', ' '])
+                .map(str::trim)
+                .filter(|endpoint| !endpoint.is_empty())
+            {
+                pairs.push((endpoint.to_string(), region.to_string()));
+            }
+        }
+        if !pairs.is_empty() {
+            return pairs;
+        }
+    }
+    get_configured_operators()
+        .into_iter()
+        .map(|endpoint| (endpoint, "default".to_string()))
+        .collect()
+}
+
+fn operator_service_request(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
+        Ok(token) if !token.is_empty() => request.header("X-CipherVault-Service-Token", token),
+        _ => request,
+    }
 }
 
 fn cmd_init(
@@ -1985,7 +2388,7 @@ pub async fn cmd_push(
         operators.len()
     );
 
-    let pool = MultiOperatorPool::new(operators.clone());
+    let pool = configured_operator_pool(operators.clone());
 
     let wire_objects = store.recovery_objects(&recovery_set)?;
     let head_cbor = to_canonical_cbor(&head)?;
@@ -2277,7 +2680,7 @@ async fn cmd_run(
 
         let operators = get_configured_operators();
         if !operators.is_empty() {
-            let pool = MultiOperatorPool::new(operators);
+            let pool = configured_operator_pool(operators);
             for cid in &missing_cids {
                 if let Ok(bytes) = pool.fetch_object_from_any(cid).await {
                     if let Ok(chunk) = from_canonical_cbor::<ChunkWireObject>(&bytes) {
@@ -2807,7 +3210,7 @@ async fn cmd_pull(dry_run: bool, force: bool) -> Result<()> {
         "Connecting to {} independent storage operator(s)...",
         operators.len()
     );
-    let pool = MultiOperatorPool::new(operators);
+    let pool = configured_operator_pool(operators);
 
     let raw_records = pool.query_recovery_records(&locator).await;
     if raw_records.is_empty() {
@@ -3079,7 +3482,7 @@ async fn cmd_recover(
         locator == secret.derive_recovery_locator()?,
         "Recovery locator does not match offline secret"
     );
-    let pool = MultiOperatorPool::new(kit.operator_endpoints.clone());
+    let pool = configured_operator_pool(kit.operator_endpoints.clone());
 
     println!("\nQuerying operators directly for recovery records...");
     let raw_records = pool.query_recovery_records(&locator).await;
@@ -3132,7 +3535,11 @@ async fn cmd_recover(
         let http = reqwest::Client::new();
         for op in &kit.operator_endpoints {
             let url = format!("{}/v1/auth/challenges", op.trim_end_matches('/'));
-            if let Ok(resp) = http.post(&url).json(&challenge).send().await {
+            if let Ok(resp) = operator_service_request(http.post(&url))
+                .json(&challenge)
+                .send()
+                .await
+            {
                 if resp.status().is_success() {
                     broadcast_count += 1;
                 }
@@ -3163,7 +3570,7 @@ async fn cmd_recover(
                     op.trim_end_matches('/'),
                     challenge_id
                 );
-                if let Ok(resp) = http.get(&url).send().await {
+                if let Ok(resp) = operator_service_request(http.get(&url)).send().await {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         if json["approved"].as_bool().unwrap_or(false) {
                             if let Some(receipts) = json["receipts"].as_array() {
@@ -3305,7 +3712,7 @@ async fn cmd_peers(discover: bool) -> Result<()> {
         let mut discovered_endpoints = Vec::new();
         for op in &operators {
             let url = format!("{}/v1/peers", op.trim_end_matches('/'));
-            if let Ok(resp) = http.get(&url).send().await {
+            if let Ok(resp) = operator_service_request(http.get(&url)).send().await {
                 if let Ok(peers) = resp
                     .json::<Vec<ciphervault_storage::PeerDescriptor>>()
                     .await
@@ -3411,7 +3818,7 @@ async fn cmd_approve_list() -> Result<()> {
     let mut all_challenges = Vec::new();
     for op in &operators {
         let url = format!("{}/v1/auth/challenges/pending", op.trim_end_matches('/'));
-        if let Ok(resp) = http.get(&url).send().await {
+        if let Ok(resp) = operator_service_request(http.get(&url)).send().await {
             if let Ok(challenges) = resp
                 .json::<Vec<ciphervault_recovery::ApprovalChallenge>>()
                 .await
@@ -3498,7 +3905,7 @@ async fn cmd_approve_sign(challenge_id: String, approver_name: Option<String>) -
             op.trim_end_matches('/'),
             challenge_id
         );
-        if let Ok(resp) = http.get(&url).send().await {
+        if let Ok(resp) = operator_service_request(http.get(&url)).send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Ok(c) = serde_json::from_value::<ciphervault_recovery::ApprovalChallenge>(
                     json["challenge"].clone(),
@@ -3557,7 +3964,11 @@ async fn cmd_approve_sign(challenge_id: String, approver_name: Option<String>) -
             op.trim_end_matches('/'),
             challenge_id
         );
-        if let Ok(resp) = http.post(&url).json(&receipt).send().await {
+        if let Ok(resp) = operator_service_request(http.post(&url))
+            .json(&receipt)
+            .send()
+            .await
+        {
             if resp.status().is_success() {
                 accepted_count += 1;
             }
@@ -3598,7 +4009,7 @@ async fn cmd_approve_status(challenge_id: String) -> Result<()> {
             op.trim_end_matches('/'),
             challenge_id
         );
-        if let Ok(resp) = http.get(&url).send().await {
+        if let Ok(resp) = operator_service_request(http.get(&url)).send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Ok(challenge) = serde_json::from_value::<
                     ciphervault_recovery::ApprovalChallenge,
@@ -4833,7 +5244,7 @@ async fn cmd_repair(custom_operators: Option<Vec<String>>) -> Result<()> {
         .await?;
     let head_bytes = to_canonical_cbor(&active_head)?;
     // Local verified ciphertext can also repair a total remote loss.
-    MultiOperatorPool::new(operators)
+    configured_operator_pool(operators)
         .replicate_and_verify(
             &vault_id,
             &device_sk,
@@ -4939,8 +5350,66 @@ fn revoke_private_ui_session() {
     *state = new_private_ui_session(current_binding);
 }
 
+fn current_account_context() -> serde_json::Value {
+    let Ok(account) = AccountStore::open(None) else {
+        return serde_json::json!({
+            "configured": false,
+            "required": false,
+            "authenticated": false,
+        });
+    };
+    let mut context = serde_json::json!({
+        "configured": true,
+        "account_id": account.account_id(),
+        "display_name": account.record().display_name,
+        "session": account.session_status(),
+        // If any vault has been linked, inability to resolve the current
+        // device is surfaced as an authentication requirement rather than a
+        // silent accountless fallback.
+        "required": !account.record().vaults.is_empty(),
+    });
+    if let Ok((vault_id, device_id, device_pk)) = current_device_identity() {
+        let linked = account.is_vault_linked(&vault_id);
+        let authenticated = account.is_authenticated_for_device(&vault_id, &device_id, &device_pk);
+        if let Some(object) = context.as_object_mut() {
+            object.insert("vault_id_hex".into(), serde_json::Value::String(vault_id));
+            object.insert("device_id_hex".into(), serde_json::Value::String(device_id));
+            object.insert(
+                "device_public_key_hex".into(),
+                serde_json::Value::String(device_pk),
+            );
+            object.insert("linked".into(), serde_json::Value::Bool(linked));
+            object.insert(
+                "authenticated".into(),
+                serde_json::Value::Bool(authenticated),
+            );
+            object.insert("required".into(), serde_json::Value::Bool(linked));
+        }
+    }
+    context
+}
+
+/// Account authentication is optional. Once a vault is linked, private API
+/// calls require a live session bound to that vault's enrolled device.
+fn private_account_session_valid() -> bool {
+    let Ok(account) = AccountStore::open(None) else {
+        return true;
+    };
+    let Ok((vault_id, device_id, device_pk)) = current_device_identity() else {
+        // An account with linked vaults must fail closed if the local vault
+        // identity cannot be read. An account with no links still preserves
+        // accountless local mode.
+        return account.record().vaults.is_empty();
+    };
+    if !account.is_vault_linked(&vault_id) {
+        return true;
+    }
+    account.is_authenticated_for_device(&vault_id, &device_id, &device_pk)
+}
+
 fn ui_capabilities(mode: UiServerMode) -> serde_json::Value {
     let private = mode == UiServerMode::LocalPrivate;
+    let hosted_account = hosted_account_endpoint().is_some();
     let public_feed_configured = std::env::var("CIPHERVAULT_PUBLIC_CHECKPOINT_FEED")
         .ok()
         .is_some_and(|path| !path.trim().is_empty());
@@ -4959,6 +5428,8 @@ fn ui_capabilities(mode: UiServerMode) -> serde_json::Value {
         "plaintext_inspection": private,
         "workspace_switching": private,
         "fleet_audit": private,
+        "hosted_account_proxy": hosted_account,
+        "hosted_webauthn": hosted_account,
     })
 }
 
@@ -4990,11 +5461,317 @@ fn ui_shell_router() -> axum::Router {
         )
 }
 
+fn hosted_account_endpoint() -> Option<String> {
+    let raw = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT").ok()?;
+    let endpoint = raw.trim().trim_end_matches('/');
+    if endpoint.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(endpoint).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(endpoint.to_string())
+}
+
+async fn proxy_account_request(
+    method: reqwest::Method,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+    body: Option<Bytes>,
+) -> axum::response::Response {
+    use axum::{http::header, response::IntoResponse};
+
+    let Some(endpoint) = hosted_account_endpoint() else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "ACCOUNT_SERVICE_NOT_CONFIGURED",
+                "error": "Hosted account service is not configured for this dashboard.",
+            })),
+        )
+            .into_response();
+    };
+    let url = format!("{}{}", endpoint, path);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut request = client.request(method, url);
+    if let Some(cookie) = headers.get(header::COOKIE) {
+        request = request.header(header::COOKIE, cookie.clone());
+    }
+    if let Some(authorization) = headers.get(header::AUTHORIZATION) {
+        request = request.header(header::AUTHORIZATION, authorization.clone());
+    }
+    if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
+        request = request.header(header::CONTENT_TYPE, content_type.clone());
+    } else if body.as_ref().is_some_and(|value| !value.is_empty()) {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
+    if let Some(body) = body {
+        request = request.body(body);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                axum::Json(serde_json::json!({
+                    "status": "error",
+                    "code": "ACCOUNT_SERVICE_UNAVAILABLE",
+                    "error": error.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let status = axum::http::StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+    let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+    let set_cookies = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let payload = match response.bytes().await {
+        Ok(payload) => payload,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                axum::Json(serde_json::json!({
+                    "status": "error",
+                    "code": "ACCOUNT_SERVICE_RESPONSE_INVALID",
+                    "error": error.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let mut proxied = (status, payload).into_response();
+    if let Some(content_type) = content_type {
+        proxied
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, content_type);
+    }
+    for cookie in set_cookies {
+        proxied.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    proxied.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    proxied
+}
+
+async fn api_account_capabilities_handler() -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::GET,
+        "/v1/capabilities",
+        &axum::http::HeaderMap::new(),
+        None,
+    )
+    .await
+}
+
+async fn api_account_session_handler(headers: axum::http::HeaderMap) -> axum::response::Response {
+    proxy_account_request(reqwest::Method::GET, "/v1/sessions", &headers, None).await
+}
+
+async fn api_account_resource_get_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::GET,
+        &format!("/v1/accounts/{account_id}"),
+        &headers,
+        None,
+    )
+    .await
+}
+
+async fn api_account_management_get_handler(
+    axum::extract::Path((account_id, resource)): axum::extract::Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::GET,
+        &format!("/v1/accounts/{account_id}/{resource}"),
+        &headers,
+        None,
+    )
+    .await
+}
+
+async fn api_account_management_post_handler(
+    axum::extract::Path((account_id, resource)): axum::extract::Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/{resource}"),
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_recovery_codes_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/recovery/codes"),
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_membership_revoke_handler(
+    axum::extract::Path((account_id, member_account_id)): axum::extract::Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/memberships/{member_account_id}/revoke"),
+        &headers,
+        None,
+    )
+    .await
+}
+
+async fn api_account_invitation_accept_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/invitations/accept",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_webauthn_options_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/webauthn/authentication/options",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_webauthn_verify_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/webauthn/authentication/verify",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_webauthn_registration_options_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/webauthn/registration/options"),
+        &headers,
+        None,
+    )
+    .await
+}
+
+async fn api_account_webauthn_registration_verify_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/webauthn/registration/verify"),
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
 fn private_ui_router() -> axum::Router {
     use axum::routing::get;
 
     ui_shell_router()
         .route("/api/context", get(api_private_context_handler))
+        .route("/api/account/status", get(api_account_status_handler))
+        .route(
+            "/api/account/capabilities",
+            get(api_account_capabilities_handler),
+        )
+        .route("/api/account/session", get(api_account_session_handler))
+        .route(
+            "/api/account/:account_id",
+            get(api_account_resource_get_handler),
+        )
+        .route(
+            "/api/account/:account_id/invitations",
+            get(api_account_management_get_handler).post(api_account_management_post_handler),
+        )
+        .route(
+            "/api/account/:account_id/memberships",
+            get(api_account_management_get_handler),
+        )
+        .route(
+            "/api/account/:account_id/memberships/:member_account_id/revoke",
+            axum::routing::post(api_account_membership_revoke_handler),
+        )
+        .route(
+            "/api/account/:account_id/recovery/codes",
+            axum::routing::post(api_account_recovery_codes_handler),
+        )
+        .route(
+            "/api/account/invitations/accept",
+            axum::routing::post(api_account_invitation_accept_handler),
+        )
+        .route(
+            "/api/account/login",
+            axum::routing::post(api_account_login_handler),
+        )
+        .route(
+            "/api/account/logout",
+            axum::routing::post(api_account_logout_handler),
+        )
+        .route(
+            "/api/account/webauthn/authentication/options",
+            axum::routing::post(api_account_webauthn_options_handler),
+        )
+        .route(
+            "/api/account/webauthn/authentication/verify",
+            axum::routing::post(api_account_webauthn_verify_handler),
+        )
+        .route(
+            "/api/account/:account_id/webauthn/registration/options",
+            axum::routing::post(api_account_webauthn_registration_options_handler),
+        )
+        .route(
+            "/api/account/:account_id/webauthn/registration/verify",
+            axum::routing::post(api_account_webauthn_registration_verify_handler),
+        )
         .route(
             "/api/session/revoke",
             axum::routing::post(api_private_session_revoke_handler),
@@ -5069,8 +5846,66 @@ fn public_ui_router() -> axum::Router {
 
     ui_shell_router()
         .route("/api/context", get(api_public_context_handler))
+        .route("/api/account/status", get(api_account_status_handler))
+        .route(
+            "/api/account/capabilities",
+            get(api_account_capabilities_handler),
+        )
+        .route("/api/account/session", get(api_account_session_handler))
+        .route(
+            "/api/account/:account_id",
+            get(api_account_resource_get_handler),
+        )
+        .route(
+            "/api/account/:account_id/invitations",
+            get(api_account_management_get_handler).post(api_account_management_post_handler),
+        )
+        .route(
+            "/api/account/:account_id/memberships",
+            get(api_account_management_get_handler),
+        )
+        .route(
+            "/api/account/:account_id/memberships/:member_account_id/revoke",
+            axum::routing::post(api_account_membership_revoke_handler),
+        )
+        .route(
+            "/api/account/:account_id/recovery/codes",
+            axum::routing::post(api_account_recovery_codes_handler),
+        )
+        .route(
+            "/api/account/invitations/accept",
+            axum::routing::post(api_account_invitation_accept_handler),
+        )
+        .route(
+            "/api/account/logout",
+            axum::routing::post(api_account_logout_handler),
+        )
+        .route(
+            "/api/account/webauthn/authentication/options",
+            axum::routing::post(api_account_webauthn_options_handler),
+        )
+        .route(
+            "/api/account/webauthn/authentication/verify",
+            axum::routing::post(api_account_webauthn_verify_handler),
+        )
+        .route(
+            "/api/account/:account_id/webauthn/registration/options",
+            axum::routing::post(api_account_webauthn_registration_options_handler),
+        )
+        .route(
+            "/api/account/:account_id/webauthn/registration/verify",
+            axum::routing::post(api_account_webauthn_registration_verify_handler),
+        )
         .route("/api/vault", get(api_public_vault_handler))
         .route("/api/operators", get(api_public_operators_handler))
+        .route(
+            "/api/operators/history",
+            get(api_public_operators_history_handler),
+        )
+        .route(
+            "/api/operators/jobs",
+            get(api_public_operators_jobs_handler),
+        )
         .route("/api/anchors", get(api_public_anchors_handler))
         .route(
             "/api/relayer/checkpoints",
@@ -5250,6 +6085,7 @@ async fn api_private_context_handler() -> axum::response::Response {
                 "revocation_endpoint": "/api/session/revoke",
             }),
         );
+        object.insert("account".to_string(), current_account_context());
     }
     let mut response = axum::Json(context).into_response();
     let cookie = format!(
@@ -5263,6 +6099,99 @@ async fn api_private_context_handler() -> axum::response::Response {
             .expect("generated private session cookie must be valid"),
     );
     response
+}
+
+async fn api_account_status_handler() -> axum::Json<serde_json::Value> {
+    axum::Json(current_account_context())
+}
+
+async fn api_account_login_handler() -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let account = match AccountStore::open(None) {
+        Ok(account) => account,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "status": "error",
+                    "code": "ACCOUNT_NOT_CONFIGURED",
+                    "error": error.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let Ok((vault_id, device_id, _)) = current_device_identity() else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "VAULT_NOT_INITIALIZED",
+                "error": "A local vault is required to bind an account session.",
+            })),
+        )
+            .into_response();
+    };
+    if !account.is_vault_linked(&vault_id) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "VAULT_NOT_LINKED",
+                "error": "Link this vault with `ciphervault vault link` before logging in here.",
+            })),
+        )
+            .into_response();
+    }
+    match account.login(Some(&device_id)) {
+        Ok(status) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "account": status,
+        }))
+        .into_response(),
+        Err(error) => (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "ACCOUNT_LOGIN_FAILED",
+                "error": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_account_logout_handler(headers: axum::http::HeaderMap) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let has_hosted_cookie = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|cookies| {
+            cookies
+                .split(';')
+                .any(|cookie| cookie.trim().starts_with("ciphervault_account_session="))
+        });
+    if hosted_account_endpoint().is_some() && has_hosted_cookie {
+        return proxy_account_request(reqwest::Method::POST, "/v1/sessions/revoke", &headers, None)
+            .await;
+    }
+    match AccountStore::open(None).and_then(|account| account.logout()) {
+        Ok(()) => {
+            revoke_private_ui_session();
+            axum::Json(serde_json::json!({ "status": "ok", "authenticated": false }))
+                .into_response()
+        }
+        Err(error) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "ACCOUNT_NOT_CONFIGURED",
+                "error": error.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn api_private_session_revoke_handler() -> axum::response::Response {
@@ -5389,9 +6318,21 @@ async fn private_ui_request_guard(
     let path = request.uri().path();
     let is_api = path.starts_with("/api/");
     let is_context = path == "/api/context";
-    let session_valid = if is_api && !is_context {
+    let is_account_bootstrap = matches!(
+        path,
+        "/api/account/status"
+            | "/api/account/login"
+            | "/api/account/logout"
+            | "/api/account/capabilities"
+            | "/api/account/session"
+            | "/api/account/webauthn/authentication/options"
+            | "/api/account/webauthn/authentication/verify"
+    ) || (path.starts_with("/api/account/")
+        && path.ends_with("/webauthn/registration/options"))
+        || (path.starts_with("/api/account/") && path.ends_with("/webauthn/registration/verify"));
+    let session_valid = if is_api && !is_context && !is_account_bootstrap {
         let session = private_ui_session_snapshot();
-        headers
+        let private_cookie_valid = headers
             .get(axum::http::header::COOKIE)
             .and_then(|value| value.to_str().ok())
             .and_then(|cookies| {
@@ -5400,7 +6341,8 @@ async fn private_ui_request_guard(
                     (name == "ciphervault_private_session").then_some(value)
                 })
             })
-            .is_some_and(|value| value == session.token)
+            .is_some_and(|value| value == session.token);
+        private_cookie_valid && private_account_session_valid()
     } else {
         true
     };
@@ -5461,6 +6403,52 @@ fn public_operator_id(operator_id: &str, index: usize) -> String {
     }
 }
 
+/// Returns true only when an operator identity is present in the independently
+/// configured trust registry.  A self-signed `/v1/info` response proves that
+/// the responder controls the returned key, but it does not prove that the key
+/// is the key the deployment intended to contact.
+///
+/// `CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES` accepts comma-separated entries in
+/// either `operator-id=64-byte-hex-key` form or as a bare public key.  The
+/// registry is deliberately opt-in: when it is absent, public telemetry stays
+/// unverified instead of silently falling back to trust-on-first-use.
+fn trusted_public_operator_identity_from_registry(
+    registry: &str,
+    operator_id: &str,
+    public_key_hex: &str,
+) -> bool {
+    let key = public_key_hex
+        .trim()
+        .trim_start_matches("0x")
+        .to_ascii_lowercase();
+    if key.len() != 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    registry.split(',').any(|entry| {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return false;
+        }
+        let (entry_id, entry_key) = entry
+            .split_once('=')
+            .map_or((None, entry), |(id, key)| (Some(id.trim()), key.trim()));
+        let entry_key = entry_key.trim_start_matches("0x").to_ascii_lowercase();
+        entry_key == key
+            && entry_id.map_or(true, |id| {
+                !id.is_empty() && id.eq_ignore_ascii_case(operator_id)
+            })
+    })
+}
+
+fn trusted_public_operator_identity(operator_id: &str, public_key_hex: &str) -> bool {
+    std::env::var("CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES")
+        .ok()
+        .is_some_and(|registry| {
+            trusted_public_operator_identity_from_registry(&registry, operator_id, public_key_hex)
+        })
+}
+
 const PUBLIC_OPERATOR_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PUBLIC_OPERATOR_CACHE_TTL: Duration = Duration::from_secs(30);
 const PUBLIC_OPERATOR_PERSISTED_MAX_AGE: Duration = Duration::from_secs(90);
@@ -5475,6 +6463,22 @@ struct PublicOperatorTelemetry {
 static PUBLIC_OPERATOR_TELEMETRY_CACHE: OnceLock<
     tokio::sync::Mutex<Option<PublicOperatorTelemetry>>,
 > = OnceLock::new();
+static PUBLIC_OPERATOR_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
+
+fn public_operator_http_client() -> HttpClient {
+    PUBLIC_OPERATOR_HTTP_CLIENT
+        .get_or_init(|| {
+            HttpClient::builder()
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(PUBLIC_OPERATOR_PROBE_TIMEOUT)
+                .pool_idle_timeout(Duration::from_secs(120))
+                .pool_max_idle_per_host(2)
+                .tcp_keepalive(Some(Duration::from_secs(30)))
+                .build()
+                .unwrap_or_else(|_| HttpClient::new())
+        })
+        .clone()
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedPublicOperatorTelemetry {
@@ -5487,6 +6491,52 @@ fn public_operator_telemetry_path() -> Option<PathBuf> {
         .ok()
         .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
+}
+
+const PUBLIC_OPERATOR_HISTORY_MAX: usize = 288;
+const PUBLIC_OPERATOR_JOB_HISTORY_MAX: usize = 1_000;
+
+fn public_operator_history_path() -> Option<PathBuf> {
+    let path = public_operator_telemetry_path()?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("operator-telemetry.json");
+    Some(path.with_file_name(format!("{}.history.jsonl", name)))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedPublicOperatorHistoryEntry {
+    observed_at_utc: String,
+    operators: Vec<serde_json::Value>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedPublicOperatorJob {
+    job_id: String,
+    started_at_utc: String,
+    completed_at_utc: String,
+    status: String,
+    #[serde(default)]
+    regions: Vec<String>,
+    operator_count: usize,
+    reachable_count: usize,
+    failure_count: usize,
+    #[serde(default)]
+    attempts: usize,
+    #[serde(default)]
+    retry_count: usize,
+    #[serde(default)]
+    error_summary: Option<String>,
+}
+
+fn public_operator_jobs_path() -> Option<PathBuf> {
+    let path = public_operator_telemetry_path()?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("operator-telemetry.json");
+    Some(path.with_file_name(format!("{}.jobs.jsonl", name)))
 }
 
 fn load_persisted_public_operator_telemetry() -> Option<PublicOperatorTelemetry> {
@@ -5543,6 +6593,120 @@ fn persist_public_operator_telemetry(snapshot: &PublicOperatorTelemetry) -> Resu
     result
 }
 
+fn persist_public_operator_history(snapshot: &PublicOperatorTelemetry) -> Result<()> {
+    let path = public_operator_history_path()
+        .context("public operator telemetry history path is not configured")?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let mut entries = fs::read_to_string(&path)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| {
+                    serde_json::from_str::<PersistedPublicOperatorHistoryEntry>(line).ok()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    entries.push(PersistedPublicOperatorHistoryEntry {
+        observed_at_utc: snapshot.observed_at.to_rfc3339(),
+        operators: snapshot.operators.clone(),
+    });
+    if entries.len() > PUBLIC_OPERATOR_HISTORY_MAX {
+        entries.drain(..entries.len() - PUBLIC_OPERATOR_HISTORY_MAX);
+    }
+    let encoded = entries
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("operator-history.jsonl"),
+        std::process::id()
+    ));
+    fs::write(&tmp, format!("{}\n", encoded))?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    fs::rename(tmp, path)?;
+    Ok(())
+}
+
+fn persist_public_operator_job(job: &PersistedPublicOperatorJob) -> Result<()> {
+    let path = public_operator_jobs_path()
+        .context("public operator job persistence path is not configured")?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let mut jobs = fs::read_to_string(&path)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<PersistedPublicOperatorJob>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    jobs.push(PersistedPublicOperatorJob {
+        job_id: job.job_id.clone(),
+        started_at_utc: job.started_at_utc.clone(),
+        completed_at_utc: job.completed_at_utc.clone(),
+        status: job.status.clone(),
+        regions: job.regions.clone(),
+        operator_count: job.operator_count,
+        reachable_count: job.reachable_count,
+        failure_count: job.failure_count,
+        attempts: job.attempts,
+        retry_count: job.retry_count,
+        error_summary: job.error_summary.clone(),
+    });
+    if jobs.len() > PUBLIC_OPERATOR_JOB_HISTORY_MAX {
+        jobs.drain(..jobs.len() - PUBLIC_OPERATOR_JOB_HISTORY_MAX);
+    }
+    let encoded = jobs
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("operator-jobs.jsonl"),
+        std::process::id()
+    ));
+    fs::write(&tmp, format!("{}\n", encoded))?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    fs::rename(tmp, path)?;
+    Ok(())
+}
+
+fn load_public_operator_jobs() -> Vec<serde_json::Value> {
+    public_operator_jobs_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<PersistedPublicOperatorJob>(line).ok())
+                .map(|job| serde_json::to_value(job).unwrap_or(serde_json::Value::Null))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 fn spawn_public_operator_collector() {
     if public_operator_telemetry_path().is_none() {
         return;
@@ -5551,41 +6715,138 @@ fn spawn_public_operator_collector() {
         let mut interval = tokio::time::interval(PUBLIC_OPERATOR_CACHE_TTL);
         loop {
             interval.tick().await;
+            let started_at = Utc::now();
             let snapshot = PublicOperatorTelemetry {
-                observed_at: Utc::now(),
+                observed_at: started_at,
                 cached_at: Instant::now(),
                 operators: probe_public_operators_uncached().await,
             };
+            let operator_count = snapshot.operators.len();
+            let reachable_count = snapshot
+                .operators
+                .iter()
+                .filter(|operator| operator["status"] == "reachable")
+                .count();
+            let failure_count = operator_count.saturating_sub(reachable_count);
+            let attempts = snapshot
+                .operators
+                .iter()
+                .filter_map(|operator| {
+                    operator
+                        .get("probe_attempts")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .map(|value| value as usize)
+                .sum::<usize>();
+            let retry_count = attempts.saturating_sub(operator_count);
+            let status = if operator_count == 0 || reachable_count == 0 {
+                "failed"
+            } else if failure_count > 0 {
+                "degraded"
+            } else {
+                "succeeded"
+            };
             if let Err(error) = persist_public_operator_telemetry(&snapshot) {
                 eprintln!("Public operator telemetry persistence failed: {error}");
+            }
+            if let Err(error) = persist_public_operator_history(&snapshot) {
+                eprintln!("Public operator telemetry history persistence failed: {error}");
+            }
+            if let Err(error) = persist_public_operator_job(&PersistedPublicOperatorJob {
+                job_id: hex::encode(rand::random::<[u8; 16]>()),
+                started_at_utc: started_at.to_rfc3339(),
+                completed_at_utc: Utc::now().to_rfc3339(),
+                status: status.to_string(),
+                regions: {
+                    let mut regions = snapshot
+                        .operators
+                        .iter()
+                        .filter_map(|operator| operator.get("region"))
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    regions.sort();
+                    regions.dedup();
+                    regions
+                },
+                operator_count,
+                reachable_count,
+                failure_count,
+                attempts,
+                retry_count,
+                error_summary: (failure_count > 0)
+                    .then(|| format!("{failure_count} operator probe(s) failed")),
+            }) {
+                eprintln!("Public operator collector job persistence failed: {error}");
             }
         }
     });
 }
 
 async fn probe_public_operators_uncached() -> Vec<serde_json::Value> {
+    const MAX_ATTEMPTS: usize = 3;
+    let http = public_operator_http_client();
     let probes =
-        get_configured_operators()
+        get_configured_operator_regions()
             .into_iter()
             .enumerate()
-            .map(|(index, endpoint)| async move {
-                let client = OperatorClient::new(endpoint);
+            .map(|(index, (endpoint, region))| {
+                let http = http.clone();
+                async move {
+                let client = OperatorClient::with_http_client(endpoint, http.clone());
                 let start = std::time::Instant::now();
-                match tokio::time::timeout(PUBLIC_OPERATOR_PROBE_TIMEOUT, client.get_info()).await {
-                    Ok(Ok(info)) => serde_json::json!({
+                let mut attempts = 0usize;
+                let result = loop {
+                    attempts += 1;
+                    match tokio::time::timeout(PUBLIC_OPERATOR_PROBE_TIMEOUT, client.get_info()).await {
+                        Ok(Ok(info)) => break Ok(info),
+                        Ok(Err(error)) if attempts < MAX_ATTEMPTS => {
+                            tokio::time::sleep(Duration::from_millis(75 * attempts as u64)).await;
+                            let _ = error;
+                        }
+                        Err(_) if attempts < MAX_ATTEMPTS => {
+                            tokio::time::sleep(Duration::from_millis(75 * attempts as u64)).await;
+                        }
+                        Ok(Err(error)) => break Err(error.to_string()),
+                        Err(_) => break Err("probe timeout".to_string()),
+                    }
+                };
+                match result {
+                    Ok(info) => {
+                        let self_signed = info.verify_identity_signature();
+                        let identity_pinned = self_signed
+                            && trusted_public_operator_identity(
+                                &info.operator_id,
+                                &info.operator_signing_pk_hex,
+                            );
+                        serde_json::json!({
                         "display_name": format!("Operator {}", index + 1),
                         "operator_id": public_operator_id(&info.operator_id, index),
+                        "region": region,
                         "status": "reachable",
-                        "identity_verification": "unverified",
+                        "identity_verification": if identity_pinned { "verified" } else { "unverified" },
+                        "identity_self_signature": if self_signed { "valid" } else { "invalid" },
+                        "identity_trust": if identity_pinned { "pinned" } else { "not_pinned" },
+                        "identity_expires_at_utc": info.identity_expires_at_utc,
+                        "identity_signature_present": !info.identity_signature_hex.is_empty(),
                         "latency_ms": start.elapsed().as_millis(),
-                    }),
-                    Ok(Err(_)) | Err(_) => serde_json::json!({
+                        "probe_attempts": attempts,
+                        })
+                    }
+                    Err(error) => serde_json::json!({
                         "display_name": format!("Operator {}", index + 1),
                         "operator_id": format!("operator-{}", index + 1),
+                        "region": region,
                         "status": "unreachable",
                         "identity_verification": "not_observed",
+                        "identity_self_signature": "not_observed",
+                        "identity_trust": "not_observed",
+                        "identity_signature_present": false,
                         "latency_ms": serde_json::Value::Null,
+                        "probe_attempts": attempts,
+                        "error": error,
                     }),
+                }
                 }
             });
 
@@ -5634,6 +6895,38 @@ async fn api_public_operators_handler() -> axum::Json<serde_json::Value> {
         })
         .collect::<Vec<_>>();
     axum::Json(serde_json::json!(operators))
+}
+
+async fn api_public_operators_history_handler() -> axum::Json<serde_json::Value> {
+    let samples = public_operator_history_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| {
+                    serde_json::from_str::<PersistedPublicOperatorHistoryEntry>(line).ok()
+                })
+                .map(|entry| {
+                    serde_json::json!({
+                        "observed_at": entry.observed_at_utc,
+                        "operators": entry.operators,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({
+        "samples": samples,
+        "sample_limit": PUBLIC_OPERATOR_HISTORY_MAX,
+    }))
+}
+
+async fn api_public_operators_jobs_handler() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "jobs": load_public_operator_jobs(),
+        "job_limit": PUBLIC_OPERATOR_JOB_HISTORY_MAX,
+        "message": "Collector job history is observational telemetry; it does not establish storage durability or quorum.",
+    }))
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -5957,11 +7250,11 @@ async fn api_vault_handler() -> impl axum::response::IntoResponse {
 }
 
 async fn api_operators_handler() -> impl axum::response::IntoResponse {
-    let operators = get_configured_operators();
-    let mut results = Vec::new();
-
-    for endpoint in operators {
-        let client = OperatorClient::new(endpoint.clone());
+    let http = public_operator_http_client();
+    let probes = get_configured_operators().into_iter().map(|endpoint| {
+        let http = http.clone();
+        async move {
+        let client = OperatorClient::with_http_client(endpoint.clone(), http);
         let start = std::time::Instant::now();
         let transport_security = if endpoint
             .trim_start()
@@ -5975,6 +7268,7 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
         match client.get_info().await {
             Ok(info) => {
                 let latency_ms = start.elapsed().as_millis();
+                let identity_verified = info.verify_identity_signature();
                 let safe_pk = if info.operator_signing_pk_hex.len() == 64
                     && info
                         .operator_signing_pk_hex
@@ -5991,7 +7285,7 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
                 let display_endpoint = mask_operator_endpoint(&endpoint);
-                results.push(serde_json::json!({
+                serde_json::json!({
                     "endpoint": display_endpoint,
                     "target_url": display_endpoint,
                     "status": "online",
@@ -6000,22 +7294,26 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
                     "latency_ms": latency_ms,
                     "retention_terms": info.retention_terms,
                     "transport_security": transport_security,
-                    "identity_verification": "unverified",
-                }));
+                    "identity_verification": if identity_verified { "verified" } else { "unverified" },
+                    "identity_expires_at_utc": info.identity_expires_at_utc,
+                    "identity_signature_present": !info.identity_signature_hex.is_empty(),
+                })
             }
             Err(_) => {
                 let display_endpoint = mask_operator_endpoint(&endpoint);
-                results.push(serde_json::json!({
+                serde_json::json!({
                     "endpoint": display_endpoint,
                     "target_url": display_endpoint,
                     "status": "offline",
                     "error": "Operator did not respond",
                     "transport_security": transport_security,
                     "identity_verification": "not_observed",
-                }));
+                })
             }
         }
-    }
+        }
+    });
+    let results = join_all(probes).await;
 
     axum::Json(serde_json::json!(results))
 }
@@ -6496,20 +7794,24 @@ async fn api_token_handler() -> impl axum::response::IntoResponse {
 async fn api_stream_handler() -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     let stream = stream::unfold((), |_| async {
         let operators = get_configured_operators();
-        let mut op_latencies = Vec::new();
-        for endpoint in operators {
-            let client = OperatorClient::new(endpoint.clone());
-            let start = std::time::Instant::now();
-            let (online, latency_ms) = match client.get_info().await {
-                Ok(_) => (true, start.elapsed().as_millis() as u64),
-                Err(_) => (false, 999),
-            };
-            op_latencies.push(serde_json::json!({
-                "endpoint": endpoint,
-                "online": online,
-                "latency_ms": latency_ms,
-            }));
-        }
+        let http = public_operator_http_client();
+        let probes = operators.into_iter().map(|endpoint| {
+            let http = http.clone();
+            async move {
+                let client = OperatorClient::with_http_client(endpoint.clone(), http);
+                let start = std::time::Instant::now();
+                let (online, latency_ms) = match client.get_info().await {
+                    Ok(_) => (true, start.elapsed().as_millis() as u64),
+                    Err(_) => (false, 999),
+                };
+                serde_json::json!({
+                    "endpoint": endpoint,
+                    "online": online,
+                    "latency_ms": latency_ms,
+                })
+            }
+        });
+        let op_latencies = join_all(probes).await;
 
         let token_attached = ciphervault_crypto::PcscHardwareToken::probe()
             .ok()
@@ -7425,6 +8727,35 @@ mod ui_router_tests {
         let mut tampered = feed.clone();
         tampered.checkpoints[0].block_number = Some(124);
         assert!(verify_public_checkpoint_feed(&tampered).is_err());
+    }
+
+    #[test]
+    fn public_operator_identity_requires_independent_pin() {
+        let key = ciphervault_crypto::generate_signing_key();
+        let key_hex = hex::encode(key.verifying_key().as_bytes());
+        assert!(!trusted_public_operator_identity_from_registry(
+            "",
+            "operator-1",
+            &key_hex
+        ));
+        assert!(trusted_public_operator_identity_from_registry(
+            &format!("operator-1={key_hex}"),
+            "operator-1",
+            &key_hex,
+        ));
+        assert!(!trusted_public_operator_identity_from_registry(
+            &format!("operator-1={key_hex}"),
+            "operator-2",
+            &key_hex,
+        ));
+        assert!(!trusted_public_operator_identity_from_registry(
+            &format!("operator-1={key_hex}"),
+            "operator-1",
+            &"00".repeat(32),
+        ));
+        assert!(trusted_public_operator_identity_from_registry(
+            &key_hex, "any-id", &key_hex,
+        ));
     }
 
     #[test]

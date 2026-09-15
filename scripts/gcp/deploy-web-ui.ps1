@@ -13,7 +13,16 @@ param(
     [string]$MachineType = "e2-micro",
 
     [Parameter(Mandatory = $false)]
-    [int]$BootDiskSizeGb = 20
+    [int]$BootDiskSizeGb = 20,
+
+    [Parameter(Mandatory = $false)]
+    [string]$WebAuthnRpId = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$WebAuthnOrigin = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$AccountAllowedOrigins = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,9 +71,13 @@ $InstExists = & $GcloudCmd compute instances list --filter="name=$InstanceName A
 
 $StartupScriptPath = Join-Path $PSScriptRoot "..\..\deploy\gcp\startup-web.sh"
 
+if (-not $WebAuthnRpId) { $WebAuthnRpId = $DomainName }
+if (-not $WebAuthnOrigin) { $WebAuthnOrigin = "https://$DomainName" }
+if (-not $AccountAllowedOrigins) { $AccountAllowedOrigins = $WebAuthnOrigin }
+
 $DiskArg = "$BootDiskSizeGb" + "GB"
 $MetaFileArg = "startup-script=" + $StartupScriptPath
-$MetaArg = "web-domain=" + $DomainName + ",acme-email=" + $AcmeEmail
+$MetaArg = "web-domain=$DomainName,acme-email=$AcmeEmail,webauthn-rp-id=$WebAuthnRpId,webauthn-origin=$WebAuthnOrigin,account-allowed-origins=$AccountAllowedOrigins"
 
 if (-not $InstExists) {
     Write-Host ("Provisioning new VM " + $InstanceName + " (" + $MachineType + " in " + $Zone + ")...") -ForegroundColor Cyan

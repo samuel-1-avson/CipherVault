@@ -11,6 +11,26 @@ const publisherEntrypoint = read(
   'docker',
   'entrypoint-public-feed-publisher.sh',
 );
+const accountDockerfile = read('deploy', 'docker', 'Dockerfile.account');
+const accountService = read('services', 'account', 'src', 'lib.rs');
+const uiApp = read('apps', 'ui', 'app.js');
+const uiIndex = read('apps', 'ui', 'index.html');
+assert.match(
+  accountDockerfile,
+  /cargo build --release --bin ciphervault-account/,
+  'the account image must build the durable control-plane binary',
+);
+assert.match(accountService, /post_webauthn_authentication_options/);
+assert.match(accountService, /post_invitation/);
+assert.match(accountService, /post_recovery_codes/);
+assert.match(uiApp, /navigator\.credentials\.get/);
+assert.match(uiApp, /navigator\.credentials\.create/);
+assert.match(uiIndex, /btn-account-manage/);
+assert.match(
+  accountDockerfile,
+  /USER ciphervault/,
+  'the account image must run as the unprivileged service user',
+);
 assert.match(
   entrypoint,
   /^exec ciphervault ui --serve --host 0\.0\.0\.0 --port 8080 --no-browser$/m,
@@ -74,6 +94,44 @@ for (const composePath of [
     /CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=/,
     `${composePath.join('/')} must provide a persistent operator observation path`,
   );
+  assert.match(
+    compose,
+    /CIPHERVAULT_OPERATOR_REGIONS=/,
+    `${composePath.join('/')} must expose regional collector configuration`,
+  );
+  assert.match(
+    compose,
+    /account:/,
+    `${composePath.join('/')} must define the durable account service`,
+  );
+  assert.match(
+    compose,
+    /CIPHERVAULT_WEBAUTHN_RP_ID=/,
+    `${composePath.join('/')} must configure the WebAuthn RP ID`,
+  );
+  assert.match(
+    compose,
+    /CIPHERVAULT_WEBAUTHN_ORIGIN=/,
+    `${composePath.join('/')} must configure the WebAuthn origin`,
+  );
+  assert.match(
+    compose,
+    /CIPHERVAULT_ACCOUNT_COOKIE_SECURE=/,
+    `${composePath.join('/')} must configure secure account cookies`,
+  );
+  if (composePath.includes('gcp')) {
+    assert.match(
+      compose,
+      /ciphervault-account:gcp/,
+      `${composePath.join('/')} must run the account image built by startup-web.sh`,
+    );
+  } else {
+    assert.match(
+      compose,
+      /Dockerfile\.account/,
+      `${composePath.join('/')} must build the account service from its pinned Dockerfile`,
+    );
+  }
 }
 
 const clusterChecks = [

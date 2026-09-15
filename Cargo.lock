@@ -363,6 +363,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciphervault-account"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "ciborium",
+ "ciphervault-crypto",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.8",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http 0.5.2",
+]
+
+[[package]]
 name = "ciphervault-agent"
 version = "1.0.0"
 dependencies = [
@@ -467,6 +492,7 @@ dependencies = [
  "rand 0.8.8",
  "rusqlite",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "x25519-dalek",
@@ -515,6 +541,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower 0.4.13",
+ "tower 0.5.3",
  "tower-http 0.5.2",
 ]
 

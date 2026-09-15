@@ -6,13 +6,38 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       - CIPHERVAULT_OPERATORS=http://10.128.0.39 http://10.128.0.40 http://10.142.0.2
+      - CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES=${CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES:-}
       - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}
       - CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=${CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE:-/var/lib/ciphervault-ui/operator-telemetry.json}
+      - CIPHERVAULT_OPERATOR_REGIONS=${CIPHERVAULT_OPERATOR_REGIONS:-}
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
+      - CIPHERVAULT_ACCOUNT_ENDPOINT=${CIPHERVAULT_ACCOUNT_ENDPOINT:-http://account:8300}
       - RUST_LOG=info
     volumes:
       - vault_data:/var/lib/ciphervault-ui
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:8080/api/vault"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  account:
+    image: ciphervault-account:gcp
+    restart: unless-stopped
+    environment:
+      - CIPHERVAULT_ACCOUNT_BIND=0.0.0.0:8300
+      - CIPHERVAULT_ACCOUNT_DATA_DIR=/var/lib/ciphervault-account
+      - CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=${CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS:-}
+      - CIPHERVAULT_WEBAUTHN_RP_ID=${CIPHERVAULT_WEBAUTHN_RP_ID:-localhost}
+      - CIPHERVAULT_WEBAUTHN_ORIGIN=${CIPHERVAULT_WEBAUTHN_ORIGIN:-http://localhost:8300}
+      - CIPHERVAULT_ACCOUNT_COOKIE_SECURE=${CIPHERVAULT_ACCOUNT_COOKIE_SECURE:-true}
+      - CIPHERVAULT_OPERATOR_ENDPOINTS=${CIPHERVAULT_OPERATOR_ENDPOINTS:-}
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
+    volumes:
+      - account_data:/var/lib/ciphervault-account
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:8300/healthz"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -45,8 +70,11 @@ services:
     depends_on:
       ciphervault-ui:
         condition: service_healthy
+      account:
+        condition: service_healthy
 
 volumes:
   vault_data:
+  account_data:
   caddy_data:
   caddy_config:

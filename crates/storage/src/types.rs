@@ -6,12 +6,59 @@ pub struct OperatorInfo {
     pub operator_signing_pk_hex: String,
     pub supported_version: u32,
     pub retention_terms: String,
+    #[serde(default)]
+    pub identity_signature_hex: String,
+    #[serde(default)]
+    pub identity_expires_at_utc: u64,
+}
+
+impl OperatorInfo {
+    pub fn identity_signing_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&(
+            &self.operator_id,
+            &self.operator_signing_pk_hex,
+            self.supported_version,
+            &self.retention_terms,
+            self.identity_expires_at_utc,
+        ))
+        .expect("serializable operator identity fields")
+    }
+
+    pub fn verify_identity_signature(&self) -> bool {
+        let Ok(pk_bytes) = hex::decode(&self.operator_signing_pk_hex) else {
+            return false;
+        };
+        let Ok(sig_bytes) = hex::decode(&self.identity_signature_hex) else {
+            return false;
+        };
+        if pk_bytes.len() != 32 || sig_bytes.len() != 64 {
+            return false;
+        }
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&pk_bytes);
+        let mut sig = [0u8; 64];
+        sig.copy_from_slice(&sig_bytes);
+        ciphervault_crypto::signatures::verify_with_domain(
+            &pk,
+            b"operator_identity",
+            &self.identity_signing_bytes(),
+            &sig,
+        )
+        .is_ok()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChallengeRequest {
     pub vault_id_hex: String,
     pub public_key_hex: String,
+    /// Optional control-plane account binding. Legacy clients may omit this
+    /// while operators migrate their enrolled identity registry.
+    #[serde(default)]
+    pub account_id: Option<String>,
+    /// Optional device-registry binding for the account session.
+    #[serde(default)]
+    pub device_id_hex: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -114,6 +161,8 @@ pub struct AppendRecordResponse {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RecoveryRecordsResponse {
     pub records_hex: Vec<String>,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -354,5 +403,27 @@ mod tests {
         let mut tampered_key = peer.clone();
         tampered_key.signing_pk_hex = hex::encode(other_pk);
         assert!(tampered_key.verify().is_err());
+    }
+
+    #[test]
+    fn test_operator_identity_signature_verification() {
+        let key = generate_signing_key();
+        let mut info = OperatorInfo {
+            operator_id: "op-alpha".into(),
+            operator_signing_pk_hex: hex::encode(key.verifying_key().as_bytes()),
+            supported_version: 1,
+            retention_terms: "90-day".into(),
+            identity_signature_hex: String::new(),
+            identity_expires_at_utc: 1_800_000_000,
+        };
+        let sig = ciphervault_crypto::signatures::sign_with_domain(
+            &key,
+            b"operator_identity",
+            &info.identity_signing_bytes(),
+        );
+        info.identity_signature_hex = hex::encode(sig);
+        assert!(info.verify_identity_signature());
+        info.retention_terms = "tampered".into();
+        assert!(!info.verify_identity_signature());
     }
 }

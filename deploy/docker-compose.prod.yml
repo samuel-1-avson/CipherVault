@@ -38,13 +38,17 @@ services:
       context: ..
       dockerfile: deploy/docker/Dockerfile.operator
     container_name: ciphervault-operator-1
+    environment:
+      - CIPHERVAULT_OPERATOR_STRICT_AUTH=${CIPHERVAULT_OPERATOR_STRICT_AUTH:-true}
+      - CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT=${CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT:-true}
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     command: ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "op_8201"]
     volumes:
       - op1_prod_data:/var/lib/ciphervault
     networks:
       - ciphervault-prod-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8201/v1/info || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8201/healthz || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -56,13 +60,17 @@ services:
       context: ..
       dockerfile: deploy/docker/Dockerfile.operator
     container_name: ciphervault-operator-2
+    environment:
+      - CIPHERVAULT_OPERATOR_STRICT_AUTH=${CIPHERVAULT_OPERATOR_STRICT_AUTH:-true}
+      - CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT=${CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT:-true}
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     command: ["--port", "8202", "--data-dir", "/var/lib/ciphervault", "--operator-id", "op_8202"]
     volumes:
       - op2_prod_data:/var/lib/ciphervault
     networks:
       - ciphervault-prod-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8202/v1/info || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8202/healthz || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -74,13 +82,17 @@ services:
       context: ..
       dockerfile: deploy/docker/Dockerfile.operator
     container_name: ciphervault-operator-3
+    environment:
+      - CIPHERVAULT_OPERATOR_STRICT_AUTH=${CIPHERVAULT_OPERATOR_STRICT_AUTH:-true}
+      - CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT=${CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT:-true}
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     command: ["--port", "8203", "--data-dir", "/var/lib/ciphervault", "--operator-id", "op_8203"]
     volumes:
       - op3_prod_data:/var/lib/ciphervault
     networks:
       - ciphervault-prod-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8203/v1/info || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8203/healthz || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -92,6 +104,8 @@ services:
       context: ..
       dockerfile: deploy/docker/Dockerfile.maintenance
     container_name: ciphervault-maintenance
+    environment:
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     command: [
       "--operators",
       "http://operator-1:8201",
@@ -115,6 +129,39 @@ services:
       - ciphervault-prod-net
     restart: unless-stopped
 
+  account:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.account
+    container_name: ciphervault-account
+    environment:
+      - CIPHERVAULT_ACCOUNT_BIND=0.0.0.0:8300
+      - CIPHERVAULT_ACCOUNT_DATA_DIR=/var/lib/ciphervault-account
+      - CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=${CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS:-}
+      - CIPHERVAULT_WEBAUTHN_RP_ID=${CIPHERVAULT_WEBAUTHN_RP_ID:-localhost}
+      - CIPHERVAULT_WEBAUTHN_ORIGIN=${CIPHERVAULT_WEBAUTHN_ORIGIN:-http://localhost:8300}
+      - CIPHERVAULT_ACCOUNT_COOKIE_SECURE=${CIPHERVAULT_ACCOUNT_COOKIE_SECURE:-true}
+      - CIPHERVAULT_OPERATOR_ENDPOINTS=http://operator-1:8201,http://operator-2:8202,http://operator-3:8203
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
+    volumes:
+      - account_prod_data:/var/lib/ciphervault-account
+    depends_on:
+      operator-1:
+        condition: service_healthy
+      operator-2:
+        condition: service_healthy
+      operator-3:
+        condition: service_healthy
+    networks:
+      - ciphervault-prod-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8300/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   dashboard:
     build:
       context: ..
@@ -122,8 +169,12 @@ services:
     container_name: ciphervault-dashboard
     environment:
       - CIPHERVAULT_OPERATORS=http://operator-1:8201 http://operator-2:8202 http://operator-3:8203
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
+      - CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES=${CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES:-}
       - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}
       - CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=${CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE:-/var/lib/ciphervault-ui/operator-telemetry.json}
+      - CIPHERVAULT_OPERATOR_REGIONS=${CIPHERVAULT_OPERATOR_REGIONS:-}
+      - CIPHERVAULT_ACCOUNT_ENDPOINT=${CIPHERVAULT_ACCOUNT_ENDPOINT:-http://account:8300}
     volumes:
       - dashboard_prod_data:/var/lib/ciphervault-ui
     depends_on:
@@ -132,6 +183,8 @@ services:
       operator-2:
         condition: service_healthy
       operator-3:
+        condition: service_healthy
+      account:
         condition: service_healthy
     networks:
       - ciphervault-prod-net
@@ -174,5 +227,6 @@ volumes:
   op3_prod_data:
   maintenance_prod_data:
   dashboard_prod_data:
+  account_prod_data:
   caddy_data:
   caddy_config:

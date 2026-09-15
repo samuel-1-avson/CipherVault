@@ -2,10 +2,15 @@ use clap::Parser;
 use colored::*;
 use ed25519_dalek::SigningKey;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_operator::{create_router, OperatorState};
@@ -33,26 +38,104 @@ struct Args {
         help = "Operator identifier"
     )]
     operator_id: String,
+
+    #[arg(
+        long,
+        help = "Rotate the persistent signing key after moving the old key to a timestamped backup"
+    )]
+    rotate_key: bool,
+}
+
+fn write_private_key(path: &std::path::Path, bytes: &[u8; 32]) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+fn ensure_private_key_permissions(path: &std::path::Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(path)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        let final_mode = fs::metadata(path)?.permissions().mode();
+        if final_mode & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "operator signing key must not be group/world readable",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn strict_auth_enabled() -> bool {
+    std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+}
+
+fn validate_security_configuration() -> io::Result<()> {
+    if strict_auth_enabled()
+        && std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN")
+            .ok()
+            .map_or(true, |token| token.trim().is_empty())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "strict operator auth requires CIPHERVAULT_OPERATOR_SERVICE_TOKEN",
+        ));
+    }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    validate_security_configuration()?;
+
     fs::create_dir_all(&args.data_dir)?;
 
     // Load or generate persistent operator signing key
     let key_file = args.data_dir.join("operator.key");
+    if args.rotate_key && key_file.exists() {
+        let backup = args.data_dir.join(format!(
+            "operator.key.previous-{}",
+            chrono::Utc::now().format("%Y%m%d%H%M%S")
+        ));
+        fs::rename(&key_file, backup)?;
+    }
     let signing_key = if key_file.exists() {
+        ensure_private_key_permissions(&key_file)?;
         let bytes = fs::read(&key_file)?;
+        if bytes.len() != 32 {
+            return Err("operator signing key must contain exactly 32 bytes".into());
+        }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
         SigningKey::from_bytes(&arr)
     } else {
         let sk = generate_signing_key();
-        fs::write(&key_file, sk.to_bytes())?;
+        write_private_key(&key_file, &sk.to_bytes())?;
         sk
     };
+    ensure_private_key_permissions(&key_file)?;
 
     let pk_hex = hex::encode(signing_key.verifying_key().as_bytes());
     let state = Arc::new(OperatorState::new(

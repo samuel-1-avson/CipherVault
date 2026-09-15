@@ -8,6 +8,7 @@ members = [
     "crates/recovery",
     "crates/storage",
     "services/operator",
+    "services/account",
     "services/maintenance",
     "apps/agent",
     "apps/cli",
@@ -29,6 +30,8 @@ sha2 = "0.10"
 hkdf = "0.12"
 argon2 = "0.5"
 rand = "0.8"
+base64 = "0.22"
+ring = "0.17"
 subtle = "2.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -1,7 +1,7 @@
 use ciphervault_crypto::hsm::list_pcsc_readers;
 use ciphervault_snapshot::fastcdc::{fastcdc_chunk, FastCdcConfig, GEAR_MATRIX};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +79,11 @@ pub struct OperatorHealthItem {
     pub online: bool,
     pub latency_ms: u64,
     pub operator_id: String,
+    pub retention_policy: Option<String>,
+    /// Short diagnostic retained for the operator table when a probe fails.
+    /// Keeping this separate from `online` prevents a timeout from looking
+    /// like a generic/offline state with no actionable explanation.
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +141,7 @@ pub struct TuiApp {
 
     pub operators: Vec<OperatorHealthItem>,
     pub operator_table_index: usize,
+    operator_http: reqwest::Client,
 
     // FastCDC inspector
     pub fastcdc_metrics: Option<FastCdcTuiMetrics>,
@@ -179,6 +185,7 @@ impl TuiApp {
 
             operators: Vec::new(),
             operator_table_index: 0,
+            operator_http: build_operator_http_client(),
 
             fastcdc_metrics: None,
             fastcdc_chunks: Vec::new(),
@@ -312,20 +319,10 @@ impl TuiApp {
             }
         }
 
-        // Read configured operators from .ciphervault/operators.json
-        let ops_file = Path::new(".ciphervault").join("operators.json");
-        let configured_ops: Vec<String> = if ops_file.exists() {
-            fs::read_to_string(&ops_file)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            vec![
-                "http://127.0.0.1:8201".into(),
-                "http://127.0.0.1:8202".into(),
-                "http://127.0.0.1:8203".into(),
-            ]
-        };
+        // Reuse the CLI's canonical operator resolution so the TUI honors
+        // CIPHERVAULT_OPERATORS, the vault-local config, and the production
+        // defaults in exactly the same order as push/audit/repair commands.
+        let configured_ops = crate::get_configured_operators();
 
         if self.operators.is_empty() || self.operators.len() != configured_ops.len() {
             self.operators = configured_ops
@@ -335,6 +332,8 @@ impl TuiApp {
                     online: false,
                     latency_ms: 0,
                     operator_id: "--".into(),
+                    retention_policy: None,
+                    last_error: None,
                 })
                 .collect();
         }
@@ -439,31 +438,104 @@ impl TuiApp {
     }
 
     pub async fn poll_operators_async(&mut self) {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(800))
-            .build()
-            .unwrap_or_default();
+        let client = self.operator_http.clone();
+        // Probe all gateways concurrently. This keeps the TUI responsive when
+        // one region is slow and makes the displayed latency representative of
+        // each operator rather than the sum of earlier requests.
+        let probes = futures_util::future::join_all(
+            self.operators
+                .iter()
+                .map(|op| probe_operator(client.clone(), op.endpoint.clone())),
+        )
+        .await;
 
-        for op in &mut self.operators {
-            let start = Instant::now();
-            let url = format!("{}/v1/info", op.endpoint.trim_end_matches('/'));
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    let lat = start.elapsed().as_millis() as u64;
-                    op.online = true;
-                    op.latency_ms = lat.max(1);
-                    if let Ok(info) = resp.json::<serde_json::Value>().await {
-                        if let Some(id) = info.get("operator_id").and_then(|v| v.as_str()) {
-                            op.operator_id = id.to_string();
-                        }
-                    }
-                }
-                _ => {
-                    op.online = false;
-                    op.latency_ms = 999;
-                }
+        for (op, probe) in self.operators.iter_mut().zip(probes) {
+            op.online = probe.online;
+            op.latency_ms = probe.latency_ms;
+            op.last_error = probe.error;
+            if let Some(operator_id) = probe.operator_id {
+                op.operator_id = operator_id;
+            }
+            if let Some(retention_policy) = probe.retention_policy {
+                op.retention_policy = Some(retention_policy);
             }
         }
+    }
+}
+
+fn build_operator_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        // Reuse DNS, TCP, and TLS connections across refreshes. Constructing
+        // a new client for every poll paid the full public-gateway handshake on
+        // every cycle, which is why all rows could settle around one second.
+        .connect_timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(3))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(8)
+        .build()
+        .unwrap_or_default()
+}
+
+struct OperatorProbeResult {
+    online: bool,
+    latency_ms: u64,
+    operator_id: Option<String>,
+    retention_policy: Option<String>,
+    error: Option<String>,
+}
+
+async fn probe_operator(client: reqwest::Client, endpoint: String) -> OperatorProbeResult {
+    let start = Instant::now();
+    let url = format!("{}/v1/info", endpoint.trim_end_matches('/'));
+    let response = match client.get(&url).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            let label = if error.is_timeout() {
+                "timeout"
+            } else if error.is_connect() {
+                "connect failed"
+            } else {
+                "request failed"
+            };
+            return OperatorProbeResult {
+                online: false,
+                latency_ms: 999,
+                operator_id: None,
+                retention_policy: None,
+                error: Some(label.into()),
+            };
+        }
+    };
+
+    let latency_ms = (start.elapsed().as_millis() as u64).max(1);
+    if !response.status().is_success() {
+        return OperatorProbeResult {
+            online: false,
+            latency_ms: 999,
+            operator_id: None,
+            retention_policy: None,
+            error: Some(format!("HTTP {}", response.status().as_u16())),
+        };
+    }
+
+    let info = response.json::<serde_json::Value>().await.ok();
+    let operator_id = info.as_ref().and_then(|info| {
+        info.get("operator_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+    });
+    let retention_policy = info.as_ref().and_then(|info| {
+        info.get("retention_terms")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+    });
+
+    OperatorProbeResult {
+        online: true,
+        latency_ms,
+        operator_id,
+        retention_policy,
+        error: None,
     }
 }
 

@@ -8,6 +8,12 @@ dist/*.zip
 dist/*.tar.gz
 **/*.rs.bk
 
+# Safe, reproducible release bundles are intentionally versioned. Do not
+# unignore private vault state, operator runtime data, or credential archives.
+!dist/repo.tar.gz
+!dist/ciphervault-source-*.tar.gz
+!dist/ciphervault-tui-*.zip
+
 # ==============================================================================
 # CipherVault Security Invariants: Local Vaults, Keys & Credentials
 # ==============================================================================

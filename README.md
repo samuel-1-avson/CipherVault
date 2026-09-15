@@ -207,6 +207,7 @@ cargo build --workspace --release --locked
 Compiled release binaries are available in `dist/bin/`:
 - `ciphervault` (Main Developer CLI and embedded Web Dashboard)
 - `ciphervault-operator` (Independent Storage Node Service)
+- `ciphervault-account` (Optional hosted account, device, and session control plane)
 - `ciphervault-agent` (File Watching & Coherent Commit Daemon)
 - `ciphervault-maintenance` (Replication Audit & Persisted Fleet Scheduler)
 
@@ -278,6 +279,37 @@ Open **`http://127.0.0.1:8080`** to review:
 - **L2 Relayer Inspector**: Live Arbitrum sequencer transaction receipts with Arbiscan explorer deep links.
 - **Maintenance Fleet Monitor**: Storage node latency gauges and SQLite `fleet.db` audit histories.
 - **Hardware Token Status**: Real-time PC/SC reader detection and touch policy indicators.
+
+### Optional account and device identity
+
+CipherVault remains usable without an online account. The CLI and local dashboard
+are accountless by default, while the public explorer never requires login. For
+cross-device hosted access, create a control-plane account and link a local vault:
+
+```sh
+ciphervault auth init --name "Alice"
+ciphervault vault link --alias "Production vault"
+ciphervault auth login
+ciphervault auth status
+ciphervault device list
+```
+
+The account stores an account ID, device registry, vault memberships, and session
+metadata. Its signing key is protected by the host key facility. It never stores
+vault plaintext or the offline recovery secret. `ciphervault auth logout` revokes
+the local account session and `ciphervault device revoke <DEVICE_ID>` invalidates
+that device. The repository also includes the optional `ciphervault-account`
+control-plane service for self-hosted account, device, vault-link, and session
+metadata. It verifies account-signed enrollment proofs and propagates revocations
+to configured operators, but it does not store vault plaintext or private vault
+keys. Browser WebAuthn registration/assertion support now exists for `none`
+attestation with Ed25519 and ES256 credentials. Credentials are bound to the
+enrolled device, can be independently revoked, and successful hosted logins
+issue an HttpOnly session cookie. The hosted dashboard proxies the passkey
+ceremony and provides passkey sign-in/registration controls. The account API
+also provides durable invitations, membership roles, and one-time recovery
+codes; email delivery, role-aware vault authorization, and production
+provisioning still require deployment work.
 
 ### 8. Interactive Terminal User Interface (TUI)
 
@@ -500,6 +532,11 @@ The device signing private key never leaves the secure element of the physical c
 | `ciphervault recovery export` | *None* | Displays public descriptors (signing PK, encryption PK, locator) without exposing secret $R$. |
 | `ciphervault recovery test` | `[--kit <PATH>] [--to <DIR>]` | Non-destructive dry-run verifying recovery set availability across operators. |
 | `ciphervault recover` | `[--kit <PATH>] [--shares <PATH...>] --to <DIR>` | Reconstructs confidential files onto clean machine using single kit or threshold shares. |
+| `ciphervault auth init` | `[--name <NAME>]` | Creates the optional local control-plane account; vault keys remain local. |
+| `ciphervault auth login/logout/status` | *None* | Unlocks, revokes, or reports the short-lived local account session. |
+| `ciphervault device list` | *None* | Lists active and revoked devices in the local account registry. |
+| `ciphervault device revoke` | `<DEVICE_ID>` | Revokes a device and invalidates its account session. |
+| `ciphervault vault link/unlink` | `[--alias <NAME>]` | Binds or removes the current vault from the local account and enrolls its device. |
 | `ciphervault token status` | *None* | Inspects connected PC/SC smartcard readers and PIV slot states. |
 | `ciphervault token probe` | *None* | Emits machine-readable JSON telemetry for hardware token driver. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser]` | Launches embedded self-contained Web Dashboard and API server. |

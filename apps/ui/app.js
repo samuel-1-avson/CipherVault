@@ -6,6 +6,11 @@ const state = {
   fetching: false,
   operators: [],
   operatorObservedAt: null,
+  operatorTelemetryStatus: 'unknown',
+  operatorHistory: [],
+  operatorJobs: [],
+  account: null,
+  accountService: null,
   snapshots: [],
   context: null,
   // Treat an unrecognized server as public until it explicitly identifies a
@@ -39,6 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initSecretToggle();
   initSearchFilters();
   initQuickActions();
+  initAccountControls();
   initMathVerifier();
   initRelayerActions();
   initFleetActions();
@@ -79,6 +85,7 @@ async function fetchAllData() {
   try {
     // Resolve the serving context before asking for any private vault state.
     await fetchContext();
+    await fetchHostedAccountState();
     if (!document.hidden) initSseStream();
 
     const requests = [
@@ -87,6 +94,10 @@ async function fetchAllData() {
       fetchAnchors(),
       fetchRelayerCheckpoints(),
     ];
+    if (isPublicExplorer()) {
+      requests.push(fetchOperatorHistory());
+      requests.push(fetchOperatorJobs());
+    }
 
     if (canAccessPrivateFeature('snapshot_history')) requests.push(fetchSnapshots());
     if (canAccessPrivateFeature('vault_workspace')) requests.push(fetchGuardians(), fetchActivity(), fetchFleet());
@@ -104,6 +115,75 @@ async function fetchAllData() {
   }
 }
 
+async function fetchHostedAccountState() {
+  try {
+    const capabilitiesResponse = await fetch('/api/account/capabilities', { credentials: 'same-origin' });
+    if (!capabilitiesResponse.ok) {
+      state.accountService = null;
+      renderAccountStatus(state.account);
+      return;
+    }
+    const capabilities = await capabilitiesResponse.json().catch(() => ({}));
+    const sessionResponse = await fetch('/api/account/session', { credentials: 'same-origin' });
+    const session = sessionResponse.ok ? await sessionResponse.json().catch(() => null) : null;
+    state.accountService = {
+      configured: true,
+      capabilities,
+      authenticated: Boolean(sessionResponse.ok && session && session.account_id),
+      session,
+    };
+    if (state.accountService.authenticated) {
+      state.account = {
+        ...(state.account || {}),
+        configured: true,
+        account_id: session.account_id,
+        authenticated: true,
+        session,
+        required: false,
+      };
+    } else {
+      state.account = {
+        ...(state.account || {}),
+        configured: true,
+        authenticated: false,
+        session: null,
+        required: false,
+      };
+    }
+    renderAccountStatus(state.account);
+  } catch (error) {
+    state.accountService = null;
+    console.debug('Hosted account service unavailable:', error);
+    renderAccountStatus(state.account);
+  }
+}
+
+async function fetchOperatorHistory() {
+  try {
+    const res = await fetch('/api/operators/history');
+    if (!res.ok) throw new Error(`Operator telemetry history request failed (${res.status})`);
+    const payload = await res.json();
+    state.operatorHistory = payload && Array.isArray(payload.samples) ? payload.samples : [];
+    renderOperators(state.operators);
+  } catch (error) {
+    state.operatorHistory = [];
+    console.debug('Operator telemetry history unavailable:', error);
+  }
+}
+
+async function fetchOperatorJobs() {
+  try {
+    const res = await fetch('/api/operators/jobs');
+    if (!res.ok) throw new Error(`Operator collector job request failed (${res.status})`);
+    const payload = await res.json();
+    state.operatorJobs = payload && Array.isArray(payload.jobs) ? payload.jobs : [];
+    renderOperators(state.operators);
+  } catch (error) {
+    state.operatorJobs = [];
+    console.debug('Operator collector job history unavailable:', error);
+  }
+}
+
 async function fetchContext() {
   try {
     const response = await fetch('/api/context');
@@ -112,12 +192,369 @@ async function fetchContext() {
     if (!context || typeof context !== 'object') return;
 
     state.context = context;
+    state.account = context.account || null;
+    renderAccountStatus(state.account);
     if (typeof context.mode !== 'string') return;
     state.accessMode = context.mode;
     applyAccessContext(context);
   } catch (error) {
     console.debug('Dashboard context unavailable; private controls remain unavailable:', error);
   }
+}
+
+function renderAccountStatus(account) {
+  const text = document.getElementById('account-status-text');
+  const dot = document.getElementById('account-pulse-dot');
+  const loginButton = document.getElementById('btn-account-login');
+  const passkeyButton = document.getElementById('btn-account-passkey');
+  const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
+  const manageButton = document.getElementById('btn-account-manage');
+  const logoutButton = document.getElementById('btn-account-logout');
+  if (!text) return;
+  if (!account || account.configured !== true) {
+    text.textContent = 'Account: Local-only';
+    if (dot) dot.style.background = 'var(--text-muted)';
+    if (loginButton) loginButton.hidden = true;
+    if (passkeyButton) passkeyButton.hidden = state.accountService == null;
+    if (registerPasskeyButton) registerPasskeyButton.hidden = true;
+    if (manageButton) manageButton.hidden = true;
+    if (logoutButton) logoutButton.hidden = true;
+    return;
+  }
+  const id = typeof account.account_id === 'string' ? truncateHash(account.account_id, 10, 6) : 'configured';
+  const session = account.session || {};
+  const authenticated = account.authenticated === true && session.authenticated !== false;
+  const hosted = state.accountService && state.accountService.configured === true;
+  if (authenticated) {
+    text.textContent = `${hosted ? 'Hosted account' : 'Account'}: ${id} · Session active`;
+    if (dot) dot.style.background = 'var(--accent-green)';
+  } else if (account.required) {
+    text.textContent = `Account: ${id} · Login required`;
+    if (dot) dot.style.background = 'var(--accent-amber)';
+  } else {
+    text.textContent = hosted ? 'Hosted account · Sign in with a passkey' : `Account: ${id} · Not linked`;
+    if (dot) dot.style.background = 'var(--text-muted)';
+  }
+  if (loginButton) {
+    loginButton.hidden = hosted || authenticated || !account.required;
+    loginButton.disabled = !account.required;
+  }
+  if (passkeyButton) passkeyButton.hidden = !hosted || authenticated;
+  if (registerPasskeyButton) registerPasskeyButton.hidden = !hosted || !authenticated;
+  if (manageButton) manageButton.hidden = !hosted || !authenticated;
+  if (logoutButton) logoutButton.hidden = !authenticated;
+}
+
+function initAccountControls() {
+  const loginButton = document.getElementById('btn-account-login');
+  const passkeyButton = document.getElementById('btn-account-passkey');
+  const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
+  const manageButton = document.getElementById('btn-account-manage');
+  const logoutButton = document.getElementById('btn-account-logout');
+  if (loginButton) {
+    loginButton.addEventListener('click', async () => {
+      loginButton.disabled = true;
+      try {
+        const response = await fetch('/api/account/login', { method: 'POST' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.status === 'error') {
+          throw new Error(payload.error || `Sign-in failed (${response.status})`);
+        }
+        showToast('Device session signed in.');
+        await fetchAllData();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Device sign-in failed');
+        loginButton.disabled = false;
+      }
+    });
+  }
+  if (passkeyButton) {
+    passkeyButton.addEventListener('click', () => openHostedPasskeyModal('authenticate'));
+  }
+  if (registerPasskeyButton) {
+    registerPasskeyButton.addEventListener('click', async () => {
+      registerPasskeyButton.disabled = true;
+      try {
+        await runHostedPasskeyRegistration();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Passkey registration failed');
+      } finally {
+        registerPasskeyButton.disabled = false;
+      }
+    });
+  }
+  if (manageButton) manageButton.addEventListener('click', () => openAccountManagementModal());
+  const passkeyModal = document.getElementById('modal-account-passkey');
+  const passkeySubmit = document.getElementById('btn-submit-account-passkey');
+  const passkeyCancel = document.getElementById('btn-cancel-modal-account-passkey');
+  const passkeyClose = document.getElementById('btn-close-modal-account-passkey');
+  const runAuthentication = async () => {
+    const input = document.getElementById('input-account-id');
+    const accountId = input && input.value.trim();
+    if (!accountId) {
+      showToast('Enter your CipherVault account ID.');
+      input?.focus();
+      return;
+    }
+    passkeySubmit.disabled = true;
+    try {
+      await runHostedPasskeyAuthentication(accountId);
+      closeHostedPasskeyModal();
+      showToast('Hosted account signed in with passkey.');
+      await fetchAllData();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Passkey sign-in failed');
+    } finally {
+      passkeySubmit.disabled = false;
+    }
+  };
+  passkeySubmit?.addEventListener('click', runAuthentication);
+  document.getElementById('input-account-id')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') runAuthentication();
+  });
+  passkeyCancel?.addEventListener('click', closeHostedPasskeyModal);
+  passkeyClose?.addEventListener('click', closeHostedPasskeyModal);
+  passkeyModal?.addEventListener('click', event => {
+    if (event.target === passkeyModal) closeHostedPasskeyModal();
+  });
+  const accountManageModal = document.getElementById('modal-account-manage');
+  const accountManageClose = document.getElementById('btn-close-modal-account-manage');
+  const accountManageCancel = document.getElementById('btn-cancel-modal-account-manage');
+  accountManageClose?.addEventListener('click', closeAccountManagementModal);
+  accountManageCancel?.addEventListener('click', closeAccountManagementModal);
+  accountManageModal?.addEventListener('click', event => {
+    if (event.target === accountManageModal) closeAccountManagementModal();
+  });
+  document.getElementById('btn-submit-account-invite')?.addEventListener('click', submitAccountInvitation);
+  document.getElementById('btn-generate-recovery-codes')?.addEventListener('click', generateHostedRecoveryCodes);
+  if (logoutButton) {
+    logoutButton.addEventListener('click', async () => {
+      logoutButton.disabled = true;
+      try {
+        const response = await fetch('/api/account/logout', { method: 'POST' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.status === 'error') {
+          throw new Error(payload.error || `Sign-out failed (${response.status})`);
+        }
+        showToast('Account session signed out.');
+        await fetchAllData();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Account sign-out failed');
+        logoutButton.disabled = false;
+      }
+    });
+  }
+}
+
+function closeAccountManagementModal() {
+  const modal = document.getElementById('modal-account-manage');
+  if (!modal) return;
+  closeModal(modal);
+  modal.hidden = true;
+}
+
+async function openAccountManagementModal() {
+  const accountId = state.account && state.account.account_id;
+  const modal = document.getElementById('modal-account-manage');
+  if (!accountId || !modal) return;
+  modal.hidden = false;
+  openModal(modal, document.activeElement);
+  await refreshAccountManagement(accountId);
+}
+
+async function refreshAccountManagement(accountId) {
+  const list = document.getElementById('account-membership-list');
+  if (list) list.textContent = 'Loading…';
+  try {
+    const [accountResponse, membershipResponse, invitationResponse] = await Promise.all([
+      fetch(`/api/account/${encodeURIComponent(accountId)}`, { credentials: 'same-origin' }),
+      fetch(`/api/account/${encodeURIComponent(accountId)}/memberships`, { credentials: 'same-origin' }),
+      fetch(`/api/account/${encodeURIComponent(accountId)}/invitations`, { credentials: 'same-origin' }),
+    ]);
+    if (!accountResponse.ok) throw new Error(`Account details unavailable (${accountResponse.status})`);
+    const account = await accountResponse.json();
+    const memberships = membershipResponse.ok ? await membershipResponse.json() : { memberships: [] };
+    const invitations = invitationResponse.ok ? await invitationResponse.json() : { invitations: [] };
+    state.account = { ...state.account, ...account, authenticated: true, session: state.account.session };
+    renderAccountStatus(state.account);
+    if (list) {
+      const lines = [];
+      (memberships.memberships || account.memberships || []).forEach(member => {
+        lines.push(`${member.member_account_id} · ${member.role} · ${member.status}`);
+      });
+      (invitations.invitations || []).filter(invite => !invite.accepted_at_utc && !invite.revoked_at_utc).forEach(invite => {
+        lines.push(`Invite ${invite.invitee_account_id} · ${invite.role} · expires ${new Date(invite.expires_at_utc * 1000).toLocaleString()}`);
+      });
+      list.textContent = lines.length ? lines.join('\n') : 'No memberships or pending invitations.';
+    }
+  } catch (error) {
+    if (list) list.textContent = error instanceof Error ? error.message : 'Account details unavailable';
+  }
+}
+
+async function submitAccountInvitation() {
+  const accountId = state.account && state.account.account_id;
+  const inviteeInput = document.getElementById('input-invite-account-id');
+  const roleInput = document.getElementById('input-invite-role');
+  const invitee = inviteeInput && inviteeInput.value.trim();
+  if (!accountId || !invitee) {
+    showToast('Enter the invitee account ID.');
+    inviteeInput?.focus();
+    return;
+  }
+  const button = document.getElementById('btn-submit-account-invite');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/invitations`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ invitee_account_id: invitee, role: roleInput?.value || 'viewer' }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Invitation failed (${response.status})`);
+    if (inviteeInput) inviteeInput.value = '';
+    await refreshAccountManagement(accountId);
+    window.prompt('Copy this invitation token and deliver it securely to the invitee:', result.token || '');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Invitation failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function generateHostedRecoveryCodes() {
+  const accountId = state.account && state.account.account_id;
+  const output = document.getElementById('account-recovery-codes');
+  const button = document.getElementById('btn-generate-recovery-codes');
+  if (!accountId) return;
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/recovery/codes`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: 8 }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Recovery code generation failed (${response.status})`);
+    if (output) {
+      output.hidden = false;
+      output.textContent = (result.codes || []).join('\n');
+    }
+    showToast('New recovery codes generated. Store them offline.');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Recovery code generation failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function base64UrlToBytes(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+  const binary = window.atob(padded);
+  return Uint8Array.from(binary, char => char.charCodeAt(0));
+}
+
+function bytesToBase64Url(value) {
+  const bytes = new Uint8Array(value || []);
+  let binary = '';
+  bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function accountIdFromStorage() {
+  try { return window.localStorage.getItem('ciphervault_account_id') || ''; } catch (_) { return ''; }
+}
+
+function openHostedPasskeyModal(mode = 'authenticate') {
+  const modal = document.getElementById('modal-account-passkey');
+  const input = document.getElementById('input-account-id');
+  const submit = document.getElementById('btn-submit-account-passkey');
+  const help = document.getElementById('account-passkey-help');
+  if (!modal || !input || !submit) return;
+  input.value = accountIdFromStorage();
+  submit.textContent = mode === 'register' ? 'Register passkey' : 'Continue with passkey';
+  if (help) help.textContent = mode === 'register'
+    ? 'Registration requires an active account session on an enrolled device.'
+    : 'Your browser will ask for the passkey enrolled on this account.';
+  modal.dataset.mode = mode;
+  modal.hidden = false;
+  openModal(modal, document.activeElement);
+  input.focus();
+}
+
+function closeHostedPasskeyModal() {
+  const modal = document.getElementById('modal-account-passkey');
+  if (!modal) return;
+  closeModal(modal);
+  modal.hidden = true;
+}
+
+async function runHostedPasskeyAuthentication(accountId) {
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    throw new Error('This browser does not support passkeys.');
+  }
+  const optionsResponse = await fetch('/api/account/webauthn/authentication/options', {
+    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account_id: accountId }),
+  });
+  const options = await optionsResponse.json().catch(() => ({}));
+  if (!optionsResponse.ok) throw new Error(options.error || `Passkey options failed (${optionsResponse.status})`);
+  const credential = await navigator.credentials.get({ publicKey: {
+    challenge: base64UrlToBytes(options.challenge),
+    rpId: options.rp_id,
+    timeout: options.timeout_ms,
+    userVerification: 'required',
+  }});
+  if (!credential || !credential.response) throw new Error('No passkey assertion was returned.');
+  const assertion = credential.response;
+  const verifyResponse = await fetch('/api/account/webauthn/authentication/verify', {
+    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challenge_id: options.challenge_id,
+      credential_id_b64: bytesToBase64Url(credential.rawId),
+      client_data_json_b64: bytesToBase64Url(assertion.clientDataJSON),
+      authenticator_data_b64: bytesToBase64Url(assertion.authenticatorData),
+      signature_b64: bytesToBase64Url(assertion.signature),
+    }),
+  });
+  const result = await verifyResponse.json().catch(() => ({}));
+  if (!verifyResponse.ok) throw new Error(result.error || `Passkey verification failed (${verifyResponse.status})`);
+  try { window.localStorage.setItem('ciphervault_account_id', accountId); } catch (_) { /* storage is optional */ }
+  return result;
+}
+
+async function runHostedPasskeyRegistration() {
+  const accountId = state.account && state.account.account_id;
+  if (!accountId) throw new Error('Sign in to the hosted account before registering a passkey.');
+  if (!window.PublicKeyCredential || !navigator.credentials) throw new Error('This browser does not support passkeys.');
+  const optionsResponse = await fetch(`/api/account/${encodeURIComponent(accountId)}/webauthn/registration/options`, {
+    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  const options = await optionsResponse.json().catch(() => ({}));
+  if (!optionsResponse.ok) throw new Error(options.error || `Passkey registration options failed (${optionsResponse.status})`);
+  const credential = await navigator.credentials.create({ publicKey: {
+    challenge: base64UrlToBytes(options.challenge),
+    rp: { id: options.rp_id, name: 'CipherVault' },
+    user: { id: base64UrlToBytes(options.user_id_b64), name: accountId, displayName: accountId },
+    pubKeyCredParams: [{ type: 'public-key', alg: -8 }, { type: 'public-key', alg: -7 }],
+    timeout: options.timeout_ms,
+    authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
+    attestation: 'none',
+  }});
+  if (!credential || !credential.response) throw new Error('No passkey credential was returned.');
+  const attestation = credential.response;
+  const verifyResponse = await fetch(`/api/account/${encodeURIComponent(accountId)}/webauthn/registration/verify`, {
+    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      challenge_id: options.challenge_id,
+      credential_id_b64: bytesToBase64Url(credential.rawId),
+      client_data_json_b64: bytesToBase64Url(attestation.clientDataJSON),
+      attestation_object_b64: bytesToBase64Url(attestation.attestationObject),
+    }),
+  });
+  const result = await verifyResponse.json().catch(() => ({}));
+  if (!verifyResponse.ok) throw new Error(result.error || `Passkey registration failed (${verifyResponse.status})`);
+  showToast('Passkey registered on this device.');
+  await fetchAllData();
 }
 
 function isPublicExplorer() {
@@ -277,11 +714,14 @@ async function fetchOperators() {
   try {
     const res = await fetch('/api/operators');
     if (!res.ok) throw new Error(`Operator telemetry request failed (${res.status})`);
-    const data = await res.json();
+    const payload = await res.json();
+    const data = Array.isArray(payload)
+      ? payload
+      : (payload && Array.isArray(payload.operators) ? payload.operators : null);
+    if (!data) throw new Error('Operator telemetry payload has an invalid schema');
     state.operators = data;
-    state.operatorObservedAt = Array.isArray(data)
-      ? (data.find(operator => typeof operator?.observed_at === 'string')?.observed_at || null)
-      : null;
+    state.operatorTelemetryStatus = data.length ? 'reported' : 'empty';
+    state.operatorObservedAt = data.find(operator => typeof operator?.observed_at === 'string')?.observed_at || null;
 
     renderOperators(data);
 
@@ -328,6 +768,7 @@ async function fetchOperators() {
     renderLatencyBars(data);
   } catch (e) {
     state.operators = [];
+    state.operatorTelemetryStatus = 'unavailable';
     state.operatorObservedAt = null;
     renderOperators([]);
     const statusText = document.getElementById('cluster-status-text');
@@ -507,14 +948,20 @@ function renderOperators(operators) {
   const observedAt = currentOperators.find(operator => typeof operator?.observed_at === 'string')?.observed_at
     || state.operatorObservedAt;
   const observedLabel = observedAt && Number.isFinite(Date.parse(observedAt))
-    ? ` Last observed ${new Date(observedAt).toLocaleTimeString()}.`
+    ? ` Last observed ${new Date(observedAt).toLocaleTimeString()}${Date.now() - Date.parse(observedAt) > 90000 ? ' (stale)' : ''}.`
     : '';
   const responseSummary = document.getElementById('operator-response-summary');
   const quorumElem = document.getElementById('quorum-health-text');
   const quorumPill = document.getElementById('quorum-status-pill');
   if (responseSummary) {
+    const historyLabel = state.operatorHistory.length > 0
+      ? ` ${state.operatorHistory.length} historical probe sample${state.operatorHistory.length === 1 ? '' : 's'} available.`
+      : '';
+    const jobsLabel = state.operatorJobs.length > 0
+      ? ` ${state.operatorJobs.length} collector run${state.operatorJobs.length === 1 ? '' : 's'} retained.`
+      : '';
     responseSummary.textContent = totalCount > 0
-      ? `${onlineCount}/${totalCount} configured operators responded to the latest probe.${observedLabel} This is not a durability or quorum verification.`
+      ? `${onlineCount}/${totalCount} configured operators responded to the latest probe.${observedLabel}${historyLabel}${jobsLabel} This is not a durability or quorum verification.`
       : 'No configured operator response is available.';
   }
   if (quorumElem) {
@@ -553,6 +1000,12 @@ function renderOperators(operators) {
     const pkDisplay = op.operator_signing_pk_hex ? truncateHash(op.operator_signing_pk_hex, 8, 6) : 'Not reported';
     const opId = op.operator_id || `operator_${idx + 1}`;
     const retentionTerms = op.retention_terms || 'Not reported';
+    const identityExpired = Number.isFinite(Number(op.identity_expires_at_utc))
+      && Number(op.identity_expires_at_utc) > 0
+      && Number(op.identity_expires_at_utc) * 1000 < Date.now();
+    const identityLabel = identityExpired
+      ? 'Expired'
+      : (op.identity_verification === 'verified' ? 'Verified' : 'Unverified');
     const transportLabel = op.transport_security === 'https' ? 'HTTPS configured' : 'Transport not reported';
 
     return `
@@ -587,6 +1040,10 @@ function renderOperators(operators) {
           <div class="op-meta-row">
             <span class="op-meta-label">Retention Policy</span>
             <span class="op-meta-val" style="color: ${op.retention_terms ? 'var(--text-secondary)' : 'var(--text-muted)'};">${escapeHtml(retentionTerms)}</span>
+          </div>
+          <div class="op-meta-row">
+            <span class="op-meta-label">Identity</span>
+            <span class="op-meta-val" style="color: ${identityLabel === 'Verified' ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${identityLabel}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Location</span>

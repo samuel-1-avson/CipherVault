@@ -29,3 +29,6 @@ ciphervault-crypto = { path = "../../crates/crypto" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-storage = { path = "../../crates/storage" }
 ciphervault-recovery = { path = "../../crates/recovery" }
+
+[dev-dependencies]
+tower05 = { package = "tower", version = "0.5", features = ["util"] }

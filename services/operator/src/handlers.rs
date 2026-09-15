@@ -3,6 +3,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use serde::Deserialize;
 use std::sync::Arc;
 
 use ciphervault_storage::types::{
@@ -20,26 +21,191 @@ fn extract_token(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
 }
 
+fn extract_vault_id(headers: &HeaderMap) -> Option<&str> {
+    headers.get("X-CipherVault-Id")?.to_str().ok()
+}
+
+fn strict_operator_auth() -> bool {
+    std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn require_control_auth(
+    state: &OperatorState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, String)> {
+    if let Ok(expected) = std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
+        if !expected.is_empty()
+            && headers
+                .get("X-CipherVault-Service-Token")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|provided| provided == expected)
+        {
+            return Ok(());
+        }
+    }
+    if !strict_operator_auth() && extract_token(headers).is_none() {
+        // Kept as an explicit migration switch for existing operator-to-operator clients.
+        // Production compose enables strict mode; local legacy callers can migrate separately.
+        return Ok(());
+    }
+    require_session(state, headers, true).map(|_| ())
+}
+
+fn require_service_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    let expected = std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN").map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Operator identity administration is not configured".into(),
+        )
+    })?;
+    if expected.is_empty()
+        || headers
+            .get("X-CipherVault-Service-Token")
+            .and_then(|value| value.to_str().ok())
+            .map_or(true, |provided| provided != expected)
+    {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid service token".into()));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IdentityRequest {
+    pub vault_id_hex: String,
+    pub public_key_hex: String,
+    #[serde(default = "default_identity_permissions")]
+    pub permissions: u32,
+    /// Optional control-plane account binding for this enrolled device.
+    #[serde(default)]
+    pub account_id: Option<String>,
+    /// Optional account device ID. Must be supplied together with account_id.
+    #[serde(default)]
+    pub device_id_hex: Option<String>,
+}
+
+fn default_identity_permissions() -> u32 {
+    0xffff_ffff
+}
+
+fn require_session<'a>(
+    state: &OperatorState,
+    headers: &'a HeaderMap,
+    write: bool,
+) -> Result<&'a str, (StatusCode, String)> {
+    let token =
+        extract_token(headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
+    if !write && token == "recovery_anonymous" {
+        return Ok(token);
+    }
+    let vault_id = extract_vault_id(headers).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Missing X-CipherVault-Id header".into(),
+    ))?;
+    if hex::decode(vault_id).map(|bytes| bytes.len()) != Ok(32) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "X-CipherVault-Id must be 32-byte hex".into(),
+        ));
+    }
+    let valid = if write {
+        state.validate_session_for_vault(token, vault_id)
+    } else {
+        state.validate_session_for_vault(token, vault_id)
+    };
+    if !valid {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Invalid, expired, or out-of-scope session token".into(),
+        ));
+    }
+    Ok(token)
+}
+
 pub async fn get_info(State(state): State<Arc<OperatorState>>) -> Json<OperatorInfo> {
     let pk_hex = hex::encode(state.signing_key.verifying_key().as_bytes());
-    Json(OperatorInfo {
+    let mut info = OperatorInfo {
         operator_id: state.operator_id.clone(),
         operator_signing_pk_hex: pk_hex,
         supported_version: 1,
         retention_terms: "90-day immutable retention minimum".into(),
-    })
+        identity_signature_hex: String::new(),
+        identity_expires_at_utc: chrono::Utc::now().timestamp() as u64 + 86_400,
+    };
+    let signature = ciphervault_crypto::signatures::sign_with_domain(
+        &state.signing_key,
+        b"operator_identity",
+        &info.identity_signing_bytes(),
+    );
+    info.identity_signature_hex = hex::encode(signature);
+    Json(info)
+}
+
+pub async fn get_health(
+    State(state): State<Arc<OperatorState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let required = ["objects", "recovery", "leases"];
+    let storage_ready = required
+        .iter()
+        .all(|name| state.data_dir.join(name).is_dir());
+    let key_ready = state.data_dir.join("operator.key").is_file();
+    let status = if storage_ready && key_ready {
+        "ready"
+    } else {
+        "degraded"
+    };
+    let body = serde_json::json!({
+        "status": status,
+        "operator_id": state.operator_id,
+        "storage_ready": storage_ready,
+        "signing_key_present": key_ready,
+        "checked_at_utc": chrono::Utc::now().to_rfc3339(),
+    });
+    if storage_ready && key_ready {
+        Ok(Json(body))
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
 }
 
 pub async fn post_challenge(
     State(state): State<Arc<OperatorState>>,
-    Json(_req): Json<ChallengeRequest>,
-) -> Json<ChallengeResponse> {
-    let (challenge_id, nonce_hex, expires_at_utc) = state.issue_challenge();
-    Json(ChallengeResponse {
+    headers: HeaderMap,
+    Json(req): Json<ChallengeRequest>,
+) -> Result<Json<ChallengeResponse>, (StatusCode, String)> {
+    // Headers are accepted as a deployment-friendly fallback for clients that
+    // cannot yet add the optional JSON fields. JSON values take precedence.
+    let account_id = req.account_id.or_else(|| {
+        headers
+            .get("X-CipherVault-Account-Id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    });
+    let device_id_hex = req.device_id_hex.or_else(|| {
+        headers
+            .get("X-CipherVault-Device-Id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    });
+    let (challenge_id, nonce_hex, expires_at_utc) = state
+        .issue_challenge_with_binding(
+            &req.vault_id_hex,
+            &req.public_key_hex,
+            account_id.as_deref(),
+            device_id_hex.as_deref(),
+        )
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(ChallengeResponse {
         challenge_id,
         nonce_hex,
         expires_at_utc,
-    })
+    }))
 }
 
 pub async fn post_session(
@@ -61,20 +227,67 @@ pub async fn post_session(
     }
 }
 
+pub async fn post_enroll_identity(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Json(req): Json<IdentityRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_service_token(&headers)?;
+    state
+        .enroll_identity_with_binding(
+            &req.vault_id_hex,
+            &req.public_key_hex,
+            req.permissions,
+            req.account_id.as_deref(),
+            req.device_id_hex.as_deref(),
+        )
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn post_revoke_identity(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Json(req): Json<IdentityRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_service_token(&headers)?;
+    if state.revoke_identity(&req.vault_id_hex, &req.public_key_hex) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "Identity is not enrolled".into()))
+    }
+}
+
+pub async fn get_enrolled_identities(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::state::EnrolledIdentity>>, (StatusCode, String)> {
+    require_service_token(&headers)?;
+    Ok(Json(state.list_enrolled_identities()))
+}
+
+pub async fn post_revoke_session(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let token = require_session(&state, &headers, true)?;
+    if state.revoke_session(token) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "Session is no longer active".into(),
+        ))
+    }
+}
+
 pub async fn put_object(
     State(state): State<Arc<OperatorState>>,
     headers: HeaderMap,
     Path(cid): Path<String>,
     body: Bytes,
 ) -> Result<Response, (StatusCode, String)> {
-    let token =
-        extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
-    if !state.validate_write_session(token) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or expired write session token".into(),
-        ));
-    }
+    require_session(&state, &headers, true)?;
 
     state
         .put_object(&cid, &body)
@@ -87,14 +300,7 @@ pub async fn get_object(
     headers: HeaderMap,
     Path(cid): Path<String>,
 ) -> Result<Bytes, (StatusCode, String)> {
-    let token =
-        extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
-    if !state.validate_read_session(token) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or expired read session token".into(),
-        ));
-    }
+    require_session(&state, &headers, false)?;
 
     let bytes = state
         .get_object(&cid)
@@ -108,14 +314,7 @@ pub async fn post_object_challenge(
     Path(cid): Path<String>,
     Json(req): Json<ciphervault_storage::PosChallengeRequest>,
 ) -> Result<Json<ciphervault_storage::ProofOfStorageReceipt>, (StatusCode, String)> {
-    let token =
-        extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
-    if !state.validate_read_session(token) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or expired read session token".into(),
-        ));
-    }
+    require_session(&state, &headers, false)?;
 
     let nonce_bytes = hex::decode(&req.nonce_hex).map_err(|e| {
         (
@@ -148,14 +347,7 @@ pub async fn post_lease(
     headers: HeaderMap,
     Json(req): Json<LeaseRequest>,
 ) -> Result<Json<LeaseReceipt>, (StatusCode, String)> {
-    let token =
-        extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
-    if !state.validate_write_session(token) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or expired write session token".into(),
-        ));
-    }
+    require_session(&state, &headers, true)?;
 
     let receipt = state
         .create_lease(&req.closure_digest_hex, req.byte_count, req.term_days)
@@ -169,14 +361,7 @@ pub async fn post_renew_lease(
     Path(lease_id): Path<String>,
     Json(req): Json<ciphervault_storage::types::LeaseRenewRequest>,
 ) -> Result<Json<LeaseReceipt>, (StatusCode, String)> {
-    let token =
-        extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
-    if !state.validate_write_session(token) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or expired write session token".into(),
-        ));
-    }
+    require_session(&state, &headers, true)?;
 
     let receipt = state
         .renew_lease(&lease_id, req.additional_days, req.byte_count)
@@ -192,12 +377,7 @@ pub async fn post_recovery_record(
 ) -> Result<Json<AppendRecordResponse>, (StatusCode, String)> {
     let token =
         extract_token(&headers).ok_or((StatusCode::UNAUTHORIZED, "Missing bearer token".into()))?;
-    if !state.validate_write_session(token) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid or expired write session token".into(),
-        ));
-    }
+    require_session(&state, &headers, true)?;
 
     let caller_pk = state.get_session_public_key(token);
     let seq = state
@@ -214,14 +394,30 @@ pub async fn get_recovery_records(
     Path(locator): Path<String>,
 ) -> Json<RecoveryRecordsResponse> {
     let records = state.get_recovery_records(&locator);
-    let records_hex = records.into_iter().map(hex::encode).collect();
-    Json(RecoveryRecordsResponse { records_hex })
+    let mut records_hex = Vec::new();
+    let mut encoded_bytes = 0usize;
+    let mut truncated = false;
+    for record in records {
+        let encoded = hex::encode(record);
+        if encoded_bytes.saturating_add(encoded.len()) > crate::state::MAX_RECOVERY_RESPONSE_BYTES {
+            truncated = true;
+            break;
+        }
+        encoded_bytes += encoded.len();
+        records_hex.push(encoded);
+    }
+    Json(RecoveryRecordsResponse {
+        records_hex,
+        truncated,
+    })
 }
 
 pub async fn post_relayer_checkpoint(
     State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
     Json(evidence): Json<ciphervault_format::CheckpointEvidence>,
 ) -> Result<Json<ciphervault_storage::RelayerReceipt>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
     let receipt = state
         .relay_checkpoint(&evidence)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -230,8 +426,10 @@ pub async fn post_relayer_checkpoint(
 
 pub async fn get_relayer_checkpoint(
     State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
     Path(commitment): Path<String>,
 ) -> Result<Json<ciphervault_storage::RelayerReceipt>, StatusCode> {
+    require_control_auth(&state, &headers).map_err(|_| StatusCode::UNAUTHORIZED)?;
     match state.get_relayed_checkpoint(&commitment) {
         Some(receipt) => Ok(Json(receipt)),
         None => Err(StatusCode::NOT_FOUND),
@@ -244,8 +442,10 @@ pub async fn get_relayer_checkpoint(
 
 pub async fn post_peer_announce(
     State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
     Json(peer): Json<ciphervault_storage::PeerDescriptor>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
     let count = state
         .register_peer(peer)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -257,9 +457,11 @@ pub async fn post_peer_announce(
 
 pub async fn get_peers(
     State(state): State<Arc<OperatorState>>,
-) -> Json<Vec<ciphervault_storage::PeerDescriptor>> {
+    headers: HeaderMap,
+) -> Result<Json<Vec<ciphervault_storage::PeerDescriptor>>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
     let peers = state.get_active_peers();
-    Json(peers)
+    Ok(Json(peers))
 }
 
 // -----------------------------------------------------------------------------
@@ -268,8 +470,10 @@ pub async fn get_peers(
 
 pub async fn post_approval_challenge(
     State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
     Json(challenge): Json<ciphervault_recovery::ApprovalChallenge>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
     let id = challenge.challenge_id.clone();
     state
         .register_approval_challenge(challenge)
@@ -282,15 +486,19 @@ pub async fn post_approval_challenge(
 
 pub async fn get_pending_challenges(
     State(state): State<Arc<OperatorState>>,
-) -> Json<Vec<ciphervault_recovery::ApprovalChallenge>> {
+    headers: HeaderMap,
+) -> Result<Json<Vec<ciphervault_recovery::ApprovalChallenge>>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
     let list = state.get_pending_challenges();
-    Json(list)
+    Ok(Json(list))
 }
 
 pub async fn get_challenge_status(
     State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_control_auth(&state, &headers).map_err(|_| StatusCode::UNAUTHORIZED)?;
     match state.get_challenge_status(&id) {
         Some((challenge, receipts)) => Ok(Json(serde_json::json!({
             "challenge": challenge,
@@ -304,8 +512,10 @@ pub async fn get_challenge_status(
 
 pub async fn post_submit_approval(
     State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
     Json(receipt): Json<ciphervault_recovery::SignedApprovalReceipt>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
     let count = state
         .submit_approval_receipt(receipt)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;

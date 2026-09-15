@@ -103,16 +103,19 @@ fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     let (badge_text, badge_color) = if online_count == total_count && total_count > 0 {
         (
-            format!(" {online_count}/{total_count} QUORUM OK "),
+            format!(" {online_count}/{total_count} RESPONDING "),
             Color::Green,
         )
     } else if online_count > 0 {
         (
-            format!(" {online_count}/{total_count} DEGRADED "),
+            format!(" {online_count}/{total_count} RESPONDING "),
             Color::Yellow,
         )
     } else {
-        (" ALL OFFLINE ".into(), Color::Red)
+        (
+            format!(" {online_count}/{total_count} RESPONDING "),
+            Color::Red,
+        )
     };
 
     let badge = Paragraph::new(Line::from(vec![Span::styled(
@@ -241,7 +244,7 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("Federation Quorum:", Style::default().fg(Color::Gray)),
+            Span::styled("Operator Responses:", Style::default().fg(Color::Gray)),
             Span::styled(
                 format!("{online_ops} of {} nodes online", app.operators.len()),
                 Style::default().fg(if online_ops == app.operators.len() {
@@ -521,7 +524,10 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                         "OFFLINE",
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("Timeout", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        op.last_error.as_deref().unwrap_or("Unavailable"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 )
             };
 
@@ -531,7 +537,10 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 Span::styled(&op.endpoint, Style::default().fg(Color::Cyan)),
                 status_span,
                 latency_span,
-                Span::styled("90-day immutable lease", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    op.retention_policy.as_deref().unwrap_or("Not observed"),
+                    Style::default().fg(Color::Gray),
+                ),
             ])
         })
         .collect();
@@ -564,7 +573,7 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         )
         .block(
             Block::default()
-                .title(" Storage Operator Quorum & Live Latency Telemetry ")
+                .title(" Storage Operator Responses & Live Latency ")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Green)),

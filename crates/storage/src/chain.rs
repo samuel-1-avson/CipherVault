@@ -433,13 +433,24 @@ impl AnchorRelayerClient {
         &self.relayer_url
     }
 
+    fn with_service_token(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
+            Ok(token) if !token.is_empty() => request.header("X-CipherVault-Service-Token", token),
+            _ => request,
+        }
+    }
+
     /// Submits a signed checkpoint evidence to the relayer for automated L2 anchoring.
     pub async fn submit_checkpoint(
         &self,
         evidence: &CheckpointEvidence,
     ) -> Result<RelayerReceipt, StorageError> {
         let url = format!("{}/v1/relayer/checkpoints", self.relayer_url);
-        let resp = self.http.post(&url).json(evidence).send().await?;
+        let resp = self
+            .with_service_token(self.http.post(&url))
+            .json(evidence)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -462,7 +473,7 @@ impl AnchorRelayerClient {
             "{}/v1/relayer/checkpoints/{}",
             self.relayer_url, commitment_hex
         );
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.with_service_token(self.http.get(&url)).send().await?;
         if resp.status().as_u16() == 404 {
             return Ok(None);
         }

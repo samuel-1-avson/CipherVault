@@ -111,9 +111,18 @@ services:
     container_name: ciphervault-operator
     restart: always
     network_mode: host
+    environment:
+      - CIPHERVAULT_OPERATOR_STRICT_AUTH=\${CIPHERVAULT_OPERATOR_STRICT_AUTH:-true}
+      - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=\${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     command: ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "$OPERATOR_ID"]
     volumes:
       - /opt/ciphervault/data:/var/lib/ciphervault
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8201/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   caddy:
     image: caddy:2-alpine

@@ -1,5 +1,6 @@
 use ed25519_dalek::SigningKey;
 use reqwest::{header, Client};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ciphervault_crypto::signatures::sign_with_domain;
@@ -16,6 +17,8 @@ use crate::types::{
 pub struct OperatorClient {
     endpoint: String,
     http: Client,
+    vault_scope: Arc<Mutex<Option<String>>>,
+    account_identity: Arc<Mutex<Option<(String, String)>>>,
 }
 
 impl OperatorClient {
@@ -24,9 +27,71 @@ impl OperatorClient {
             .timeout(Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| Client::new());
+        Self::with_http_client(endpoint, http)
+    }
+
+    /// Creates a client using a caller-owned HTTP pool. Cloning `reqwest::Client`
+    /// shares its connection pool, allowing recurring probes to reuse TCP
+    /// connections instead of paying a cross-region handshake every sample.
+    pub fn with_http_client(endpoint: String, http: Client) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             http,
+            vault_scope: Arc::new(Mutex::new(None)),
+            account_identity: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Binds operator sessions to the optional CipherVault account/device
+    /// registry. The values are identifiers only; no account or vault secret
+    /// is sent to an operator.
+    pub fn with_account_identity(
+        &self,
+        account_id: impl Into<String>,
+        device_id_hex: impl Into<String>,
+    ) {
+        if let Ok(mut identity) = self.account_identity.lock() {
+            *identity = Some((
+                account_id.into().trim().to_ascii_lowercase(),
+                device_id_hex.into().trim().to_ascii_lowercase(),
+            ));
+        }
+    }
+
+    pub fn clear_account_identity(&self) {
+        if let Ok(mut identity) = self.account_identity.lock() {
+            *identity = None;
+        }
+    }
+
+    fn account_identity(&self) -> Option<(String, String)> {
+        self.account_identity
+            .lock()
+            .ok()
+            .and_then(|identity| identity.clone())
+    }
+
+    fn with_identity_binding(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.account_identity() {
+            Some((account_id, device_id_hex)) => request
+                .header("X-CipherVault-Account-Id", account_id)
+                .header("X-CipherVault-Device-Id", device_id_hex),
+            None => request,
+        }
+    }
+
+    fn with_vault_scope(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let request = match self.vault_scope.lock().ok().and_then(|scope| scope.clone()) {
+            Some(scope) => request.header("X-CipherVault-Id", scope),
+            None => request,
+        };
+        self.with_identity_binding(request)
+    }
+
+    fn with_service_token(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
+            Ok(token) if !token.is_empty() => request.header("X-CipherVault-Service-Token", token),
+            _ => request,
         }
     }
 
@@ -43,6 +108,41 @@ impl OperatorClient {
             return Err(StorageError::ServerError { status, message });
         }
         let info = resp.json::<OperatorInfo>().await?;
+        if !info.identity_signature_hex.is_empty() && !info.verify_identity_signature() {
+            return Err(StorageError::ServerError {
+                status: 502,
+                message: "Operator identity signature verification failed".into(),
+            });
+        }
+        Ok(info)
+    }
+
+    /// Fetches and verifies an operator identity against a caller-supplied pinned key.
+    /// This is the strict path used when a vault has an enrolled operator registry.
+    pub async fn get_info_pinned(
+        &self,
+        expected_signing_key: &[u8; 32],
+    ) -> Result<OperatorInfo, StorageError> {
+        let info = self.get_info().await?;
+        let expected_hex = hex::encode(expected_signing_key);
+        if !info
+            .operator_signing_pk_hex
+            .eq_ignore_ascii_case(&expected_hex)
+            || !info.verify_identity_signature()
+        {
+            return Err(StorageError::ServerError {
+                status: 502,
+                message: "Operator identity does not match the pinned signing key".into(),
+            });
+        }
+        if info.identity_expires_at_utc != 0
+            && chrono::Utc::now().timestamp() as u64 > info.identity_expires_at_utc
+        {
+            return Err(StorageError::ServerError {
+                status: 502,
+                message: "Operator identity descriptor has expired".into(),
+            });
+        }
         Ok(info)
     }
 
@@ -53,15 +153,17 @@ impl OperatorClient {
     ) -> Result<String, StorageError> {
         let pk_hex = hex::encode(signing_key.verifying_key().as_bytes());
         let vault_hex = hex::encode(vault_id);
+        let identity = self.account_identity();
 
         // 1. Request challenge
         let challenge_url = format!("{}/v1/challenges", self.endpoint);
         let c_resp = self
-            .http
-            .post(&challenge_url)
+            .with_identity_binding(self.http.post(&challenge_url))
             .json(&ChallengeRequest {
-                vault_id_hex: vault_hex,
+                vault_id_hex: vault_hex.clone(),
                 public_key_hex: pk_hex.clone(),
+                account_id: identity.as_ref().map(|(account_id, _)| account_id.clone()),
+                device_id_hex: identity.as_ref().map(|(_, device_id)| device_id.clone()),
             })
             .send()
             .await?;
@@ -85,8 +187,7 @@ impl OperatorClient {
         // 3. Redeem session
         let session_url = format!("{}/v1/sessions", self.endpoint);
         let s_resp = self
-            .http
-            .post(&session_url)
+            .with_identity_binding(self.http.post(&session_url))
             .json(&SessionRequest {
                 challenge_id: challenge.challenge_id,
                 public_key_hex: pk_hex,
@@ -101,6 +202,9 @@ impl OperatorClient {
             return Err(StorageError::ServerError { status, message });
         }
         let session = s_resp.json::<SessionResponse>().await?;
+        if let Ok(mut scope) = self.vault_scope.lock() {
+            *scope = Some(vault_hex);
+        }
         Ok(session.token)
     }
 
@@ -114,8 +218,7 @@ impl OperatorClient {
         let url = format!("{}/v1/objects/{}", self.endpoint, cid_hex);
 
         let resp = self
-            .http
-            .put(&url)
+            .with_vault_scope(self.http.put(&url))
             .header(header::AUTHORIZATION, format!("Bearer {}", token))
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .body(data)
@@ -130,13 +233,27 @@ impl OperatorClient {
         Ok(())
     }
 
+    pub async fn revoke_session(&self, token: &str) -> Result<(), StorageError> {
+        let url = format!("{}/v1/sessions/revoke", self.endpoint);
+        let resp = self
+            .with_vault_scope(self.http.post(&url))
+            .header(header::AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let message = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError { status, message });
+        }
+        Ok(())
+    }
+
     pub async fn get_object(&self, token: &str, cid: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
         let cid_hex = hex::encode(cid);
         let url = format!("{}/v1/objects/{}", self.endpoint, cid_hex);
 
         let resp = self
-            .http
-            .get(&url)
+            .with_vault_scope(self.http.get(&url))
             .header(header::AUTHORIZATION, format!("Bearer {}", token))
             .send()
             .await?;
@@ -173,8 +290,7 @@ impl OperatorClient {
         let url = format!("{}/v1/objects/{}/challenge", self.endpoint, cid_hex);
 
         let resp = self
-            .http
-            .post(&url)
+            .with_vault_scope(self.http.post(&url))
             .header(header::AUTHORIZATION, format!("Bearer {}", token))
             .json(&PosChallengeRequest {
                 nonce_hex: hex::encode(nonce),
@@ -201,8 +317,7 @@ impl OperatorClient {
     ) -> Result<LeaseReceipt, StorageError> {
         let url = format!("{}/v1/leases", self.endpoint);
         let resp = self
-            .http
-            .post(&url)
+            .with_vault_scope(self.http.post(&url))
             .header(header::AUTHORIZATION, format!("Bearer {}", token))
             .json(&LeaseRequest {
                 closure_digest_hex: hex::encode(closure_digest),
@@ -231,8 +346,7 @@ impl OperatorClient {
     ) -> Result<LeaseReceipt, StorageError> {
         let url = format!("{}/v1/leases/{}/renew", self.endpoint, lease_id);
         let resp = self
-            .http
-            .post(&url)
+            .with_vault_scope(self.http.post(&url))
             .header(header::AUTHORIZATION, format!("Bearer {}", token))
             .json(&crate::types::LeaseRenewRequest {
                 additional_days,
@@ -261,8 +375,7 @@ impl OperatorClient {
         let url = format!("{}/v1/recovery/{}/records", self.endpoint, locator_hex);
 
         let resp = self
-            .http
-            .post(&url)
+            .with_vault_scope(self.http.post(&url))
             .header(header::AUTHORIZATION, format!("Bearer {}", token))
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .body(record_bytes)
@@ -310,7 +423,11 @@ impl OperatorClient {
         descriptor: &crate::types::PeerDescriptor,
     ) -> Result<(), StorageError> {
         let url = format!("{}/v1/peers/announce", self.endpoint);
-        let resp = self.http.post(&url).json(descriptor).send().await?;
+        let resp = self
+            .with_service_token(self.http.post(&url))
+            .json(descriptor)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let message = resp.text().await.unwrap_or_default();
@@ -321,7 +438,7 @@ impl OperatorClient {
 
     pub async fn get_peers(&self) -> Result<Vec<crate::types::PeerDescriptor>, StorageError> {
         let url = format!("{}/v1/peers", self.endpoint);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.with_service_token(self.http.get(&url)).send().await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let message = resp.text().await.unwrap_or_default();

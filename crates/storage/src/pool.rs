@@ -31,6 +31,21 @@ impl MultiOperatorPool {
             .collect()
     }
 
+    /// Propagates the optional account/device identity to every operator
+    /// client so challenge issuance and subsequent requests carry the same
+    /// device-registry binding.
+    pub fn set_account_identity(&self, account_id: &str, device_id_hex: &str) {
+        for client in &self.clients {
+            client.with_account_identity(account_id, device_id_hex);
+        }
+    }
+
+    pub fn clear_account_identity(&self) {
+        for client in &self.clients {
+            client.clear_account_identity();
+        }
+    }
+
     /// Discovers active peer operators from current endpoints via P2P gossip and dynamically expands the pool.
     /// Returns the number of newly discovered and verified peer operators.
     pub async fn discover_and_expand_peers(&mut self) -> Result<usize, StorageError> {

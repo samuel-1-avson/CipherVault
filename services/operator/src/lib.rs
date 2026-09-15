@@ -6,6 +6,7 @@
 pub mod handlers;
 pub mod state;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
 use axum::Router;
 use std::sync::Arc;
@@ -17,8 +18,18 @@ pub use state::OperatorState;
 pub fn create_router(state: Arc<OperatorState>) -> Router {
     Router::new()
         .route("/v1/info", get(handlers::get_info))
+        .route("/healthz", get(handlers::get_health))
         .route("/v1/challenges", post(handlers::post_challenge))
         .route("/v1/sessions", post(handlers::post_session))
+        .route("/v1/sessions/revoke", post(handlers::post_revoke_session))
+        .route(
+            "/v1/identities",
+            get(handlers::get_enrolled_identities).post(handlers::post_enroll_identity),
+        )
+        .route(
+            "/v1/identities/revoke",
+            post(handlers::post_revoke_identity),
+        )
         .route(
             "/v1/objects/:cid",
             put(handlers::put_object).get(handlers::get_object),
@@ -61,6 +72,24 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             "/v1/auth/challenges/:id/approve",
             post(handlers::post_submit_approval),
         )
-        .layer(CorsLayer::permissive())
+        // Operator APIs are consumed by the dashboard backend and authenticated clients.
+        // Do not grant arbitrary browser origins access to operator responses.
+        .layer(
+            CorsLayer::new()
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                ])
+                .allow_headers([
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderName::from_static("x-ciphervault-id"),
+                    axum::http::HeaderName::from_static("x-ciphervault-account-id"),
+                    axum::http::HeaderName::from_static("x-ciphervault-device-id"),
+                    axum::http::HeaderName::from_static("x-ciphervault-service-token"),
+                ]),
+        )
+        .layer(DefaultBodyLimit::max(state::MAX_OBJECT_SIZE))
         .with_state(state)
 }

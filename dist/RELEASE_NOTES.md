@@ -160,7 +160,8 @@ Benchmarked on Windows x86_64:
 
 | Binary | Size | SHA-256 Checksum |
 |---|---|---|
-| `ciphervault.exe` | 11.23 MB | `cc91fefa92ff5d548b1291ecf2ccb66d962f1737f007bbc09c09c87573a30691` |
+| `ciphervault.exe` | 12.74 MB | `6a51d704f3fd3020d656b38e30836d1d0b71f4e38c7828f932ab3a2212d3a9f0` |
+| `ciphervault-tui-fixed.exe` | 12.74 MB | `5c14bceac603f510d9d800e04916b50573acd6cc57d806b3be1aeaa2b2936c44` |
 | `ciphervault-operator.exe` | 2.93 MB | `0ccac66908d30d77e6390b9b8848dadc73acd6ac8e4aba2f000fc2f371717a93` |
 | `ciphervault-agent.exe` | 6.84 MB | `4fdcff408894e3be1a0caf477df2a47b9cef935b3483e47385efab16a2bfc69e` |
 | `ciphervault-maintenance.exe` | 5.66 MB | `ae27c33a3478ce34ffe2cfae9b0a5ad5c6e11709238d771cb36ede3e126b0f29` |
@@ -245,4 +246,3 @@ dist/bin/ciphervault.exe watch --debounce 2 --sync
 # or use the one-click Windows launcher:
 .\start-watcher.bat
 ```
-

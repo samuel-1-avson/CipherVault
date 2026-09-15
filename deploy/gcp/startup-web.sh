@@ -54,6 +54,9 @@ fi
 # 6. Extract Custom Domain from GCP Instance Metadata (or fallback)
 WEB_DOMAIN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/web-domain" 2>/dev/null || echo "vault.example.com")
 ACME_EMAIL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/acme-email" 2>/dev/null || echo "admin@example.com")
+WEBAUTHN_RP_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/webauthn-rp-id" 2>/dev/null || echo "$WEB_DOMAIN")
+WEBAUTHN_ORIGIN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/webauthn-origin" 2>/dev/null || echo "https://$WEB_DOMAIN")
+ACCOUNT_ALLOWED_ORIGINS=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/account-allowed-origins" 2>/dev/null || echo "https://$WEB_DOMAIN")
 
 echo "Configured Web Domain: $WEB_DOMAIN"
 echo "Configured ACME Email: $ACME_EMAIL"
@@ -67,12 +70,18 @@ cat <<EOF > /opt/ciphervault-ui/.env
 WEB_DOMAIN=${WEB_DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
 CIPHERVAULT_OPERATORS=http://10.128.0.39 http://10.128.0.40 http://10.142.0.2
+CIPHERVAULT_WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID}
+CIPHERVAULT_WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
+CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=${ACCOUNT_ALLOWED_ORIGINS}
+CIPHERVAULT_ACCOUNT_COOKIE_SECURE=true
 EOF
 
 # 8. Build Production Dashboard Image
 echo "Building ciphervault-ui container image..."
 cd /opt/ciphervault-ui/repo
 docker build -t ciphervault-ui:gcp -f deploy/docker/Dockerfile.dashboard .
+echo "Building ciphervault-account control-plane image..."
+docker build -t ciphervault-account:gcp -f deploy/docker/Dockerfile.account .
 
 # 9. Create and Enable Systemd Service
 cat <<'EOF' > /etc/systemd/system/ciphervault-ui.service

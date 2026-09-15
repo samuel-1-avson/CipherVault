@@ -9,6 +9,9 @@ ACME_EMAIL="${2:-admin@example.com}"
 ZONE="${3:-us-central1-a}"
 MACHINE_TYPE="e2-micro"
 BOOT_DISK_SIZE="20GB"
+WEBAUTHN_RP_ID="${WEBAUTHN_RP_ID:-$DOMAIN_NAME}"
+WEBAUTHN_ORIGIN="${WEBAUTHN_ORIGIN:-https://$DOMAIN_NAME}"
+ACCOUNT_ALLOWED_ORIGINS="${ACCOUNT_ALLOWED_ORIGINS:-$WEBAUTHN_ORIGIN}"
 
 if [ -z "$DOMAIN_NAME" ]; then
     echo "Usage: ./deploy-web-ui.sh <subdomain.domain.com> [acme_email] [zone]"
@@ -49,13 +52,13 @@ if ! gcloud compute instances describe "$INSTANCE_NAME" --zone="$ZONE" &>/dev/nu
         --boot-disk-type="pd-balanced" \
         --tags="ciphervault-web-ui,http-server,https-server" \
         --metadata-from-file="startup-script=$STARTUP_PATH" \
-        --metadata="web-domain=$DOMAIN_NAME,acme-email=$ACME_EMAIL" \
+        --metadata="web-domain=$DOMAIN_NAME,acme-email=$ACME_EMAIL,webauthn-rp-id=$WEBAUTHN_RP_ID,webauthn-origin=$WEBAUTHN_ORIGIN,account-allowed-origins=$ACCOUNT_ALLOWED_ORIGINS" \
         --quiet
 else
     echo "Updating existing VM metadata..."
     gcloud compute instances add-metadata "$INSTANCE_NAME" \
         --zone="$ZONE" \
-        --metadata="web-domain=$DOMAIN_NAME,acme-email=$ACME_EMAIL" \
+        --metadata="web-domain=$DOMAIN_NAME,acme-email=$ACME_EMAIL,webauthn-rp-id=$WEBAUTHN_RP_ID,webauthn-origin=$WEBAUTHN_ORIGIN,account-allowed-origins=$ACCOUNT_ALLOWED_ORIGINS" \
         --metadata-from-file="startup-script=$STARTUP_PATH" \
         --quiet
 fi

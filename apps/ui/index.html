@@ -81,6 +81,19 @@
           <span id="cluster-status-text">Probing Cluster...</span>
         </div>
 
+        <!-- Optional account/control-plane identity. Hidden in public explorer mode. -->
+        <div class="cluster-status-indicator account-status-badge" id="account-status-indicator" role="status" aria-live="polite">
+          <span class="pulse-dot" id="account-pulse-dot"></span>
+          <span id="account-status-text">Account: Local-only</span>
+        </div>
+        <div class="account-actions" aria-label="Account controls">
+          <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key">Device sign in</button>
+          <button class="btn-action secondary small" id="btn-account-passkey" type="button" title="Sign in to a hosted CipherVault account with a passkey" hidden>Passkey sign in</button>
+          <button class="btn-action secondary small" id="btn-account-register-passkey" type="button" title="Register a passkey on this device" hidden>Register passkey</button>
+          <button class="btn-action secondary small" id="btn-account-manage" type="button" title="Manage hosted account membership and recovery" hidden>Manage account</button>
+          <button class="btn-action secondary small" id="btn-account-logout" type="button" title="Revoke the current local account session" hidden>Sign out</button>
+        </div>
+
         <!-- Live Real-Time SSE Indicator -->
         <div class="cluster-status-indicator sse-live-badge" id="sse-stream-indicator" role="status" aria-live="polite" title="Continuous operator telemetry">
           <span class="pulse-dot sse-dot" id="sse-pulse-dot"></span>
@@ -1193,6 +1206,64 @@
         <input type="text" id="terminal-cmd-input" class="terminal-input" placeholder="Type a CLI command (e.g. diff, status, audit, push)..." aria-label="CLI Command Input">
         <button class="btn-terminal-exec" id="btn-terminal-exec">Run</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Modal: Hosted account passkey ceremony -->
+  <div class="modal-backdrop" id="modal-account-passkey" role="dialog" aria-modal="true" aria-labelledby="modal-account-passkey-title" hidden>
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3 id="modal-account-passkey-title" class="modal-title">Hosted CipherVault account</h3>
+        <button class="btn-modal-close" id="btn-close-modal-account-passkey" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+          Use a passkey stored by your browser, operating system, or security key. The dashboard receives only a short-lived session cookie; vault plaintext and private keys stay local.
+        </p>
+        <div class="form-group">
+          <label for="input-account-id" class="form-label">Account ID</label>
+          <input type="text" id="input-account-id" class="form-input" placeholder="cvacct_…" autocomplete="username webauthn" spellcheck="false">
+        </div>
+        <p id="account-passkey-help" class="form-help" aria-live="polite">Your account ID is shown in the CipherVault CLI after account creation.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-account-passkey">Cancel</button>
+        <button class="btn-action primary" id="btn-submit-account-passkey">Continue with passkey</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Hosted account management -->
+  <div class="modal-backdrop" id="modal-account-manage" role="dialog" aria-modal="true" aria-labelledby="modal-account-manage-title" hidden>
+    <div class="modal-card" style="max-width: 680px;">
+      <div class="modal-header">
+        <h3 id="modal-account-manage-title" class="modal-title">Account management</h3>
+        <button class="btn-modal-close" id="btn-close-modal-account-manage" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" for="input-invite-account-id">Invite an account</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="input-invite-account-id" class="form-input" placeholder="cvacct_…" autocomplete="off" spellcheck="false">
+            <select id="input-invite-role" class="form-input" style="max-width: 130px;" aria-label="Invitation role">
+              <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option><option value="recovery">Recovery</option>
+            </select>
+            <button class="btn-action primary" id="btn-submit-account-invite" type="button">Invite</button>
+          </div>
+          <p class="form-help">The invitee must already have a CipherVault account. The generated token is shown once for secure delivery.</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="account-membership-list">Memberships</label>
+          <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; max-height: 170px; overflow-y: auto; color: var(--accent-cyan);">Loading…</pre>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Recovery codes</label>
+          <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
+          <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; margin-top: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; color: var(--accent-amber);" hidden></pre>
+          <p class="form-help">Codes are displayed once. Store them offline; generating a new set invalidates unused codes.</p>
+        </div>
+      </div>
+      <div class="modal-footer"><button class="btn-action secondary" id="btn-cancel-modal-account-manage">Close</button></div>
     </div>
   </div>
 

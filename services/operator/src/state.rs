@@ -1,11 +1,15 @@
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::{
@@ -19,19 +23,102 @@ pub const MAX_RECOVERY_RECORD_SIZE: usize = 64 * 1024; // 64 KiB max per recover
 pub const MAX_ACTIVE_CHALLENGES: usize = 5_000;
 pub const MAX_ACTIVE_SESSIONS: usize = 5_000;
 pub const MAX_RECORDS_PER_LOCATOR: usize = 10_000;
+pub const MAX_RECOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RELAYED_CHECKPOINTS: usize = 5_000;
+pub const MAX_ACTIVE_PEERS: usize = 128;
+
+fn valid_account_id(value: &str) -> bool {
+    let value = value.trim();
+    value.len() == 39
+        && value
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("cvacct_"))
+        && hex::decode(&value[7..]).map(|bytes| bytes.len()) == Ok(16)
+}
+
+fn valid_device_id(value: &str) -> bool {
+    hex::decode(value.trim()).map(|bytes| bytes.len()) == Ok(32)
+}
+
+fn normalize_identity_binding(
+    account_id: Option<&str>,
+    device_id_hex: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let account_id = account_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let device_id_hex = device_id_hex
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    if let Some(account_id) = account_id.as_deref() {
+        if !valid_account_id(account_id) {
+            return Err("account_id must use the cvacct_<32 hex characters> format".into());
+        }
+    }
+    if let Some(device_id_hex) = device_id_hex.as_deref() {
+        if !valid_device_id(device_id_hex) {
+            return Err("device_id_hex must be 32-byte hex".into());
+        }
+    }
+    if account_id.is_none() != device_id_hex.is_none() {
+        return Err("account_id and device_id_hex must be supplied together".into());
+    }
+    Ok((account_id, device_id_hex))
+}
+
+#[derive(Clone, Debug)]
+struct ChallengeRecord {
+    nonce_hex: String,
+    expires_at_utc: u64,
+    vault_id_hex: String,
+    public_key_hex: String,
+    account_id: Option<String>,
+    device_id_hex: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedSession {
+    token: String,
+    expires_at_utc: u64,
+    public_key_hex: String,
+    vault_id_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnrolledIdentity {
+    pub vault_id_hex: String,
+    pub public_key_hex: String,
+    pub permissions: u32,
+    pub enrolled_at_utc: u64,
+    #[serde(default)]
+    pub revoked_at_utc: Option<u64>,
+    /// Optional control-plane account that owns this device identity.
+    /// Older identity records remain valid with this field omitted.
+    #[serde(default)]
+    pub account_id: Option<String>,
+    /// Optional account device ID. When present, strict challenge issuance
+    /// requires the caller to present the same device binding.
+    #[serde(default)]
+    pub device_id_hex: Option<String>,
+}
 
 pub struct OperatorState {
     pub operator_id: String,
     pub signing_key: SigningKey,
     pub data_dir: PathBuf,
     io_lock: Mutex<()>,
-    // Active challenges: challenge_id -> (nonce_hex, expires_at_utc)
-    pub challenges: Mutex<HashMap<String, (String, u64)>>,
+    // Active challenges are bound to the requested vault and device key.
+    challenges: Mutex<HashMap<String, ChallengeRecord>>,
     // Active sessions: token -> expires_at_utc
     pub sessions: Mutex<HashMap<String, u64>>,
     // Authenticated caller public key: token -> public_key
     pub session_keys: Mutex<HashMap<String, [u8; 32]>>,
+    // Vault scope for each authenticated session: token -> vault id hex.
+    session_vaults: Mutex<HashMap<String, String>>,
+    // Explicitly enrolled device identities, persisted across restarts.
+    pub enrolled_identities: Mutex<Vec<EnrolledIdentity>>,
     // Relayed L2 checkpoints: commitment_hex -> RelayerReceipt
     pub relayed_checkpoints: Mutex<HashMap<String, ciphervault_storage::RelayerReceipt>>,
     // Active P2P peers: operator_id -> PeerDescriptor
@@ -54,7 +141,7 @@ impl OperatorState {
         fs::create_dir_all(data_dir.join("recovery")).unwrap();
         fs::create_dir_all(data_dir.join("leases")).unwrap();
 
-        Self {
+        let state = Self {
             operator_id,
             signing_key,
             data_dir,
@@ -62,13 +149,360 @@ impl OperatorState {
             challenges: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             session_keys: Mutex::new(HashMap::new()),
+            session_vaults: Mutex::new(HashMap::new()),
+            enrolled_identities: Mutex::new(Vec::new()),
             relayed_checkpoints: Mutex::new(HashMap::new()),
             peer_routing_table: Mutex::new(HashMap::new()),
             approval_challenges: Mutex::new(HashMap::new()),
+        };
+        state.load_enrolled_identities();
+        state.load_sessions();
+        state
+    }
+
+    fn identity_store_path(&self) -> PathBuf {
+        self.data_dir.join("identities.json")
+    }
+
+    fn load_enrolled_identities(&self) {
+        let Ok(bytes) = fs::read(self.identity_store_path()) else {
+            return;
+        };
+        let Ok(records) = serde_json::from_slice::<Vec<EnrolledIdentity>>(&bytes) else {
+            return;
+        };
+        let mut identities = self.enrolled_identities.lock().unwrap();
+        identities.extend(records.into_iter().filter(|record| {
+            hex::decode(&record.vault_id_hex).map(|b| b.len()) == Ok(32)
+                && hex::decode(&record.public_key_hex).map(|b| b.len()) == Ok(32)
+                && record.vault_id_hex == record.vault_id_hex.to_ascii_lowercase()
+                && record.public_key_hex == record.public_key_hex.to_ascii_lowercase()
+                && record.account_id.as_deref().map_or(true, valid_account_id)
+                && record
+                    .device_id_hex
+                    .as_deref()
+                    .map_or(true, valid_device_id)
+                && record.account_id.is_some() == record.device_id_hex.is_some()
+        }));
+    }
+
+    fn persist_enrolled_identities(&self) -> Result<(), String> {
+        let identities = self.enrolled_identities.lock().unwrap().clone();
+        let encoded = serde_json::to_vec_pretty(&identities).map_err(|e| e.to_string())?;
+        let path = self.identity_store_path();
+        let tmp = path.with_file_name(format!(
+            ".{}.tmp-{}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("identities.json"),
+            std::process::id()
+        ));
+        fs::write(&tmp, encoded).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        if let Err(error) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.to_string());
+        }
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn enrollment_required() -> bool {
+        std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
+            || std::env::var("CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT")
+                .ok()
+                .is_some_and(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes"
+                    )
+                })
+    }
+
+    pub fn is_identity_enrolled(&self, vault_id_hex: &str, public_key_hex: &str) -> bool {
+        self.is_identity_enrolled_with_binding(vault_id_hex, public_key_hex, None, None)
+    }
+
+    pub fn is_identity_enrolled_with_binding(
+        &self,
+        vault_id_hex: &str,
+        public_key_hex: &str,
+        account_id: Option<&str>,
+        device_id_hex: Option<&str>,
+    ) -> bool {
+        let vault_id_hex = vault_id_hex.trim().to_ascii_lowercase();
+        let public_key_hex = public_key_hex.trim().to_ascii_lowercase();
+        let Ok((account_id, device_id_hex)) = normalize_identity_binding(account_id, device_id_hex)
+        else {
+            return false;
+        };
+        self.enrolled_identities
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|identity| {
+                identity.revoked_at_utc.is_none()
+                    && identity.vault_id_hex == vault_id_hex
+                    && identity.public_key_hex == public_key_hex
+                    && identity
+                        .account_id
+                        .as_deref()
+                        .map_or(true, |bound| account_id.as_deref() == Some(bound))
+                    && identity
+                        .device_id_hex
+                        .as_deref()
+                        .map_or(true, |bound| device_id_hex.as_deref() == Some(bound))
+            })
+    }
+
+    pub fn enroll_identity(
+        &self,
+        vault_id_hex: &str,
+        public_key_hex: &str,
+        permissions: u32,
+    ) -> Result<(), String> {
+        self.enroll_identity_with_binding(vault_id_hex, public_key_hex, permissions, None, None)
+    }
+
+    pub fn enroll_identity_with_binding(
+        &self,
+        vault_id_hex: &str,
+        public_key_hex: &str,
+        permissions: u32,
+        account_id: Option<&str>,
+        device_id_hex: Option<&str>,
+    ) -> Result<(), String> {
+        let vault_id_hex = vault_id_hex.trim().to_ascii_lowercase();
+        let public_key_hex = public_key_hex.trim().to_ascii_lowercase();
+        if hex::decode(&vault_id_hex).map(|b| b.len()) != Ok(32) {
+            return Err("vault_id_hex must be 32-byte hex".into());
+        }
+        if hex::decode(&public_key_hex).map(|b| b.len()) != Ok(32) {
+            return Err("public_key_hex must be 32-byte hex".into());
+        }
+        let (account_id, device_id_hex) = normalize_identity_binding(account_id, device_id_hex)?;
+        let _io_guard = self.io_lock.lock().map_err(|e| e.to_string())?;
+        let mut identities = self.enrolled_identities.lock().unwrap();
+        if let Some(existing) = identities.iter_mut().find(|identity| {
+            identity.vault_id_hex == vault_id_hex && identity.public_key_hex == public_key_hex
+        }) {
+            existing.permissions = permissions;
+            existing.revoked_at_utc = None;
+            // An omitted binding preserves an existing enrollment binding so
+            // legacy administrative updates cannot accidentally unbind a device.
+            if account_id.is_some() {
+                existing.account_id = account_id.clone();
+                existing.device_id_hex = device_id_hex.clone();
+            }
+        } else {
+            identities.push(EnrolledIdentity {
+                vault_id_hex: vault_id_hex.clone(),
+                public_key_hex: public_key_hex.clone(),
+                permissions,
+                enrolled_at_utc: Utc::now().timestamp().max(0) as u64,
+                revoked_at_utc: None,
+                account_id: account_id.clone(),
+                device_id_hex: device_id_hex.clone(),
+            });
+        }
+        drop(identities);
+        self.persist_enrolled_identities()?;
+        self.audit_event(
+            "identity_enrolled",
+            serde_json::json!({
+                "vault_id_hex": vault_id_hex,
+                "public_key_hex": public_key_hex,
+                "permissions": permissions,
+                "account_id": account_id,
+                "device_id_hex": device_id_hex,
+            }),
+        );
+        Ok(())
+    }
+
+    pub fn revoke_identity(&self, vault_id_hex: &str, public_key_hex: &str) -> bool {
+        let vault_id_hex = vault_id_hex.trim().to_ascii_lowercase();
+        let public_key_hex = public_key_hex.trim().to_ascii_lowercase();
+        let now = Utc::now().timestamp().max(0) as u64;
+        let _io_guard = self.io_lock.lock().unwrap();
+        let mut identities = self.enrolled_identities.lock().unwrap();
+        let mut changed = false;
+        for identity in identities.iter_mut().filter(|identity| {
+            identity.vault_id_hex == vault_id_hex && identity.public_key_hex == public_key_hex
+        }) {
+            if identity.revoked_at_utc.is_none() {
+                identity.revoked_at_utc = Some(now);
+                changed = true;
+            }
+        }
+        drop(identities);
+        if changed {
+            let _ = self.persist_enrolled_identities();
+            let revoked_tokens: Vec<String> = self
+                .session_keys
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, key)| hex::encode(key) == public_key_hex)
+                .map(|(token, _)| token.clone())
+                .collect();
+            if !revoked_tokens.is_empty() {
+                let mut sessions = self.sessions.lock().unwrap();
+                let mut keys = self.session_keys.lock().unwrap();
+                let mut vaults = self.session_vaults.lock().unwrap();
+                for token in &revoked_tokens {
+                    sessions.remove(token);
+                    keys.remove(token);
+                    vaults.remove(token);
+                }
+                drop(vaults);
+                drop(keys);
+                drop(sessions);
+                self.persist_sessions();
+            }
+            self.audit_event(
+                "identity_revoked",
+                serde_json::json!({
+                    "vault_id_hex": vault_id_hex,
+                    "public_key_hex": public_key_hex,
+                    "sessions_revoked": revoked_tokens.len(),
+                }),
+            );
+        }
+        changed
+    }
+
+    pub fn list_enrolled_identities(&self) -> Vec<EnrolledIdentity> {
+        self.enrolled_identities.lock().unwrap().clone()
+    }
+
+    fn session_store_path(&self) -> PathBuf {
+        self.data_dir.join("sessions.json")
+    }
+
+    fn load_sessions(&self) {
+        let Ok(bytes) = fs::read(self.session_store_path()) else {
+            return;
+        };
+        let Ok(records) = serde_json::from_slice::<Vec<PersistedSession>>(&bytes) else {
+            return;
+        };
+        let now = Utc::now().timestamp() as u64;
+        let mut sessions = self.sessions.lock().unwrap();
+        let mut keys = self.session_keys.lock().unwrap();
+        let mut vaults = self.session_vaults.lock().unwrap();
+        for record in records {
+            if record.expires_at_utc <= now || record.token.is_empty() {
+                continue;
+            }
+            let Ok(key_bytes) = hex::decode(&record.public_key_hex) else {
+                continue;
+            };
+            if key_bytes.len() != 32 || hex::decode(&record.vault_id_hex).map(|b| b.len()) != Ok(32)
+            {
+                continue;
+            }
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&key_bytes);
+            sessions.insert(record.token.clone(), record.expires_at_utc);
+            keys.insert(record.token.clone(), key);
+            vaults.insert(record.token, record.vault_id_hex);
         }
     }
 
-    pub fn issue_challenge(&self) -> (String, String, u64) {
+    fn persist_sessions(&self) {
+        let sessions = self.sessions.lock().unwrap();
+        let keys = self.session_keys.lock().unwrap();
+        let vaults = self.session_vaults.lock().unwrap();
+        let records: Vec<PersistedSession> = sessions
+            .iter()
+            .filter_map(|(token, expires_at_utc)| {
+                Some(PersistedSession {
+                    token: token.clone(),
+                    expires_at_utc: *expires_at_utc,
+                    public_key_hex: hex::encode(keys.get(token)?),
+                    vault_id_hex: vaults.get(token)?.clone(),
+                })
+            })
+            .collect();
+        let Ok(encoded) = serde_json::to_vec(&records) else {
+            return;
+        };
+        let tmp = self.data_dir.join("sessions.json.tmp");
+        if fs::write(&tmp, encoded).is_ok() {
+            let _ = fs::remove_file(self.session_store_path());
+            if fs::rename(tmp, self.session_store_path()).is_ok() {
+                #[cfg(unix)]
+                {
+                    let _ = fs::set_permissions(
+                        self.session_store_path(),
+                        fs::Permissions::from_mode(0o600),
+                    );
+                }
+            }
+        }
+    }
+
+    fn audit_event(&self, event: &str, fields: serde_json::Value) {
+        let path = self.data_dir.join("events.log");
+        let payload = serde_json::json!({
+            "event": event,
+            "operator_id": self.operator_id,
+            "timestamp_utc": Utc::now().to_rfc3339(),
+            "fields": fields,
+        });
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(file, "{}", payload);
+            #[cfg(unix)]
+            {
+                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
+    pub fn issue_challenge(
+        &self,
+        vault_id_hex: &str,
+        public_key_hex: &str,
+    ) -> Result<(String, String, u64), String> {
+        self.issue_challenge_with_binding(vault_id_hex, public_key_hex, None, None)
+    }
+
+    pub fn issue_challenge_with_binding(
+        &self,
+        vault_id_hex: &str,
+        public_key_hex: &str,
+        account_id: Option<&str>,
+        device_id_hex: Option<&str>,
+    ) -> Result<(String, String, u64), String> {
+        if hex::decode(vault_id_hex).map(|b| b.len()) != Ok(32) {
+            return Err("vault_id_hex must be 32-byte hex".into());
+        }
+        if hex::decode(public_key_hex).map(|b| b.len()) != Ok(32) {
+            return Err("public_key_hex must be 32-byte hex".into());
+        }
+        let (account_id, device_id_hex) = normalize_identity_binding(account_id, device_id_hex)?;
+        let vault_id_hex = vault_id_hex.to_ascii_lowercase();
+        let public_key_hex = public_key_hex.to_ascii_lowercase();
+        if Self::enrollment_required()
+            && !self.is_identity_enrolled_with_binding(
+                &vault_id_hex,
+                &public_key_hex,
+                account_id.as_deref(),
+                device_id_hex.as_deref(),
+            )
+        {
+            return Err("device identity is not enrolled for this vault".into());
+        }
         let mut id_bytes = [0u8; 16];
         let mut nonce_bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut id_bytes);
@@ -81,20 +515,39 @@ impl OperatorState {
 
         let mut lock = self.challenges.lock().unwrap();
         // TTL eviction: remove expired challenges
-        lock.retain(|_, (_, exp)| *exp > now);
+        lock.retain(|_, record| record.expires_at_utc > now);
         // Quota bound: if at capacity, evict oldest
         if lock.len() >= MAX_ACTIVE_CHALLENGES {
             if let Some(oldest_key) = lock
                 .iter()
-                .min_by_key(|(_, (_, exp))| *exp)
+                .min_by_key(|(_, record)| record.expires_at_utc)
                 .map(|(k, _)| k.clone())
             {
                 lock.remove(&oldest_key);
             }
         }
-        lock.insert(challenge_id.clone(), (nonce_hex.clone(), expires_at));
+        lock.insert(
+            challenge_id.clone(),
+            ChallengeRecord {
+                nonce_hex: nonce_hex.clone(),
+                expires_at_utc: expires_at,
+                vault_id_hex: vault_id_hex.clone(),
+                public_key_hex: public_key_hex.clone(),
+                account_id: account_id.clone(),
+                device_id_hex: device_id_hex.clone(),
+            },
+        );
+        self.audit_event(
+            "challenge_issued",
+            serde_json::json!({
+                "vault_id_hex": vault_id_hex,
+                "public_key_hex": public_key_hex,
+                "account_id": account_id,
+                "device_id_hex": device_id_hex,
+            }),
+        );
 
-        (challenge_id, nonce_hex, expires_at)
+        Ok((challenge_id, nonce_hex, expires_at))
     }
 
     pub fn verify_and_create_session(
@@ -104,12 +557,28 @@ impl OperatorState {
         signature_hex: &str,
     ) -> Option<String> {
         let now = Utc::now().timestamp() as u64;
-        let (nonce_hex, expires_at) = {
+        let challenge = {
             let mut lock = self.challenges.lock().unwrap();
             lock.remove(challenge_id)?
         };
 
-        if now > expires_at {
+        if now > challenge.expires_at_utc {
+            return None;
+        }
+        if !challenge
+            .public_key_hex
+            .eq_ignore_ascii_case(public_key_hex)
+        {
+            return None;
+        }
+        if Self::enrollment_required()
+            && !self.is_identity_enrolled_with_binding(
+                &challenge.vault_id_hex,
+                &challenge.public_key_hex,
+                challenge.account_id.as_deref(),
+                challenge.device_id_hex.as_deref(),
+            )
+        {
             return None;
         }
 
@@ -127,7 +596,7 @@ impl OperatorState {
         let mut sig_arr = [0u8; 64];
         sig_arr.copy_from_slice(&sig_bytes);
 
-        let nonce_bytes = hex::decode(nonce_hex).ok()?;
+        let nonce_bytes = hex::decode(challenge.nonce_hex).ok()?;
 
         // Verify signature with domain separation
         if ciphervault_crypto::signatures::verify_with_domain(
@@ -158,19 +627,75 @@ impl OperatorState {
             {
                 lock.remove(&oldest_token);
                 self.session_keys.lock().unwrap().remove(&oldest_token);
+                self.session_vaults.lock().unwrap().remove(&oldest_token);
             }
         }
         lock.insert(token.clone(), token_exp);
+        drop(lock);
 
         let mut key_lock = self.session_keys.lock().unwrap();
         key_lock.insert(token.clone(), pk_arr);
 
+        let mut vault_lock = self.session_vaults.lock().unwrap();
+        vault_lock.insert(token.clone(), challenge.vault_id_hex);
+
+        drop(vault_lock);
+        drop(key_lock);
+        self.persist_sessions();
+        self.audit_event(
+            "session_created",
+            serde_json::json!({
+                "vault_id_hex": self.get_session_vault_id(&token),
+                "public_key_hex": hex::encode(pk_arr),
+                "expires_at_utc": token_exp
+            }),
+        );
+
         Some(token)
+    }
+
+    pub fn revoke_session(&self, token: &str) -> bool {
+        let removed = self.sessions.lock().unwrap().remove(token).is_some();
+        self.session_keys.lock().unwrap().remove(token);
+        self.session_vaults.lock().unwrap().remove(token);
+        if removed {
+            self.persist_sessions();
+            self.audit_event(
+                "session_revoked",
+                serde_json::json!({
+                    "token_hash": hex::encode(compute_digest(token.as_bytes()))
+                }),
+            );
+        }
+        removed
     }
 
     pub fn get_session_public_key(&self, token: &str) -> Option<[u8; 32]> {
         let lock = self.session_keys.lock().unwrap();
         lock.get(token).copied()
+    }
+
+    pub fn get_session_vault_id(&self, token: &str) -> Option<String> {
+        self.session_vaults.lock().unwrap().get(token).cloned()
+    }
+
+    pub fn validate_session_for_vault(&self, token: &str, vault_id_hex: &str) -> bool {
+        if !self.validate_write_session(token) {
+            return false;
+        }
+        let Some(scope) = self.get_session_vault_id(token) else {
+            return false;
+        };
+        if !scope.eq_ignore_ascii_case(vault_id_hex) {
+            return false;
+        }
+        if Self::enrollment_required() {
+            let Some(public_key) = self.get_session_public_key(token) else {
+                return false;
+            };
+            return self.is_identity_enrolled(&scope, &hex::encode(public_key));
+        }
+        true
     }
 
     /// Validates a session token for read-only object operations.
@@ -645,6 +1170,9 @@ impl OperatorState {
         if let Some(existing) = lock.get(&commitment_hex) {
             return Ok(existing.clone());
         }
+        if lock.len() >= MAX_RELAYED_CHECKPOINTS {
+            return Err("Relayer checkpoint capacity reached".into());
+        }
 
         // If evidence contains confirmed on-chain data (block > 0 and non-zero tx_hash):
         // status is "SequencerConfirmed". Otherwise it is truthfully "QueuedForRelay".
@@ -707,16 +1235,38 @@ impl OperatorState {
     ) -> Result<usize, String> {
         peer.verify()
             .map_err(|e| format!("Invalid peer signature: {}", e))?;
+        let endpoint = peer.endpoint.trim();
+        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
+            || endpoint.contains('@')
+            || endpoint.bytes().any(|byte| byte < 0x20)
+        {
+            return Err("Peer endpoint must be an absolute HTTP(S) URL without credentials".into());
+        }
+        if let Ok(allowed) = std::env::var("CIPHERVAULT_TRUSTED_PEER_KEYS") {
+            let trusted = allowed
+                .split(',')
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .any(|value| value == peer.signing_pk_hex.to_ascii_lowercase());
+            if !trusted {
+                return Err("Peer signing key is not in the configured trust registry".into());
+            }
+        }
         let mut lock = self.peer_routing_table.lock().unwrap();
         let now = Utc::now().timestamp() as u64;
         lock.retain(|_, p| now.saturating_sub(p.timestamp_utc) < 86400);
+        if !lock.contains_key(&peer.operator_id) && lock.len() >= MAX_ACTIVE_PEERS {
+            return Err("Peer routing table capacity reached".into());
+        }
         lock.insert(peer.operator_id.clone(), peer);
         Ok(lock.len())
     }
 
     /// Retrieves all currently active and unexpired peer operators in the cluster.
     pub fn get_active_peers(&self) -> Vec<ciphervault_storage::PeerDescriptor> {
-        let lock = self.peer_routing_table.lock().unwrap();
+        let now = Utc::now().timestamp() as u64;
+        let mut lock = self.peer_routing_table.lock().unwrap();
+        lock.retain(|_, peer| now.saturating_sub(peer.timestamp_utc) < 86400);
         lock.values().cloned().collect()
     }
 
@@ -821,6 +1371,62 @@ mod tests {
         fs::write(root.join("leases"), b"block writes").unwrap();
         assert!(state.create_lease(&"a".repeat(64), 100, 90).is_err());
         drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn challenge_binds_device_key_and_vault_and_persists_session() {
+        let root = std::env::temp_dir().join(format!("cv-session-{}", rand::random::<u128>()));
+        let operator_key = ciphervault_crypto::generate_signing_key();
+        let state = OperatorState::new("test-auth".into(), root.clone(), operator_key);
+        let device_key = ciphervault_crypto::generate_signing_key();
+        let other_key = ciphervault_crypto::generate_signing_key();
+        let vault_id = "11".repeat(32);
+        let other_vault = "22".repeat(32);
+        let device_pk = hex::encode(device_key.verifying_key().as_bytes());
+
+        let (challenge_id, nonce_hex, _) = state
+            .issue_challenge(&vault_id, &device_pk)
+            .expect("valid challenge inputs");
+        let nonce = hex::decode(nonce_hex).unwrap();
+        let signature = ciphervault_crypto::signatures::sign_with_domain(
+            &device_key,
+            b"operator_challenge",
+            &nonce,
+        );
+        assert!(state
+            .verify_and_create_session(
+                &challenge_id,
+                &hex::encode(other_key.verifying_key().as_bytes()),
+                &hex::encode(signature)
+            )
+            .is_none());
+
+        let (challenge_id, nonce_hex, _) = state
+            .issue_challenge(&vault_id, &device_pk)
+            .expect("valid challenge inputs");
+        let nonce = hex::decode(nonce_hex).unwrap();
+        let signature = ciphervault_crypto::signatures::sign_with_domain(
+            &device_key,
+            b"operator_challenge",
+            &nonce,
+        );
+        let token = state
+            .verify_and_create_session(&challenge_id, &device_pk, &hex::encode(signature))
+            .expect("bound session");
+        assert!(state.validate_session_for_vault(&token, &vault_id));
+        assert!(!state.validate_session_for_vault(&token, &other_vault));
+
+        drop(state);
+        let restarted = OperatorState::new(
+            "test-auth".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        assert!(restarted.validate_session_for_vault(&token, &vault_id));
+        assert!(restarted.revoke_session(&token));
+        assert!(!restarted.validate_write_session(&token));
+        drop(restarted);
         fs::remove_dir_all(root).unwrap();
     }
 
