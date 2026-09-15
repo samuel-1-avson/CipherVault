@@ -81,10 +81,11 @@ same-origin browser clients; the service accepts that cookie or an
 
 The dashboard proxies the account service at `/api/account/*` so browser
 origins never need direct access to the control-plane container. The hosted
-explorer exposes passkey sign-in and passkey registration controls; it sends
-only the WebAuthn ceremony payloads and retains the resulting session in the
-HttpOnly cookie. Account IDs are kept in browser storage only as a convenience
-for selecting the account during passkey sign-in.
+explorer exposes passkey and authenticator sign-in controls; account management
+exposes passkey registration, TOTP enrollment, and revocation. It sends only
+the ceremony payloads and retains resulting sessions in the HttpOnly cookie.
+Account IDs are kept in browser storage only as a convenience for selecting the
+account during sign-in.
 
 The account service accepts browser WebAuthn registration and assertions for
 `fmt=none` credentials using Ed25519 (`-8`) or ES256 (`-7`). It verifies the
@@ -94,6 +95,16 @@ Registration binds the credential to the enrolled device session; revoking that
 device invalidates its WebAuthn sessions and configured operator bindings.
 Challenges are single-use and consumed atomically so an assertion cannot be
 replayed to mint a second session.
+
+Authenticator-app MFA is available as a separate RFC 6238 ceremony. The
+service exposes enrollment (`POST /v1/accounts/:account_id/totp/enrollment`,
+then `/enrollment/verify`), revocation (`/totp/revoke`), and account-session
+login (`POST /v1/totp/authentication/options` followed by `/verify`). Seeds are
+wrapped with AES-256-GCM using the 32-byte `CIPHERVAULT_ACCOUNT_TOTP_KEY`
+environment secret before they enter SQLite. Codes are six digits with a
+30-second period, a one-step clock-skew window, and a durable replay barrier.
+TOTP login produces an account session; a linked vault still requires an
+enrolled device-bound session for private vault operations.
 The account-key ceremony remains available for bootstrap and recovery. Packed
 attestation and enterprise attestation policy are still outside the supported
 `fmt=none` profile; the hosted UI intentionally asks the browser for
@@ -117,6 +128,9 @@ Operator enrollment records accept optional account and device identifiers. Stri
    web/app clients.
 4. Independent production provisioning of operator fingerprints and the
    account/device enrollment records.
+5. Provisioning `CIPHERVAULT_ACCOUNT_TOTP_KEY`, enabling the dashboard's
+   authenticator controls, and completing browser/CLI step-up authorization
+   tests before exposing hosted private vault routes.
 
 The hosted account API now includes invitation and membership routes
 (`POST/GET /v1/accounts/:account_id/invitations`,

@@ -15,7 +15,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ciphervault_crypto::signatures::verify_with_domain;
 use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 use rand::RngCore;
-use ring::signature::{self, UnparsedPublicKey};
+use ring::{
+    aead,
+    signature::{self, UnparsedPublicKey},
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,10 +29,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+mod totp;
+
 const SESSION_TTL_SECONDS: u64 = 30 * 60;
 const CHALLENGE_TTL_SECONDS: u64 = 5 * 60;
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const SESSION_COOKIE_NAME: &str = "ciphervault_account_session";
+const TOTP_KEY_ENV: &str = "CIPHERVAULT_ACCOUNT_TOTP_KEY";
+const TOTP_NONCE_BYTES: usize = 12;
 
 #[derive(Clone)]
 pub struct AccountState {
@@ -150,6 +157,16 @@ impl AccountState {
                  UNIQUE (credential_id_hex),
                  FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
              );
+             CREATE TABLE IF NOT EXISTS totp_credentials (
+                 account_id TEXT PRIMARY KEY,
+                 secret_ciphertext_b64 TEXT NOT NULL,
+                 enabled INTEGER NOT NULL DEFAULT 0,
+                 created_at_utc INTEGER NOT NULL,
+                 last_used_step INTEGER,
+                 last_used_at_utc INTEGER,
+                 revoked_at_utc INTEGER,
+                 FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+             );
              CREATE TABLE IF NOT EXISTS audit_events (
                  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                  account_id TEXT NOT NULL,
@@ -228,6 +245,8 @@ pub struct AccountView {
     pub devices: Vec<DeviceView>,
     pub vaults: Vec<VaultLinkView>,
     pub webauthn_credentials: Vec<WebAuthnCredentialView>,
+    pub totp_enabled: bool,
+    pub totp_last_used_at_utc: Option<u64>,
     pub memberships: Vec<MembershipView>,
 }
 
@@ -357,6 +376,44 @@ pub struct WebAuthnCredentialView {
     pub created_at_utc: u64,
     pub last_used_at_utc: Option<u64>,
     pub revoked_at_utc: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TotpEnrollmentView {
+    pub account_id: String,
+    pub secret_base32: String,
+    pub otpauth_uri: String,
+    pub issuer: String,
+    pub algorithm: String,
+    pub digits: u8,
+    pub period_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TotpCodeRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TotpAuthenticationOptionsRequest {
+    pub account_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TotpAuthenticationVerifyRequest {
+    pub account_id: String,
+    pub challenge_id: String,
+    pub code: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TotpAuthenticationOptionsView {
+    pub account_id: String,
+    pub challenge_id: String,
+    pub expires_at_utc: u64,
+    pub digits: u8,
+    pub period_seconds: u64,
+    pub ceremony: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -502,6 +559,63 @@ fn derive_account_id(public_key_hex: &str) -> Result<String, AccountServiceError
 
 fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// The TOTP seed is an authentication secret and must not be persisted in
+/// plaintext. Production supplies a 32-byte hex wrapping key through the
+/// account service environment; the database stores only an AEAD envelope.
+fn totp_wrapping_key() -> Result<[u8; 32], AccountServiceError> {
+    let raw = std::env::var(TOTP_KEY_ENV).map_err(|_| {
+        AccountServiceError::Invalid(format!(
+            "{TOTP_KEY_ENV} must be configured before enabling authenticator MFA"
+        ))
+    })?;
+    let bytes = hex::decode(raw.trim())
+        .map_err(|_| AccountServiceError::Invalid(format!("{TOTP_KEY_ENV} must be 32-byte hex")))?;
+    bytes
+        .try_into()
+        .map_err(|_| AccountServiceError::Invalid(format!("{TOTP_KEY_ENV} must be 32-byte hex")))
+}
+
+fn encrypt_totp_secret(secret: &[u8]) -> Result<String, AccountServiceError> {
+    let key = aead::UnboundKey::new(&aead::AES_256_GCM, &totp_wrapping_key()?)
+        .map_err(|_| AccountServiceError::Invalid("unable to initialize TOTP key".into()))?;
+    let key = aead::LessSafeKey::new(key);
+    let mut nonce = [0u8; TOTP_NONCE_BYTES];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let mut payload = secret.to_vec();
+    key.seal_in_place_append_tag(
+        aead::Nonce::assume_unique_for_key(nonce),
+        aead::Aad::empty(),
+        &mut payload,
+    )
+    .map_err(|_| AccountServiceError::Invalid("unable to encrypt TOTP secret".into()))?;
+    let mut envelope = nonce.to_vec();
+    envelope.extend_from_slice(&payload);
+    Ok(b64_encode(&envelope))
+}
+
+fn decrypt_totp_secret(value: &str) -> Result<Vec<u8>, AccountServiceError> {
+    let envelope = b64_decode(value, "TOTP secret envelope")?;
+    if envelope.len() <= TOTP_NONCE_BYTES {
+        return Err(AccountServiceError::Invalid(
+            "TOTP secret envelope is invalid".into(),
+        ));
+    }
+    let mut nonce = [0u8; TOTP_NONCE_BYTES];
+    nonce.copy_from_slice(&envelope[..TOTP_NONCE_BYTES]);
+    let key = aead::UnboundKey::new(&aead::AES_256_GCM, &totp_wrapping_key()?)
+        .map_err(|_| AccountServiceError::Invalid("unable to initialize TOTP key".into()))?;
+    let key = aead::LessSafeKey::new(key);
+    let mut payload = envelope[TOTP_NONCE_BYTES..].to_vec();
+    let plaintext = key
+        .open_in_place(
+            aead::Nonce::assume_unique_for_key(nonce),
+            aead::Aad::empty(),
+            &mut payload,
+        )
+        .map_err(|_| AccountServiceError::Invalid("TOTP secret could not be decrypted".into()))?;
+    Ok(plaintext.to_vec())
 }
 
 fn audit_event(
@@ -1024,6 +1138,20 @@ fn account_view(db: &Connection, account_id: &str) -> Result<Option<AccountView>
             revoked_at_utc: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
         });
     }
+    let (totp_enabled, totp_last_used_at_utc) = db
+        .query_row(
+            "SELECT enabled, last_used_at_utc FROM totp_credentials
+             WHERE account_id = ?1 AND revoked_at_utc IS NULL",
+            params![account_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? != 0,
+                    row.get::<_, Option<i64>>(1)?.map(|value| value as u64),
+                ))
+            },
+        )
+        .optional()?
+        .unwrap_or((false, None));
     let mut memberships = Vec::new();
     let mut membership_statement = db.prepare(
         "SELECT account_id, member_account_id, role, status, invited_at_utc, accepted_at_utc, revoked_at_utc
@@ -1049,6 +1177,8 @@ fn account_view(db: &Connection, account_id: &str) -> Result<Option<AccountView>
         devices,
         vaults,
         webauthn_credentials,
+        totp_enabled,
+        totp_last_used_at_utc,
         memberships,
     }))
 }
@@ -1136,6 +1266,9 @@ pub async fn get_capabilities() -> Json<serde_json::Value> {
         "account_signed_device_enrollment": true,
         "webauthn": true,
         "webauthn_status": "ed25519_es256_fmt_none",
+        "totp": true,
+        "totp_status": "rfc6238_sha1_6_digit_30_second",
+        "totp_configured": totp_wrapping_key().is_ok(),
         "managed_session_cookie": true,
         "session_cookie_name": SESSION_COOKIE_NAME,
         "invitations": true,
@@ -2991,6 +3124,435 @@ pub async fn post_webauthn_authentication_verify(
     response
 }
 
+fn totp_not_configured() -> Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "TOTP_NOT_CONFIGURED",
+        format!("{TOTP_KEY_ENV} is not configured on the account service"),
+    )
+}
+
+fn account_session_for(
+    state: &AccountState,
+    headers: &HeaderMap,
+    account_id: &str,
+) -> Result<SessionView, Response> {
+    let session = authenticated_session(state, headers)?;
+    if session.account_id != account_id {
+        return Err(error_response(
+            StatusCode::FORBIDDEN,
+            "ACCOUNT_SCOPE_MISMATCH",
+            "Session is outside this account",
+        ));
+    }
+    Ok(session)
+}
+
+/// Start TOTP enrollment for an already authenticated account session. The
+/// secret is returned once so the user can scan it into an authenticator app;
+/// the database stores only an encrypted envelope and remains disabled until
+/// the first code is verified.
+pub async fn post_totp_enrollment(
+    State(state): State<AccountState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Response {
+    let account_id = match normalize_account_id(&account_id) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    if let Err(response) = account_session_for(&state, &headers, &account_id) {
+        return response;
+    }
+    if std::env::var(TOTP_KEY_ENV).is_err() {
+        return totp_not_configured();
+    }
+    let secret = totp::generate_secret();
+    let secret_base32 = totp::base32_encode(&secret);
+    let ciphertext = match encrypt_totp_secret(&secret) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    let now = now_utc();
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let active = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM totp_credentials
+             WHERE account_id = ?1 AND enabled != 0 AND revoked_at_utc IS NULL)",
+            params![account_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if active {
+        return error_response(
+            StatusCode::CONFLICT,
+            "TOTP_ALREADY_ENABLED",
+            "Revoke the existing authenticator before enrolling a replacement",
+        );
+    }
+    if let Err(error) = db.execute(
+        "INSERT INTO totp_credentials(account_id, secret_ciphertext_b64, enabled, created_at_utc, revoked_at_utc)
+         VALUES(?1, ?2, 0, ?3, NULL)
+         ON CONFLICT(account_id) DO UPDATE SET
+           secret_ciphertext_b64 = excluded.secret_ciphertext_b64,
+           enabled = 0,
+           created_at_utc = excluded.created_at_utc,
+           last_used_step = NULL,
+           last_used_at_utc = NULL,
+           revoked_at_utc = NULL",
+        params![account_id, ciphertext, now],
+    ) {
+        return service_error(error.into());
+    }
+    if let Err(error) = audit_event(
+        &db,
+        &account_id,
+        "totp_enrollment_started",
+        serde_json::json!({"algorithm": "SHA1", "digits": totp::DIGITS, "period_seconds": totp::STEP_SECONDS}),
+    ) {
+        return service_error(error.into());
+    }
+    let uri = format!(
+        "otpauth://totp/CipherVault:{}?secret={}&issuer=CipherVault&algorithm=SHA1&digits={}&period={}",
+        account_id,
+        secret_base32,
+        totp::DIGITS,
+        totp::STEP_SECONDS,
+    );
+    Json(TotpEnrollmentView {
+        account_id,
+        secret_base32,
+        otpauth_uri: uri,
+        issuer: "CipherVault".into(),
+        algorithm: "SHA1".into(),
+        digits: totp::DIGITS as u8,
+        period_seconds: totp::STEP_SECONDS,
+    })
+    .into_response()
+}
+
+pub async fn post_totp_enrollment_verify(
+    State(state): State<AccountState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+    Json(request): Json<TotpCodeRequest>,
+) -> Response {
+    let account_id = match normalize_account_id(&account_id) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    if let Err(response) = account_session_for(&state, &headers, &account_id) {
+        return response;
+    }
+    if std::env::var(TOTP_KEY_ENV).is_err() {
+        return totp_not_configured();
+    }
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let row = match db
+        .query_row(
+            "SELECT secret_ciphertext_b64, enabled, revoked_at_utc, last_used_step
+             FROM totp_credentials WHERE account_id = ?1",
+            params![account_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? != 0,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?.map(|value| value as u64),
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(value) => value,
+        Err(error) => return service_error(error.into()),
+    };
+    let Some((ciphertext, enabled, revoked_at, last_used_step)) = row else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "TOTP_NOT_ENROLLED",
+            "Begin TOTP enrollment first",
+        );
+    };
+    if enabled || revoked_at.is_some() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "TOTP_ENROLLMENT_INVALID",
+            "No pending TOTP enrollment is available",
+        );
+    }
+    let secret = match decrypt_totp_secret(&ciphertext) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    let step = match totp::verify_code(&secret, &request.code, now_utc(), last_used_step) {
+        Ok(step) => step,
+        Err(error) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "TOTP_CODE_INVALID",
+                error.to_string(),
+            )
+        }
+    };
+    let now = now_utc();
+    let changed = match db.execute(
+        "UPDATE totp_credentials SET enabled = 1, last_used_step = ?2, last_used_at_utc = ?3
+         WHERE account_id = ?1 AND enabled = 0 AND revoked_at_utc IS NULL",
+        params![account_id, step as i64, now],
+    ) {
+        Ok(changed) => changed,
+        Err(error) => return service_error(error.into()),
+    };
+    if changed != 1 {
+        return error_response(
+            StatusCode::CONFLICT,
+            "TOTP_ENROLLMENT_INVALID",
+            "The pending TOTP enrollment was already confirmed",
+        );
+    }
+    if let Err(error) = audit_event(&db, &account_id, "totp_enabled", serde_json::json!({})) {
+        return service_error(error.into());
+    }
+    Json(serde_json::json!({"status": "enabled", "account_id": account_id})).into_response()
+}
+
+pub async fn post_totp_revoke(
+    State(state): State<AccountState>,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Response {
+    let account_id = match normalize_account_id(&account_id) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    if let Err(response) = account_session_for(&state, &headers, &account_id) {
+        return response;
+    }
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let now = now_utc();
+    let changed = match db.execute(
+        "UPDATE totp_credentials SET enabled = 0, revoked_at_utc = ?2 WHERE account_id = ?1 AND revoked_at_utc IS NULL",
+        params![account_id, now],
+    ) {
+        Ok(changed) => changed,
+        Err(error) => return service_error(error.into()),
+    };
+    if changed == 0 {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "TOTP_NOT_ENROLLED",
+            "No active authenticator is enrolled",
+        );
+    }
+    if let Err(error) = audit_event(&db, &account_id, "totp_revoked", serde_json::json!({})) {
+        return service_error(error.into());
+    }
+    Json(serde_json::json!({"status": "revoked", "account_id": account_id})).into_response()
+}
+
+pub async fn post_totp_authentication_options(
+    State(state): State<AccountState>,
+    Json(request): Json<TotpAuthenticationOptionsRequest>,
+) -> Response {
+    let account_id = match normalize_account_id(&request.account_id) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    if std::env::var(TOTP_KEY_ENV).is_err() {
+        return totp_not_configured();
+    }
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let enabled = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM totp_credentials
+             WHERE account_id = ?1 AND enabled != 0 AND revoked_at_utc IS NULL)",
+            params![account_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if !enabled {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "TOTP_NOT_ENROLLED",
+            "No active authenticator is enrolled",
+        );
+    }
+    let challenge_id = random_hex(16);
+    let nonce_hex = random_hex(32);
+    let expires_at = now_utc() + CHALLENGE_TTL_SECONDS;
+    if let Err(error) = db.execute(
+        "INSERT INTO challenges(challenge_id, kind, account_id, nonce_hex, expires_at_utc)
+         VALUES(?1, 'totp_login', ?2, ?3, ?4)",
+        params![challenge_id, account_id, nonce_hex, expires_at],
+    ) {
+        return service_error(error.into());
+    }
+    Json(TotpAuthenticationOptionsView {
+        account_id,
+        challenge_id,
+        expires_at_utc: expires_at,
+        digits: totp::DIGITS as u8,
+        period_seconds: totp::STEP_SECONDS,
+        ceremony: "totp.get".into(),
+    })
+    .into_response()
+}
+
+pub async fn post_totp_authentication_verify(
+    State(state): State<AccountState>,
+    Json(request): Json<TotpAuthenticationVerifyRequest>,
+) -> Response {
+    let account_id = match normalize_account_id(&request.account_id) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    if std::env::var(TOTP_KEY_ENV).is_err() {
+        return totp_not_configured();
+    }
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let now = now_utc();
+    let challenge = match db
+        .query_row(
+            "SELECT nonce_hex, expires_at_utc, used_at_utc FROM challenges
+             WHERE challenge_id = ?1 AND kind = 'totp_login' AND account_id = ?2",
+            params![request.challenge_id, account_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(value) => value,
+        Err(error) => return service_error(error.into()),
+    };
+    let Some((_, expires_at, used_at)) = challenge else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "CHALLENGE_INVALID",
+            "TOTP challenge is unknown",
+        );
+    };
+    if expires_at <= now || used_at.is_some() {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "CHALLENGE_EXPIRED",
+            "TOTP challenge is expired or already used",
+        );
+    }
+    let row = match db
+        .query_row(
+            "SELECT secret_ciphertext_b64, last_used_step FROM totp_credentials
+             WHERE account_id = ?1 AND enabled != 0 AND revoked_at_utc IS NULL",
+            params![account_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?.map(|value| value as u64),
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(value) => value,
+        Err(error) => return service_error(error.into()),
+    };
+    let Some((ciphertext, last_used_step)) = row else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "TOTP_NOT_ENROLLED",
+            "No active authenticator is enrolled",
+        );
+    };
+    let secret = match decrypt_totp_secret(&ciphertext) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    let step = match totp::verify_code(&secret, &request.code, now, last_used_step) {
+        Ok(step) => step,
+        Err(error) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "TOTP_CODE_INVALID",
+                error.to_string(),
+            )
+        }
+    };
+    let changed = match db.execute(
+        "UPDATE totp_credentials SET last_used_step = ?2, last_used_at_utc = ?3
+         WHERE account_id = ?1 AND enabled != 0 AND revoked_at_utc IS NULL
+           AND (last_used_step IS NULL OR last_used_step < ?2)",
+        params![account_id, step as i64, now],
+    ) {
+        Ok(changed) => changed,
+        Err(error) => return service_error(error.into()),
+    };
+    if changed != 1 {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "TOTP_REPLAY",
+            "TOTP code was already used",
+        );
+    }
+    let challenge_consumed = match db.execute(
+        "UPDATE challenges SET used_at_utc = ?2 WHERE challenge_id = ?1 AND used_at_utc IS NULL",
+        params![request.challenge_id, now],
+    ) {
+        Ok(changed) => changed == 1,
+        Err(error) => return service_error(error.into()),
+    };
+    if !challenge_consumed {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "CHALLENGE_REPLAY",
+            "TOTP challenge was already consumed",
+        );
+    }
+    let token = random_hex(32);
+    let expires_at = now + SESSION_TTL_SECONDS;
+    if let Err(error) = db.execute(
+        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, issued_at_utc, expires_at_utc)
+         VALUES(?1, ?2, NULL, NULL, ?3, ?4)",
+        params![hash_token(&token), account_id, now, expires_at],
+    ) {
+        return service_error(error.into());
+    }
+    if let Err(error) = audit_event(&db, &account_id, "totp_login", serde_json::json!({})) {
+        return service_error(error.into());
+    }
+    let mut response = Json(SessionResponse {
+        token: token.clone(),
+        session: SessionView {
+            account_id,
+            device_id_hex: None,
+            issued_at_utc: now,
+            expires_at_utc: expires_at,
+        },
+    })
+    .into_response();
+    attach_session_cookie(&mut response, &token);
+    response
+}
+
 pub fn create_router(state: AccountState) -> axum::Router {
     use axum::routing::{get, post};
     let cors = std::env::var("CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS")
@@ -3056,6 +3618,26 @@ pub fn create_router(state: AccountState) -> axum::Router {
         .route(
             "/v1/webauthn/authentication/verify",
             post(post_webauthn_authentication_verify),
+        )
+        .route(
+            "/v1/totp/authentication/options",
+            post(post_totp_authentication_options),
+        )
+        .route(
+            "/v1/totp/authentication/verify",
+            post(post_totp_authentication_verify),
+        )
+        .route(
+            "/v1/accounts/:account_id/totp/enrollment",
+            post(post_totp_enrollment),
+        )
+        .route(
+            "/v1/accounts/:account_id/totp/enrollment/verify",
+            post(post_totp_enrollment_verify),
+        )
+        .route(
+            "/v1/accounts/:account_id/totp/revoke",
+            post(post_totp_revoke),
         )
         .route("/v1/accounts/:account_id/vaults", post(post_vault_link))
         .route(
@@ -3579,5 +4161,129 @@ mod tests {
             .unwrap();
         assert_eq!(webauthn_after.status(), StatusCode::UNAUTHORIZED);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn totp_enrollment_login_and_replay_protection() {
+        let previous_key = std::env::var(TOTP_KEY_ENV).ok();
+        std::env::set_var(TOTP_KEY_ENV, "11".repeat(32));
+        let root = std::env::temp_dir().join(format!("cv-account-totp-{}", random_hex(8)));
+        let state = AccountState::open(&root).expect("state");
+        let app = create_router(state.clone());
+        let account_key = generate_signing_key();
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "display_name": "TOTP test",
+                            "account_public_key_hex": hex::encode(account_key.verifying_key().as_bytes()),
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let account = json(created).await;
+        let account_id = account["account_id"].as_str().unwrap().to_string();
+        let session_token = random_hex(32);
+        {
+            let db = state.connection().expect("db");
+            let now = now_utc();
+            db.execute(
+                "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, issued_at_utc, expires_at_utc)
+                 VALUES(?1, ?2, NULL, NULL, ?3, ?4)",
+                params![hash_token(&session_token), account_id, now, now + SESSION_TTL_SECONDS],
+            )
+            .unwrap();
+        }
+        let bearer = format!("Bearer {session_token}");
+        let enrollment = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/totp/enrollment").as_str())
+                    .header("authorization", &bearer)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enrollment.status(), StatusCode::OK);
+        let enrollment_json = json(enrollment).await;
+        let secret =
+            totp::base32_decode(enrollment_json["secret_base32"].as_str().unwrap()).unwrap();
+        let current_step = now_utc() / totp::STEP_SECONDS;
+        let code = totp::code_for_step(&secret, current_step.saturating_sub(1)).unwrap();
+        let confirmed = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/totp/enrollment/verify").as_str())
+                    .header("authorization", &bearer)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({"code": code}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirmed.status(), StatusCode::OK);
+        let options = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/totp/authentication/options")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"account_id": account_id}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(options.status(), StatusCode::OK);
+        let options_json = json(options).await;
+        let next_code = totp::code_for_step(&secret, current_step).unwrap();
+        let verified = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/totp/authentication/verify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "account_id": account_id,
+                            "challenge_id": options_json["challenge_id"],
+                            "code": next_code,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(verified.status(), StatusCode::OK);
+        let replay = app
+            .oneshot(
+                Request::post("/v1/totp/authentication/verify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "account_id": account_id,
+                            "challenge_id": options_json["challenge_id"],
+                            "code": next_code,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+        let _ = fs::remove_dir_all(root);
+        if let Some(value) = previous_key {
+            std::env::set_var(TOTP_KEY_ENV, value);
+        } else {
+            std::env::remove_var(TOTP_KEY_ENV);
+        }
     }
 }

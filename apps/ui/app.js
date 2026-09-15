@@ -11,6 +11,7 @@ const state = {
   operatorJobs: [],
   account: null,
   accountService: null,
+  totpEnrollment: null,
   snapshots: [],
   context: null,
   // Treat an unrecognized server as public until it explicitly identifies a
@@ -207,15 +208,21 @@ function renderAccountStatus(account) {
   const dot = document.getElementById('account-pulse-dot');
   const loginButton = document.getElementById('btn-account-login');
   const passkeyButton = document.getElementById('btn-account-passkey');
+  const totpButton = document.getElementById('btn-account-totp');
   const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
   const manageButton = document.getElementById('btn-account-manage');
   const logoutButton = document.getElementById('btn-account-logout');
+  const totpAvailable = state.accountService
+    && state.accountService.configured === true
+    && state.accountService.capabilities
+    && state.accountService.capabilities.totp_configured === true;
   if (!text) return;
   if (!account || account.configured !== true) {
     text.textContent = 'Account: Local-only';
     if (dot) dot.style.background = 'var(--text-muted)';
     if (loginButton) loginButton.hidden = true;
     if (passkeyButton) passkeyButton.hidden = state.accountService == null;
+    if (totpButton) totpButton.hidden = !totpAvailable;
     if (registerPasskeyButton) registerPasskeyButton.hidden = true;
     if (manageButton) manageButton.hidden = true;
     if (logoutButton) logoutButton.hidden = true;
@@ -240,6 +247,7 @@ function renderAccountStatus(account) {
     loginButton.disabled = !account.required;
   }
   if (passkeyButton) passkeyButton.hidden = !hosted || authenticated;
+  if (totpButton) totpButton.hidden = !totpAvailable || authenticated || account.totp_enabled !== true;
   if (registerPasskeyButton) registerPasskeyButton.hidden = !hosted || !authenticated;
   if (manageButton) manageButton.hidden = !hosted || !authenticated;
   if (logoutButton) logoutButton.hidden = !authenticated;
@@ -248,6 +256,7 @@ function renderAccountStatus(account) {
 function initAccountControls() {
   const loginButton = document.getElementById('btn-account-login');
   const passkeyButton = document.getElementById('btn-account-passkey');
+  const totpButton = document.getElementById('btn-account-totp');
   const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
   const manageButton = document.getElementById('btn-account-manage');
   const logoutButton = document.getElementById('btn-account-logout');
@@ -270,6 +279,9 @@ function initAccountControls() {
   }
   if (passkeyButton) {
     passkeyButton.addEventListener('click', () => openHostedPasskeyModal('authenticate'));
+  }
+  if (totpButton) {
+    totpButton.addEventListener('click', openHostedTotpModal);
   }
   if (registerPasskeyButton) {
     registerPasskeyButton.addEventListener('click', async () => {
@@ -317,6 +329,51 @@ function initAccountControls() {
   passkeyModal?.addEventListener('click', event => {
     if (event.target === passkeyModal) closeHostedPasskeyModal();
   });
+  const totpModal = document.getElementById('modal-account-totp');
+  const totpSubmit = document.getElementById('btn-submit-account-totp');
+  const closeTotpModal = () => {
+    if (totpModal) closeModal(totpModal);
+  };
+  document.getElementById('btn-close-modal-account-totp')?.addEventListener('click', closeTotpModal);
+  document.getElementById('btn-cancel-modal-account-totp')?.addEventListener('click', closeTotpModal);
+  totpModal?.addEventListener('click', event => {
+    if (event.target === totpModal) closeTotpModal();
+  });
+  totpSubmit?.addEventListener('click', async () => {
+    const accountId = document.getElementById('input-totp-account-id')?.value.trim();
+    const code = document.getElementById('input-totp-code')?.value.trim();
+    const help = document.getElementById('totp-auth-help');
+    if (!accountId || !code) {
+      if (help) help.textContent = 'Enter your account ID and six-digit authenticator code.';
+      return;
+    }
+    totpSubmit.disabled = true;
+    try {
+      const optionsResponse = await fetch('/api/account/totp/authentication/options', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId }),
+      });
+      const options = await optionsResponse.json().catch(() => ({}));
+      if (!optionsResponse.ok) throw new Error(options.error || `Authenticator challenge failed (${optionsResponse.status})`);
+      const verifyResponse = await fetch('/api/account/totp/authentication/verify', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId, challenge_id: options.challenge_id, code }),
+      });
+      const result = await verifyResponse.json().catch(() => ({}));
+      if (!verifyResponse.ok) throw new Error(result.error || `Authenticator sign-in failed (${verifyResponse.status})`);
+      try { window.localStorage.setItem('ciphervault_account_id', accountId); } catch (_) { /* optional */ }
+      closeTotpModal();
+      showToast('Hosted account signed in with authenticator code.');
+      await fetchAllData();
+    } catch (error) {
+      if (help) help.textContent = error instanceof Error ? error.message : 'Authenticator sign-in failed.';
+    } finally {
+      totpSubmit.disabled = false;
+    }
+  });
+  document.getElementById('input-totp-code')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') totpSubmit?.click();
+  });
   const accountManageModal = document.getElementById('modal-account-manage');
   const accountManageClose = document.getElementById('btn-close-modal-account-manage');
   const accountManageCancel = document.getElementById('btn-cancel-modal-account-manage');
@@ -327,6 +384,19 @@ function initAccountControls() {
   });
   document.getElementById('btn-submit-account-invite')?.addEventListener('click', submitAccountInvitation);
   document.getElementById('btn-generate-recovery-codes')?.addEventListener('click', generateHostedRecoveryCodes);
+  document.getElementById('btn-start-totp-enrollment')?.addEventListener('click', startTotpEnrollment);
+  document.getElementById('btn-confirm-totp-enrollment')?.addEventListener('click', confirmTotpEnrollment);
+  document.getElementById('btn-revoke-totp')?.addEventListener('click', revokeTotpEnrollment);
+  document.getElementById('btn-copy-totp-uri')?.addEventListener('click', async () => {
+    const uri = state.totpEnrollment && state.totpEnrollment.otpauth_uri;
+    if (!uri) return;
+    try {
+      await navigator.clipboard.writeText(uri);
+      showToast('Authenticator setup URI copied.');
+    } catch (_) {
+      showToast('Copy failed; select the setup URI manually.');
+    }
+  });
   if (logoutButton) {
     logoutButton.addEventListener('click', async () => {
       logoutButton.disabled = true;
@@ -377,6 +447,14 @@ async function refreshAccountManagement(accountId) {
     const invitations = invitationResponse.ok ? await invitationResponse.json() : { invitations: [] };
     state.account = { ...state.account, ...account, authenticated: true, session: state.account.session };
     renderAccountStatus(state.account);
+    const totpStatus = document.getElementById('account-totp-status');
+    const totpStart = document.getElementById('btn-start-totp-enrollment');
+    const totpRevoke = document.getElementById('btn-revoke-totp');
+    if (totpStatus) totpStatus.textContent = account.totp_enabled === true
+      ? 'Enabled · codes are required for authenticator sign-in'
+      : 'Not enrolled';
+    if (totpStart) totpStart.hidden = account.totp_enabled === true;
+    if (totpRevoke) totpRevoke.hidden = account.totp_enabled !== true;
     if (list) {
       const lines = [];
       (memberships.memberships || account.memberships || []).forEach(member => {
@@ -486,6 +564,93 @@ function closeHostedPasskeyModal() {
   if (!modal) return;
   closeModal(modal);
   modal.hidden = true;
+}
+
+function openHostedTotpModal() {
+  const modal = document.getElementById('modal-account-totp');
+  const input = document.getElementById('input-totp-account-id');
+  const code = document.getElementById('input-totp-code');
+  const help = document.getElementById('totp-auth-help');
+  if (!modal || !input) return;
+  input.value = accountIdFromStorage();
+  if (code) code.value = '';
+  if (help) help.textContent = 'Codes change every 30 seconds.';
+  modal.hidden = false;
+  openModal(modal, document.activeElement);
+  (input.value ? code : input).focus();
+}
+
+async function startTotpEnrollment() {
+  const accountId = state.account && state.account.account_id;
+  const panel = document.getElementById('totp-enrollment-panel');
+  const uri = document.getElementById('totp-enrollment-uri');
+  const secret = document.getElementById('totp-enrollment-secret');
+  const code = document.getElementById('input-enrollment-totp-code');
+  if (!accountId || !panel || !secret) return;
+  const button = document.getElementById('btn-start-totp-enrollment');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/totp/enrollment`, {
+      method: 'POST', credentials: 'same-origin',
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Authenticator enrollment failed (${response.status})`);
+    state.totpEnrollment = result;
+    if (uri) uri.textContent = result.otpauth_uri || '';
+    secret.textContent = result.secret_base32 || result.otpauth_uri || '';
+    panel.hidden = false;
+    if (code) { code.value = ''; code.focus(); }
+    showToast('Authenticator secret generated. Confirm it with a current code.');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Authenticator enrollment failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function confirmTotpEnrollment() {
+  const accountId = state.account && state.account.account_id;
+  const code = document.getElementById('input-enrollment-totp-code')?.value.trim();
+  if (!accountId || !code) return;
+  const button = document.getElementById('btn-confirm-totp-enrollment');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/totp/enrollment/verify`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Authenticator confirmation failed (${response.status})`);
+    state.totpEnrollment = null;
+    const panel = document.getElementById('totp-enrollment-panel');
+    if (panel) panel.hidden = true;
+    showToast('Authenticator app enabled for this account.');
+    await refreshAccountManagement(accountId);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Authenticator confirmation failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function revokeTotpEnrollment() {
+  const accountId = state.account && state.account.account_id;
+  if (!accountId || !window.confirm('Revoke the enrolled authenticator app?')) return;
+  const button = document.getElementById('btn-revoke-totp');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/totp/revoke`, {
+      method: 'POST', credentials: 'same-origin',
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Authenticator revoke failed (${response.status})`);
+    showToast('Authenticator app revoked.');
+    await refreshAccountManagement(accountId);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Authenticator revoke failed');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function runHostedPasskeyAuthentication(accountId) {

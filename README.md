@@ -310,6 +310,11 @@ ceremony and provides passkey sign-in/registration controls. The account API
 also provides durable invitations, membership roles, and one-time recovery
 codes; email delivery, role-aware vault authorization, and production
 provisioning still require deployment work.
+Authenticator-app MFA is also supported by the account service using RFC 6238
+six-digit codes. TOTP seeds are encrypted at rest with the configured account
+wrapping key, and replayed codes are rejected. Passkeys or hardware tokens
+remain the preferred phishing-resistant factors; TOTP authenticates an account
+session and never replaces the vault encryption key.
 
 ### 8. Interactive Terminal User Interface (TUI)
 

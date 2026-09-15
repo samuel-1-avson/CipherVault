@@ -89,6 +89,7 @@
         <div class="account-actions" aria-label="Account controls">
           <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key">Device sign in</button>
           <button class="btn-action secondary small" id="btn-account-passkey" type="button" title="Sign in to a hosted CipherVault account with a passkey" hidden>Passkey sign in</button>
+          <button class="btn-action secondary small" id="btn-account-totp" type="button" title="Sign in with an authenticator app code" hidden>Authenticator sign in</button>
           <button class="btn-action secondary small" id="btn-account-register-passkey" type="button" title="Register a passkey on this device" hidden>Register passkey</button>
           <button class="btn-action secondary small" id="btn-account-manage" type="button" title="Manage hosted account membership and recovery" hidden>Manage account</button>
           <button class="btn-action secondary small" id="btn-account-logout" type="button" title="Revoke the current local account session" hidden>Sign out</button>
@@ -1233,6 +1234,34 @@
     </div>
   </div>
 
+  <!-- Modal: Hosted account authenticator code -->
+  <div class="modal-backdrop" id="modal-account-totp" role="dialog" aria-modal="true" aria-labelledby="modal-account-totp-title" hidden>
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3 id="modal-account-totp-title" class="modal-title">Authenticator app sign-in</h3>
+        <button class="btn-modal-close" id="btn-close-modal-account-totp" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+          Enter the six-digit code from your enrolled authenticator app. This creates a short-lived account session; it never exposes your vault key.
+        </p>
+        <div class="form-group">
+          <label for="input-totp-account-id" class="form-label">Account ID</label>
+          <input type="text" id="input-totp-account-id" class="form-input" placeholder="cvacct_…" autocomplete="username" spellcheck="false">
+        </div>
+        <div class="form-group">
+          <label for="input-totp-code" class="form-label">Authenticator code</label>
+          <input type="text" id="input-totp-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="123456">
+        </div>
+        <p id="totp-auth-help" class="form-help" aria-live="polite">Codes change every 30 seconds.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-account-totp">Cancel</button>
+        <button class="btn-action primary" id="btn-submit-account-totp">Sign in</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Hosted account management -->
   <div class="modal-backdrop" id="modal-account-manage" role="dialog" aria-modal="true" aria-labelledby="modal-account-manage-title" hidden>
     <div class="modal-card" style="max-width: 680px;">
@@ -1261,6 +1290,24 @@
           <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
           <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; margin-top: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; color: var(--accent-amber);" hidden></pre>
           <p class="form-help">Codes are displayed once. Store them offline; generating a new set invalidates unused codes.</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Authenticator app</label>
+          <div id="account-totp-status" class="form-help" aria-live="polite">Not enrolled</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+            <button class="btn-action secondary small" id="btn-start-totp-enrollment" type="button">Set up authenticator</button>
+            <button class="btn-action secondary small" id="btn-revoke-totp" type="button" hidden>Revoke authenticator</button>
+          </div>
+          <div id="totp-enrollment-panel" hidden style="margin-top:10px;">
+            <p class="form-help">Scan the setup URI or enter the secret manually in your authenticator app. The secret is shown only during enrollment.</p>
+            <label class="form-label" for="totp-enrollment-uri">Setup URI</label>
+            <code id="totp-enrollment-uri" style="display:block; word-break:break-all; color:var(--accent-cyan); margin:8px 0;"></code>
+            <button class="btn-action secondary small" id="btn-copy-totp-uri" type="button">Copy setup URI</button>
+            <label class="form-label" for="totp-enrollment-secret" style="display:block; margin-top:10px;">Manual secret</label>
+            <code id="totp-enrollment-secret" style="display:block; word-break:break-all; color:var(--accent-cyan); margin:8px 0;"></code>
+            <input type="text" id="input-enrollment-totp-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter the six-digit code to confirm">
+            <button class="btn-action primary small" id="btn-confirm-totp-enrollment" type="button" style="margin-top:8px;">Confirm enrollment</button>
+          </div>
         </div>
       </div>
       <div class="modal-footer"><button class="btn-action secondary" id="btn-cancel-modal-account-manage">Close</button></div>

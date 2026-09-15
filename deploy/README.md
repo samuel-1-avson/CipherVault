@@ -68,6 +68,12 @@ and membership roles are available through
 `/v1/accounts/:account_id/invitations`, `/v1/invitations/accept`, and
 `/v1/accounts/:account_id/memberships`; one-time recovery codes use
 `/v1/accounts/:account_id/recovery/codes` and `/v1/recovery/redeem`.
+Authenticator-app MFA uses RFC 6238 six-digit codes. Set
+`CIPHERVAULT_ACCOUNT_TOTP_KEY` to a unique 32-byte hex wrapping key before
+enabling enrollment; TOTP seeds are stored as AES-256-GCM envelopes in the
+account database and are never logged or returned after enrollment. The
+dashboard exposes authenticator sign-in and account-management enrollment
+controls through the same-origin `/api/account/totp/*` proxy.
 Keep the
 service behind the private network until a managed browser session, production
 origin policy, and per-client rate limits have been provisioned.

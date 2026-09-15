@@ -5713,6 +5713,72 @@ async fn api_account_webauthn_registration_verify_handler(
     .await
 }
 
+async fn api_account_totp_options_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/totp/authentication/options",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_totp_verify_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/totp/authentication/verify",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_totp_enrollment_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/totp/enrollment"),
+        &headers,
+        None,
+    )
+    .await
+}
+
+async fn api_account_totp_enrollment_verify_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/totp/enrollment/verify"),
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_totp_revoke_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/totp/revoke"),
+        &headers,
+        None,
+    )
+    .await
+}
+
 fn private_ui_router() -> axum::Router {
     use axum::routing::get;
 
@@ -5771,6 +5837,26 @@ fn private_ui_router() -> axum::Router {
         .route(
             "/api/account/:account_id/webauthn/registration/verify",
             axum::routing::post(api_account_webauthn_registration_verify_handler),
+        )
+        .route(
+            "/api/account/totp/authentication/options",
+            axum::routing::post(api_account_totp_options_handler),
+        )
+        .route(
+            "/api/account/totp/authentication/verify",
+            axum::routing::post(api_account_totp_verify_handler),
+        )
+        .route(
+            "/api/account/:account_id/totp/enrollment",
+            axum::routing::post(api_account_totp_enrollment_handler),
+        )
+        .route(
+            "/api/account/:account_id/totp/enrollment/verify",
+            axum::routing::post(api_account_totp_enrollment_verify_handler),
+        )
+        .route(
+            "/api/account/:account_id/totp/revoke",
+            axum::routing::post(api_account_totp_revoke_handler),
         )
         .route(
             "/api/session/revoke",
@@ -5895,6 +5981,14 @@ fn public_ui_router() -> axum::Router {
         .route(
             "/api/account/:account_id/webauthn/registration/verify",
             axum::routing::post(api_account_webauthn_registration_verify_handler),
+        )
+        .route(
+            "/api/account/totp/authentication/options",
+            axum::routing::post(api_account_totp_options_handler),
+        )
+        .route(
+            "/api/account/totp/authentication/verify",
+            axum::routing::post(api_account_totp_verify_handler),
         )
         .route("/api/vault", get(api_public_vault_handler))
         .route("/api/operators", get(api_public_operators_handler))
@@ -6327,6 +6421,8 @@ async fn private_ui_request_guard(
             | "/api/account/session"
             | "/api/account/webauthn/authentication/options"
             | "/api/account/webauthn/authentication/verify"
+            | "/api/account/totp/authentication/options"
+            | "/api/account/totp/authentication/verify"
     ) || (path.starts_with("/api/account/")
         && path.ends_with("/webauthn/registration/options"))
         || (path.starts_with("/api/account/") && path.ends_with("/webauthn/registration/verify"));
