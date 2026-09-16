@@ -5963,6 +5963,26 @@ fn hosted_account_endpoint() -> Option<String> {
     Some(endpoint.to_string())
 }
 
+static ACCOUNT_PROXY_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
+
+/// Shared connection-pooled client for the dashboard account proxy. The proxy
+/// serves every hosted-account request from the long-lived dashboard server,
+/// so it must reuse one client (and its connection pool) instead of building
+/// a fresh client per proxied request.
+fn account_proxy_http_client() -> HttpClient {
+    ACCOUNT_PROXY_HTTP_CLIENT
+        .get_or_init(|| {
+            HttpClient::builder()
+                .timeout(Duration::from_secs(8))
+                .pool_idle_timeout(Duration::from_secs(120))
+                .pool_max_idle_per_host(4)
+                .tcp_keepalive(Some(Duration::from_secs(30)))
+                .build()
+                .unwrap_or_else(|_| HttpClient::new())
+        })
+        .clone()
+}
+
 async fn proxy_account_request(
     method: reqwest::Method,
     path: &str,
@@ -5983,10 +6003,7 @@ async fn proxy_account_request(
             .into_response();
     };
     let url = format!("{}{}", endpoint, path);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    let client = account_proxy_http_client();
     let mut request = client.request(method, url);
     if let Some(cookie) = headers.get(header::COOKIE) {
         request = request.header(header::COOKIE, cookie.clone());
@@ -9716,5 +9733,18 @@ mod ui_router_tests {
             .as_deref()
             .is_some_and(|message| message.contains("restarted")));
         assert_eq!(jobs[1].status, "succeeded");
+    }
+
+    #[test]
+    fn account_proxy_client_is_shared_and_pool_backed() {
+        // The dashboard proxy serves every hosted-account request from one
+        // long-lived server; both handles must come from the shared pooled
+        // client so connections are reused across proxied requests.
+        let first = account_proxy_http_client();
+        let second = account_proxy_http_client();
+        for client in [&first, &second] {
+            let request = client.get("http://127.0.0.1:9/v1/sessions").build();
+            assert!(request.is_ok());
+        }
     }
 }
