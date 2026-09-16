@@ -115,7 +115,7 @@ $stageId = $DashboardImage.Substring($DashboardImage.Length - 12)
 $remoteStage = "/tmp/ciphervault-release-$stageId"
 
 Write-Host "Checking that the target VM can pull the candidate images..." -ForegroundColor Cyan
-Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; docker pull '$DashboardImage' >/dev/null; docker pull '$AccountImage' >/dev/null"
+Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo docker pull '$DashboardImage' >/dev/null; sudo docker pull '$AccountImage' >/dev/null"
 
 if (-not $Apply) {
     Write-Host "Preflight succeeded. Re-run with -Apply to stage the release and perform the controlled VM restart." -ForegroundColor Yellow
@@ -166,7 +166,7 @@ try {
     if (-not $running) {
         throw "The VM did not reach RUNNING state within five minutes."
     }
-    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; systemctl is-active --quiet ciphervault-ui.service; docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
+    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; systemctl is-active --quiet ciphervault-ui.service; sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
 
     $healthUrl = "https://$DomainName/api/vault"
     for ($attempt = 1; $attempt -le 12; $attempt++) {
