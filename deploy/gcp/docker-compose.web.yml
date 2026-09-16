@@ -72,6 +72,9 @@ services:
     environment:
       - WEB_DOMAIN=${WEB_DOMAIN:-vault.example.com}
       - ACME_EMAIL=${ACME_EMAIL:-admin@example.com}
+      - OPERATOR_GATEWAY_UPSTREAM_1=${OPERATOR_GATEWAY_UPSTREAM_1:-10.128.0.39:80}
+      - OPERATOR_GATEWAY_UPSTREAM_2=${OPERATOR_GATEWAY_UPSTREAM_2:-10.128.0.40:80}
+      - OPERATOR_GATEWAY_UPSTREAM_3=${OPERATOR_GATEWAY_UPSTREAM_3:-10.142.0.2:80}
     volumes:
       - /opt/ciphervault-ui/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

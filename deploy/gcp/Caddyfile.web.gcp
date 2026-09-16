@@ -18,9 +18,37 @@
     import security_headers
     encode zstd gzip
 
-    # The dashboard reaches private operators over its VPC-only service
-    # connections. Public operator gateway proxy paths are deliberately not
-    # exposed through this Internet-facing listener.
+    # Client storage traffic enters through an operator-specific path and is
+    # forwarded over the dashboard VM's private VPC routes. The operator still
+    # enforces its signed challenge/session and vault-scope authorization; this
+    # gateway only removes the public path prefix.
+    handle_path /op/1/* {
+        reverse_proxy {$OPERATOR_GATEWAY_UPSTREAM_1:10.128.0.39:80} {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
+
+    handle_path /op/2/* {
+        reverse_proxy {$OPERATOR_GATEWAY_UPSTREAM_2:10.128.0.40:80} {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
+
+    handle_path /op/3/* {
+        reverse_proxy {$OPERATOR_GATEWAY_UPSTREAM_3:10.142.0.2:80} {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
+
     reverse_proxy 127.0.0.1:8080 {
         header_up Host {host}
         header_up X-Real-IP {remote}
