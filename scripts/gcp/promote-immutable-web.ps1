@@ -24,6 +24,7 @@ param(
     [string]$DomainName = "vault.cipherv.online",
     [string]$AcmeEmail = "admin@example.com",
     [string]$AccountTotpSecret = "ciphervault-account-totp-key",
+    [string]$HealthCheckIp = "",
     [string]$CosignCertificateIdentityRegex = "https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*",
     [switch]$Apply
 )
@@ -171,7 +172,12 @@ try {
     $healthUrl = "https://$DomainName/api/vault"
     for ($attempt = 1; $attempt -le 12; $attempt++) {
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 10 | Out-Null
+            if ($HealthCheckIp) {
+                & curl.exe --fail --silent --show-error --max-time 10 --resolve "$DomainName`:443`:$HealthCheckIp" $healthUrl | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "curl health check failed with exit code $LASTEXITCODE" }
+            } else {
+                Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 10 | Out-Null
+            }
             Write-Host "Production health endpoint is responding." -ForegroundColor Green
             break
         } catch {
