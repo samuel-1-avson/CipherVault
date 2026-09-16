@@ -19,8 +19,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Audit Rust dependencies
-        uses: rustsec/audit-check@v2.0.0
+        run: cargo audit
 
   repository-scan:
     name: Repository vulnerability and secret scan
