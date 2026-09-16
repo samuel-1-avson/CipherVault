@@ -326,6 +326,26 @@ bounds how many objects upload and verify concurrently per operator. Raise towar
 concurrently, and stragglers are abandoned once the remaining operators cannot
 reach quorum.
 
+### Proving push throughput (bench + soak)
+
+`apps/cli/tests/push_bench.rs` (ignored perf test) replicates 48 x 16 KiB
+objects across 3 loopback operators at concurrency 1 vs 8 and prints a JSON
+summary with the speedup. CI runs it release-mode on Linux (`bench` job):
+
+```sh
+cargo test -p ciphervault-cli --release --test push_bench -- --ignored --nocapture
+```
+
+- `CIPHERVAULT_BENCH_OBJECTS` / `CIPHERVAULT_BENCH_OBJECT_KB`: workload size.
+- `CIPHERVAULT_BENCH_SOAK_ITERS` (default 2): extra concurrent quorum runs;
+  every iteration must reach quorum (catches `busy_timeout`/flake regressions).
+- `CIPHERVAULT_BENCH_ASSERT=1`: fail unless concurrent is >=2x faster than
+  sequential. Default is warn-only so shared CI runners never flake the build.
+
+Phase 3 done-condition: p50 `push --pos` >=2x on a 3-node cluster. Record the
+maintainer-run numbers here: sequential ___s, concurrent ___s, speedup ___x,
+date/runner ___.
+
 ## 13. Metrics, Tracing & Repair Lag (R8/R11)
 
 Operator disk I/O is sharded across 64 per-key striped locks (R8): concurrent

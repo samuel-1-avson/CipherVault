@@ -71,3 +71,27 @@ jobs:
 
       - name: Run Foundry Contract Tests
         run: forge test -vvv
+
+  bench:
+    name: Push Throughput Bench (ignored perf test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Run push bench (sequential vs concurrent)
+        run: cargo test --locked -p ciphervault-cli --release --test push_bench -- --ignored --nocapture
