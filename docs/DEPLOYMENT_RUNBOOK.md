@@ -252,3 +252,39 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
 - The explorer renders amber `STALE` and red `MISSING` badges; treat either as a paging
   alarm: the anchor daemon, publisher worker, or feed mount is broken.
 - Tune the max age to roughly 3x the anchor daemon interval (default daemon: 3600 s).
+
+## 10. Secret Cutover, Rotation & Signed Promotion (R3/R4)
+
+All tooling below already exists; this section is the execution checklist for the
+live `vault.cipherv.online` cutover. Perform in order; stop on the first red check.
+
+### R3: TOTP key cutover to Secret Manager
+1. Create/rotate the secret: `gcloud secrets create ciphervault-account-totp-key
+   --replication-policy=automatic` (or `add-version` with 32 fresh random bytes).
+2. Grant the web runtime service account `secretmanager.secretAccessor` on that secret only.
+3. Set instance metadata `account-totp-secret=ciphervault-account-totp-key` on `cv-web-ui`.
+4. Re-run `deploy/gcp/startup-web.sh` (or recreate the instance): it writes the key to the
+   read-only mount `/run/secrets/account-totp-key` consumed by the compose files.
+5. Delete the legacy value from `/opt/ciphervault-ui/.env`, rotate it (it was long-lived),
+   and confirm no log, image layer, or crash dump contains the key material.
+6. Apply the same ceremony to operator signing keys before calling rotation done.
+
+### R4: first signed-digest promotion
+1. Tag a release; confirm `release.yml` published GHCR digests with SBOM + SLSA provenance
+   and a cosign signature (keyless, identity-bound to the release workflow).
+2. Record the current live digests as rollback images.
+3. Dry-run: `scripts/gcp/verify-immutable-deployment.sh` with
+   `CIPHERVAULT_DASHBOARD_IMAGE` / `CIPHERVAULT_ACCOUNT_IMAGE` set to the new
+   `ghcr.io/...@sha256:...` digests plus `COSIGN_CERTIFICATE_IDENTITY_REGEX`.
+4. Promote: `scripts/gcp/promote-immutable-web.ps1 -DashboardImage ... -AccountImage ...
+   -RollbackDashboardImage ... -RollbackAccountImage ... -OperatorEndpoints ...
+   -RuntimeServiceAccount ... -Apply` (omit `-Apply` for a plan-only run).
+5. Verify live: explorer loads, `/api/anchors` and `/api/operators` respond, and
+   `docker inspect` on the VM reports the promoted digests. Roll back with the recorded
+   rollback images if any check fails.
+
+### Phase 1 exit criteria
+- R1: dashboard env pins all 3 operator identities; cards show Verified; rotation drilled.
+- R2: publisher deployed + key pinned; RPC finality live; canary ok; alarm tested (stale).
+- R3: live TOTP key served from Secret Manager mount; legacy value rotated away.
+- R4: live VM runs CI-built signed digests; rollback path tested.
