@@ -58,6 +58,20 @@ impl MultiOperatorPool {
         }
     }
 
+    /// Propagates one trace ID to every operator client so spans from a
+    /// single push/repair correlate across the quorum (R11).
+    pub fn set_trace_id(&self, trace_id: &str) {
+        for client in &self.clients {
+            client.set_trace_id(trace_id);
+        }
+    }
+
+    pub fn clear_trace_id(&self) {
+        for client in &self.clients {
+            client.clear_trace_id();
+        }
+    }
+
     /// Bounds how many objects replicate concurrently per operator (1-32).
     pub fn set_object_concurrency(&self, concurrency: usize) {
         self.object_concurrency.store(

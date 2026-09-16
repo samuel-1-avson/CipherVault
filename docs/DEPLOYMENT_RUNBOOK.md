@@ -325,3 +325,62 @@ bounds how many objects upload and verify concurrently per operator. Raise towar
 16 on fast remotes, lower toward 1 on lossy links. Operators always replicate
 concurrently, and stragglers are abandoned once the remaining operators cannot
 reach quorum.
+
+## 13. Metrics, Tracing & Repair Lag (R8/R11)
+
+Operator disk I/O is sharded across 64 per-key striped locks (R8): concurrent
+uploads for different CIDs no longer serialize. One `identities.json` lock and
+one `events.log` leaf lock remain; both are low-traffic admin paths.
+
+### Operator Prometheus endpoint
+
+Every operator serves `GET /metrics` (same unauthenticated posture as
+`/healthz`; firewall it or scrape via loopback/Caddy allowlist):
+
+- `ciphervault_operator_objects_put_total` + `put_latency_ms` histogram:
+  push-side store rate and latency.
+- `ciphervault_operator_pos_challenges_total` / `pos_failures_total` +
+  `pos_latency_ms`: Proof-of-Storage rate.
+- `ciphervault_operator_requests_total` (+ `_4xx`/`_5xx`) and
+  `request_latency_ms`: request plane.
+- Lease, recovery, and `auth_failures_total` counters, plus `uptime_seconds`.
+
+Scrape example (all three operators):
+
+```yaml
+scrape_configs:
+  - job_name: ciphervault-operators
+    static_configs:
+      - targets: ['op1:8201', 'op2:8202', 'op3:8203']
+```
+
+### Request tracing
+
+`ciphervault push` generates a 32-hex trace ID per replication, sends it as
+`X-CipherVault-Trace-Id` on every operator request, and prints it with the
+replication latency. Operators echo the ID back on every response and, with
+`CIPHERVAULT_TRACE_LOG=1`, emit one JSON span per request on stderr:
+
+```json
+{"span": "operator_request", "route": "object", "trace_id": "ab...",
+ "status": 200, "elapsed_ms": 3}
+```
+
+Correlate across the quorum by trace ID; correlate fleet repairs by closure
+digest (see below), since the daemon mints its own spans.
+
+### Fleet repair lag
+
+`ciphervault-maintenance --fleet-status` now reports repairs recorded and the
+last repair lag (detection-to-repaired seconds). For Prometheus, run:
+
+```sh
+ciphervault-maintenance --db fleet.db --metrics > /var/lib/node_exporter/ciphervault_fleet.prom
+```
+
+`ciphervault_fleet_last_repair_lag_seconds` is the repair-lag signal;
+`repairs_recorded_total` / `repair_failures_total` count sweep outcomes.
+Repairs are recorded via `record_repair` by CLI-driven repair flows; the
+daemon loop audits but does not yet repair autonomously (it carries no vault
+credentials), so daemon-only deployments show zero repairs until autonomous
+repair lands.

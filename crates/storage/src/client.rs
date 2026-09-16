@@ -19,6 +19,7 @@ pub struct OperatorClient {
     http: Client,
     vault_scope: Arc<Mutex<Option<String>>>,
     account_identity: Arc<Mutex<Option<(String, String)>>>,
+    trace_id: Arc<Mutex<Option<String>>>,
 }
 
 impl OperatorClient {
@@ -39,6 +40,7 @@ impl OperatorClient {
             http,
             vault_scope: Arc::new(Mutex::new(None)),
             account_identity: Arc::new(Mutex::new(None)),
+            trace_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -64,6 +66,30 @@ impl OperatorClient {
         }
     }
 
+    /// Generates a random 128-bit trace ID (32 hex chars) correlating one
+    /// CLI/fleet operation across operator spans (R11).
+    pub fn new_trace_id() -> String {
+        hex::encode(rand::random::<[u8; 16]>())
+    }
+
+    /// Sets the trace ID attached to every subsequent request.
+    pub fn set_trace_id(&self, trace_id: &str) {
+        if let Ok(mut current) = self.trace_id.lock() {
+            *current = Some(trace_id.trim().to_ascii_lowercase());
+        }
+    }
+
+    /// Returns the currently configured trace ID, if any.
+    pub fn trace_id(&self) -> Option<String> {
+        self.trace_id.lock().ok().and_then(|id| id.clone())
+    }
+
+    pub fn clear_trace_id(&self) {
+        if let Ok(mut current) = self.trace_id.lock() {
+            *current = None;
+        }
+    }
+
     fn account_identity(&self) -> Option<(String, String)> {
         self.account_identity
             .lock()
@@ -83,6 +109,10 @@ impl OperatorClient {
     fn with_vault_scope(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let request = match self.vault_scope.lock().ok().and_then(|scope| scope.clone()) {
             Some(scope) => request.header("X-CipherVault-Id", scope),
+            None => request,
+        };
+        let request = match self.trace_id.lock().ok().and_then(|id| id.clone()) {
+            Some(trace_id) => request.header("X-CipherVault-Trace-Id", trace_id),
             None => request,
         };
         self.with_identity_binding(request)
@@ -446,5 +476,23 @@ impl OperatorClient {
         }
         let peers = resp.json::<Vec<crate::types::PeerDescriptor>>().await?;
         Ok(peers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OperatorClient;
+
+    #[test]
+    fn trace_id_round_trip_and_format() {
+        let id = OperatorClient::new_trace_id();
+        assert_eq!(id.len(), 32);
+        assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let client = OperatorClient::new("http://127.0.0.1:9".into());
+        assert!(client.trace_id().is_none());
+        client.set_trace_id(&id);
+        assert_eq!(client.trace_id().as_deref(), Some(id.as_str()));
+        client.clear_trace_id();
+        assert!(client.trace_id().is_none());
     }
 }

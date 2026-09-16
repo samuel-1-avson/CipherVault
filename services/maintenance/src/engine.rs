@@ -45,6 +45,8 @@ pub struct RepairResult {
     pub objects_repaired: usize,
     pub objects_failed: usize,
     pub placement_updates: Vec<PlacementUpdate>,
+    /// Detection-to-completion wall time of the sweep (repair-lag signal).
+    pub elapsed_secs: u64,
 }
 
 /// Engine executing zero-knowledge replication audits, object self-repair, and lease extensions.
@@ -389,6 +391,7 @@ impl MaintenanceEngine {
         sessions: &HashMap<String, String>,
         signing_key: &SigningKey,
     ) -> Result<RepairResult> {
+        let repair_started = std::time::Instant::now();
         let mut objects_repaired = 0;
         let mut objects_failed = 0;
         let mut placement_updates = Vec::new();
@@ -448,6 +451,7 @@ impl MaintenanceEngine {
             objects_repaired,
             objects_failed,
             placement_updates,
+            elapsed_secs: repair_started.elapsed().as_secs(),
         })
     }
 

@@ -47,6 +47,70 @@ pub struct FleetSummary {
     pub total_audits_recorded: usize,
     pub online_operators: usize,
     pub total_operators: usize,
+    pub total_repairs_recorded: usize,
+    pub total_repair_failures: usize,
+    pub last_repair_lag_secs: u64,
+}
+
+impl FleetSummary {
+    /// Renders fleet aggregates in Prometheus text exposition format, backing
+    /// `ciphervault-maintenance --metrics` (stdout scrape or textfile collector).
+    pub fn to_prometheus(&self) -> String {
+        let mut out = String::new();
+        for (name, help, value) in [
+            (
+                "tracked_vaults",
+                "Vault locators tracked by the fleet.",
+                self.total_tracked_vaults,
+            ),
+            (
+                "healthy_vaults",
+                "Tracked vaults whose last audit was healthy.",
+                self.healthy_vaults,
+            ),
+            (
+                "degraded_vaults",
+                "Tracked vaults whose last audit was degraded.",
+                self.degraded_vaults,
+            ),
+            (
+                "audits_recorded_total",
+                "Audit rows recorded in fleet history.",
+                self.total_audits_recorded,
+            ),
+            (
+                "online_operators",
+                "Operator nodes currently healthy.",
+                self.online_operators,
+            ),
+            (
+                "total_operators",
+                "Operator nodes known to the fleet.",
+                self.total_operators,
+            ),
+            (
+                "repairs_recorded_total",
+                "Objects repaired across all recorded sweeps.",
+                self.total_repairs_recorded,
+            ),
+            (
+                "repair_failures_total",
+                "Objects that failed repair across all recorded sweeps.",
+                self.total_repair_failures,
+            ),
+        ] {
+            out.push_str(&format!("# HELP ciphervault_fleet_{name} {help}\n"));
+            out.push_str(&format!("# TYPE ciphervault_fleet_{name} gauge\n"));
+            out.push_str(&format!("ciphervault_fleet_{name} {value}\n"));
+        }
+        out.push_str("# HELP ciphervault_fleet_last_repair_lag_seconds Seconds the most recent repair sweep took from detection to completion.\n");
+        out.push_str("# TYPE ciphervault_fleet_last_repair_lag_seconds gauge\n");
+        out.push_str(&format!(
+            "ciphervault_fleet_last_repair_lag_seconds {}\n",
+            self.last_repair_lag_secs
+        ));
+        out
+    }
 }
 
 pub struct MaintenanceDb {
@@ -97,7 +161,17 @@ impl MaintenanceDb {
                 is_healthy INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS repair_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                locator_hex TEXT NOT NULL,
+                timestamp_utc INTEGER NOT NULL,
+                objects_repaired INTEGER NOT NULL,
+                objects_failed INTEGER NOT NULL,
+                lag_secs INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_audit_locator ON audit_history(locator_hex);
+            CREATE INDEX IF NOT EXISTS idx_repair_locator ON repair_history(locator_hex);
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_history(timestamp_utc);
             "#,
         )?;
@@ -186,6 +260,34 @@ impl MaintenanceDb {
         Ok(())
     }
 
+    /// Records one completed self-repair sweep with its detection-to-repaired
+    /// lag in seconds (R11 repair-lag telemetry).
+    pub fn record_repair(
+        &self,
+        locator_hex: &str,
+        objects_repaired: usize,
+        objects_failed: usize,
+        lag_secs: u64,
+    ) -> Result<()> {
+        let clean_locator = locator_hex.trim().trim_start_matches("0x").to_lowercase();
+        let now = Utc::now().timestamp() as u64;
+        let lock = self.conn.lock().unwrap();
+        lock.execute(
+            r#"
+            INSERT INTO repair_history (locator_hex, timestamp_utc, objects_repaired, objects_failed, lag_secs)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                clean_locator,
+                now,
+                objects_repaired as i64,
+                objects_failed as i64,
+                lag_secs as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn update_operator_health(
         &self,
         endpoint: &str,
@@ -235,6 +337,24 @@ impl MaintenanceDb {
             |r| r.get(0),
         )?;
 
+        let total_repairs: i64 = lock.query_row(
+            "SELECT COALESCE(SUM(objects_repaired), 0) FROM repair_history",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let total_repair_failures: i64 = lock.query_row(
+            "SELECT COALESCE(SUM(objects_failed), 0) FROM repair_history",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let last_repair_lag: i64 = lock.query_row(
+            "SELECT COALESCE((SELECT lag_secs FROM repair_history ORDER BY id DESC LIMIT 1), 0)",
+            [],
+            |r| r.get(0),
+        )?;
+
         Ok(FleetSummary {
             total_tracked_vaults: total_tracked as usize,
             healthy_vaults: healthy_vaults as usize,
@@ -242,6 +362,9 @@ impl MaintenanceDb {
             total_audits_recorded: total_audits as usize,
             online_operators: online_ops as usize,
             total_operators: total_ops as usize,
+            total_repairs_recorded: total_repairs as usize,
+            total_repair_failures: total_repair_failures as usize,
+            last_repair_lag_secs: last_repair_lag as u64,
         })
     }
 
@@ -341,6 +464,32 @@ mod tests {
         assert_eq!(summary.total_operators, 3);
         assert_eq!(summary.online_operators, 2);
 
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn test_repair_history_and_prometheus() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "cv_maint_repair_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let db = MaintenanceDb::open(&test_dir.join("maintenance.db")).unwrap();
+        let summary = db.get_fleet_summary().unwrap();
+        assert_eq!(summary.total_repairs_recorded, 0);
+        assert_eq!(summary.last_repair_lag_secs, 0);
+        db.record_repair(&"b".repeat(64), 3, 1, 42).unwrap();
+        db.record_repair(&"b".repeat(64), 2, 0, 7).unwrap();
+        let summary = db.get_fleet_summary().unwrap();
+        assert_eq!(summary.total_repairs_recorded, 5);
+        assert_eq!(summary.total_repair_failures, 1);
+        assert_eq!(summary.last_repair_lag_secs, 7);
+        let exposition = summary.to_prometheus();
+        assert!(exposition.contains("ciphervault_fleet_repairs_recorded_total 5"));
+        assert!(exposition.contains("ciphervault_fleet_last_repair_lag_seconds 7"));
         let _ = std::fs::remove_dir_all(test_dir);
     }
 }

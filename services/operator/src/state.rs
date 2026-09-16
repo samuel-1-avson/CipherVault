@@ -17,6 +17,7 @@ use ciphervault_format::{
     HeadRecord, SnapshotRecord, PROTOCOL_VERSION,
 };
 use ciphervault_storage::types::LeaseReceipt;
+use crate::metrics::OperatorMetrics;
 
 pub const MAX_OBJECT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB max per chunk/manifest object
 pub const MAX_RECOVERY_RECORD_SIZE: usize = 64 * 1024; // 64 KiB max per recovery record
@@ -174,6 +175,8 @@ pub struct OperatorState {
     event_lock: Mutex<()>,
     // Per-key striped locks for objects, leases, and recovery logs.
     io_stripes: Box<[Mutex<()>]>,
+    // Prometheus counters + span observer (R11).
+    pub metrics: OperatorMetrics,
     // Active challenges are bound to the requested vault and device key.
     challenges: Mutex<HashMap<String, ChallengeRecord>>,
     // Active sessions: token -> expires_at_utc
@@ -216,6 +219,7 @@ impl OperatorState {
                 .map(|_| Mutex::new(()))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
+            metrics: OperatorMetrics::new(),
             challenges: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             session_keys: Mutex::new(HashMap::new()),
@@ -892,6 +896,14 @@ impl OperatorState {
     }
 
     pub fn validate_session_for_vault(&self, token: &str, vault_id_hex: &str) -> bool {
+        let valid = self.validate_session_for_vault_inner(token, vault_id_hex);
+        if !valid {
+            self.metrics.observe_auth_failure();
+        }
+        valid
+    }
+
+    fn validate_session_for_vault_inner(&self, token: &str, vault_id_hex: &str) -> bool {
         if !self.validate_write_session(token) {
             return false;
         }
@@ -939,6 +951,14 @@ impl OperatorState {
     }
 
     pub fn put_object(&self, cid_hex: &str, bytes: &[u8]) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let outcome = self.put_object_inner(cid_hex, bytes);
+        self.metrics
+            .observe_put(bytes.len() as u64, started.elapsed(), outcome.is_ok());
+        outcome
+    }
+
+    fn put_object_inner(&self, cid_hex: &str, bytes: &[u8]) -> Result<(), String> {
         let limit = max_object_size();
         if bytes.len() > limit {
             return Err(format!(
@@ -968,6 +988,16 @@ impl OperatorState {
     }
 
     pub fn get_object(&self, cid_hex: &str) -> Option<Vec<u8>> {
+        let started = std::time::Instant::now();
+        let outcome = self.get_object_inner(cid_hex);
+        self.metrics.observe_get(
+            outcome.as_ref().map(|bytes| bytes.len() as u64),
+            started.elapsed(),
+        );
+        outcome
+    }
+
+    fn get_object_inner(&self, cid_hex: &str) -> Option<Vec<u8>> {
         if cid_hex.len() != 64 || hex::decode(cid_hex).is_err() {
             return None;
         }
@@ -977,6 +1007,18 @@ impl OperatorState {
 
     /// Computes and signs a cryptographic Proof-of-Storage receipt for a challenged object.
     pub fn generate_pos_proof(
+        &self,
+        cid_hex: &str,
+        nonce: &[u8; 32],
+    ) -> Result<ciphervault_storage::ProofOfStorageReceipt, String> {
+        let started = std::time::Instant::now();
+        let outcome = self.generate_pos_proof_inner(cid_hex, nonce);
+        self.metrics
+            .observe_pos(started.elapsed(), outcome.is_ok());
+        outcome
+    }
+
+    fn generate_pos_proof_inner(
         &self,
         cid_hex: &str,
         nonce: &[u8; 32],
@@ -1058,6 +1100,17 @@ impl OperatorState {
         bytes: u64,
         term_days: u32,
     ) -> Result<LeaseReceipt, String> {
+        let outcome = self.create_lease_inner(closure_digest_hex, bytes, term_days);
+        self.metrics.observe_lease_create(outcome.is_ok());
+        outcome
+    }
+
+    fn create_lease_inner(
+        &self,
+        closure_digest_hex: &str,
+        bytes: u64,
+        term_days: u32,
+    ) -> Result<LeaseReceipt, String> {
         if closure_digest_hex.len() != 64
             || hex::decode(closure_digest_hex).is_err()
             || term_days == 0
@@ -1079,6 +1132,17 @@ impl OperatorState {
     }
 
     pub fn renew_lease(
+        &self,
+        lease_id: &str,
+        additional_days: u32,
+        bytes: u64,
+    ) -> Result<LeaseReceipt, String> {
+        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes);
+        self.metrics.observe_lease_renew(outcome.is_ok());
+        outcome
+    }
+
+    fn renew_lease_inner(
         &self,
         lease_id: &str,
         additional_days: u32,
@@ -1119,6 +1183,19 @@ impl OperatorState {
         record: &[u8],
         caller_pk: Option<&[u8; 32]>,
     ) -> Result<u64, String> {
+        let outcome =
+            self.append_authorized_recovery_record_inner(locator_hex, record, caller_pk);
+        self.metrics
+            .observe_recovery_append(record.len() as u64, outcome.is_ok());
+        outcome
+    }
+
+    fn append_authorized_recovery_record_inner(
+        &self,
+        locator_hex: &str,
+        record: &[u8],
+        caller_pk: Option<&[u8; 32]>,
+    ) -> Result<u64, String> {
         if locator_hex.len() != 64 || hex::decode(locator_hex).is_err() {
             return Err("Invalid recovery locator (must be 64 hex characters)".into());
         }
@@ -1132,7 +1209,7 @@ impl OperatorState {
 
         // Cryptographic Authorization Check
         // Inspect existing records to find registered recovery_signing_pk and authorized device public keys.
-        let existing = self.get_recovery_records(locator_hex);
+        let existing = self.get_recovery_records_inner(locator_hex);
         if existing.len() >= MAX_RECORDS_PER_LOCATOR {
             return Err(format!(
                 "Locator recovery log capacity limit of {} records exceeded",
@@ -1331,6 +1408,12 @@ impl OperatorState {
     }
 
     pub fn get_recovery_records(&self, locator_hex: &str) -> Vec<Vec<u8>> {
+        let records = self.get_recovery_records_inner(locator_hex);
+        self.metrics.observe_recovery_read(&records);
+        records
+    }
+
+    fn get_recovery_records_inner(&self, locator_hex: &str) -> Vec<Vec<u8>> {
         if locator_hex.len() != 64 || hex::decode(locator_hex).is_err() {
             return Vec::new();
         }
@@ -2081,6 +2164,45 @@ mod tests {
         let first = state.io_stripe(&"ab".repeat(32)) as *const _ as usize;
         let second = state.io_stripe(&"ab".repeat(32)) as *const _ as usize;
         assert_eq!(first, second);
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metrics_count_operations_and_render_prometheus() {
+        let root = std::env::temp_dir().join(format!("cv-metrics-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        let payload = b"metrics-observed-object";
+        let cid_hex = hex::encode(ciphervault_format::compute_digest(payload));
+        state.put_object(&cid_hex, payload).unwrap();
+        assert!(state.put_object(&cid_hex, b"wrong bytes!!").is_err());
+        assert_eq!(state.get_object(&cid_hex).as_deref(), Some(&payload[..]));
+        assert!(state.get_object(&"00".repeat(32)).is_none());
+        let nonce = [0x77u8; 32];
+        assert!(state.generate_pos_proof(&cid_hex, &nonce).is_ok());
+        assert!(state.generate_pos_proof(&"00".repeat(32), &nonce).is_err());
+        assert!(!state.validate_session_for_vault("bogus", &"11".repeat(32)));
+
+        let exposition = state.metrics.render_prometheus();
+        for line in [
+            "ciphervault_operator_objects_put_total 1",
+            "ciphervault_operator_objects_put_failures_total 1",
+            "ciphervault_operator_objects_get_total 2",
+            "ciphervault_operator_pos_challenges_total 2",
+            "ciphervault_operator_pos_failures_total 1",
+            "ciphervault_operator_auth_failures_total 1",
+            "ciphervault_operator_uptime_seconds ",
+        ] {
+            assert!(
+                exposition.contains(line),
+                "missing metric line {line:?} in:\n{exposition}"
+            );
+        }
+        assert!(exposition.contains("# TYPE ciphervault_operator_put_latency_ms histogram"));
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

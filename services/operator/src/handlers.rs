@@ -585,3 +585,13 @@ pub async fn post_submit_approval(
         "approval_count": count
     })))
 }
+
+/// Prometheus exposition for operator counters and latency histograms (R11).
+/// Unauthenticated like `/healthz`; firewall it or scrape via loopback.
+pub async fn get_metrics(State(state): State<Arc<OperatorState>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.render_prometheus(),
+    )
+}

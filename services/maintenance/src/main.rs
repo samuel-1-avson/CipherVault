@@ -39,6 +39,12 @@ struct Cli {
 
     #[arg(long, help = "Display fleet summary status and exit")]
     fleet_status: bool,
+
+    #[arg(
+        long,
+        help = "Print fleet metrics in Prometheus exposition format and exit"
+    )]
+    metrics: bool,
 }
 
 #[tokio::main]
@@ -115,6 +121,17 @@ async fn main() -> Result<()> {
             "  Fleet Database:     {}",
             cli.db.display().to_string().dimmed()
         );
+        println!(
+            "  Repairs Recorded:   {} ({} failed)",
+            summary.total_repairs_recorded, summary.total_repair_failures
+        );
+        println!("  Last Repair Lag:    {}s", summary.last_repair_lag_secs);
+        return Ok(());
+    }
+
+    if cli.metrics {
+        let summary = db.get_fleet_summary()?;
+        print!("{}", summary.to_prometheus());
         return Ok(());
     }
 

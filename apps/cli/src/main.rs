@@ -3080,6 +3080,8 @@ pub async fn cmd_push(
     );
 
     let pool = configured_operator_pool(operators.clone());
+    let trace_id = ciphervault_storage::client::OperatorClient::new_trace_id();
+    pool.set_trace_id(&trace_id);
     if let Some(requested) = concurrency {
         if !(1..=ciphervault_storage::pool::MAX_OBJECT_CONCURRENCY).contains(&requested) {
             eprintln!(
@@ -3093,6 +3095,7 @@ pub async fn cmd_push(
     let wire_objects = store.recovery_objects(&recovery_set)?;
     let head_cbor = to_canonical_cbor(&head)?;
     let closure_digest = recovery_set.closure.compute_base_closure_digest()?;
+    let replication_started = std::time::Instant::now();
     let rep_result = pool
         .replicate_and_verify(
             &vault_id,
@@ -3125,6 +3128,11 @@ pub async fn cmd_push(
                     operators.len()
                 );
             }
+            println!(
+                "  Replication:    {:.2}s (trace {})",
+                replication_started.elapsed().as_secs_f64(),
+                trace_id
+            );
         }
         Err(e) => {
             println!(
@@ -3132,6 +3140,7 @@ pub async fn cmd_push(
                 "Local only".yellow().bold(),
                 e
             );
+            println!("  Trace ID:       {trace_id}");
             return Err(e.into());
         }
     }
