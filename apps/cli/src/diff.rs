@@ -356,7 +356,7 @@ mod tests {
     fn test_mask_value() {
         assert_eq!(mask_value("short"), "***");
         assert_eq!(mask_value("12345678"), "12***78");
-        assert_eq!(mask_value("sk_test_51MzQ4xyz999"), "sk_***999");
+        assert_eq!(mask_value("token_test_51MzQ4xyz999"), "tok***999");
     }
 
     #[test]
@@ -417,8 +417,8 @@ mod tests {
 
     #[test]
     fn test_diff_masking() {
-        let old_vars = vec![("SECRET".into(), "sk_live_1234567890abcdef".into())];
-        let new_vars = vec![("SECRET".into(), "sk_live_0987654321fedcba".into())];
+        let old_vars = vec![("SECRET".into(), "token_live_1234567890abcdef".into())];
+        let new_vars = vec![("SECRET".into(), "token_live_0987654321fedcba".into())];
 
         let masked_report = diff_dotenv(".env", &old_vars, &new_vars, false);
         let entry = &masked_report.entries[0];
