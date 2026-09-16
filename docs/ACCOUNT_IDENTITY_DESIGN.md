@@ -100,8 +100,10 @@ Authenticator-app MFA is available as a separate RFC 6238 ceremony. The
 service exposes enrollment (`POST /v1/accounts/:account_id/totp/enrollment`,
 then `/enrollment/verify`), revocation (`/totp/revoke`), and account-session
 login (`POST /v1/totp/authentication/options` followed by `/verify`). Seeds are
-wrapped with AES-256-GCM using the 32-byte `CIPHERVAULT_ACCOUNT_TOTP_KEY`
-environment secret before they enter SQLite. Codes are six digits with a
+wrapped with AES-256-GCM using a 32-byte key read from the protected
+`CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE` mount before they enter SQLite. The legacy
+`CIPHERVAULT_ACCOUNT_TOTP_KEY` environment input remains for local development
+only. Codes are six digits with a
 30-second period, a one-step clock-skew window, and a durable replay barrier.
 TOTP login produces an account session; a linked vault still requires an
 enrolled device-bound session for private vault operations.
@@ -128,9 +130,10 @@ Operator enrollment records accept optional account and device identifiers. Stri
    web/app clients.
 4. Independent production provisioning of operator fingerprints and the
    account/device enrollment records.
-5. Provisioning `CIPHERVAULT_ACCOUNT_TOTP_KEY`, enabling the dashboard's
-   authenticator controls, and completing browser/CLI step-up authorization
-   tests before exposing hosted private vault routes.
+5. Provisioning `CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE` through the cloud secret
+   mount, enabling the dashboard's authenticator controls, and completing
+   browser/CLI step-up authorization tests before exposing hosted private vault
+   routes.
 
 The hosted account API now includes invitation and membership routes
 (`POST/GET /v1/accounts/:account_id/invitations`,

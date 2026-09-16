@@ -26,6 +26,9 @@ async fn spawn_operator() -> (String, Arc<OperatorState>, tokio::task::JoinHandl
 
 #[tokio::test]
 async fn test_out_of_band_approval_challenge_lifecycle() {
+    // Ephemeral test operator; production control routes default to strict
+    // authorization when the variable is unset.
+    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
     let (endpoint, state, _handle) = spawn_operator().await;
     let client = reqwest::Client::new();
 
@@ -122,4 +125,5 @@ async fn test_out_of_band_approval_challenge_lifecycle() {
 
     // Clean up
     let _ = std::fs::remove_dir_all(&state.data_dir);
+    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
 }

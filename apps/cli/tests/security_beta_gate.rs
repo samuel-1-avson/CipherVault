@@ -65,6 +65,9 @@ fn search_bytes_for_needle(path: &Path, needle: &[u8]) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_canary_leak_defense_across_operators_and_db() {
+    // Local test operators intentionally exercise the legacy migration mode;
+    // production defaults to strict enrollment when this variable is absent.
+    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
     let test_dir = std::env::temp_dir().join(format!(
         "cv_canary_test_{}",
         std::time::SystemTime::now()
@@ -236,6 +239,7 @@ async fn test_canary_leak_defense_across_operators_and_db() {
         db_leaks, 0,
         "Local SQLite store leaked canary plaintext in database!"
     );
+    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
 }
 
 #[test]

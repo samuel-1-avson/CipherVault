@@ -3,6 +3,7 @@ use ed25519_dalek::SigningKey;
 use crate::client::OperatorClient;
 use crate::error::StorageError;
 use crate::types::LeaseReceipt;
+use futures_util::future::join_all;
 
 pub struct MultiOperatorPool {
     clients: Vec<OperatorClient>,
@@ -84,21 +85,21 @@ impl MultiOperatorPool {
         vault_id: &[u8; 32],
         signing_key: &SigningKey,
     ) -> Vec<(OperatorClient, String)> {
+        let attempts = self.clients.iter().cloned().map(|client| async move {
+            let result = client.authenticate(vault_id, signing_key).await;
+            (client, result)
+        });
         let mut authenticated = Vec::new();
-
-        for client in &self.clients {
-            match client.authenticate(vault_id, signing_key).await {
-                Ok(token) => authenticated.push((client.clone(), token)),
-                Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to authenticate with operator {}: {}",
-                        client.endpoint(),
-                        e
-                    );
-                }
+        for (client, result) in join_all(attempts).await {
+            match result {
+                Ok(token) => authenticated.push((client, token)),
+                Err(e) => eprintln!(
+                    "Warning: Failed to authenticate with operator {}: {}",
+                    client.endpoint(),
+                    e
+                ),
             }
         }
-
         authenticated
     }
 
@@ -283,28 +284,30 @@ impl MultiOperatorPool {
 
     /// Queries all surviving operators for recovery records (candidate heads and envelopes).
     pub async fn query_recovery_records(&self, locator: &[u8; 32]) -> Vec<Vec<u8>> {
+        let queries = self
+            .clients
+            .iter()
+            .cloned()
+            .map(|client| async move { client.get_recovery_records(locator).await });
         let mut all_records = Vec::new();
-
-        for client in &self.clients {
-            if let Ok(records) = client.get_recovery_records(locator).await {
-                for r in records {
-                    if !all_records.contains(&r) {
-                        all_records.push(r);
-                    }
+        for records in join_all(queries).await.into_iter().flatten() {
+            for record in records {
+                if !all_records.contains(&record) {
+                    all_records.push(record);
                 }
             }
         }
-
         all_records
     }
 
     /// Fetches an object by CID from any available operator in the pool.
     pub async fn fetch_object_from_any(&self, cid: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-        for client in &self.clients {
+        let queries = self.clients.iter().cloned().map(|client| async move {
             // For public recovery fetch or with open access
-            if let Ok(bytes) = client.get_object("recovery_anonymous", cid).await {
-                return Ok(bytes);
-            }
+            client.get_object("recovery_anonymous", cid).await
+        });
+        if let Some(bytes) = join_all(queries).await.into_iter().flatten().next() {
+            return Ok(bytes);
         }
         Err(StorageError::OperatorUnreachable {
             endpoint: "all".into(),

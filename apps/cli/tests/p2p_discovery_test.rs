@@ -29,6 +29,9 @@ async fn spawn_operator(
 
 #[tokio::test]
 async fn test_p2p_gossip_and_pool_peer_expansion() {
+    // Ephemeral test operators use the migration mode; production control
+    // routes default to strict authorization when unset.
+    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
     // 1. Spawn three operator nodes
     let (ep1, state1, _h1) = spawn_operator("operator-alpha").await;
     let (ep2, state2, _h2) = spawn_operator("operator-beta").await;
@@ -95,4 +98,5 @@ async fn test_p2p_gossip_and_pool_peer_expansion() {
     let _ = std::fs::remove_dir_all(&state1.data_dir);
     let _ = std::fs::remove_dir_all(&state2.data_dir);
     let _ = std::fs::remove_dir_all(&state3.data_dir);
+    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
 }

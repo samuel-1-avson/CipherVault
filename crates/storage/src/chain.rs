@@ -323,6 +323,24 @@ impl ArbitrumAnchorClient {
         &self,
         evidence: &CheckpointEvidence,
     ) -> Result<AnchorVerificationReport, StorageError> {
+        if evidence.chain_id != self.chain_id {
+            return Err(StorageError::ServerError {
+                status: 400,
+                message: format!(
+                    "Checkpoint chain id {} does not match configured chain {}",
+                    evidence.chain_id, self.chain_id
+                ),
+            });
+        }
+        if evidence.contract_address.len() != 20
+            || evidence.contract_address.as_slice() != self.contract_address.as_slice()
+        {
+            return Err(StorageError::ServerError {
+                status: 400,
+                message: "Checkpoint contract address does not match the configured registry"
+                    .into(),
+            });
+        }
         let preimage_valid = evidence.verify_commitment();
         let mut commitment_arr = [0u8; 32];
         if evidence.commitment.len() == 32 {
@@ -344,7 +362,7 @@ impl ArbitrumAnchorClient {
         // transaction hash is present, independently query the chain receipt
         // and require a successful receipt at the same block as the registry
         // inclusion. Pre-submission evidence (all-zero tx hash) can still be
-        // confirmed from the contract query alone.
+        // observed in the registry, but it is not a receipt-backed settlement.
         let tx_hash_present =
             evidence.tx_hash.len() == 32 && evidence.tx_hash.iter().any(|byte| *byte != 0);
         let receipt = if tx_hash_present {
@@ -358,7 +376,7 @@ impl ArbitrumAnchorClient {
             (true, Some(receipt), Some(contract_block)) => {
                 receipt.status && receipt.block_number == contract_block
             }
-            (false, _, Some(_)) => true,
+            (false, _, Some(_)) => false,
             _ => false,
         };
         let receipt_block_number = receipt.as_ref().map(|receipt| receipt.block_number);

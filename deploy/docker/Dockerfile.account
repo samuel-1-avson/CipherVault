@@ -1,7 +1,7 @@
 # ======================================================================
 # CipherVault hosted account/control-plane service
 # ======================================================================
-FROM rust:1-slim-bookworm AS builder
+FROM rust:1-slim-bookworm@sha256:ebd900bae66fd508b466cef82d64a83a5fb34682e4c8b2797a42908bddc95a57 AS builder
 
 WORKDIR /workspace
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,9 +12,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY services ./services
 COPY apps ./apps
-RUN cargo build --release --bin ciphervault-account
+RUN cargo build --release --locked --bin ciphervault-account
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*

@@ -74,7 +74,7 @@ fi
 if [ "$INSTALLED" = "false" ]; then
     echo "Pre-built binary not found for ${TAG}. Attempting cargo install from GitHub..."
     if command -v cargo >/dev/null 2>&1; then
-        cargo install --git "https://github.com/${REPO}.git" ciphervault-cli --root "${INSTALL_DIR}/.."
+        cargo install --locked --git "https://github.com/${REPO}.git" ciphervault-cli --root "${INSTALL_DIR}/.."
         INSTALLED=true
     else
         echo "Error: Could not download pre-built binary and cargo is not installed." >&2

@@ -692,7 +692,7 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                         Style::default().fg(Color::White),
                     ),
                     dup_span,
-                    Span::styled(&c.preview, Style::default().fg(Color::DarkGray)),
+                    Span::styled("Masked", Style::default().fg(Color::DarkGray)),
                 ])
             })
             .collect();
@@ -704,7 +704,7 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Constraint::Length(20),
             Constraint::Length(10),
             Constraint::Length(12),
-            Constraint::Min(20),
+            Constraint::Length(12),
         ];
 
         let table = Table::new(rows, widths)
@@ -716,7 +716,7 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     "Gear Rolling Hash",
                     "Entropy",
                     "Deduplication",
-                    "Plaintext Preview",
+                    "Content",
                 ])
                 .style(
                     Style::default()

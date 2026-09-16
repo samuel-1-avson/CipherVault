@@ -1,6 +1,6 @@
 services:
   ingress:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     container_name: ciphervault-ingress
     ports:
       - "80:80"
@@ -138,14 +138,22 @@ services:
       - CIPHERVAULT_ACCOUNT_BIND=0.0.0.0:8300
       - CIPHERVAULT_ACCOUNT_DATA_DIR=/var/lib/ciphervault-account
       - CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=${CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS:-}
+      - CIPHERVAULT_ACCOUNT_TRUST_PROXY_HEADERS=${CIPHERVAULT_ACCOUNT_TRUST_PROXY_HEADERS:-true}
       - CIPHERVAULT_WEBAUTHN_RP_ID=${CIPHERVAULT_WEBAUTHN_RP_ID:-localhost}
       - CIPHERVAULT_WEBAUTHN_ORIGIN=${CIPHERVAULT_WEBAUTHN_ORIGIN:-http://localhost:8300}
       - CIPHERVAULT_ACCOUNT_COOKIE_SECURE=${CIPHERVAULT_ACCOUNT_COOKIE_SECURE:-true}
-      - CIPHERVAULT_ACCOUNT_TOTP_KEY=${CIPHERVAULT_ACCOUNT_TOTP_KEY:-}
+      - CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=/run/secrets/account-totp-key
+      - CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=${CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY:-true}
       - CIPHERVAULT_OPERATOR_ENDPOINTS=http://operator-1:8201,http://operator-2:8202,http://operator-3:8203
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     volumes:
       - account_prod_data:/var/lib/ciphervault-account
+    secrets:
+      - source: account_totp_key
+        target: account-totp-key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     depends_on:
       operator-1:
         condition: service_healthy
@@ -231,3 +239,7 @@ volumes:
   account_prod_data:
   caddy_data:
   caddy_config:
+
+secrets:
+  account_totp_key:
+    file: ${CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE:-/run/ciphervault-account-totp-key}

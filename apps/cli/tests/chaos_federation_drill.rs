@@ -40,6 +40,9 @@ async fn spawn_operator(name: &str, storage_dir: PathBuf) -> (String, tokio::tas
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn test_chaos_federation_and_guardian_disaster_drill() {
+    // The drill uses ephemeral local operators without an enrollment service;
+    // production defaults to strict enrollment when unset.
+    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
     let bin = get_ciphervault_bin();
     assert!(
         bin.exists(),
@@ -454,5 +457,6 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
     op3_task.abort();
     op4_task.abort();
     let _ = fs::remove_dir_all(&base_test_dir);
+    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
     println!("\n>>> [ALL CHAOS DRILL VERIFICATION PHASES PASSED WITH ZERO BITFLIPS]\n");
 }

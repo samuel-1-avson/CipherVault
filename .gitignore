@@ -24,6 +24,7 @@ secrets.env
 *.env
 .env*
 !deploy/docker/.env.example
+!deploy/gcp/.env.example
 
 # Cryptographic private keys, certificates, and identity files
 *.key

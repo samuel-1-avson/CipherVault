@@ -18,29 +18,9 @@
     import security_headers
     encode zstd gzip
 
-    # Shielded Operator Gateways (Private VPC Routing)
-    handle_path /op/1/* {
-        reverse_proxy http://10.128.0.39:80 {
-            header_up Host {host}
-            header_up X-Forwarded-Prefix /op/1
-        }
-    }
-
-    handle_path /op/2/* {
-        reverse_proxy http://10.128.0.40:80 {
-            header_up Host {host}
-            header_up X-Forwarded-Prefix /op/2
-        }
-    }
-
-    handle_path /op/3/* {
-        reverse_proxy http://10.142.0.2:80 {
-            header_up Host {host}
-            header_up X-Forwarded-Prefix /op/3
-        }
-    }
-
-    # Reverse proxy to the containerized CipherVault UI daemon
+    # The dashboard reaches private operators over its VPC-only service
+    # connections. Public operator gateway proxy paths are deliberately not
+    # exposed through this Internet-facing listener.
     reverse_proxy 127.0.0.1:8080 {
         header_up Host {host}
         header_up X-Real-IP {remote}

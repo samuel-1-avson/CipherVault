@@ -82,12 +82,13 @@ fn ensure_private_key_permissions(path: &std::path::Path) -> io::Result<()> {
 fn strict_auth_enabled() -> bool {
     std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
         .ok()
-        .is_some_and(|value| {
+        .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes"
             )
         })
+        .unwrap_or(true)
 }
 
 fn validate_security_configuration() -> io::Result<()> {

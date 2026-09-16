@@ -96,7 +96,6 @@ pub struct FastCdcTuiChunk {
     pub gear_fingerprint: String,
     pub entropy: f64,
     pub is_duplicate: bool,
-    pub preview: String,
 }
 
 #[derive(Debug, Clone)]
@@ -475,16 +474,6 @@ impl TuiApp {
                 unique_bytes += slice.len();
             }
 
-            let preview = if slice
-                .iter()
-                .all(|&b| b.is_ascii_graphic() || b == b' ' || b == b'\t' || b == b'\n')
-            {
-                let s = String::from_utf8_lossy(&slice[..slice.len().min(40)]);
-                s.trim().replace('\n', " ").to_string()
-            } else {
-                format!("hex:{}", hex::encode(&slice[..slice.len().min(16)]))
-            };
-
             records.push(FastCdcTuiChunk {
                 index: i,
                 offset,
@@ -493,7 +482,6 @@ impl TuiApp {
                 gear_fingerprint: format!("0x{:016x}", gear),
                 entropy: (entropy * 100.0).round() / 100.0,
                 is_duplicate: is_dup,
-                preview,
             });
 
             offset += slice.len();

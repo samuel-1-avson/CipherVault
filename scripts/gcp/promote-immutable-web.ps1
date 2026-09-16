@@ -1,0 +1,198 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$DashboardImage,
+
+    [Parameter(Mandatory = $true)]
+    [string]$AccountImage,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RollbackDashboardImage,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RollbackAccountImage,
+
+    [Parameter(Mandatory = $true)]
+    [string]$OperatorEndpoints,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RuntimeServiceAccount,
+
+    [string]$ProjectId = "",
+    [string]$InstanceName = "cv-web-ui",
+    [string]$Zone = "us-east1-b",
+    [string]$DomainName = "vault.cipherv.online",
+    [string]$AcmeEmail = "admin@example.com",
+    [string]$AccountTotpSecret = "ciphervault-account-totp-key",
+    [string]$CosignCertificateIdentityRegex = "https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*",
+    [switch]$Apply
+)
+
+$ErrorActionPreference = "Stop"
+
+function Invoke-Gcloud {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    & gcloud @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "gcloud $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Assert-DigestImage {
+    param([string]$Name, [string]$Image)
+    if ($Image -notmatch '^ghcr\.io/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$') {
+        throw "$Name must be a lowercase GHCR image pinned by sha256 digest."
+    }
+}
+
+function Assert-MetadataValue {
+    param([string]$Name, [string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Contains("`r") -or $Value.Contains("`n") -or $Value.Contains(',')) {
+        throw "$Name must be non-empty and cannot contain a comma or newline."
+    }
+}
+
+function Verify-ImageSignature {
+    param([string]$Image)
+    & cosign verify `
+        --certificate-identity-regexp $CosignCertificateIdentityRegex `
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com `
+        $Image | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cosign verification failed for $Image"
+    }
+}
+
+foreach ($command in @("gcloud", "cosign")) {
+    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+        throw "$command must be installed and authenticated before promotion."
+    }
+}
+
+if (-not $ProjectId) {
+    $ProjectId = (& gcloud config get-value project 2>$null).Trim()
+}
+foreach ($item in @(
+    @{ Name = "CIPHERVAULT_DASHBOARD_IMAGE"; Value = $DashboardImage },
+    @{ Name = "CIPHERVAULT_ACCOUNT_IMAGE"; Value = $AccountImage },
+    @{ Name = "ROLLBACK_DASHBOARD_IMAGE"; Value = $RollbackDashboardImage },
+    @{ Name = "ROLLBACK_ACCOUNT_IMAGE"; Value = $RollbackAccountImage }
+)) {
+    Assert-DigestImage $item.Name $item.Value
+}
+foreach ($item in @(
+    @{ Name = "ProjectId"; Value = $ProjectId },
+    @{ Name = "OperatorEndpoints"; Value = $OperatorEndpoints },
+    @{ Name = "RuntimeServiceAccount"; Value = $RuntimeServiceAccount },
+    @{ Name = "DomainName"; Value = $DomainName },
+    @{ Name = "AccountTotpSecret"; Value = $AccountTotpSecret }
+)) {
+    Assert-MetadataValue $item.Name $item.Value
+}
+if ($AccountTotpSecret -notmatch '^[A-Za-z0-9_-]+$') {
+    throw "AccountTotpSecret contains unsupported characters."
+}
+if ($RuntimeServiceAccount -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\.iam\.gserviceaccount\.com$') {
+    throw "RuntimeServiceAccount must be a Google service-account address."
+}
+
+Write-Host "Verifying signed image attestations..." -ForegroundColor Cyan
+foreach ($image in @($DashboardImage, $AccountImage, $RollbackDashboardImage, $RollbackAccountImage) | Select-Object -Unique) {
+    Verify-ImageSignature $image
+}
+
+$root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+$compose = Join-Path $root "deploy\gcp\docker-compose.web.yml"
+$caddy = Join-Path $root "deploy\gcp\Caddyfile.web.gcp"
+$startup = Join-Path $root "deploy\gcp\startup-web.sh"
+foreach ($path in @($compose, $caddy, $startup)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required deployment file is missing: $path"
+    }
+}
+
+$stageId = $DashboardImage.Substring($DashboardImage.Length - 12)
+$remoteStage = "/tmp/ciphervault-release-$stageId"
+
+Write-Host "Checking that the target VM can pull the candidate images..." -ForegroundColor Cyan
+Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; docker pull '$DashboardImage' >/dev/null; docker pull '$AccountImage' >/dev/null"
+
+if (-not $Apply) {
+    Write-Host "Preflight succeeded. Re-run with -Apply to stage the release and perform the controlled VM restart." -ForegroundColor Yellow
+    return
+}
+
+$promotionStarted = $false
+try {
+    Write-Host "Staging reviewed deployment configuration on the VM..." -ForegroundColor Cyan
+    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; rm -rf '$remoteStage'; mkdir -p '$remoteStage'"
+    Invoke-Gcloud compute scp $compose "${InstanceName}:$remoteStage/docker-compose.yml" --project $ProjectId --zone $Zone
+    Invoke-Gcloud compute scp $caddy "${InstanceName}:$remoteStage/Caddyfile" --project $ProjectId --zone $Zone
+    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo install -d -m 0755 /opt/ciphervault-ui/release; sudo install -m 0644 '$remoteStage/docker-compose.yml' /opt/ciphervault-ui/release/docker-compose.yml; sudo install -m 0644 '$remoteStage/Caddyfile' /opt/ciphervault-ui/release/Caddyfile; rm -rf '$remoteStage'"
+
+    $metadata = @(
+        "ciphervault-dashboard-image=$DashboardImage",
+        "ciphervault-account-image=$AccountImage",
+        "operator-endpoints=$OperatorEndpoints",
+        "web-domain=$DomainName",
+        "acme-email=$AcmeEmail",
+        "webauthn-rp-id=$DomainName",
+        "webauthn-origin=https://$DomainName",
+        "account-allowed-origins=https://$DomainName",
+        "account-totp-secret=$AccountTotpSecret",
+        "project-id=$ProjectId"
+    ) -join ','
+
+    Write-Host "Switching the VM to the least-privilege runtime identity and cloud-platform scope..." -ForegroundColor Cyan
+    Invoke-Gcloud compute instances stop $InstanceName --project $ProjectId --zone $Zone --quiet
+    $promotionStarted = $true
+    Invoke-Gcloud compute instances set-service-account $InstanceName --project $ProjectId --zone $Zone `
+        --service-account $RuntimeServiceAccount --scopes cloud-platform --quiet
+    Invoke-Gcloud compute instances add-metadata $InstanceName --project $ProjectId --zone $Zone `
+        --metadata $metadata --metadata-from-file "startup-script=$startup" --quiet
+    Invoke-Gcloud compute instances start $InstanceName --project $ProjectId --zone $Zone --quiet
+    $running = $false
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $status = (& gcloud compute instances describe $InstanceName --project $ProjectId --zone $Zone --format="value(status)").Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not read the VM status after starting it."
+        }
+        if ($status -eq "RUNNING") {
+            $running = $true
+            break
+        }
+        Start-Sleep -Seconds 10
+    }
+    if (-not $running) {
+        throw "The VM did not reach RUNNING state within five minutes."
+    }
+    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; systemctl is-active --quiet ciphervault-ui.service; docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
+
+    $healthUrl = "https://$DomainName/api/vault"
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 10 | Out-Null
+            Write-Host "Production health endpoint is responding." -ForegroundColor Green
+            break
+        } catch {
+            if ($attempt -eq 12) { throw }
+            Start-Sleep -Seconds 10
+        }
+    }
+    Write-Host "Promotion completed. Run scripts/gcp/verify-immutable-deployment.sh for independent post-deploy verification." -ForegroundColor Green
+} catch {
+    if ($promotionStarted) {
+        Write-Warning "Promotion failed after the VM stop. Restoring the supplied signed rollback images."
+        $rollbackMetadata = @(
+            "ciphervault-dashboard-image=$RollbackDashboardImage",
+            "ciphervault-account-image=$RollbackAccountImage"
+        ) -join ','
+        try {
+            Invoke-Gcloud compute instances add-metadata $InstanceName --project $ProjectId --zone $Zone --metadata $rollbackMetadata --quiet
+            Invoke-Gcloud compute instances reset $InstanceName --project $ProjectId --zone $Zone --quiet
+        } catch {
+            Write-Error "Automatic rollback could not be completed: $($_.Exception.Message)"
+        }
+    }
+    throw
+}

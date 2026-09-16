@@ -1,11 +1,11 @@
 services:
   ciphervault-ui:
-    image: ciphervault-ui:gcp
+    image: ${CIPHERVAULT_DASHBOARD_IMAGE:?CIPHERVAULT_DASHBOARD_IMAGE must be a signed GHCR digest}
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      - CIPHERVAULT_OPERATORS=http://10.128.0.39 http://10.128.0.40 http://10.142.0.2
+      - CIPHERVAULT_OPERATORS=${CIPHERVAULT_OPERATORS:?CIPHERVAULT_OPERATORS must list private operator endpoints}
       - CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES=${CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES:-}
       - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}
       - CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE=${CIPHERVAULT_PUBLIC_OPERATOR_TELEMETRY_FILE:-/var/lib/ciphervault-ui/operator-telemetry.json}
@@ -23,20 +23,28 @@ services:
       start_period: 10s
 
   account:
-    image: ciphervault-account:gcp
+    image: ${CIPHERVAULT_ACCOUNT_IMAGE:?CIPHERVAULT_ACCOUNT_IMAGE must be a signed GHCR digest}
     restart: unless-stopped
     environment:
       - CIPHERVAULT_ACCOUNT_BIND=0.0.0.0:8300
       - CIPHERVAULT_ACCOUNT_DATA_DIR=/var/lib/ciphervault-account
       - CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=${CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS:-}
+      - CIPHERVAULT_ACCOUNT_TRUST_PROXY_HEADERS=${CIPHERVAULT_ACCOUNT_TRUST_PROXY_HEADERS:-true}
       - CIPHERVAULT_WEBAUTHN_RP_ID=${CIPHERVAULT_WEBAUTHN_RP_ID:-localhost}
       - CIPHERVAULT_WEBAUTHN_ORIGIN=${CIPHERVAULT_WEBAUTHN_ORIGIN:-http://localhost:8300}
       - CIPHERVAULT_ACCOUNT_COOKIE_SECURE=${CIPHERVAULT_ACCOUNT_COOKIE_SECURE:-true}
-      - CIPHERVAULT_ACCOUNT_TOTP_KEY=${CIPHERVAULT_ACCOUNT_TOTP_KEY:-}
+      - CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=/run/secrets/account-totp-key
+      - CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=${CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY:-true}
       - CIPHERVAULT_OPERATOR_ENDPOINTS=${CIPHERVAULT_OPERATOR_ENDPOINTS:-}
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     volumes:
       - account_data:/var/lib/ciphervault-account
+    secrets:
+      - source: account_totp_key
+        target: account-totp-key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:8300/healthz"]
       interval: 15s
@@ -46,7 +54,7 @@ services:
 
   public-feed-publisher:
     profiles: ["public-feed"]
-    image: ciphervault-ui:gcp
+    image: ${CIPHERVAULT_DASHBOARD_IMAGE:?CIPHERVAULT_DASHBOARD_IMAGE must be a signed GHCR digest}
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/entrypoint-public-feed-publisher.sh"]
     environment:
@@ -58,7 +66,7 @@ services:
       - vault_data:/var/lib/ciphervault-ui
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     restart: unless-stopped
     network_mode: host
     environment:
@@ -79,3 +87,7 @@ volumes:
   account_data:
   caddy_data:
   caddy_config:
+
+secrets:
+  account_totp_key:
+    file: ${CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE:-/run/ciphervault-account-totp-key}

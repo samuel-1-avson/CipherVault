@@ -157,6 +157,7 @@ impl OperatorState {
         };
         state.load_enrolled_identities();
         state.load_sessions();
+        state.load_relayed_checkpoints();
         state
     }
 
@@ -414,6 +415,47 @@ impl OperatorState {
             keys.insert(record.token.clone(), key);
             vaults.insert(record.token, record.vault_id_hex);
         }
+    }
+
+    fn relayed_checkpoint_store_path(&self) -> PathBuf {
+        self.data_dir.join("relayed-checkpoints.json")
+    }
+
+    fn load_relayed_checkpoints(&self) {
+        let Ok(bytes) = fs::read(self.relayed_checkpoint_store_path()) else {
+            return;
+        };
+        let Ok(records) =
+            serde_json::from_slice::<HashMap<String, ciphervault_storage::RelayerReceipt>>(&bytes)
+        else {
+            return;
+        };
+        let mut stored = self.relayed_checkpoints.lock().unwrap();
+        for (commitment, receipt) in records {
+            let tx_hash = receipt.tx_hash_hex.trim_start_matches("0x");
+            if commitment.len() == 64
+                && hex::decode(&commitment).is_ok()
+                && receipt.commitment_hex == commitment
+                && (tx_hash.is_empty() || (tx_hash.len() == 64 && hex::decode(tx_hash).is_ok()))
+                && matches!(
+                    receipt.status.as_str(),
+                    "QueuedForRelay"
+                        | "SequencerConfirmed"
+                        | "ParentDataFinalized"
+                        | "AssertionSettled"
+                )
+            {
+                stored.insert(commitment, receipt);
+            }
+        }
+    }
+
+    fn persist_relayed_checkpoints(
+        &self,
+        records: &HashMap<String, ciphervault_storage::RelayerReceipt>,
+    ) -> Result<(), String> {
+        let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
+        self.persist_atomic(&self.relayed_checkpoint_store_path(), &encoded)
     }
 
     fn persist_sessions(&self) {
@@ -1171,30 +1213,65 @@ impl OperatorState {
             return Err("Relayer checkpoint capacity reached".into());
         }
 
-        // If evidence contains confirmed on-chain data (block > 0 and non-zero tx_hash):
-        // status is "SequencerConfirmed". Otherwise it is truthfully "QueuedForRelay".
-        let has_on_chain_tx =
-            !evidence.tx_hash.is_empty() && evidence.tx_hash.iter().any(|b| *b != 0);
-        let (status, block_number, tx_hash_hex) = if evidence.block_number > 0 && has_on_chain_tx {
-            (
-                "SequencerConfirmed".to_string(),
-                evidence.block_number,
-                hex::encode(&evidence.tx_hash),
-            )
-        } else {
-            ("QueuedForRelay".to_string(), 0, String::new())
-        };
-
+        // Client-supplied transaction hashes and block numbers are hints only.
+        // Keep every new checkpoint pending until a trusted RPC verifier has
+        // independently checked the receipt and registry inclusion.
         let receipt = ciphervault_storage::RelayerReceipt {
             commitment_hex: commitment_hex.clone(),
-            tx_hash_hex,
-            block_number,
-            status,
+            tx_hash_hex: String::new(),
+            block_number: 0,
+            status: "QueuedForRelay".to_string(),
             timestamp: Utc::now().timestamp() as u64,
         };
 
-        lock.insert(commitment_hex, receipt.clone());
+        lock.insert(commitment_hex.clone(), receipt.clone());
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_relayed_checkpoints(&snapshot) {
+            lock.remove(&commitment_hex);
+            return Err(format!("Unable to persist relayed checkpoint: {error}"));
+        }
         Ok(receipt)
+    }
+
+    /// Marks a queued checkpoint as confirmed only after an independent RPC
+    /// verifier has validated its receipt and registry inclusion. This method
+    /// intentionally accepts the verifier's report separately so callers
+    /// cannot promote a client-supplied block/transaction pair by themselves.
+    pub fn confirm_relayed_checkpoint(
+        &self,
+        evidence: &ciphervault_format::CheckpointEvidence,
+        report: &ciphervault_storage::AnchorVerificationReport,
+    ) -> Result<ciphervault_storage::RelayerReceipt, String> {
+        if !report.preimage_valid || !report.on_chain_confirmed || !report.receipt_verified {
+            return Err("Checkpoint has no independently verified on-chain receipt".into());
+        }
+        if report.commitment_hex != hex::encode(&evidence.commitment)
+            || report.receipt_block_number.is_none()
+            || evidence.tx_hash.len() != 32
+            || evidence.tx_hash.iter().all(|byte| *byte == 0)
+        {
+            return Err("Independent checkpoint receipt does not match evidence".into());
+        }
+        let commitment_hex = hex::encode(&evidence.commitment);
+        let tx_hash_hex = hex::encode(&evidence.tx_hash);
+        let block_number = report
+            .receipt_block_number
+            .ok_or_else(|| "Verified checkpoint receipt has no block number".to_string())?;
+        let mut lock = self.relayed_checkpoints.lock().unwrap();
+        let existing = lock
+            .get_mut(&commitment_hex)
+            .ok_or_else(|| "Checkpoint is not queued for relay".to_string())?;
+        let previous = existing.clone();
+        existing.tx_hash_hex = tx_hash_hex;
+        existing.block_number = block_number;
+        existing.status = "SequencerConfirmed".to_string();
+        let updated = existing.clone();
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_relayed_checkpoints(&snapshot) {
+            lock.insert(commitment_hex, previous);
+            return Err(format!("Unable to persist relayed checkpoint: {error}"));
+        }
+        Ok(updated)
     }
 
     /// Updates the on-chain settlement status of a relayed checkpoint once mined.
@@ -1207,10 +1284,17 @@ impl OperatorState {
     ) -> Option<ciphervault_storage::RelayerReceipt> {
         let mut lock = self.relayed_checkpoints.lock().unwrap();
         if let Some(existing) = lock.get_mut(commitment_hex) {
+            let previous = existing.clone();
             existing.tx_hash_hex = tx_hash_hex.to_string();
             existing.block_number = block_number;
             existing.status = status.to_string();
-            Some(existing.clone())
+            let updated = existing.clone();
+            let snapshot = lock.clone();
+            if self.persist_relayed_checkpoints(&snapshot).is_err() {
+                lock.insert(commitment_hex.to_string(), previous);
+                return None;
+            }
+            Some(updated)
         } else {
             None
         }
@@ -1373,6 +1457,7 @@ mod tests {
 
     #[test]
     fn challenge_binds_device_key_and_vault_and_persists_session() {
+        std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
         let root = std::env::temp_dir().join(format!("cv-session-{}", rand::random::<u128>()));
         let operator_key = ciphervault_crypto::generate_signing_key();
         let state = OperatorState::new("test-auth".into(), root.clone(), operator_key);
@@ -1425,6 +1510,7 @@ mod tests {
         assert!(!restarted.validate_write_session(&token));
         drop(restarted);
         fs::remove_dir_all(root).unwrap();
+        std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
     }
 
     #[test]
@@ -1557,6 +1643,22 @@ mod tests {
         assert_eq!(receipt.status, "QueuedForRelay");
         assert_eq!(receipt.block_number, 0);
 
+        // Client-supplied on-chain fields must never promote a new checkpoint
+        // before an independent RPC verifier has checked them.
+        let claimed = ciphervault_format::CheckpointEvidence::new(
+            [0x12u8; 32],
+            [0x23u8; 32],
+            42161,
+            contract,
+            [0x44u8; 32],
+            12345,
+            1700000000,
+        );
+        let queued_claim = state.relay_checkpoint(&claimed).unwrap();
+        assert_eq!(queued_claim.status, "QueuedForRelay");
+        assert!(queued_claim.tx_hash_hex.is_empty());
+        assert_eq!(queued_claim.block_number, 0);
+
         // Confirm mined status update
         let updated = state
             .update_relayed_checkpoint(
@@ -1576,12 +1678,27 @@ mod tests {
         assert_eq!(queried.tx_hash_hex, updated.tx_hash_hex);
         assert_eq!(queried.status, "SequencerConfirmed");
 
+        // The relay receipt survives an operator restart so clients can
+        // continue polling settlement progress after a process crash.
+        drop(state);
+        let restarted = OperatorState::new(
+            "test-relayer".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        let restored = restarted
+            .get_relayed_checkpoint(&receipt.commitment_hex)
+            .unwrap();
+        assert_eq!(restored.status, "SequencerConfirmed");
+        assert_eq!(restored.block_number, 12345);
+        assert_eq!(restored.tx_hash_hex, updated.tx_hash_hex);
+
         // Rejects tampered commitment math
         let mut tampered = evidence.clone();
         tampered.salt[0] ^= 0xFF;
-        assert!(state.relay_checkpoint(&tampered).is_err());
+        assert!(restarted.relay_checkpoint(&tampered).is_err());
 
-        drop(state);
+        drop(restarted);
         fs::remove_dir_all(root).unwrap();
     }
 

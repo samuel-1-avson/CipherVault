@@ -88,6 +88,10 @@ async fn test_automated_l2_relayer_flow() {
     use std::sync::Arc;
     use tokio::net::TcpListener;
 
+    // This in-process relayer intentionally exercises the legacy migration
+    // mode. Production operators fail closed when strict auth is unset.
+    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
+
     let test_dir = std::env::temp_dir().join(format!(
         "cv_relayer_test_{}",
         std::time::SystemTime::now()
@@ -163,6 +167,7 @@ async fn test_automated_l2_relayer_flow() {
     bad_evidence.salt[0] ^= 0xFF;
     assert!(client.submit_checkpoint(&bad_evidence).await.is_err());
 
+    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
     let _ = fs::remove_dir_all(test_dir);
 }
 

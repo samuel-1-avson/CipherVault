@@ -145,11 +145,19 @@ pub mod portable_keystore {
                     return Ok(key);
                 }
             }
-            // Derive 32 bytes from passphrase using domain-separated hash
-            let mut hasher = Sha256::new();
-            hasher.update(b"CipherVault-MasterKey-Passphrase-v2");
-            hasher.update(val.as_bytes());
-            return Ok(hasher.finalize().into());
+            // Passwords are deliberately slower to derive than raw keys. A
+            // caller may supply a stable 16-byte salt via
+            // CIPHERVAULT_MASTER_KEY_SALT; otherwise derive a per-keystore
+            // salt from the non-secret key-file path so two installations do
+            // not share the same salt.
+            let salt = passphrase_salt()?;
+            return ciphervault_crypto::derive_key_from_password(val.as_bytes(), &salt).map_err(
+                |error| {
+                    LocalStoreError::KeyProtectionError(format!(
+                        "Argon2id master-key derivation failed: {error}"
+                    ))
+                },
+            );
         }
 
         // 2. Check key file from CIPHERVAULT_KEYSTORE_PATH or ~/.config/ciphervault/keystore.key
@@ -173,6 +181,29 @@ pub mod portable_keystore {
         Err(LocalStoreError::KeyProtectionError(
             "Non-Windows keystore requires provisioned CIPHERVAULT_MASTER_KEY or valid keystore file (~/.config/ciphervault/keystore.key). Guessable environment credentials rejected.".into(),
         ))
+    }
+
+    fn passphrase_salt() -> Result<[u8; 16], LocalStoreError> {
+        if let Ok(value) = std::env::var("CIPHERVAULT_MASTER_KEY_SALT") {
+            let bytes = hex::decode(value.trim()).map_err(|_| {
+                LocalStoreError::KeyProtectionError(
+                    "CIPHERVAULT_MASTER_KEY_SALT must be 16-byte hex".into(),
+                )
+            })?;
+            return bytes.try_into().map_err(|_| {
+                LocalStoreError::KeyProtectionError(
+                    "CIPHERVAULT_MASTER_KEY_SALT must be 16-byte hex".into(),
+                )
+            });
+        }
+        let path = get_default_keyfile_path()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"CipherVault-MasterKey-Salt-v3");
+        hasher.update(path.to_string_lossy().as_bytes());
+        let digest = hasher.finalize();
+        let mut salt = [0u8; 16];
+        salt.copy_from_slice(&digest[..16]);
+        Ok(salt)
     }
 
     pub fn get_default_keyfile_path() -> Result<PathBuf, LocalStoreError> {

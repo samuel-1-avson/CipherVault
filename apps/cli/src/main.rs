@@ -6605,7 +6605,7 @@ struct PersistedPublicOperatorHistoryEntry {
     operators: Vec<serde_json::Value>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedPublicOperatorJob {
     job_id: String,
     started_at_utc: String,
@@ -6752,19 +6752,14 @@ fn persist_public_operator_job(job: &PersistedPublicOperatorJob) -> Result<()> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    jobs.push(PersistedPublicOperatorJob {
-        job_id: job.job_id.clone(),
-        started_at_utc: job.started_at_utc.clone(),
-        completed_at_utc: job.completed_at_utc.clone(),
-        status: job.status.clone(),
-        regions: job.regions.clone(),
-        operator_count: job.operator_count,
-        reachable_count: job.reachable_count,
-        failure_count: job.failure_count,
-        attempts: job.attempts,
-        retry_count: job.retry_count,
-        error_summary: job.error_summary.clone(),
-    });
+    if let Some(existing) = jobs
+        .iter_mut()
+        .find(|existing| existing.job_id == job.job_id)
+    {
+        *existing = job.clone();
+    } else {
+        jobs.push(job.clone());
+    }
     if jobs.len() > PUBLIC_OPERATOR_JOB_HISTORY_MAX {
         jobs.drain(..jobs.len() - PUBLIC_OPERATOR_JOB_HISTORY_MAX);
     }
@@ -6801,15 +6796,103 @@ fn load_public_operator_jobs() -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
+fn reconcile_public_operator_job_records(
+    jobs: &mut [PersistedPublicOperatorJob],
+    completed_at_utc: &str,
+) -> usize {
+    let mut interrupted = 0usize;
+    for job in jobs {
+        if job.status == "running" {
+            job.status = "interrupted".to_string();
+            job.completed_at_utc = completed_at_utc.to_string();
+            job.error_summary = Some("collector restarted before job completion".to_string());
+            interrupted += 1;
+        }
+    }
+    interrupted
+}
+
+/// Mark jobs that were persisted as running before a process restart. Keeping
+/// an explicit interrupted outcome prevents the public job feed from claiming
+/// that work is still active forever after a crash and gives operators a
+/// durable recovery signal for the next collector cycle.
+fn reconcile_public_operator_jobs() -> Result<usize> {
+    let path = public_operator_jobs_path()
+        .context("public operator job persistence path is not configured")?;
+    let mut jobs = fs::read_to_string(&path)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| serde_json::from_str::<PersistedPublicOperatorJob>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let now = Utc::now().to_rfc3339();
+    let interrupted = reconcile_public_operator_job_records(&mut jobs, &now);
+    if interrupted == 0 {
+        return Ok(0);
+    }
+    let encoded = jobs
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("operator-jobs.jsonl"),
+        std::process::id()
+    ));
+    fs::write(&tmp, format!("{}\n", encoded))?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    if let Err(error) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.into());
+    }
+    Ok(interrupted)
+}
+
 fn spawn_public_operator_collector() {
     if public_operator_telemetry_path().is_none() {
         return;
+    }
+    if let Ok(interrupted) = reconcile_public_operator_jobs() {
+        if interrupted > 0 {
+            eprintln!("Marked {interrupted} interrupted public operator collector job(s)");
+        }
     }
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(PUBLIC_OPERATOR_CACHE_TTL);
         loop {
             interval.tick().await;
             let started_at = Utc::now();
+            let job_id = hex::encode(rand::random::<[u8; 16]>());
+            let started_at_utc = started_at.to_rfc3339();
+            let mut regions = get_configured_operator_regions()
+                .into_iter()
+                .map(|(_, region)| region)
+                .collect::<Vec<_>>();
+            regions.sort();
+            regions.dedup();
+            if let Err(error) = persist_public_operator_job(&PersistedPublicOperatorJob {
+                job_id: job_id.clone(),
+                started_at_utc: started_at_utc.clone(),
+                completed_at_utc: String::new(),
+                status: "running".to_string(),
+                regions: regions.clone(),
+                operator_count: 0,
+                reachable_count: 0,
+                failure_count: 0,
+                attempts: 0,
+                retry_count: 0,
+                error_summary: None,
+            }) {
+                eprintln!("Public operator collector start persistence failed: {error}");
+            }
             let snapshot = PublicOperatorTelemetry {
                 observed_at: started_at,
                 cached_at: Instant::now(),
@@ -6847,21 +6930,22 @@ fn spawn_public_operator_collector() {
                 eprintln!("Public operator telemetry history persistence failed: {error}");
             }
             if let Err(error) = persist_public_operator_job(&PersistedPublicOperatorJob {
-                job_id: hex::encode(rand::random::<[u8; 16]>()),
-                started_at_utc: started_at.to_rfc3339(),
+                job_id,
+                started_at_utc,
                 completed_at_utc: Utc::now().to_rfc3339(),
                 status: status.to_string(),
                 regions: {
-                    let mut regions = snapshot
+                    let mut observed_regions = snapshot
                         .operators
                         .iter()
                         .filter_map(|operator| operator.get("region"))
                         .filter_map(serde_json::Value::as_str)
                         .map(str::to_string)
                         .collect::<Vec<_>>();
-                    regions.sort();
-                    regions.dedup();
-                    regions
+                    observed_regions.extend(regions);
+                    observed_regions.sort();
+                    observed_regions.dedup();
+                    observed_regions
                 },
                 operator_count,
                 reachable_count,
@@ -8947,5 +9031,48 @@ mod ui_router_tests {
         assert!(canonical_tracked_inspection_file(&workspace_root, &outside).is_err());
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn collector_restart_marks_inflight_jobs_interrupted() {
+        let mut jobs = vec![
+            PersistedPublicOperatorJob {
+                job_id: "running".into(),
+                started_at_utc: "2026-09-16T00:00:00Z".into(),
+                completed_at_utc: String::new(),
+                status: "running".into(),
+                regions: vec!["default".into()],
+                operator_count: 0,
+                reachable_count: 0,
+                failure_count: 0,
+                attempts: 0,
+                retry_count: 0,
+                error_summary: None,
+            },
+            PersistedPublicOperatorJob {
+                job_id: "done".into(),
+                started_at_utc: "2026-09-16T00:00:00Z".into(),
+                completed_at_utc: "2026-09-16T00:00:01Z".into(),
+                status: "succeeded".into(),
+                regions: vec!["default".into()],
+                operator_count: 1,
+                reachable_count: 1,
+                failure_count: 0,
+                attempts: 1,
+                retry_count: 0,
+                error_summary: None,
+            },
+        ];
+        assert_eq!(
+            reconcile_public_operator_job_records(&mut jobs, "2026-09-16T00:00:30Z"),
+            1
+        );
+        assert_eq!(jobs[0].status, "interrupted");
+        assert_eq!(jobs[0].completed_at_utc, "2026-09-16T00:00:30Z");
+        assert!(jobs[0]
+            .error_summary
+            .as_deref()
+            .is_some_and(|message| message.contains("restarted")));
+        assert_eq!(jobs[1].status, "succeeded");
     }
 }

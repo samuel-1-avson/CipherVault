@@ -44,7 +44,7 @@ jobs:
         if: runner.os == 'Linux'
 
       - name: Clippy Linter Check
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Workspace Unit & Integration Tests
         run: cargo test --workspace --locked --verbose

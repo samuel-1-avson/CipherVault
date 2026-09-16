@@ -17,7 +17,7 @@ const uiApp = read('apps', 'ui', 'app.js');
 const uiIndex = read('apps', 'ui', 'index.html');
 assert.match(
   accountDockerfile,
-  /cargo build --release --bin ciphervault-account/,
+  /cargo build --release(?: --locked)? --bin ciphervault-account/,
   'the account image must build the durable control-plane binary',
 );
 assert.match(accountService, /post_webauthn_authentication_options/);
@@ -122,8 +122,13 @@ for (const composePath of [
   if (composePath.includes('gcp')) {
     assert.match(
       compose,
-      /ciphervault-account:gcp/,
-      `${composePath.join('/')} must run the account image built by startup-web.sh`,
+      /CIPHERVAULT_ACCOUNT_IMAGE:\?CIPHERVAULT_ACCOUNT_IMAGE must be a signed GHCR digest/,
+      `${composePath.join('/')} must require an immutable account image digest`,
+    );
+    assert.match(
+      compose,
+      /CIPHERVAULT_DASHBOARD_IMAGE:\?CIPHERVAULT_DASHBOARD_IMAGE must be a signed GHCR digest/,
+      `${composePath.join('/')} must require an immutable dashboard image digest`,
     );
   } else {
     assert.match(

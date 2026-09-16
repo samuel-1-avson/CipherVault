@@ -19,7 +19,9 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
 #[tokio::test]
 async fn challenge_and_object_routes_enforce_vault_scope() {
     let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await;
-    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
+    // Explicitly exercise the legacy migration mode; production defaults to
+    // strict authorization when the variable is absent.
+    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
     std::env::remove_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN");
     let root = std::env::temp_dir().join(format!("cv-http-auth-{}", rand::random::<u128>()));
     let state = Arc::new(OperatorState::new(
@@ -110,6 +112,7 @@ async fn challenge_and_object_routes_enforce_vault_scope() {
         .await
         .unwrap();
     assert_eq!(valid.status(), StatusCode::OK);
+    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
     let _ = std::fs::remove_dir_all(root);
 }
 

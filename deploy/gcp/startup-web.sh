@@ -1,99 +1,142 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# CipherVault Web Dashboard GCP VPS Automated Startup Script
-# ==============================================================================
+# CipherVault immutable web release bootstrap for Compute Engine.
+#
+# A release promotion stages the reviewed Compose and Caddy files beneath
+# /opt/ciphervault-ui/release before this script is installed as instance
+# metadata. This script never checks out Git and never builds application
+# images. It pulls only digest-pinned images specified by instance metadata.
 set -euo pipefail
 
-echo "======================================================="
-echo "  Starting CipherVault Web Dashboard Provisioning (GCP)"
-echo "======================================================="
+readonly APP_DIR=/opt/ciphervault-ui
+readonly RELEASE_DIR="$APP_DIR/release"
+readonly SECRETS_DIR="$APP_DIR/secrets"
+readonly ENV_FILE="$APP_DIR/.env"
+readonly TOTP_KEY_FILE="$SECRETS_DIR/account-totp-key"
 
-# 1. Update OS Packages & Prerequisites
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release git jq ufw
+metadata_value() {
+    local key="$1"
+    local fallback="${2:-}"
+    local value
+    value=$(curl --fail --silent --show-error --connect-timeout 2 \
+        -H 'Metadata-Flavor: Google' \
+        "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$key" \
+        2>/dev/null || true)
+    printf '%s' "${value:-$fallback}"
+}
 
-# 2. Configure Swap Space (Prevents OOM during Rust compilation on small instances)
-if [ ! -f /swapfile ]; then
-    echo "Configuring 4GB swap space for compilation headroom..."
-    fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+require_digest_image() {
+    local name="$1"
+    local image="$2"
+    if [[ ! "$image" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+        echo "$name must be a lowercase GHCR image pinned by sha256 digest" >&2
+        exit 1
+    fi
+}
+
+install_docker() {
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v docker >/dev/null 2>&1; then
+        apt-get update -y
+        apt-get install -y --no-install-recommends ca-certificates curl gnupg
+        install -m 0755 -d /etc/apt/keyrings
+        curl --fail --silent --show-error https://download.docker.com/linux/ubuntu/gpg \
+            -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+        . /etc/os-release
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
+            > /etc/apt/sources.list.d/docker.list
+        apt-get update -y
+        apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        apt-get update -y
+        apt-get install -y --no-install-recommends jq
+    fi
+}
+
+fetch_totp_key() {
+    local project_id="$1"
+    local secret_name="$2"
+    local token response_file key_file
+    token=$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
+        | jq -er '.access_token')
+    response_file=$(mktemp)
+    key_file=$(mktemp)
+    trap 'rm -f "$response_file" "$key_file"' RETURN
+    curl --fail --silent --show-error \
+        -H "Authorization: Bearer $token" \
+        "https://secretmanager.googleapis.com/v1/projects/$project_id/secrets/$secret_name/versions/latest:access" \
+        > "$response_file"
+    jq -er '.payload.data' "$response_file" | base64 --decode | tr -d '\r\n' > "$key_file"
+    if ! grep -Eq '^[[:xdigit:]]{64}$' "$key_file"; then
+        echo 'The account TOTP wrapping secret must contain exactly 32 hex bytes' >&2
+        exit 1
+    fi
+    install -d -m 0700 "$SECRETS_DIR"
+    install -o 10001 -g 10001 -m 0400 "$key_file" "$TOTP_KEY_FILE"
+}
+
+install_docker
+mkdir -p "$APP_DIR" "$APP_DIR/caddy_data" "$APP_DIR/caddy_config"
+
+if [[ ! -f "$RELEASE_DIR/docker-compose.yml" || ! -f "$RELEASE_DIR/Caddyfile" ]]; then
+    echo 'No staged CipherVault release configuration exists; refusing to start a mutable deployment' >&2
+    exit 1
 fi
 
-# 3. Install Docker Engine if not present
-if ! command -v docker &> /dev/null; then
-    echo "Installing Docker Engine..."
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || \
-    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
+readonly DASHBOARD_IMAGE="$(metadata_value ciphervault-dashboard-image)"
+readonly ACCOUNT_IMAGE="$(metadata_value ciphervault-account-image)"
+readonly OPERATORS="$(metadata_value operator-endpoints)"
+readonly WEB_DOMAIN="$(metadata_value web-domain vault.example.com)"
+readonly ACME_EMAIL="$(metadata_value acme-email admin@example.com)"
+readonly WEBAUTHN_RP_ID="$(metadata_value webauthn-rp-id "$WEB_DOMAIN")"
+readonly WEBAUTHN_ORIGIN="$(metadata_value webauthn-origin "https://$WEB_DOMAIN")"
+readonly ACCOUNT_ALLOWED_ORIGINS="$(metadata_value account-allowed-origins "$WEBAUTHN_ORIGIN")"
+readonly TOTP_SECRET_NAME="$(metadata_value account-totp-secret ciphervault-account-totp-key)"
+readonly PROJECT_ID="$(metadata_value project-id)"
 
-    DISTRO=$(. /etc/os-release && echo "$ID")
-    CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$DISTRO $CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    apt-get update -y
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+require_digest_image CIPHERVAULT_DASHBOARD_IMAGE "$DASHBOARD_IMAGE"
+require_digest_image CIPHERVAULT_ACCOUNT_IMAGE "$ACCOUNT_IMAGE"
+if [[ -z "$OPERATORS" ]]; then
+    echo 'operator-endpoints metadata must list private operator endpoints' >&2
+    exit 1
+fi
+if [[ -z "$PROJECT_ID" || ! "$TOTP_SECRET_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo 'project-id or account-totp-secret metadata is invalid' >&2
+    exit 1
 fi
 
-# 4. Setup Directories
-mkdir -p /opt/ciphervault-ui
-mkdir -p /opt/ciphervault-ui/caddy_data
-mkdir -p /opt/ciphervault-ui/caddy_config
-
-# 5. Clone / Fetch Repository
-echo "Fetching CipherVault repository..."
-if [ ! -d "/opt/ciphervault-ui/repo" ]; then
-    git clone --depth 1 https://github.com/samuel-1-avson/CipherVault.git /opt/ciphervault-ui/repo
-else
-    git -C /opt/ciphervault-ui/repo pull || true
-fi
-
-# 6. Extract Custom Domain from GCP Instance Metadata (or fallback)
-WEB_DOMAIN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/web-domain" 2>/dev/null || echo "vault.example.com")
-ACME_EMAIL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/acme-email" 2>/dev/null || echo "admin@example.com")
-WEBAUTHN_RP_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/webauthn-rp-id" 2>/dev/null || echo "$WEB_DOMAIN")
-WEBAUTHN_ORIGIN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/webauthn-origin" 2>/dev/null || echo "https://$WEB_DOMAIN")
-ACCOUNT_ALLOWED_ORIGINS=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/account-allowed-origins" 2>/dev/null || echo "https://$WEB_DOMAIN")
-
-echo "Configured Web Domain: $WEB_DOMAIN"
-echo "Configured ACME Email: $ACME_EMAIL"
-
-# 7. Copy Compose & Caddy configuration
-cp /opt/ciphervault-ui/repo/deploy/gcp/docker-compose.web.yml /opt/ciphervault-ui/docker-compose.yml
-cp /opt/ciphervault-ui/repo/deploy/gcp/Caddyfile.web.gcp /opt/ciphervault-ui/Caddyfile
-
-# Write environment file
-cat <<EOF > /opt/ciphervault-ui/.env
-WEB_DOMAIN=${WEB_DOMAIN}
-ACME_EMAIL=${ACME_EMAIL}
-CIPHERVAULT_OPERATORS=http://10.128.0.39 http://10.128.0.40 http://10.142.0.2
-CIPHERVAULT_WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID}
-CIPHERVAULT_WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
-CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=${ACCOUNT_ALLOWED_ORIGINS}
+fetch_totp_key "$PROJECT_ID" "$TOTP_SECRET_NAME"
+install -o root -g root -m 0644 "$RELEASE_DIR/docker-compose.yml" "$APP_DIR/docker-compose.yml"
+install -o root -g root -m 0644 "$RELEASE_DIR/Caddyfile" "$APP_DIR/Caddyfile"
+umask 077
+cat > "$ENV_FILE" <<EOF
+WEB_DOMAIN=$WEB_DOMAIN
+ACME_EMAIL=$ACME_EMAIL
+CIPHERVAULT_DASHBOARD_IMAGE=$DASHBOARD_IMAGE
+CIPHERVAULT_ACCOUNT_IMAGE=$ACCOUNT_IMAGE
+CIPHERVAULT_OPERATORS=$OPERATORS
+CIPHERVAULT_WEBAUTHN_RP_ID=$WEBAUTHN_RP_ID
+CIPHERVAULT_WEBAUTHN_ORIGIN=$WEBAUTHN_ORIGIN
+CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=$ACCOUNT_ALLOWED_ORIGINS
 CIPHERVAULT_ACCOUNT_COOKIE_SECURE=true
+CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=$TOTP_KEY_FILE
+CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=true
 EOF
+chmod 0600 "$ENV_FILE"
 
-# 8. Build Production Dashboard Image
-echo "Building ciphervault-ui container image..."
-cd /opt/ciphervault-ui/repo
-docker build -t ciphervault-ui:gcp -f deploy/docker/Dockerfile.dashboard .
-echo "Building ciphervault-account control-plane image..."
-docker build -t ciphervault-account:gcp -f deploy/docker/Dockerfile.account .
-
-# 9. Create and Enable Systemd Service
-cat <<'EOF' > /etc/systemd/system/ciphervault-ui.service
+cat > /etc/systemd/system/ciphervault-ui.service <<'EOF'
 [Unit]
-Description=CipherVault Web Dashboard & Caddy Reverse Proxy
+Description=CipherVault immutable web dashboard release
 After=docker.service network-online.target
 Requires=docker.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/ciphervault-ui
-ExecStart=/usr/bin/docker compose up
+ExecStartPre=/usr/bin/docker compose pull --quiet
+ExecStart=/usr/bin/docker compose up --remove-orphans
 ExecStop=/usr/bin/docker compose down
 Restart=always
 RestartSec=5s
@@ -104,16 +147,3 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now ciphervault-ui.service
-
-# 10. Configure Host Firewall (Allow 80, 443, 22)
-if command -v ufw &> /dev/null; then
-    ufw allow 22/tcp || true
-    ufw allow 80/tcp || true
-    ufw allow 443/tcp || true
-    ufw --force enable || true
-fi
-
-echo "======================================================="
-echo " CipherVault Web Dashboard Provisioning Complete!      "
-echo " Listening on ports 80 & 443 with automated TLS.       "
-echo "======================================================="

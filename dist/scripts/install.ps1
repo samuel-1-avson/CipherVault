@@ -67,7 +67,7 @@ if (Test-Path -Path $LocalCandidate -PathType Leaf) {
             } catch {
                 if (Get-Command cargo -ErrorAction SilentlyContinue) {
                     Write-Host "Building locally via cargo..." -ForegroundColor Yellow
-                    cargo build --release -p ciphervault-cli
+                    cargo build --release --locked -p ciphervault-cli
                     Copy-Item -Path "target\release\ciphervault.exe" -Destination $BinDir -Force
                     $Downloaded = $true
                 } else {

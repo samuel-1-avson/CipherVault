@@ -33,7 +33,10 @@ fn strict_operator_auth() -> bool {
                 "1" | "true" | "yes"
             )
         })
-        .unwrap_or(false)
+        // Fail closed when an operator is launched outside the hardened
+        // Compose/systemd environment. Anonymous control routes are unsafe
+        // as a source default.
+        .unwrap_or(true)
 }
 
 fn require_control_auth(
@@ -74,6 +77,45 @@ fn require_service_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)
         return Err((StatusCode::UNAUTHORIZED, "Invalid service token".into()));
     }
     Ok(())
+}
+
+fn configured_anchor_client() -> Result<Option<ciphervault_storage::ArbitrumAnchorClient>, String> {
+    let Some(rpc_url) = std::env::var("ARBITRUM_RPC_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let chain_id = std::env::var("ARBITRUM_CHAIN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| "ARBITRUM_CHAIN_ID must be an unsigned integer".to_string())
+        })
+        .transpose()?;
+    let chain_id = chain_id.unwrap_or(42161);
+    let contract = std::env::var("CIPHERVAULT_REGISTRY_CONTRACT")
+        .ok()
+        .or_else(|| std::env::var("ARBITRUM_CONTRACT_ADDRESS").ok())
+        .filter(|value| !value.trim().is_empty());
+    let Some(contract) = contract else {
+        return Ok(None);
+    };
+    let bytes = hex::decode(contract.trim().trim_start_matches("0x"))
+        .map_err(|_| "CIPHERVAULT_REGISTRY_CONTRACT must be 20-byte hex".to_string())?;
+    if bytes.len() != 20 {
+        return Err("CIPHERVAULT_REGISTRY_CONTRACT must be 20-byte hex".into());
+    }
+    let mut address = [0u8; 20];
+    address.copy_from_slice(&bytes);
+    if address == [0u8; 20] {
+        return Err("CIPHERVAULT_REGISTRY_CONTRACT cannot be the zero address".into());
+    }
+    Ok(Some(ciphervault_storage::ArbitrumAnchorClient::new(
+        rpc_url, chain_id, address,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,7 +459,29 @@ pub async fn post_relayer_checkpoint(
     let receipt = state
         .relay_checkpoint(&evidence)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(receipt))
+    let Some(anchor_client) = configured_anchor_client().map_err(|error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Invalid anchor verification configuration: {error}"),
+        )
+    })?
+    else {
+        return Ok(Json(receipt));
+    };
+    match anchor_client.verify_evidence(&evidence).await {
+        Ok(report) if report.on_chain_confirmed && report.receipt_verified => {
+            let confirmed = state
+                .confirm_relayed_checkpoint(&evidence, &report)
+                .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+            Ok(Json(confirmed))
+        }
+        Ok(_) => Ok(Json(receipt)),
+        Err(_) => {
+            // RPC outages and pending transactions remain queued. They must
+            // never be represented as confirmed based on client-supplied data.
+            Ok(Json(receipt))
+        }
+    }
 }
 
 pub async fn get_relayer_checkpoint(

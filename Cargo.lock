@@ -587,6 +587,7 @@ dependencies = [
  "ciphervault-crypto",
  "ciphervault-format",
  "ed25519-dalek",
+ "futures-util",
  "hex",
  "rand 0.8.8",
  "reqwest",

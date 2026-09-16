@@ -7,8 +7,10 @@
 //! successful logins can use an HttpOnly managed-session cookie. The
 //! account-key ceremony remains the explicit bootstrap/recovery path.
 
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -36,7 +38,13 @@ const CHALLENGE_TTL_SECONDS: u64 = 5 * 60;
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const SESSION_COOKIE_NAME: &str = "ciphervault_account_session";
 const TOTP_KEY_ENV: &str = "CIPHERVAULT_ACCOUNT_TOTP_KEY";
+const TOTP_KEY_FILE_ENV: &str = "CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE";
+const REQUIRE_TOTP_KEY_ENV: &str = "CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY";
 const TOTP_NONCE_BYTES: usize = 12;
+const AUTH_RATE_WINDOW_SECONDS: u64 = 5 * 60;
+const AUTH_RATE_MAX_FAILURES: u32 = 5;
+const AUTH_RATE_LOCK_SECONDS: u64 = 5 * 60;
+const AUTH_RATE_MAX_KEYS: usize = 10_000;
 
 #[derive(Clone)]
 pub struct AccountState {
@@ -138,6 +146,7 @@ impl AccountState {
                  account_id TEXT NOT NULL,
                  device_id_hex TEXT,
                  credential_id_hex TEXT,
+                 session_kind TEXT NOT NULL DEFAULT 'device',
                  issued_at_utc INTEGER NOT NULL,
                  expires_at_utc INTEGER NOT NULL,
                  revoked_at_utc INTEGER,
@@ -174,6 +183,13 @@ impl AccountState {
                  details_json TEXT NOT NULL,
                  created_at_utc INTEGER NOT NULL,
                  FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS auth_rate_limits (
+                 rate_key TEXT PRIMARY KEY,
+                 window_started_at_utc INTEGER NOT NULL,
+                 failures INTEGER NOT NULL,
+                 blocked_until_utc INTEGER NOT NULL,
+                 updated_at_utc INTEGER NOT NULL
              );",
         )?;
         // Older account databases predate device-bound WebAuthn credentials.
@@ -205,6 +221,20 @@ impl AccountState {
         if !has_session_credential {
             connection.execute("ALTER TABLE sessions ADD COLUMN credential_id_hex TEXT", [])?;
         }
+        let has_session_kind: bool = connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pragma_table_info('sessions')
+                 WHERE name = 'session_kind'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_session_kind {
+            connection.execute(
+                "ALTER TABLE sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'device'",
+                [],
+            )?;
+        }
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_device
              ON webauthn_credentials(account_id, device_id_hex)",
@@ -215,6 +245,14 @@ impl AccountState {
              ON sessions(account_id, credential_id_hex)",
             [],
         )?;
+        if std::env::var(REQUIRE_TOTP_KEY_ENV)
+            .ok()
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        {
+            // Production must fail before accepting traffic when its TOTP
+            // wrapping key is missing, malformed, or unreadable.
+            let _ = totp_wrapping_key()?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -317,6 +355,8 @@ pub struct ChallengeView {
 pub struct SessionView {
     pub account_id: String,
     pub device_id_hex: Option<String>,
+    #[serde(default = "default_session_kind")]
+    pub auth_method: String,
     pub issued_at_utc: u64,
     pub expires_at_utc: u64,
 }
@@ -514,6 +554,10 @@ fn default_member_role() -> String {
     "viewer".into()
 }
 
+fn default_session_kind() -> String {
+    "device".into()
+}
+
 fn default_recovery_code_count() -> usize {
     8
 }
@@ -526,6 +570,68 @@ fn normalize_vault_role(value: &str) -> Result<String, AccountServiceError> {
             "role must be one of owner, admin, editor, viewer, or recovery".into(),
         )),
     }
+}
+
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "owner" => 4,
+        "admin" => 3,
+        "editor" => 2,
+        "viewer" => 1,
+        "recovery" => 0,
+        _ => 0,
+    }
+}
+
+fn active_membership_role(
+    db: &Connection,
+    account_id: &str,
+    member_account_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    if account_id == member_account_id {
+        return Ok(Some("owner".into()));
+    }
+    db.query_row(
+        "SELECT role FROM memberships
+         WHERE account_id = ?1 AND member_account_id = ?2
+           AND status = 'active' AND accepted_at_utc IS NOT NULL
+           AND revoked_at_utc IS NULL",
+        params![account_id, member_account_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Authorize a session against an account's active membership. Owners are
+/// implicit; invited accounts must have an accepted, non-revoked membership.
+#[allow(clippy::result_large_err)]
+fn account_role_for(
+    state: &AccountState,
+    headers: &HeaderMap,
+    account_id: &str,
+    minimum_role: &str,
+) -> Result<(SessionView, String), Box<Response>> {
+    let session = authenticated_session(state, headers).map_err(Box::new)?;
+    let db = state
+        .connection()
+        .map_err(|error| Box::new(service_error(error)))?;
+    let role = active_membership_role(&db, account_id, &session.account_id)
+        .map_err(|error| Box::new(service_error(error.into())))?;
+    let Some(role) = role else {
+        return Err(Box::new(error_response(
+            StatusCode::FORBIDDEN,
+            "ACCOUNT_MEMBERSHIP_REQUIRED",
+            "Session is not an active member of this account",
+        )));
+    };
+    if role_rank(&role) < role_rank(minimum_role) {
+        return Err(Box::new(error_response(
+            StatusCode::FORBIDDEN,
+            "ACCOUNT_ROLE_REQUIRED",
+            format!("This action requires the {minimum_role} role"),
+        )));
+    }
+    Ok((session, role))
 }
 
 fn decode_32(value: &str, field: &str) -> Result<[u8; 32], AccountServiceError> {
@@ -562,19 +668,29 @@ fn hash_token(token: &str) -> String {
 }
 
 /// The TOTP seed is an authentication secret and must not be persisted in
-/// plaintext. Production supplies a 32-byte hex wrapping key through the
-/// account service environment; the database stores only an AEAD envelope.
+/// plaintext. Production supplies a 32-byte hex wrapping key through a
+/// read-only secret file; a direct environment value remains available only
+/// for local development and existing deployments. The database stores only an
+/// AEAD envelope.
 fn totp_wrapping_key() -> Result<[u8; 32], AccountServiceError> {
-    let raw = std::env::var(TOTP_KEY_ENV).map_err(|_| {
-        AccountServiceError::Invalid(format!(
-            "{TOTP_KEY_ENV} must be configured before enabling authenticator MFA"
-        ))
+    let raw = match std::env::var(TOTP_KEY_FILE_ENV) {
+        Ok(path) if !path.trim().is_empty() => fs::read_to_string(path.trim()).map_err(|_| {
+            AccountServiceError::Invalid(format!(
+                "{TOTP_KEY_FILE_ENV} must reference a readable 32-byte hex key file"
+            ))
+        })?,
+        _ => std::env::var(TOTP_KEY_ENV).map_err(|_| {
+            AccountServiceError::Invalid(format!(
+                "{TOTP_KEY_FILE_ENV} or {TOTP_KEY_ENV} must be configured before enabling authenticator MFA"
+            ))
+        })?,
+    };
+    let bytes = hex::decode(raw.trim()).map_err(|_| {
+        AccountServiceError::Invalid("TOTP wrapping key must be 32-byte hex".into())
     })?;
-    let bytes = hex::decode(raw.trim())
-        .map_err(|_| AccountServiceError::Invalid(format!("{TOTP_KEY_ENV} must be 32-byte hex")))?;
     bytes
         .try_into()
-        .map_err(|_| AccountServiceError::Invalid(format!("{TOTP_KEY_ENV} must be 32-byte hex")))
+        .map_err(|_| AccountServiceError::Invalid("TOTP wrapping key must be 32-byte hex".into()))
 }
 
 fn encrypt_totp_secret(secret: &[u8]) -> Result<String, AccountServiceError> {
@@ -953,6 +1069,204 @@ fn error_response(status: StatusCode, code: &'static str, error: impl Into<Strin
         .into_response()
 }
 
+fn request_source(headers: &HeaderMap) -> String {
+    // Forwarded headers are caller-controlled unless the service is explicitly
+    // deployed behind a trusted proxy. Keep direct deployments on one stable
+    // source key so an attacker cannot evade the limiter by spoofing XFF.
+    let trust_proxy_headers = std::env::var("CIPHERVAULT_ACCOUNT_TRUST_PROXY_HEADERS")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    if !trust_proxy_headers {
+        return "direct".into();
+    }
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .chars()
+        .take(128)
+        .collect()
+}
+
+fn auth_rate_key(headers: &HeaderMap, account_id: &str, ceremony: &str) -> String {
+    format!("{ceremony}:{account_id}:{}", request_source(headers))
+}
+
+fn auth_rate_allowed(state: &AccountState, key: &str) -> Result<(), Box<Response>> {
+    let now = now_utc();
+    let db = state.connection().map_err(|_| {
+        Box::new(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "AUTH_RATE_UNAVAILABLE",
+            "Authentication rate limiter unavailable",
+        ))
+    })?;
+    db.execute(
+        "DELETE FROM auth_rate_limits
+         WHERE blocked_until_utc <= ?1
+           AND (?1 - window_started_at_utc) > ?2",
+        params![now as i64, AUTH_RATE_WINDOW_SECONDS as i64],
+    )
+    .map_err(|_| {
+        Box::new(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "AUTH_RATE_UNAVAILABLE",
+            "Authentication rate limiter unavailable",
+        ))
+    })?;
+    let current = db
+        .query_row(
+            "SELECT window_started_at_utc, failures, blocked_until_utc
+             FROM auth_rate_limits WHERE rate_key = ?1",
+            params![key],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? as u32,
+                    row.get::<_, i64>(2)? as u64,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| {
+            Box::new(error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "AUTH_RATE_UNAVAILABLE",
+                "Authentication rate limiter unavailable",
+            ))
+        })?;
+    let Some((window_started, failures, blocked_until)) = current else {
+        let active_keys: i64 = db
+            .query_row("SELECT COUNT(*) FROM auth_rate_limits", [], |row| {
+                row.get(0)
+            })
+            .map_err(|_| {
+                Box::new(error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "AUTH_RATE_UNAVAILABLE",
+                    "Authentication rate limiter unavailable",
+                ))
+            })?;
+        if active_keys >= AUTH_RATE_MAX_KEYS as i64 {
+            return Err(Box::new(error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "AUTH_RATE_LIMITED",
+                "Too many authentication sources are active; try again later",
+            )));
+        }
+        db.execute(
+            "INSERT INTO auth_rate_limits(rate_key, window_started_at_utc, failures, blocked_until_utc, updated_at_utc)
+             VALUES(?1, ?2, 0, 0, ?2)",
+            params![key, now as i64],
+        )
+        .map_err(|_| {
+            Box::new(error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "AUTH_RATE_UNAVAILABLE",
+                "Authentication rate limiter unavailable",
+            ))
+        })?;
+        return Ok(());
+    };
+    if blocked_until > now {
+        return Err(Box::new(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "AUTH_RATE_LIMITED",
+            "Too many failed authentication attempts; try again later",
+        )));
+    }
+    if now.saturating_sub(window_started) > AUTH_RATE_WINDOW_SECONDS {
+        db.execute(
+            "UPDATE auth_rate_limits
+             SET window_started_at_utc = ?2, failures = 0, blocked_until_utc = 0, updated_at_utc = ?2
+             WHERE rate_key = ?1",
+            params![key, now as i64],
+        )
+        .map_err(|_| {
+            Box::new(error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "AUTH_RATE_UNAVAILABLE",
+                "Authentication rate limiter unavailable",
+            ))
+        })?;
+        return Ok(());
+    }
+    if failures >= AUTH_RATE_MAX_FAILURES {
+        db.execute(
+            "UPDATE auth_rate_limits SET blocked_until_utc = ?2, updated_at_utc = ?3 WHERE rate_key = ?1",
+            params![key, (now + AUTH_RATE_LOCK_SECONDS) as i64, now as i64],
+        )
+        .map_err(|_| {
+            Box::new(error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "AUTH_RATE_UNAVAILABLE",
+                "Authentication rate limiter unavailable",
+            ))
+        })?;
+        return Err(Box::new(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "AUTH_RATE_LIMITED",
+            "Too many failed authentication attempts; try again later",
+        )));
+    }
+    Ok(())
+}
+
+fn auth_rate_failure_with_db(db: &Connection, key: &str) {
+    let now = now_utc();
+    let current = db
+        .query_row(
+            "SELECT window_started_at_utc, failures FROM auth_rate_limits WHERE rate_key = ?1",
+            params![key],
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u32)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let (window_started, failures) = current.unwrap_or((now, 0));
+    let (window_started, failures) =
+        if now.saturating_sub(window_started) > AUTH_RATE_WINDOW_SECONDS {
+            (now, 1)
+        } else {
+            (window_started, failures.saturating_add(1))
+        };
+    let blocked_until = if failures >= AUTH_RATE_MAX_FAILURES {
+        now + AUTH_RATE_LOCK_SECONDS
+    } else {
+        0
+    };
+    let _ = db.execute(
+        "INSERT INTO auth_rate_limits(rate_key, window_started_at_utc, failures, blocked_until_utc, updated_at_utc)
+         VALUES(?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(rate_key) DO UPDATE SET
+           window_started_at_utc = excluded.window_started_at_utc,
+           failures = excluded.failures,
+           blocked_until_utc = excluded.blocked_until_utc,
+           updated_at_utc = excluded.updated_at_utc",
+        params![key, window_started as i64, failures as i64, blocked_until as i64, now as i64],
+    );
+}
+
+#[cfg(test)]
+fn auth_rate_failure(state: &AccountState, key: &str) {
+    if let Ok(db) = state.connection() {
+        auth_rate_failure_with_db(&db, key);
+    }
+}
+
+fn auth_rate_success(state: &AccountState, key: &str) {
+    if let Ok(db) = state.connection() {
+        let _ = db.execute(
+            "DELETE FROM auth_rate_limits WHERE rate_key = ?1",
+            params![key],
+        );
+    }
+}
+
 fn service_error(error: AccountServiceError) -> Response {
     match error {
         AccountServiceError::Invalid(message) => {
@@ -975,6 +1289,36 @@ fn service_error(error: AccountServiceError) -> Response {
             )
         }
     }
+}
+
+async fn csrf_origin_guard(request: Request<Body>, next: Next) -> Response {
+    if request.method() == axum::http::Method::POST {
+        if let Some(origin) = request.headers().get(axum::http::header::ORIGIN) {
+            let origin = origin.to_str().unwrap_or_default();
+            let configured = std::env::var("CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS")
+                .ok()
+                .into_iter()
+                .flat_map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let allowed = configured.iter().any(|item| item == origin)
+                || (configured.is_empty() && origin == webauthn_origin());
+            if !allowed {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "CSRF_ORIGIN_REJECTED",
+                    "Request origin is not allowed",
+                );
+            }
+        }
+    }
+    next.run(request).await
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -1042,15 +1386,16 @@ fn authenticated_session(
     }
     let session = db
         .query_row(
-            "SELECT account_id, device_id_hex, issued_at_utc, expires_at_utc
+            "SELECT account_id, device_id_hex, session_kind, issued_at_utc, expires_at_utc
              FROM sessions WHERE token_hash_hex = ?1 AND revoked_at_utc IS NULL AND expires_at_utc > ?2",
             params![token_hash, now],
             |row| {
                 Ok(SessionView {
                     account_id: row.get(0)?,
                     device_id_hex: row.get(1)?,
-                    issued_at_utc: row.get::<_, i64>(2)? as u64,
-                    expires_at_utc: row.get::<_, i64>(3)? as u64,
+                    auth_method: row.get(2)?,
+                    issued_at_utc: row.get::<_, i64>(3)? as u64,
+                    expires_at_utc: row.get::<_, i64>(4)? as u64,
                 })
             },
         )
@@ -1762,8 +2107,8 @@ pub async fn post_login(
     let token = random_hex(32);
     let expires_at = now + SESSION_TTL_SECONDS;
     if let Err(error) = db.execute(
-        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, issued_at_utc, expires_at_utc)
-         VALUES(?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, session_kind, issued_at_utc, expires_at_utc)
+         VALUES(?1, ?2, ?3, 'device', ?4, ?5)",
         params![hash_token(&token), challenge.0, challenge.1, now, expires_at],
     ) {
         return service_error(error.into());
@@ -1789,6 +2134,7 @@ pub async fn post_login(
             session: SessionView {
                 account_id: challenge.0,
                 device_id_hex: challenge.1,
+                auth_method: "device".into(),
                 issued_at_utc: now,
                 expires_at_utc: expires_at,
             },
@@ -1858,16 +2204,8 @@ pub async fn post_vault_link(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
+    if let Err(response) = account_role_for(&state, &headers, &account_id, "owner") {
+        return *response;
     }
     if let Err(error) = decode_32(&request.vault_id_hex, "vault_id_hex") {
         return service_error(error);
@@ -1952,17 +2290,10 @@ pub async fn post_invitation(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let (_session, actor_role) = match account_role_for(&state, &headers, &account_id, "admin") {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
-    }
     let invitee = match normalize_account_id(&request.invitee_account_id) {
         Ok(value) => value,
         Err(error) => return service_error(error),
@@ -1978,6 +2309,13 @@ pub async fn post_invitation(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
+    if role == "owner" || (role == "admin" && actor_role != "owner") {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "ROLE_GRANT_NOT_ALLOWED",
+            "Only an owner can grant admin access, and owner access cannot be delegated",
+        );
+    }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
@@ -2044,16 +2382,8 @@ pub async fn get_invitations(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
+    if let Err(response) = account_role_for(&state, &headers, &account_id, "admin") {
+        return *response;
     }
     let db = match state.connection() {
         Ok(db) => db,
@@ -2178,16 +2508,8 @@ pub async fn get_memberships(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
+    if let Err(response) = account_role_for(&state, &headers, &account_id, "viewer") {
+        return *response;
     }
     let db = match state.connection() {
         Ok(db) => db,
@@ -2225,21 +2547,48 @@ pub async fn post_membership_revoke(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let (session, actor_role) = match account_role_for(&state, &headers, &account_id, "admin") {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
-    if session.account_id != account_id {
+    if session.account_id == member_account_id {
         return error_response(
             StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Only the owning account can revoke membership",
+            "SELF_MEMBERSHIP_REVOKE",
+            "A session cannot revoke its own membership",
         );
     }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    let target_role = match db
+        .query_row(
+            "SELECT role FROM memberships
+         WHERE account_id = ?1 AND member_account_id = ?2
+           AND status = 'active' AND revoked_at_utc IS NULL",
+            params![account_id, member_account_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    {
+        Ok(value) => value,
+        Err(error) => return service_error(error.into()),
+    };
+    let Some(target_role) = target_role else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "MEMBERSHIP_NOT_FOUND",
+            "Membership is not active",
+        );
+    };
+    if actor_role != "owner" && role_rank(&target_role) >= role_rank(&actor_role) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "ROLE_HIERARCHY",
+            "An admin can revoke only lower-privilege memberships",
+        );
+    }
     let now = now_utc();
     match db.execute("UPDATE memberships SET status = 'revoked', revoked_at_utc = ?3 WHERE account_id = ?1 AND member_account_id = ?2 AND revoked_at_utc IS NULL", params![account_id, member_account_id, now]) {
         Ok(0) => error_response(StatusCode::NOT_FOUND, "MEMBERSHIP_NOT_FOUND", "Membership is not active"),
@@ -2258,15 +2607,15 @@ pub async fn post_recovery_codes(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let (session, _) = match account_role_for(&state, &headers, &account_id, "owner") {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
-    if session.account_id != account_id {
+    if session.device_id_hex.is_none() {
         return error_response(
             StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
+            "DEVICE_STEP_UP_REQUIRED",
+            "Recovery codes require an enrolled device-bound session",
         );
     }
     let count = request.count.clamp(4, 16);
@@ -2301,12 +2650,17 @@ pub async fn post_recovery_codes(
 
 pub async fn post_recovery_redeem(
     State(state): State<AccountState>,
+    headers: HeaderMap,
     Json(request): Json<RecoveryRedeemRequest>,
 ) -> Response {
     let account_id = match normalize_account_id(&request.account_id) {
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
+    let rate_key = auth_rate_key(&headers, &account_id, "recovery");
+    if let Err(response) = auth_rate_allowed(&state, &rate_key) {
+        return *response;
+    }
     let code = request.code.trim();
     if code.len() < 16 {
         return error_response(
@@ -2323,6 +2677,7 @@ pub async fn post_recovery_redeem(
     let code_hash = hash_token(code);
     let valid = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_codes WHERE account_id = ?1 AND code_hash_hex = ?2 AND used_at_utc IS NULL)", params![account_id, code_hash], |row| row.get::<_, bool>(0)).unwrap_or(false);
     if !valid {
+        auth_rate_failure_with_db(&db, &rate_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "RECOVERY_CODE_INVALID",
@@ -2332,7 +2687,7 @@ pub async fn post_recovery_redeem(
     if let Err(error) = db.execute("UPDATE recovery_codes SET used_at_utc = ?3 WHERE account_id = ?1 AND code_hash_hex = ?2 AND used_at_utc IS NULL", params![account_id, code_hash, now]) { return service_error(error.into()); }
     let token = random_hex(32);
     let expires_at = now + SESSION_TTL_SECONDS;
-    if let Err(error) = db.execute("INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, issued_at_utc, expires_at_utc) VALUES(?1, ?2, NULL, NULL, ?3, ?4)", params![hash_token(&token), account_id, now, expires_at]) { return service_error(error.into()); }
+    if let Err(error) = db.execute("INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc) VALUES(?1, ?2, NULL, NULL, 'recovery', ?3, ?4)", params![hash_token(&token), account_id, now, expires_at]) { return service_error(error.into()); }
     if let Err(error) = audit_event(
         &db,
         &account_id,
@@ -2341,6 +2696,8 @@ pub async fn post_recovery_redeem(
     ) {
         return service_error(error.into());
     }
+    drop(db);
+    auth_rate_success(&state, &rate_key);
     let mut response = (
         StatusCode::OK,
         Json(SessionResponse {
@@ -2348,6 +2705,7 @@ pub async fn post_recovery_redeem(
             session: SessionView {
                 account_id,
                 device_id_hex: None,
+                auth_method: "recovery".into(),
                 issued_at_utc: now,
                 expires_at_utc: expires_at,
             },
@@ -3089,8 +3447,8 @@ pub async fn post_webauthn_authentication_verify(
     let token = random_hex(32);
     let expires_at = now + SESSION_TTL_SECONDS;
     if let Err(error) = db.execute(
-        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, issued_at_utc, expires_at_utc)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc)
+         VALUES(?1, ?2, ?3, ?4, 'webauthn', ?5, ?6)",
         params![
             hash_token(&token),
             challenge.0,
@@ -3115,6 +3473,7 @@ pub async fn post_webauthn_authentication_verify(
         session: SessionView {
             account_id: challenge.0,
             device_id_hex: credential.0.clone(),
+            auth_method: "webauthn".into(),
             issued_at_utc: now,
             expires_at_utc: expires_at,
         },
@@ -3128,7 +3487,7 @@ fn totp_not_configured() -> Response {
     error_response(
         StatusCode::SERVICE_UNAVAILABLE,
         "TOTP_NOT_CONFIGURED",
-        format!("{TOTP_KEY_ENV} is not configured on the account service"),
+        format!("{TOTP_KEY_FILE_ENV} or {TOTP_KEY_ENV} is not configured on the account service"),
     )
 }
 
@@ -3136,14 +3495,21 @@ fn account_session_for(
     state: &AccountState,
     headers: &HeaderMap,
     account_id: &str,
-) -> Result<SessionView, Response> {
-    let session = authenticated_session(state, headers)?;
+) -> Result<SessionView, Box<Response>> {
+    let session = authenticated_session(state, headers).map_err(Box::new)?;
     if session.account_id != account_id {
-        return Err(error_response(
+        return Err(Box::new(error_response(
             StatusCode::FORBIDDEN,
             "ACCOUNT_SCOPE_MISMATCH",
             "Session is outside this account",
-        ));
+        )));
+    }
+    if session.auth_method == "recovery" {
+        return Err(Box::new(error_response(
+            StatusCode::FORBIDDEN,
+            "RECOVERY_STEP_UP_REQUIRED",
+            "Recovery sessions must enroll a device or complete a hardware/passkey step-up before account changes",
+        )));
     }
     Ok(session)
 }
@@ -3162,9 +3528,9 @@ pub async fn post_totp_enrollment(
         Err(error) => return service_error(error),
     };
     if let Err(response) = account_session_for(&state, &headers, &account_id) {
-        return response;
+        return *response;
     }
-    if std::env::var(TOTP_KEY_ENV).is_err() {
+    if totp_wrapping_key().is_err() {
         return totp_not_configured();
     }
     let secret = totp::generate_secret();
@@ -3244,10 +3610,14 @@ pub async fn post_totp_enrollment_verify(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    if let Err(response) = account_session_for(&state, &headers, &account_id) {
-        return response;
+    let rate_key = auth_rate_key(&headers, &account_id, "totp-enrollment");
+    if let Err(response) = auth_rate_allowed(&state, &rate_key) {
+        return *response;
     }
-    if std::env::var(TOTP_KEY_ENV).is_err() {
+    if let Err(response) = account_session_for(&state, &headers, &account_id) {
+        return *response;
+    }
+    if totp_wrapping_key().is_err() {
         return totp_not_configured();
     }
     let db = match state.connection() {
@@ -3294,11 +3664,12 @@ pub async fn post_totp_enrollment_verify(
     let step = match totp::verify_code(&secret, &request.code, now_utc(), last_used_step) {
         Ok(step) => step,
         Err(error) => {
+            auth_rate_failure_with_db(&db, &rate_key);
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 "TOTP_CODE_INVALID",
                 error.to_string(),
-            )
+            );
         }
     };
     let now = now_utc();
@@ -3320,6 +3691,8 @@ pub async fn post_totp_enrollment_verify(
     if let Err(error) = audit_event(&db, &account_id, "totp_enabled", serde_json::json!({})) {
         return service_error(error.into());
     }
+    drop(db);
+    auth_rate_success(&state, &rate_key);
     Json(serde_json::json!({"status": "enabled", "account_id": account_id})).into_response()
 }
 
@@ -3333,7 +3706,7 @@ pub async fn post_totp_revoke(
         Err(error) => return service_error(error),
     };
     if let Err(response) = account_session_for(&state, &headers, &account_id) {
-        return response;
+        return *response;
     }
     let db = match state.connection() {
         Ok(db) => db,
@@ -3362,13 +3735,18 @@ pub async fn post_totp_revoke(
 
 pub async fn post_totp_authentication_options(
     State(state): State<AccountState>,
+    headers: HeaderMap,
     Json(request): Json<TotpAuthenticationOptionsRequest>,
 ) -> Response {
     let account_id = match normalize_account_id(&request.account_id) {
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    if std::env::var(TOTP_KEY_ENV).is_err() {
+    let rate_key = auth_rate_key(&headers, &account_id, "totp-login");
+    if let Err(response) = auth_rate_allowed(&state, &rate_key) {
+        return *response;
+    }
+    if totp_wrapping_key().is_err() {
         return totp_not_configured();
     }
     let db = match state.connection() {
@@ -3413,13 +3791,18 @@ pub async fn post_totp_authentication_options(
 
 pub async fn post_totp_authentication_verify(
     State(state): State<AccountState>,
+    headers: HeaderMap,
     Json(request): Json<TotpAuthenticationVerifyRequest>,
 ) -> Response {
     let account_id = match normalize_account_id(&request.account_id) {
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    if std::env::var(TOTP_KEY_ENV).is_err() {
+    let rate_key = auth_rate_key(&headers, &account_id, "totp-login");
+    if let Err(response) = auth_rate_allowed(&state, &rate_key) {
+        return *response;
+    }
+    if totp_wrapping_key().is_err() {
         return totp_not_configured();
     }
     let db = match state.connection() {
@@ -3446,6 +3829,7 @@ pub async fn post_totp_authentication_verify(
         Err(error) => return service_error(error.into()),
     };
     let Some((_, expires_at, used_at)) = challenge else {
+        auth_rate_failure_with_db(&db, &rate_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "CHALLENGE_INVALID",
@@ -3453,6 +3837,7 @@ pub async fn post_totp_authentication_verify(
         );
     };
     if expires_at <= now || used_at.is_some() {
+        auth_rate_failure_with_db(&db, &rate_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "CHALLENGE_EXPIRED",
@@ -3477,6 +3862,7 @@ pub async fn post_totp_authentication_verify(
         Err(error) => return service_error(error.into()),
     };
     let Some((ciphertext, last_used_step)) = row else {
+        auth_rate_failure_with_db(&db, &rate_key);
         return error_response(
             StatusCode::NOT_FOUND,
             "TOTP_NOT_ENROLLED",
@@ -3490,11 +3876,12 @@ pub async fn post_totp_authentication_verify(
     let step = match totp::verify_code(&secret, &request.code, now, last_used_step) {
         Ok(step) => step,
         Err(error) => {
+            auth_rate_failure_with_db(&db, &rate_key);
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 "TOTP_CODE_INVALID",
                 error.to_string(),
-            )
+            );
         }
     };
     let changed = match db.execute(
@@ -3507,6 +3894,7 @@ pub async fn post_totp_authentication_verify(
         Err(error) => return service_error(error.into()),
     };
     if changed != 1 {
+        auth_rate_failure_with_db(&db, &rate_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "TOTP_REPLAY",
@@ -3521,6 +3909,7 @@ pub async fn post_totp_authentication_verify(
         Err(error) => return service_error(error.into()),
     };
     if !challenge_consumed {
+        auth_rate_failure_with_db(&db, &rate_key);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "CHALLENGE_REPLAY",
@@ -3530,8 +3919,8 @@ pub async fn post_totp_authentication_verify(
     let token = random_hex(32);
     let expires_at = now + SESSION_TTL_SECONDS;
     if let Err(error) = db.execute(
-        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, issued_at_utc, expires_at_utc)
-         VALUES(?1, ?2, NULL, NULL, ?3, ?4)",
+        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc)
+         VALUES(?1, ?2, NULL, NULL, 'totp', ?3, ?4)",
         params![hash_token(&token), account_id, now, expires_at],
     ) {
         return service_error(error.into());
@@ -3539,11 +3928,14 @@ pub async fn post_totp_authentication_verify(
     if let Err(error) = audit_event(&db, &account_id, "totp_login", serde_json::json!({})) {
         return service_error(error.into());
     }
+    drop(db);
+    auth_rate_success(&state, &rate_key);
     let mut response = Json(SessionResponse {
         token: token.clone(),
         session: SessionView {
             account_id,
             device_id_hex: None,
+            auth_method: "totp".into(),
             issued_at_utc: now,
             expires_at_utc: expires_at,
         },
@@ -3656,6 +4048,7 @@ pub fn create_router(state: AccountState) -> axum::Router {
         )
         .route("/v1/recovery/redeem", post(post_recovery_redeem))
         .layer(cors)
+        .layer(axum::middleware::from_fn(csrf_origin_guard))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -4285,5 +4678,160 @@ mod tests {
         } else {
             std::env::remove_var(TOTP_KEY_ENV);
         }
+    }
+
+    #[tokio::test]
+    async fn membership_roles_and_origins_are_enforced() {
+        let root = std::env::temp_dir().join(format!("cv-account-roles-{}", random_hex(8)));
+        let state = AccountState::open(&root).expect("state");
+        let app = create_router(state.clone());
+        let owner = format!("cvacct_{}", "11".repeat(16));
+        let viewer = format!("cvacct_{}", "22".repeat(16));
+        let admin = format!("cvacct_{}", "33".repeat(16));
+        let invitee = format!("cvacct_{}", "44".repeat(16));
+        let viewer_token = random_hex(32);
+        let admin_token = random_hex(32);
+        let owner_token = random_hex(32);
+        {
+            let db = state.connection().expect("db");
+            for (account_id, key) in [
+                (&owner, "aa".repeat(32)),
+                (&viewer, "bb".repeat(32)),
+                (&admin, "cc".repeat(32)),
+                (&invitee, "dd".repeat(32)),
+            ] {
+                db.execute(
+                    "INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc)
+                     VALUES(?1, ?2, ?3, ?4)",
+                    params![account_id, account_id, key, now_utc() as i64],
+                )
+                .unwrap();
+            }
+            for (token, account_id) in [
+                (&owner_token, &owner),
+                (&viewer_token, &viewer),
+                (&admin_token, &admin),
+            ] {
+                db.execute(
+                    "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc)
+                     VALUES(?1, ?2, NULL, NULL, 'device', ?3, ?4)",
+                    params![hash_token(token), account_id, now_utc() as i64, (now_utc() + SESSION_TTL_SECONDS) as i64],
+                )
+                .unwrap();
+            }
+            db.execute(
+                "INSERT INTO memberships(account_id, member_account_id, role, status, invited_at_utc, accepted_at_utc)
+                 VALUES(?1, ?2, 'viewer', 'active', ?3, ?3)",
+                params![owner, viewer, now_utc() as i64],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO memberships(account_id, member_account_id, role, status, invited_at_utc, accepted_at_utc)
+                 VALUES(?1, ?2, 'admin', 'active', ?3, ?3)",
+                params![owner, admin, now_utc() as i64],
+            )
+            .unwrap();
+        }
+
+        let viewer_memberships = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/accounts/{owner}/memberships").as_str())
+                    .header("authorization", format!("Bearer {viewer_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(viewer_memberships.status(), StatusCode::OK);
+
+        let viewer_invite = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{owner}/invitations").as_str())
+                    .header("authorization", format!("Bearer {viewer_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"invitee_account_id": invitee, "role": "viewer"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(viewer_invite.status(), StatusCode::FORBIDDEN);
+
+        let viewer_link = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{owner}/vaults").as_str())
+                    .header("authorization", format!("Bearer {viewer_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "vault_id_hex": "55".repeat(32),
+                            "alias": "shared",
+                            "role": "viewer"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(viewer_link.status(), StatusCode::FORBIDDEN);
+
+        let admin_owner_invite = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{owner}/invitations").as_str())
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"invitee_account_id": invitee, "role": "admin"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(admin_owner_invite.status(), StatusCode::FORBIDDEN);
+
+        let evil_origin = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{owner}/invitations").as_str())
+                    .header("authorization", format!("Bearer {owner_token}"))
+                    .header("origin", "https://evil.example")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"invitee_account_id": invitee, "role": "viewer"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(evil_origin.status(), StatusCode::FORBIDDEN);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn authentication_rate_limiter_blocks_repeated_failures() {
+        let root = std::env::temp_dir().join(format!("cv-account-rate-{}", random_hex(8)));
+        let state = AccountState::open(&root).expect("state");
+        let key = "totp-login:cvacct_test:unknown";
+        for _ in 0..AUTH_RATE_MAX_FAILURES {
+            assert!(auth_rate_allowed(&state, key).is_ok());
+            auth_rate_failure(&state, key);
+        }
+        assert!(auth_rate_allowed(&state, key).is_err());
+        drop(state);
+        let reopened = AccountState::open(&root).expect("reopened state");
+        assert!(auth_rate_allowed(&reopened, key).is_err());
+        auth_rate_success(&reopened, key);
+        assert!(auth_rate_allowed(&reopened, key).is_ok());
+        let _ = fs::remove_dir_all(root);
     }
 }

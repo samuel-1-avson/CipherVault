@@ -68,12 +68,17 @@ and membership roles are available through
 `/v1/accounts/:account_id/invitations`, `/v1/invitations/accept`, and
 `/v1/accounts/:account_id/memberships`; one-time recovery codes use
 `/v1/accounts/:account_id/recovery/codes` and `/v1/recovery/redeem`.
-Authenticator-app MFA uses RFC 6238 six-digit codes. Set
-`CIPHERVAULT_ACCOUNT_TOTP_KEY` to a unique 32-byte hex wrapping key before
-enabling enrollment; TOTP seeds are stored as AES-256-GCM envelopes in the
-account database and are never logged or returned after enrollment. The
-dashboard exposes authenticator sign-in and account-management enrollment
-controls through the same-origin `/api/account/totp/*` proxy.
+Authenticator-app MFA uses RFC 6238 six-digit codes. In production, set
+`CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE` to a protected file containing one unique
+32-byte hex wrapping key and leave
+`CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=true`. The account container mounts that
+file read-only at `/run/secrets/account-totp-key`; no TOTP wrapping secret is
+placed in the Compose environment. `CIPHERVAULT_ACCOUNT_TOTP_KEY` remains only
+as a local-development compatibility input. TOTP seeds are stored as
+AES-256-GCM envelopes in the account database and are never logged or returned
+after enrollment. The dashboard exposes authenticator sign-in and
+account-management enrollment controls through the same-origin
+`/api/account/totp/*` proxy.
 Keep the
 service behind the private network until a managed browser session, production
 origin policy, and per-client rate limits have been provisioned.
@@ -91,6 +96,44 @@ access.
 ```bash
 docker compose ps
 ```
+
+For a hosted release, do not promote a mutable tag or build from a VM checkout.
+The release workflow publishes signed GHCR digests. Phase 1/2 promotion stages
+the reviewed Compose and Caddy files, attaches the dedicated runtime service
+account, retrieves the TOTP wrapping key only from Secret Manager, and starts
+the VM with digest-pinned images. It requires a signed candidate and a signed
+rollback pair:
+
+```powershell
+.\scripts\gcp\promote-immutable-web.ps1 `
+  -DashboardImage 'ghcr.io/samuel-1-avson/ciphervault-dashboard@sha256:<candidate>' `
+  -AccountImage 'ghcr.io/samuel-1-avson/ciphervault-account@sha256:<candidate>' `
+  -RollbackDashboardImage 'ghcr.io/samuel-1-avson/ciphervault-dashboard@sha256:<rollback>' `
+  -RollbackAccountImage 'ghcr.io/samuel-1-avson/ciphervault-account@sha256:<rollback>' `
+  -OperatorEndpoints 'http://10.x.x.x http://10.x.x.x http://10.x.x.x' `
+  -RuntimeServiceAccount '<runtime-service-account>'
+```
+
+The command above is a signature and pull preflight. Add `-Apply` only after
+the candidate, rollback images, private endpoint list, and release commit have
+been recorded. The tool never accepts or prints a secret value.
+
+After the cloud host has been promoted, run the read-only verification script
+from an authenticated operator workstation:
+
+```bash
+export CIPHERVAULT_DASHBOARD_IMAGE='ghcr.io/samuel-1-avson/ciphervault-dashboard@sha256:<digest>'
+export CIPHERVAULT_ACCOUNT_IMAGE='ghcr.io/samuel-1-avson/ciphervault-account@sha256:<digest>'
+export COSIGN_CERTIFICATE_IDENTITY_REGEX='https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*'
+export INSTANCE_NAME=cv-web-ui
+export ZONE=us-east1-b
+./scripts/gcp/verify-immutable-deployment.sh
+```
+
+The check verifies keyless Cosign signatures, local digest identity, cloud
+container digests, unprivileged runtime users, container health, and the public
+explorer/account contracts. It does not accept or print production secrets and
+does not perform a rollout.
 
 Set the internal service token before starting a strict cluster and keep it in the deployment secret manager rather than committing it to `.env`:
 
