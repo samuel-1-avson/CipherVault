@@ -547,6 +547,13 @@ enum AuthSubcommand {
             help = "Label for the enrolled device"
         )]
         label: String,
+
+        #[arg(
+            long,
+            default_value = "Production vault",
+            help = "Alias for the current vault in the hosted account"
+        )]
+        vault_alias: String,
     },
 
     /// Unlock the local account key and create a short-lived device-bound session
@@ -723,9 +730,11 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Update { check } => cmd_update(check).await,
         Commands::Auth { sub } => match sub {
             AuthSubcommand::Init { name } => cmd_auth_init(name),
-            AuthSubcommand::Connect { endpoint, label } => {
-                cmd_auth_connect(&endpoint, &label).await
-            }
+            AuthSubcommand::Connect {
+                endpoint,
+                label,
+                vault_alias,
+            } => cmd_auth_connect(&endpoint, &label, &vault_alias).await,
             AuthSubcommand::Login => cmd_auth_login(),
             AuthSubcommand::Logout => cmd_auth_logout(),
             AuthSubcommand::Status => cmd_auth_status(),
@@ -1184,8 +1193,12 @@ fn hosted_endpoint_value(raw: &str) -> Result<String> {
     Ok(endpoint.to_string())
 }
 
-async fn cmd_auth_connect(endpoint_raw: &str, label: &str) -> Result<()> {
+async fn cmd_auth_connect(endpoint_raw: &str, label: &str, vault_alias: &str) -> Result<()> {
     let endpoint = hosted_endpoint_value(endpoint_raw)?;
+    let vault_alias = vault_alias.trim();
+    if vault_alias.is_empty() {
+        bail!("Hosted vault alias cannot be empty");
+    }
     let mut account =
         AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let (vault_id, device_id, device_pk) = current_device_identity().context(
@@ -1364,6 +1377,24 @@ async fn cmd_auth_connect(endpoint_raw: &str, label: &str) -> Result<()> {
         .get("token")
         .and_then(serde_json::Value::as_str)
         .context("hosted browser-login response did not include a session token")?;
+    let vault_link_response = client
+        .post(format!("{endpoint}/{}/vaults", account.account_id()))
+        .bearer_auth(login_token)
+        .json(&serde_json::json!({
+            "vault_id_hex": vault_id,
+            "alias": vault_alias,
+            "role": "owner",
+        }))
+        .send()
+        .await
+        .context("linking the vault to the hosted account")?;
+    if !vault_link_response.status().is_success()
+        && vault_link_response.status() != reqwest::StatusCode::CONFLICT
+    {
+        let status = vault_link_response.status();
+        let body = vault_link_response.text().await.unwrap_or_default();
+        bail!("hosted vault link failed ({status}): {body}");
+    }
     let handoff_response = client
         .post(format!("{endpoint}/sessions/handoff"))
         .bearer_auth(login_token)
@@ -1410,7 +1441,6 @@ async fn cmd_auth_connect(endpoint_raw: &str, label: &str) -> Result<()> {
         "\nOpen this one-time browser link within two minutes to finish hosted sign-in:\n  {}",
         browser_url
     );
-    let _ = vault_id;
     Ok(())
 }
 
@@ -6360,6 +6390,10 @@ fn private_ui_router() -> axum::Router {
             get(api_account_management_get_handler).post(api_account_management_post_handler),
         )
         .route(
+            "/api/account/:account_id/vaults",
+            axum::routing::post(api_account_management_post_handler),
+        )
+        .route(
             "/api/account/:account_id/memberships",
             get(api_account_management_get_handler),
         )
@@ -6534,6 +6568,10 @@ fn public_ui_router() -> axum::Router {
         .route(
             "/api/account/:account_id/invitations",
             get(api_account_management_get_handler).post(api_account_management_post_handler),
+        )
+        .route(
+            "/api/account/:account_id/vaults",
+            axum::routing::post(api_account_management_post_handler),
         )
         .route(
             "/api/account/:account_id/memberships",
