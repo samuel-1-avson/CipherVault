@@ -434,3 +434,10 @@ than the policy, and unreplicated snapshots (pending uploads). Chunk GC is
 skipped for the run if any retained snapshot lacks a recovery set. `--dry-run`
 prints targets without deleting. Remote operator copies are untouched; prune
 only reclaims local disk.
+
+### Rotation (R13)
+`ciphervault rekey --check` reports every epoch key's age (warns past
+`--warn-days`, default 90); `ciphervault rekey` mints epoch N+1 and points new
+snapshots at it. Old epoch keys are retained so existing snapshots stay
+readable; device-key rotation remains manual (new device certificate ceremony).
+Pre-migration keys show unknown age and always warn: rotate once to baseline.

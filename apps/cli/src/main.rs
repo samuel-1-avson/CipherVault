@@ -200,6 +200,15 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Rotate the vault epoch key (reports ages with --check)
+    Rekey {
+        #[arg(long, help = "Only report key ages without rotating")]
+        check: bool,
+
+        #[arg(long, help = "Warn when the active epoch key is older than D days (default 90)")]
+        warn_days: Option<u64>,
+    },
+
     /// Restore confidential files from a snapshot
     Restore {
         #[arg(
@@ -811,6 +820,7 @@ async fn run(cli: Cli) -> Result<()> {
             keep_days,
             dry_run,
         } => cmd_prune(keep_last, keep_days, dry_run),
+        Commands::Rekey { check, warn_days } => cmd_rekey(check, warn_days),
         Commands::Restore {
             snapshot,
             to,
@@ -3326,6 +3336,58 @@ fn cmd_prune(keep_last: Option<usize>, keep_days: Option<u64>, dry_run: bool) ->
     if outcome.chunk_gc_skipped {
         println!("  Chunk GC:       skipped (a retained snapshot has no recovery set)");
     }
+    Ok(())
+}
+
+const DEFAULT_REKEY_WARN_DAYS: u64 = 90;
+
+/// Returns (age in days, stale) for an epoch key. Unknown-age (0) keys report
+/// `(None, true)` so pre-migration keys always prompt one baseline rotation.
+fn epoch_key_status(created_at_utc: u64, warn_days: u64, now_utc: u64) -> (Option<u64>, bool) {
+    if created_at_utc == 0 {
+        return (None, true);
+    }
+    let age_days = now_utc.saturating_sub(created_at_utc) / 86_400;
+    (Some(age_days), age_days >= warn_days)
+}
+
+fn cmd_rekey(check: bool, warn_days: Option<u64>) -> Result<()> {
+    let warn_days = warn_days.unwrap_or(DEFAULT_REKEY_WARN_DAYS);
+    let store = get_vault_store()?;
+    let (_, _, _, current_epoch) = store.get_device_state()?;
+    let epochs = store.list_epoch_keys()?;
+    let now_utc = Utc::now().timestamp().max(0) as u64;
+
+    println!("{}", "CipherVault Epoch Keys".bold());
+    println!("--------------------------------------------------------------------------------");
+    let mut stale_current = false;
+    for info in &epochs {
+        let (age, stale) = epoch_key_status(info.created_at_utc, warn_days, now_utc);
+        let marker = if info.epoch == current_epoch { " (active)" } else { "" };
+        match age {
+            Some(days) => println!(
+                "  Epoch {:>4}{}: {} day(s) old{}",
+                info.epoch,
+                marker,
+                days,
+                if stale { " -- STALE" } else { "" }
+            ),
+            None => println!("  Epoch {:>4}{}: age unknown -- ROTATE", info.epoch, marker),
+        }
+        if stale && info.epoch == current_epoch {
+            stale_current = true;
+        }
+    }
+    if check {
+        if stale_current {
+            println!("  Verdict:        active epoch key needs rotation");
+        } else {
+            println!("  Verdict:        rotation not required");
+        }
+        return Ok(());
+    }
+    let (next, _) = store.rotate_epoch_key()?;
+    println!("  Rotated:        epoch {current_epoch} -> {next} (new snapshots use epoch {next})");
     Ok(())
 }
 
@@ -10420,6 +10482,20 @@ mod ui_router_tests {
         // keep-last 0 still protects head/pending/young.
         let targets = select_prune_targets(&candidates, 0, 30, now);
         assert_eq!(targets, vec![[1u8; 32], [2u8; 32]]);
+    }
+
+    #[test]
+    fn epoch_key_status_flags_stale_and_unknown() {
+        let now = 2_000_000_000u64;
+        assert_eq!(epoch_key_status(now - 10 * 86_400, 90, now), (Some(10), false));
+        assert_eq!(epoch_key_status(now - 90 * 86_400, 90, now), (Some(90), true));
+        assert_eq!(
+            epoch_key_status(now - 200 * 86_400, 90, now),
+            (Some(200), true)
+        );
+        assert_eq!(epoch_key_status(0, 90, now), (None, true));
+        // Future timestamps saturate to age 0, never stale.
+        assert_eq!(epoch_key_status(now + 86_400, 90, now), (Some(0), false));
     }
 
     #[test]

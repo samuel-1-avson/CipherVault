@@ -11,6 +11,14 @@ use ciphervault_format::{
 
 use crate::error::LocalStoreError;
 
+/// Wall-clock seconds for key-creation stamps (std-only; no chrono dep here).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
 pub struct LocalVaultStore {
     conn: Connection,
 }
@@ -35,6 +43,14 @@ pub struct PruneOutcome {
     pub chunks_removed: usize,
     pub chunk_bytes_reclaimed: u64,
     pub chunk_gc_skipped: bool,
+}
+
+/// One epoch key's rotation metadata (`created_at_utc == 0` means unknown:
+/// a pre-migration key that has never been stamped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpochKeyInfo {
+    pub epoch: u64,
+    pub created_at_utc: u64,
 }
 
 /// Represents a recorded event in the vault's persistent local activity history.
@@ -169,6 +185,14 @@ impl LocalVaultStore {
                     created_at_utc INTEGER NOT NULL
                 );
                 PRAGMA user_version = 2;
+                "#,
+            )?;
+        }
+        if version < 3 {
+            self.conn.execute_batch(
+                r#"
+                ALTER TABLE epoch_keys ADD COLUMN created_at_utc INTEGER NOT NULL DEFAULT 0;
+                PRAGMA user_version = 3;
                 "#,
             )?;
         }
@@ -335,10 +359,59 @@ impl LocalVaultStore {
     pub fn save_epoch_key(&self, epoch: u64, key: &VaultEpochKey) -> Result<(), LocalStoreError> {
         let protected_bytes = crate::keyring::protect_secret(key.as_bytes())?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO epoch_keys (epoch, epoch_key_bytes) VALUES (?1, ?2)",
-            params![epoch, protected_bytes.as_slice()],
+            r#"
+            INSERT INTO epoch_keys (epoch, epoch_key_bytes, created_at_utc)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(epoch) DO UPDATE SET epoch_key_bytes = excluded.epoch_key_bytes
+            "#,
+            params![epoch, protected_bytes.as_slice(), unix_now()],
         )?;
         Ok(())
+    }
+
+    /// Lists every epoch key's rotation metadata, oldest epoch first.
+    pub fn list_epoch_keys(&self) -> Result<Vec<EpochKeyInfo>, LocalStoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT epoch, created_at_utc FROM epoch_keys ORDER BY epoch ASC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(EpochKeyInfo {
+                epoch: row.get(0)?,
+                created_at_utc: row.get::<_, i64>(1)? as u64,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Mints a fresh epoch key and advances `current_epoch` atomically. Old
+    /// epoch keys are retained so existing snapshots stay readable; only new
+    /// snapshots use the returned epoch.
+    pub fn rotate_epoch_key(&self) -> Result<(u64, VaultEpochKey), LocalStoreError> {
+        let current: u64 = self.conn.query_row(
+            "SELECT current_epoch FROM vault_metadata WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let next = current.checked_add(1).ok_or_else(|| {
+            LocalStoreError::CorruptedRecord("current_epoch would overflow".into())
+        })?;
+        let key = VaultEpochKey::generate();
+        let protected = crate::keyring::protect_secret(key.as_bytes())?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO epoch_keys (epoch, epoch_key_bytes, created_at_utc) VALUES (?1, ?2, ?3)",
+            params![next, protected.as_slice(), unix_now()],
+        )?;
+        tx.execute(
+            "UPDATE vault_metadata SET current_epoch = ?1 WHERE id = 1",
+            params![next],
+        )?;
+        tx.commit()?;
+        Ok((next, key))
     }
 
     /// Retrieves and decrypts an epoch key via the OS keyring.
@@ -1491,5 +1564,72 @@ mod tests {
         assert!(remaining.contains(&shared_cid));
         assert!(remaining.contains(&new_only_cid));
         assert!(!remaining.contains(&old_only_cid));
+    }
+
+    #[test]
+    fn epoch_rotation_advances_current_and_keeps_old_keys() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let r = RecoverySecret::generate();
+        let r_sk = r.derive_recovery_signing_key().unwrap();
+        let (_, r_enc_pk) = r.derive_recovery_encryption_keys().unwrap();
+        let vault_id = [0xAAu8; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: r_sk.verifying_key().as_bytes().to_vec(),
+            recovery_encryption_pk: r_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0u8; 32],
+            created_at_utc: 1000,
+            creation_nonce: vec![0u8; 32],
+            signature: Vec::new(),
+        };
+        genesis.sign(&r_sk).unwrap();
+        let dev_sk = generate_signing_key();
+        let dev_id = [0xBBu8; 32];
+        let epoch_key = VaultEpochKey::generate();
+        let locator = r.derive_recovery_locator().unwrap();
+        store
+            .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
+            .unwrap();
+
+        let (epoch2, _) = store.rotate_epoch_key().unwrap();
+        assert_eq!(epoch2, 2);
+        let (_, _, _, current) = store.get_device_state().unwrap();
+        assert_eq!(current, 2);
+        // Old key still retrievable and distinct.
+        let key1 = store.get_epoch_key(1).unwrap();
+        let key2 = store.get_epoch_key(2).unwrap();
+        assert_ne!(key1.as_bytes(), key2.as_bytes());
+        let infos = store.list_epoch_keys().unwrap();
+        assert_eq!(infos.len(), 2);
+        assert!(infos.iter().all(|info| info.created_at_utc > 0));
+        assert!(infos[0].created_at_utc <= infos[1].created_at_utc);
+    }
+
+    #[test]
+    fn epoch_key_migration_backfills_unknown_stamps() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        // Simulate a pre-migration v2 database with one legacy row.
+        store
+            .conn
+            .execute_batch("ALTER TABLE epoch_keys DROP COLUMN created_at_utc;")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO epoch_keys (epoch, epoch_key_bytes) VALUES (?1, ?2)",
+                params![1u64, vec![7u8; 48]],
+            )
+            .unwrap();
+        store.conn.execute("PRAGMA user_version = 2", []).unwrap();
+        store.run_migrations().unwrap();
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let infos = store.list_epoch_keys().unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].created_at_utc, 0);
     }
 }
