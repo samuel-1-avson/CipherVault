@@ -1640,6 +1640,9 @@ function checkpointDisplayState(record, transactionHash) {
   if (isZeroTransactionHash(transactionHash)) {
     return { label: 'Not submitted', tone: 'var(--text-muted)', confirmed: false };
   }
+  if (record && record.finality_status === 'reorg_suspected') {
+    return { label: 'Reorg suspected — finalized receipt regressed', tone: 'var(--accent-rose)', confirmed: false };
+  }
 
   const verificationStatus = record && typeof record.verification_status === 'string'
     ? record.verification_status.toLowerCase()
@@ -1954,6 +1957,20 @@ function renderRelayerCheckpoints(data) {
     } else {
       canaryDisplay.textContent = 'Checkpoint canary: not reported';
       canaryDisplay.style.color = 'var(--text-muted)';
+    }
+  }
+
+  const reorgDisplay = document.getElementById('relayer-reorg-display');
+  if (reorgDisplay && response.relayer_status) {
+    if (response.relayer_status.reorg_suspected === true) {
+      const suspectCount = Array.isArray(response.relayer_status.reorg_suspect_tx_hashes)
+        ? response.relayer_status.reorg_suspect_tx_hashes.length
+        : 0;
+      reorgDisplay.textContent = `Reorg suspected (${suspectCount})`;
+      reorgDisplay.style.color = 'var(--accent-rose)';
+    } else {
+      reorgDisplay.textContent = 'No reorg detected';
+      reorgDisplay.style.color = 'var(--text-muted)';
     }
   }
 

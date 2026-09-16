@@ -8285,6 +8285,35 @@ fn checkpoint_finality(
     }
 }
 
+/// Detects reorg suspects among previously-finalized receipts: a suspect is a
+/// feed checkpoint whose finalized receipt is now missing or mined at a
+/// different block. `current` carries (tx hash, finality status, receipt block).
+/// Checkpoints that left the feed are ignored (feed edits are not reorgs), and
+/// a re-finalized receipt clears even at a new block (the chain moved on).
+fn detect_reorg_suspects(
+    previously_finalized: &[(String, u64)],
+    current: &[(String, String, Option<u64>)],
+) -> Vec<String> {
+    previously_finalized
+        .iter()
+        .filter(|(tx, block)| {
+            let Some((_, status, observed)) =
+                current.iter().find(|(current_tx, _, _)| current_tx == tx)
+            else {
+                return false;
+            };
+            if status == "finalized" {
+                return false;
+            }
+            match observed {
+                Some(observed_block) => observed_block != block,
+                None => true,
+            }
+        })
+        .map(|(tx, _)| tx.clone())
+        .collect()
+}
+
 fn finality_confirmations_required() -> u64 {
     std::env::var("CIPHERVAULT_FINALITY_CONFIRMATIONS")
         .ok()
@@ -8372,6 +8401,8 @@ static CHECKPOINT_FINALITY_CACHE: OnceLock<tokio::sync::Mutex<Option<FinalityCac
 struct FinalityCacheEntry {
     cached_at: Instant,
     checkpoints: Vec<serde_json::Value>,
+    /// Previously-finalized receipts as (tx hash, block): reorg memory.
+    finalized: Vec<(String, u64)>,
 }
 
 /// Loads the verified feed and, when `CIPHERVAULT_ARBITRUM_RPC_URL` is set,
@@ -8391,11 +8422,13 @@ async fn load_public_feed_with_finality() -> Result<Option<Vec<serde_json::Value
     };
 
     let cache = CHECKPOINT_FINALITY_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
-    if let Some(entry) = cache.lock().await.clone() {
-        if entry.cached_at.elapsed() < CHECKPOINT_FINALITY_CACHE_TTL {
+    let previous_finalized = match cache.lock().await.clone() {
+        Some(entry) if entry.cached_at.elapsed() < CHECKPOINT_FINALITY_CACHE_TTL => {
             return Ok(Some(entry.checkpoints));
         }
-    }
+        Some(entry) => entry.finalized,
+        None => Vec::new(),
+    };
 
     let client = checkpoint_rpc_http_client();
     let required = finality_confirmations_required();
@@ -8435,9 +8468,55 @@ async fn load_public_feed_with_finality() -> Result<Option<Vec<serde_json::Value
         }
     }
 
+    let current: Vec<(String, String, Option<u64>)> = enriched
+        .iter()
+        .filter_map(|record| {
+            let tx = record.get("tx_hash_hex")?.as_str().filter(|hash| !hash.is_empty())?;
+            let status = record
+                .get("finality_status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let block = record.get("receipt_block_number").and_then(|value| value.as_u64());
+            Some((tx.to_string(), status.to_string(), block))
+        })
+        .collect();
+    let suspects = detect_reorg_suspects(&previous_finalized, &current);
+    for record in enriched.iter_mut() {
+        let tx = record.get("tx_hash_hex").and_then(|hash| hash.as_str()).unwrap_or("");
+        if suspects.iter().any(|suspect| suspect == tx) {
+            if let Some(object) = record.as_object_mut() {
+                object.insert(
+                    "finality_status".to_string(),
+                    serde_json::json!("reorg_suspected"),
+                );
+            }
+        }
+    }
+    for tx in &suspects {
+        eprintln!("checkpoint reorg suspected: finalized receipt for {tx} missing or re-mined");
+    }
+    let mut next_finalized: Vec<(String, u64)> = Vec::new();
+    for (tx, status, block) in &current {
+        if status == "finalized" {
+            if let Some(number) = block {
+                next_finalized.push((tx.clone(), *number));
+            }
+        }
+    }
+    // Suspects stay in memory so the alarm persists until re-finalized; feed
+    // removals drop out (feed edits are not reorgs).
+    for (tx, block) in &previous_finalized {
+        if current.iter().any(|(current_tx, _, _)| current_tx == tx)
+            && !next_finalized.iter().any(|(known, _)| known == tx)
+        {
+            next_finalized.push((tx.clone(), *block));
+        }
+    }
+
     let entry = FinalityCacheEntry {
         cached_at: Instant::now(),
         checkpoints: enriched.clone(),
+        finalized: next_finalized,
     };
     *cache.lock().await = Some(entry);
     Ok(Some(enriched))
@@ -8476,6 +8555,16 @@ async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
             let now_utc = Utc::now().timestamp().max(0) as u64;
             let canary_max_age = checkpoint_canary_max_age_secs();
             let canary = checkpoint_canary_status(newest_checkpoint, now_utc, canary_max_age);
+            let reorg_suspect_tx_hashes: Vec<String> = checkpoints
+                .iter()
+                .filter(|checkpoint| {
+                    checkpoint.get("finality_status").and_then(|status| status.as_str())
+                        == Some("reorg_suspected")
+                })
+                .filter_map(|checkpoint| {
+                    checkpoint.get("tx_hash_hex")?.as_str().map(str::to_string)
+                })
+                .collect();
             let rpc_configured = std::env::var("CIPHERVAULT_ARBITRUM_RPC_URL")
                 .ok()
                 .is_some_and(|url| !url.trim().is_empty());
@@ -8488,6 +8577,8 @@ async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
                     "verification_status": "publisher_signed",
                     "finality_status": if rpc_configured { "independent_rpc" } else { "unverified" },
                     "canary_status": canary,
+                    "reorg_suspected": !reorg_suspect_tx_hashes.is_empty(),
+                    "reorg_suspect_tx_hashes": reorg_suspect_tx_hashes,
                     "canary_max_age_secs": canary_max_age,
                     "newest_checkpoint_at_utc": newest_checkpoint,
                 },
@@ -10158,6 +10249,29 @@ mod ui_router_tests {
         let mut tampered = feed.clone();
         tampered.checkpoints[0].block_number = Some(124);
         assert!(verify_public_checkpoint_feed(&tampered).is_err());
+    }
+
+    #[test]
+    fn reorg_alarm_fires_on_finalized_receipt_regression() {
+        let previous = vec![("0xaaa".to_string(), 100u64), ("0xbbb".to_string(), 120u64)];
+        // Vanished receipt + re-mined receipt alarm; steady ones stay quiet.
+        let current = vec![
+            ("0xaaa".to_string(), "unknown".to_string(), None),
+            ("0xbbb".to_string(), "confirmed".to_string(), Some(125u64)),
+        ];
+        assert_eq!(
+            detect_reorg_suspects(&previous, &current),
+            vec!["0xaaa".to_string(), "0xbbb".to_string()]
+        );
+        // Still finalized, or confirmed at the same block: no alarm.
+        let current = vec![
+            ("0xaaa".to_string(), "finalized".to_string(), Some(100u64)),
+            ("0xbbb".to_string(), "confirmed".to_string(), Some(120u64)),
+        ];
+        assert!(detect_reorg_suspects(&previous, &current).is_empty());
+        // Re-finalized at a new block clears; feed removals never alarm.
+        let current = vec![("0xaaa".to_string(), "finalized".to_string(), Some(140u64))];
+        assert!(detect_reorg_suspects(&previous, &current).is_empty());
     }
 
     #[test]

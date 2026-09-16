@@ -253,6 +253,15 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
   alarm: the anchor daemon, publisher worker, or feed mount is broken.
 - Tune the max age to roughly 3x the anchor daemon interval (default daemon: 3600 s).
 
+### Reorg alarm
+- The dashboard remembers finalized receipts across refreshes. A checkpoint whose
+  finalized receipt vanishes or re-mines at another block flips to
+  `finality_status: reorg_suspected`, the feed reports `reorg_suspected: true`
+  with the suspect tx hashes, and the dashboard host logs a stderr alarm line.
+- The alarm is sticky until the receipt re-finalizes; checkpoints removed from
+  the publisher feed never alarm. Treat a live alarm as a paging event: verify
+  the RPC endpoint first (a wedged node mimics a reorg), then the chain.
+
 ## 10. Secret Cutover, Rotation & Signed Promotion (R3/R4)
 
 All tooling below already exists; this section is the execution checklist for the

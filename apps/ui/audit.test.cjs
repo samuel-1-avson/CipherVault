@@ -529,6 +529,28 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   await vm.runInContext('fetchApprovals()', context);
   assert(getElementById('table-approvals-body').innerHTML.includes('No pending approval challenges.'), 'Empty queue must show the empty state');
 
+  // =========================================================================
+  // 15. Checkpoint Reorg Alarm Tests
+  // =========================================================================
+  const reorgState = vm.runInContext(
+    `checkpointDisplayState({ finality_status: 'reorg_suspected' }, '0x${'ab'.repeat(32)}')`,
+    context
+  );
+  assert.equal(reorgState.label, 'Reorg suspected — finalized receipt regressed');
+  assert.equal(reorgState.confirmed, false);
+
+  vm.runInContext(`renderRelayerCheckpoints({
+    relayer_status: { public_read_only: true, reorg_suspected: true, reorg_suspect_tx_hashes: ['0xaaa', '0xbbb'] },
+    checkpoints: []
+  })`, context);
+  assert.equal(getElementById('relayer-reorg-display').textContent, 'Reorg suspected (2)');
+
+  vm.runInContext(`renderRelayerCheckpoints({
+    relayer_status: { public_read_only: true, reorg_suspected: false },
+    checkpoints: []
+  })`, context);
+  assert.equal(getElementById('relayer-reorg-display').textContent, 'No reorg detected');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
