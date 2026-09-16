@@ -6,3 +6,6 @@
 *.bash text eol=lf
 Dockerfile* text eol=lf
 Caddyfile* text eol=lf
+
+# Rust sources are LF-only; kills CRLF drift between Windows/Unix checkouts
+*.rs text eol=lf
