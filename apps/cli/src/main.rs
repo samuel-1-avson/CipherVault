@@ -521,6 +521,12 @@ enum Commands {
         #[command(subcommand)]
         sub: ApproveSubcommand,
     },
+
+    /// Run local self-checks (vault, keyring, operators, quorum, anchors)
+    Doctor {
+        #[arg(long, help = "Output the report in structured JSON format")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -945,6 +951,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             ApproveSubcommand::Status { challenge_id } => cmd_approve_status(challenge_id).await,
         },
+        Commands::Doctor { json } => cmd_doctor(json).await,
     }
 }
 
@@ -2716,6 +2723,193 @@ fn cmd_status() -> Result<()> {
     }
 
     Ok(())
+}
+
+struct DoctorCheck {
+    name: &'static str,
+    ok: bool,
+    detail: String,
+}
+
+fn doctor_report(checks: &[DoctorCheck]) -> serde_json::Value {
+    let failures = checks.iter().filter(|check| !check.ok).count();
+    let rendered: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|check| {
+            serde_json::json!({
+                "name": check.name,
+                "ok": check.ok,
+                "detail": check.detail,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "status": if failures == 0 { "ok" } else { "degraded" },
+        "failures": failures,
+        "checks": rendered,
+    })
+}
+
+/// Local self-check: vault database, OS keyring, operator reachability,
+/// quorum, and anchor freshness. Prints a human report (or JSON with `--json`)
+/// and fails when any check fails, for monitoring scripts.
+async fn cmd_doctor(json: bool) -> Result<()> {
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+
+    // 1. Vault database opens and core state reads back.
+    let store = get_vault_store().ok();
+    match store.as_ref() {
+        Some(store) => match (|| -> Result<String> {
+            let vault_id = store.get_vault_id()?;
+            let tracked = store.list_tracked_files()?;
+            let head = store.get_active_head()?;
+            Ok(format!(
+                "vault={} tracked={} head={}",
+                hex::encode(vault_id),
+                tracked.len(),
+                head.map(|record| hex::encode(&record.snapshot_id))
+                    .unwrap_or_else(|| "none".to_string())
+            ))
+        })() {
+            Ok(detail) => checks.push(DoctorCheck {
+                name: "vault",
+                ok: true,
+                detail,
+            }),
+            Err(error) => checks.push(DoctorCheck {
+                name: "vault",
+                ok: false,
+                detail: format!("read failed: {error}"),
+            }),
+        },
+        None => checks.push(DoctorCheck {
+            name: "vault",
+            ok: false,
+            detail: format!("no vault at {}", get_active_vault_path().display()),
+        }),
+    }
+
+    // 2. OS keyring round-trip with random (non-secret) bytes.
+    let mut probe = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut probe);
+    match ciphervault_local_store::protect_secret(&probe)
+        .ok()
+        .and_then(|sealed| ciphervault_local_store::unprotect_secret(&sealed).ok())
+    {
+        Some(opened) if opened == probe => checks.push(DoctorCheck {
+            name: "keyring",
+            ok: true,
+            detail: "protect/unprotect round-trip ok".to_string(),
+        }),
+        _ => checks.push(DoctorCheck {
+            name: "keyring",
+            ok: false,
+            detail: "OS keyring round-trip failed".to_string(),
+        }),
+    }
+
+    // 3-4. Operator reachability counts toward quorum.
+    let operators = get_configured_operators();
+    let mut reachable = 0usize;
+    let mut operator_details = Vec::new();
+    for endpoint in &operators {
+        let client = OperatorClient::new(endpoint.clone());
+        match client.get_info().await {
+            Ok(info) => {
+                reachable += 1;
+                operator_details.push(format!(
+                    "{} ok ({})",
+                    mask_operator_endpoint(endpoint),
+                    info.operator_id
+                ));
+            }
+            Err(error) => {
+                operator_details.push(format!(
+                    "{} unreachable ({error})",
+                    mask_operator_endpoint(endpoint)
+                ));
+            }
+        }
+    }
+    checks.push(DoctorCheck {
+        name: "operators",
+        ok: reachable == operators.len() && !operators.is_empty(),
+        detail: operator_details.join("; "),
+    });
+    let quorum = operators.len() / 2 + 1;
+    checks.push(DoctorCheck {
+        name: "quorum",
+        ok: reachable >= quorum,
+        detail: format!(
+            "reachable={reachable} required={quorum} total={}",
+            operators.len()
+        ),
+    });
+
+    // 5. Anchor freshness from local checkpoint evidence.
+    match store.as_ref() {
+        Some(store) => match store.list_checkpoint_evidence() {
+            Ok(evidence) => {
+                let newest = evidence.iter().map(|entry| entry.timestamp_utc).max();
+                match newest {
+                    Some(timestamp) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_secs())
+                            .unwrap_or(timestamp);
+                        let age = now.saturating_sub(timestamp);
+                        checks.push(DoctorCheck {
+                            name: "anchors",
+                            ok: true,
+                            detail: format!(
+                                "newest evidence age={age}s count={}",
+                                evidence.len()
+                            ),
+                        });
+                    }
+                    None => checks.push(DoctorCheck {
+                        name: "anchors",
+                        ok: true,
+                        detail: "no local checkpoint evidence yet".to_string(),
+                    }),
+                }
+            }
+            Err(error) => checks.push(DoctorCheck {
+                name: "anchors",
+                ok: false,
+                detail: format!("evidence read failed: {error}"),
+            }),
+        },
+        None => checks.push(DoctorCheck {
+            name: "anchors",
+            ok: false,
+            detail: "skipped (no vault)".to_string(),
+        }),
+    }
+
+    let failures = checks.iter().filter(|check| !check.ok).count();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&doctor_report(&checks))?
+        );
+    } else {
+        println!("{}", "CipherVault Doctor".bold());
+        println!("--------------------------------------------------");
+        for check in &checks {
+            let state = if check.ok {
+                "PASS".green()
+            } else {
+                "FAIL".red()
+            };
+            println!("  [{state}] {:<10} {}", check.name, check.detail);
+        }
+    }
+    if failures == 0 {
+        Ok(())
+    } else {
+        bail!("doctor: {failures} failing check(s)")
+    }
 }
 
 pub async fn cmd_push(
@@ -10154,5 +10348,31 @@ mod ui_router_tests {
             let request = client.get("http://127.0.0.1:9/v1/sessions").build();
             assert!(request.is_ok());
         }
+    }
+
+    #[test]
+    fn doctor_report_marks_degraded_on_any_failure() {
+        let ok = vec![
+            DoctorCheck {
+                name: "vault",
+                ok: true,
+                detail: "v".to_string(),
+            },
+            DoctorCheck {
+                name: "keyring",
+                ok: true,
+                detail: "k".to_string(),
+            },
+        ];
+        assert_eq!(doctor_report(&ok)["status"], "ok");
+        let bad = vec![DoctorCheck {
+            name: "vault",
+            ok: false,
+            detail: "missing".to_string(),
+        }];
+        let report = doctor_report(&bad);
+        assert_eq!(report["status"], "degraded");
+        assert_eq!(report["failures"], 1);
+        assert_eq!(report["checks"][0]["name"], "vault");
     }
 }
