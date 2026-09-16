@@ -1,6 +1,6 @@
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 use ciphervault_crypto::VaultEpochKey;
@@ -25,6 +25,16 @@ pub struct PendingUpload {
     pub attempts: u32,
     pub last_error: Option<String>,
     pub created_at_utc: i64,
+}
+
+/// Outcome of one retention prune sweep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PruneOutcome {
+    pub snapshots_removed: usize,
+    pub snapshots_skipped_protected: usize,
+    pub chunks_removed: usize,
+    pub chunk_bytes_reclaimed: u64,
+    pub chunk_gc_skipped: bool,
 }
 
 /// Represents a recorded event in the vault's persistent local activity history.
@@ -942,6 +952,155 @@ impl LocalVaultStore {
         Ok(())
     }
 
+    /// Deletes the given snapshots (by record CID) with fail-closed guards:
+    /// the active head and any snapshot with a pending upload row are skipped.
+    /// Removes snapshot rows (both aliases), recovery sets, and inactive head
+    /// rows, then garbage-collects chunks unreferenced by retained recovery
+    /// sets. Chunk GC is skipped entirely when any retained snapshot lacks a
+    /// recovery set (its references are unknowable).
+    pub fn prune_snapshots(&self, record_cids: &[[u8; 32]]) -> Result<PruneOutcome, LocalStoreError> {
+        use std::collections::HashSet;
+
+        let active_head_cid: Option<[u8; 32]> = self
+            .get_active_head()?
+            .and_then(|head| head.snapshot_id.as_slice().try_into().ok());
+        let pending: HashSet<[u8; 32]> = self
+            .list_pending_uploads()?
+            .into_iter()
+            .map(|upload| upload.record_cid)
+            .collect();
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut removed = 0usize;
+        let mut skipped = 0usize;
+        for cid in record_cids {
+            if Some(*cid) == active_head_cid || pending.contains(cid) {
+                skipped += 1;
+                continue;
+            }
+            let record_cbor: Option<Vec<u8>> = tx
+                .query_row(
+                    "SELECT record_cbor FROM snapshots WHERE snapshot_id = ?1",
+                    params![cid.as_slice()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(record_cbor) = record_cbor else {
+                continue; // Idempotent: already gone.
+            };
+            let record: SnapshotRecord = from_canonical_cbor(&record_cbor)?;
+            let mut deleted_rows = tx.execute(
+                "DELETE FROM snapshots WHERE snapshot_id = ?1",
+                params![cid.as_slice()],
+            )?;
+            if record.snapshot_id.as_slice() != cid.as_slice() {
+                deleted_rows += tx.execute(
+                    "DELETE FROM snapshots WHERE snapshot_id = ?1",
+                    params![record.snapshot_id.as_slice()],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM recovery_sets WHERE head_cid = ?1",
+                params![cid.as_slice()],
+            )?;
+            tx.execute(
+                "DELETE FROM heads WHERE snapshot_id = ?1 AND is_active = 0",
+                params![cid.as_slice()],
+            )?;
+            if deleted_rows > 0 {
+                removed += 1;
+            }
+        }
+
+        // Chunk GC over retained recovery sets.
+        let mut retained_cids = HashSet::new();
+        {
+            let mut stmt = tx.prepare("SELECT DISTINCT record_cbor FROM snapshots")?;
+            let rows = stmt.query_map([], |row| {
+                let blob: Vec<u8> = row.get(0)?;
+                let record: SnapshotRecord = from_canonical_cbor(&blob).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })?;
+                let cid = record.compute_record_cid().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })?;
+                Ok(cid)
+            })?;
+            for cid in rows {
+                retained_cids.insert(cid?);
+            }
+        }
+        let mut referenced = HashSet::new();
+        let mut sets_complete = true;
+        for cid in &retained_cids {
+            let set_cbor: Option<Vec<u8>> = tx
+                .query_row(
+                    "SELECT set_cbor FROM recovery_sets WHERE head_cid = ?1",
+                    params![cid.as_slice()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(set_cbor) = set_cbor else {
+                sets_complete = false;
+                break;
+            };
+            let set: ciphervault_format::RecoverySet = from_canonical_cbor(&set_cbor)?;
+            for chunk in &set.closure.chunk_cids {
+                if let Ok(arr) = <[u8; 32]>::try_from(chunk.as_slice()) {
+                    referenced.insert(arr);
+                }
+            }
+        }
+        let mut chunks_removed = 0usize;
+        let mut bytes_reclaimed = 0u64;
+        if sets_complete {
+            let doomed: Vec<([u8; 32], i64)> = {
+                let mut stmt = tx.prepare("SELECT chunk_cid, length(chunk_cbor) FROM local_chunks")?;
+                let rows = stmt.query_map([], |row| {
+                    let blob: Vec<u8> = row.get(0)?;
+                    let len: i64 = row.get(1)?;
+                    let mut cid = [0u8; 32];
+                    if blob.len() == 32 {
+                        cid.copy_from_slice(&blob);
+                    }
+                    Ok((cid, len))
+                })?;
+                let mut out = Vec::new();
+                for entry in rows {
+                    let (cid, len) = entry?;
+                    if !referenced.contains(&cid) {
+                        out.push((cid, len));
+                    }
+                }
+                out
+            };
+            for (cid, len) in doomed {
+                tx.execute(
+                    "DELETE FROM local_chunks WHERE chunk_cid = ?1",
+                    params![cid.as_slice()],
+                )?;
+                chunks_removed += 1;
+                bytes_reclaimed += len.max(0) as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(PruneOutcome {
+            snapshots_removed: removed,
+            snapshots_skipped_protected: skipped,
+            chunks_removed,
+            chunk_bytes_reclaimed: bytes_reclaimed,
+            chunk_gc_skipped: !sets_complete,
+        })
+    }
+
     /// Records an upload failure attempt for a snapshot in the pending queue.
     pub fn record_upload_failure(
         &self,
@@ -1225,5 +1384,112 @@ mod tests {
             store.get_active_head().unwrap().unwrap().snapshot_id,
             vec![0xBBu8; 32]
         );
+    }
+
+    #[test]
+    fn prune_removes_rows_sets_and_unreferenced_chunks_only() {
+        use ciphervault_format::{RecoveryClosure, RecoverySet};
+
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let record = |id: u8, ts: u64| SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: vec![id; 32],
+            parent_snapshot_ids: Vec::new(),
+            device_id: vec![0x33u8; 32],
+            device_counter: 1,
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![id; 32],
+            encrypted_manifest_len: 3,
+            advisory_timestamp_utc: ts,
+            signature: Vec::new(),
+        };
+        let chunk = |payload: &[u8]| ChunkWireObject {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            file_version_id: vec![0x44u8; 32],
+            chunk_index: 0,
+            total_chunks: 1,
+            declared_padded_length: payload.len() as u32,
+            key_epoch: 1,
+            payload: payload.to_vec(),
+        };
+        let shared = chunk(b"shared-chunk-bytes");
+        let only_old = chunk(b"only-old-chunk-bytes");
+        let only_new = chunk(b"only-new-chunk-bytes");
+        let shared_cid = shared.compute_cid().unwrap();
+        let old_only_cid = only_old.compute_cid().unwrap();
+        let new_only_cid = only_new.compute_cid().unwrap();
+
+        let old = record(1, 1000);
+        let new = record(2, 2000);
+        let old_cid = old.compute_record_cid().unwrap();
+        let new_cid = new.compute_record_cid().unwrap();
+        store
+            .save_snapshot(&old, b"manifest-old", &[shared.clone(), only_old.clone()])
+            .unwrap();
+        store
+            .save_snapshot(&new, b"manifest-new", &[shared.clone(), only_new.clone()])
+            .unwrap();
+        // Both replicated: the pending guard must not interfere here.
+        store.mark_upload_completed(&[1u8; 32]).unwrap();
+        store.mark_upload_completed(&[2u8; 32]).unwrap();
+        // Crafted recovery sets: old references shared+old-only, new shared+new-only.
+        for (cid, chunks) in [
+            (old_cid, vec![shared_cid, old_only_cid]),
+            (new_cid, vec![shared_cid, new_only_cid]),
+        ] {
+            let set = RecoverySet {
+                closure: RecoveryClosure {
+                    snapshot_id: vec![0u8; 32],
+                    snapshot_record_cid: cid.to_vec(),
+                    manifest_cid: vec![0u8; 32],
+                    envelope_ids: Vec::new(),
+                    chunk_cids: chunks.iter().map(|c| c.to_vec()).collect(),
+                    total_bytes: 0,
+                },
+                locator: [0u8; 32],
+                records: Vec::new(),
+            };
+            store
+                .conn
+                .execute(
+                    "INSERT INTO recovery_sets (head_cid, set_cbor) VALUES (?1, ?2)",
+                    params![cid.as_slice(), to_canonical_cbor(&set).unwrap()],
+                )
+                .unwrap();
+        }
+
+        // Active head is fail-closed even when explicitly listed.
+        let mut head = HeadRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: new_cid.to_vec(),
+            parent_snapshot_ids: Vec::new(),
+            closure_digest: vec![0x11u8; 32],
+            device_id: vec![0x33u8; 32],
+            device_counter: 2,
+            signature: Vec::new(),
+        };
+        head.sign(&generate_signing_key()).unwrap();
+        store.set_head(&head).unwrap();
+
+        let outcome = store.prune_snapshots(&[old_cid, new_cid]).unwrap();
+        assert_eq!(outcome.snapshots_removed, 1);
+        assert_eq!(outcome.snapshots_skipped_protected, 1);
+        assert!(!outcome.chunk_gc_skipped);
+        assert_eq!(outcome.chunks_removed, 1);
+
+        // Old rows (both aliases) and its recovery set are gone.
+        assert!(store.get_snapshot(&old_cid).is_err());
+        assert!(store.get_recovery_set(&old_cid).is_err());
+        // New snapshot fully intact.
+        assert!(store.get_snapshot(&new_cid).is_ok());
+        // Shared + new-only chunks retained; old-only chunk collected.
+        let remaining = store.list_all_chunk_cids().unwrap();
+        assert!(remaining.contains(&shared_cid));
+        assert!(remaining.contains(&new_only_cid));
+        assert!(!remaining.contains(&old_only_cid));
     }
 }

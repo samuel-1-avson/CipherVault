@@ -423,3 +423,14 @@ Repairs are recorded via `record_repair` by CLI-driven repair flows; the
 daemon loop audits but does not yet repair autonomously (it carries no vault
 credentials), so daemon-only deployments show zero repairs until autonomous
 repair lands.
+
+## 14. Snapshot Retention & Rotation (R18/R13)
+
+### Retention (R18)
+`ciphervault prune --keep-last N --keep-days D` (defaults 10 / 30) deletes old
+local snapshots: snapshot rows, recovery sets, and chunks unreferenced by any
+retained recovery set. Always protected: the active head, snapshots younger
+than the policy, and unreplicated snapshots (pending uploads). Chunk GC is
+skipped for the run if any retained snapshot lacks a recovery set. `--dry-run`
+prints targets without deleting. Remote operator copies are untouched; prune
+only reclaims local disk.

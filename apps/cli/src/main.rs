@@ -188,6 +188,18 @@ enum Commands {
     /// Display snapshot history DAG
     History,
 
+    /// Prune old snapshots per the retention policy (keeps head + unreplicated)
+    Prune {
+        #[arg(long, help = "Keep at least the N newest snapshots (default 10)")]
+        keep_last: Option<usize>,
+
+        #[arg(long, help = "Keep snapshots newer than D days (default 30)")]
+        keep_days: Option<u64>,
+
+        #[arg(long, help = "Show what would be pruned without deleting anything")]
+        dry_run: bool,
+    },
+
     /// Restore confidential files from a snapshot
     Restore {
         #[arg(
@@ -794,6 +806,11 @@ async fn run(cli: Cli) -> Result<()> {
             concurrency,
         } => cmd_push(message, touch, local, anchor, reader, pin, concurrency).await,
         Commands::History => cmd_history(),
+        Commands::Prune {
+            keep_last,
+            keep_days,
+            dry_run,
+        } => cmd_prune(keep_last, keep_days, dry_run),
         Commands::Restore {
             snapshot,
             to,
@@ -3201,6 +3218,114 @@ fn cmd_history() -> Result<()> {
         println!();
     }
 
+    Ok(())
+}
+
+const DEFAULT_PRUNE_KEEP_LAST: usize = 10;
+const DEFAULT_PRUNE_KEEP_DAYS: u64 = 30;
+
+/// Snapshot metadata for retention selection.
+struct PruneCandidate {
+    record_cid: [u8; 32],
+    created_at_utc: u64,
+    is_head: bool,
+    has_pending_upload: bool,
+}
+
+/// Selects prune targets under newest-first protection: keeps the newest
+/// `keep_last`, anything younger than `keep_days`, plus the active head and
+/// unreplicated snapshots always. Returns targets oldest-first for stable output.
+fn select_prune_targets(
+    candidates: &[PruneCandidate],
+    keep_last: usize,
+    keep_days: u64,
+    now_utc: u64,
+) -> Vec<[u8; 32]> {
+    let mut ordered: Vec<&PruneCandidate> = candidates.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.created_at_utc
+            .cmp(&a.created_at_utc)
+            .then_with(|| b.record_cid.cmp(&a.record_cid))
+    });
+    let cutoff = now_utc.saturating_sub(keep_days.saturating_mul(86_400));
+    let mut targets = Vec::new();
+    for (index, candidate) in ordered.iter().enumerate() {
+        if candidate.is_head || candidate.has_pending_upload {
+            continue;
+        }
+        if index < keep_last {
+            continue;
+        }
+        if candidate.created_at_utc >= cutoff {
+            continue;
+        }
+        targets.push(candidate.record_cid);
+    }
+    targets.reverse();
+    targets
+}
+
+fn cmd_prune(keep_last: Option<usize>, keep_days: Option<u64>, dry_run: bool) -> Result<()> {
+    let keep_last = keep_last.unwrap_or(DEFAULT_PRUNE_KEEP_LAST);
+    let keep_days = keep_days.unwrap_or(DEFAULT_PRUNE_KEEP_DAYS);
+    let store = get_vault_store()?;
+    let snapshots = store.list_snapshots()?;
+    if snapshots.is_empty() {
+        println!("No snapshots found.");
+        return Ok(());
+    }
+    let head_cid: Option<[u8; 32]> = store
+        .get_active_head()?
+        .and_then(|head| head.snapshot_id.as_slice().try_into().ok());
+    let pending: std::collections::HashSet<[u8; 32]> = store
+        .list_pending_uploads()?
+        .into_iter()
+        .map(|upload| upload.record_cid)
+        .collect();
+    let mut candidates = Vec::new();
+    for snap in &snapshots {
+        let Ok(record_cid) = snap.compute_record_cid() else {
+            continue;
+        };
+        candidates.push(PruneCandidate {
+            record_cid,
+            created_at_utc: snap.advisory_timestamp_utc,
+            is_head: head_cid == Some(record_cid),
+            has_pending_upload: pending.contains(&record_cid),
+        });
+    }
+    let now_utc = Utc::now().timestamp().max(0) as u64;
+    let targets = select_prune_targets(&candidates, keep_last, keep_days, now_utc);
+
+    println!("{}", "CipherVault Snapshot Retention".bold());
+    println!("--------------------------------------------------------------------------------");
+    println!("  Policy:         keep-last {keep_last}, keep-days {keep_days}");
+    println!("  Snapshots:      {}", candidates.len());
+    println!("  Prune targets:  {}", targets.len());
+    for target in &targets {
+        println!("    - {}", hex::encode(target).dimmed());
+    }
+    if dry_run {
+        println!("  Dry run:        no changes made");
+        return Ok(());
+    }
+    if targets.is_empty() {
+        println!("  Nothing to prune.");
+        return Ok(());
+    }
+    let outcome = store.prune_snapshots(&targets)?;
+    println!("  Removed:        {} snapshot(s)", outcome.snapshots_removed);
+    println!(
+        "  Skipped:        {} protected snapshot(s)",
+        outcome.snapshots_skipped_protected
+    );
+    println!(
+        "  Chunks:         {} removed ({} bytes reclaimed)",
+        outcome.chunks_removed, outcome.chunk_bytes_reclaimed
+    );
+    if outcome.chunk_gc_skipped {
+        println!("  Chunk GC:       skipped (a retained snapshot has no recovery set)");
+    }
     Ok(())
 }
 
@@ -10272,6 +10397,29 @@ mod ui_router_tests {
         // Re-finalized at a new block clears; feed removals never alarm.
         let current = vec![("0xaaa".to_string(), "finalized".to_string(), Some(140u64))];
         assert!(detect_reorg_suspects(&previous, &current).is_empty());
+    }
+
+    #[test]
+    fn prune_selection_keeps_head_pending_recent_and_last_n() {
+        let candidate = |id: u8, age_days: u64, head: bool, pending: bool| PruneCandidate {
+            record_cid: [id; 32],
+            created_at_utc: 2_000_000_000 - age_days * 86_400,
+            is_head: head,
+            has_pending_upload: pending,
+        };
+        let now = 2_000_000_000u64;
+        let candidates = vec![
+            candidate(1, 60, false, false),
+            candidate(2, 45, false, false),
+            candidate(3, 5, false, false),
+            candidate(4, 90, true, false),
+            candidate(5, 90, false, true),
+        ];
+        let targets = select_prune_targets(&candidates, 2, 30, now);
+        assert_eq!(targets, vec![[1u8; 32]]);
+        // keep-last 0 still protects head/pending/young.
+        let targets = select_prune_targets(&candidates, 0, 30, now);
+        assert_eq!(targets, vec![[1u8; 32], [2u8; 32]]);
     }
 
     #[test]
