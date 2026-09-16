@@ -4426,6 +4426,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cookie_current.status(), StatusCode::OK);
+        let handoff = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/handoff")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(handoff.status(), StatusCode::OK);
+        let handoff_json = json(handoff).await;
+        let handoff_code = handoff_json["handoff_code"].as_str().unwrap().to_string();
+        let browser_handoff = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/handoff/consume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "handoff_code": handoff_code,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(browser_handoff.status(), StatusCode::OK);
+        assert!(browser_handoff
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("ciphervault_account_session=")));
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/handoff/consume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "handoff_code": handoff_code,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
         let registration_options = app
             .clone()
             .oneshot(
