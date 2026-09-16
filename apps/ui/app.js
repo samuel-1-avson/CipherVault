@@ -392,6 +392,7 @@ function initAccountControls() {
     if (event.target === accountManageModal) closeAccountManagementModal();
   });
   document.getElementById('btn-submit-account-invite')?.addEventListener('click', submitAccountInvitation);
+  document.getElementById('btn-refresh-approvals')?.addEventListener('click', fetchApprovals);
   document.getElementById('btn-generate-recovery-codes')?.addEventListener('click', generateHostedRecoveryCodes);
   document.getElementById('btn-start-totp-enrollment')?.addEventListener('click', startTotpEnrollment);
   document.getElementById('btn-confirm-totp-enrollment')?.addEventListener('click', confirmTotpEnrollment);
@@ -484,6 +485,8 @@ async function openAccountManagementModal() {
   modal.hidden = false;
   openModal(modal, document.activeElement);
   await refreshAccountManagement(accountId);
+  renderRoleMatrix();
+  await fetchApprovals();
 }
 
 async function refreshAccountManagement(accountId) {
@@ -551,6 +554,79 @@ async function submitAccountInvitation() {
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+// Team role matrix (R14). Minimum roles mirror the account-service guards in
+// services/account/src/lib.rs: viewer lists memberships (get_memberships),
+// admin invites/lists/revokes (post_invitation, get_invitations,
+// post_membership_revoke), owner links vaults and mints recovery codes
+// (post_vault_link, post_recovery_codes); account view/audit are self-scoped.
+const ROLE_MATRIX = [
+  { capability: 'View memberships', cells: [true, true, true, true, false] },
+  { capability: 'Invite members', cells: ['Any role', 'Editor or below', false, false, false] },
+  { capability: 'List invitations', cells: [true, true, false, false, false] },
+  { capability: 'Revoke memberships', cells: ['Anyone', 'Below admin', false, false, false] },
+  { capability: 'Link vault', cells: [true, false, false, false, false] },
+  { capability: 'Recovery codes', cells: [true, false, false, false, false] },
+  { capability: 'View own account + audit', cells: ['Self', 'Self', 'Self', 'Self', 'Self'] },
+];
+
+function renderRoleMatrix() {
+  const body = document.getElementById('table-role-matrix-body');
+  if (!body) return;
+  body.innerHTML = ROLE_MATRIX.map(row => {
+    const cells = row.cells.map(cell => {
+      if (cell === true) return '<td>✓</td>';
+      if (cell === false) return '<td>—</td>';
+      return `<td>${escapeHtml(cell)}</td>`;
+    }).join('');
+    return `<tr><td>${escapeHtml(row.capability)}</td>${cells}</tr>`;
+  }).join('');
+}
+
+async function fetchApprovals() {
+  const status = document.getElementById('approvals-status');
+  if (status) status.textContent = 'Loading…';
+  try {
+    const response = await fetch('/api/approvals', { credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Approval queue unavailable (${response.status})`);
+    renderApprovalQueue(await response.json());
+    if (status) status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    renderApprovalQueue({ operators: [] });
+    if (status) status.textContent = error instanceof Error ? error.message : 'Approval queue unavailable';
+  }
+}
+
+function renderApprovalQueue(payload) {
+  const body = document.getElementById('table-approvals-body');
+  if (!body) return;
+  const rows = [];
+  (payload.operators || []).forEach(operator => {
+    (operator.challenges || []).forEach(challenge => {
+      const id = String(challenge.challenge_id || '');
+      const vault = String(challenge.vault_id_hex || '');
+      const expires = challenge.expires_at_utc
+        ? new Date(challenge.expires_at_utc * 1000).toLocaleString()
+        : 'unknown';
+      rows.push(
+        `<tr><td title="${escapeHtml(id)}">${escapeHtml(id.slice(0, 12))}…</td>` +
+        `<td>${escapeHtml(String(challenge.action || 'unknown'))}</td>` +
+        `<td title="${escapeHtml(vault)}">${escapeHtml(vault.slice(0, 12))}…</td>` +
+        `<td>${escapeHtml(expires)}</td>` +
+        `<td>${escapeHtml(String(operator.endpoint || 'operator'))}</td></tr>`
+      );
+    });
+    if (operator.status && operator.status !== 'online') {
+      rows.push(
+        `<tr><td colspan="5">${escapeHtml(String(operator.endpoint || 'operator'))} · ` +
+        `${escapeHtml(String(operator.status))}</td></tr>`
+      );
+    }
+  });
+  body.innerHTML = rows.length
+    ? rows.join('')
+    : '<tr><td colspan="5">No pending approval challenges.</td></tr>';
 }
 
 async function generateHostedRecoveryCodes() {

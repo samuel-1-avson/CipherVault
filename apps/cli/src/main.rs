@@ -6704,6 +6704,7 @@ fn private_ui_router() -> axum::Router {
         )
         .route("/api/vault", get(api_vault_handler))
         .route("/api/operators", get(api_operators_handler))
+        .route("/api/approvals", get(api_approvals_handler))
         .route(
             "/api/snapshots",
             get(api_snapshots_handler).post(api_create_snapshot_handler),
@@ -8705,6 +8706,46 @@ async fn api_operators_handler() -> impl axum::response::IntoResponse {
     let results = join_all(probes).await;
 
     axum::Json(serde_json::json!(results))
+}
+
+/// Private-workspace approval queue (R14): probes every configured operator
+/// for pending out-of-band approval challenges. Read-only; approvals are
+/// submitted through the CLI guardian ceremony, never the browser.
+async fn api_approvals_handler() -> impl axum::response::IntoResponse {
+    let http = public_operator_http_client();
+    let probes = get_configured_operators().into_iter().map(|endpoint| {
+        let http = http.clone();
+        async move {
+            let client = OperatorClient::with_http_client(endpoint.clone(), http);
+            let display_endpoint = mask_operator_endpoint(&endpoint);
+            match client.get_pending_approvals().await {
+                Ok(challenges) => serde_json::json!({
+                    "endpoint": display_endpoint,
+                    "status": "online",
+                    "challenges": challenges
+                        .iter()
+                        .map(|challenge| serde_json::json!({
+                            "challenge_id": challenge.challenge_id,
+                            "action": challenge.action,
+                            "vault_id_hex": challenge.vault_id_hex,
+                            "requester_device_id_hex": challenge.requester_device_id_hex,
+                            "created_at_utc": challenge.created_at_utc,
+                            "expires_at_utc": challenge.expires_at_utc,
+                            "details": challenge.details,
+                        }))
+                        .collect::<Vec<_>>(),
+                }),
+                Err(error) => serde_json::json!({
+                    "endpoint": display_endpoint,
+                    "status": "unavailable",
+                    "error": error.to_string(),
+                    "challenges": [],
+                }),
+            }
+        }
+    });
+    let operators = join_all(probes).await;
+    axum::Json(serde_json::json!({ "operators": operators }))
 }
 
 async fn api_snapshots_handler() -> impl axum::response::IntoResponse {

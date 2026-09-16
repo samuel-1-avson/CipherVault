@@ -305,6 +305,16 @@ Every fresh lockout emits two alert signals: an `auth_rate_lockout` row in `audi
 to the log aggregator and page on lockout spikes per source; the audit row is the
 per-account source of truth for incident review.
 
+### Team role matrix + approval queue (R14)
+
+The hosted account modal shows a role matrix (owner/admin/editor/viewer/recovery
+minimums per capability, enforced by the account service) and a read-only
+approval queue aggregating pending out-of-band challenges from every configured
+operator (GET /api/approvals on the private dashboard only; never exposed on
+the public explorer). The queue needs CIPHERVAULT_OPERATOR_SERVICE_TOKEN on
+the dashboard host; without it each operator reports unavailable. Approvals
+themselves are submitted through the CLI guardian ceremony, never the browser.
+
 ## 12. Performance Tuning (Caps + Chunking)
 
 Three operator caps are runtime-tunable via environment (plain bytes or `KB`/`MB`

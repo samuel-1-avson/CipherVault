@@ -477,6 +477,24 @@ impl OperatorClient {
         let peers = resp.json::<Vec<crate::types::PeerDescriptor>>().await?;
         Ok(peers)
     }
+
+    /// Fetches pending out-of-band approval challenges (R14 dashboard queue).
+    /// Control-plane route: authenticates with the operator service token.
+    pub async fn get_pending_approvals(
+        &self,
+    ) -> Result<Vec<crate::types::PendingApprovalChallenge>, StorageError> {
+        let url = format!("{}/v1/auth/challenges/pending", self.endpoint);
+        let resp = self.with_service_token(self.http.get(&url)).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let message = resp.text().await.unwrap_or_default();
+            return Err(StorageError::ServerError { status, message });
+        }
+        let challenges = resp
+            .json::<Vec<crate::types::PendingApprovalChallenge>>()
+            .await?;
+        Ok(challenges)
+    }
 }
 
 #[cfg(test)]

@@ -180,6 +180,22 @@ pub struct ProofOfStorageReceipt {
     pub size_bytes: u64,
 }
 
+/// Pending out-of-band approval challenge as served by operator
+/// `GET /v1/auth/challenges/pending` (R14). Local wire mirror: the storage
+/// crate must not grow a ciphervault-recovery dependency (lock edge).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PendingApprovalChallenge {
+    pub challenge_id: String,
+    pub vault_id_hex: String,
+    /// Unit-variant enum on the wire (`"EmergencyRecovery"`, ...).
+    pub action: String,
+    pub requester_device_id_hex: String,
+    pub nonce_hex: String,
+    pub created_at_utc: u64,
+    pub expires_at_utc: u64,
+    pub details: String,
+}
+
 impl ProofOfStorageReceipt {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();

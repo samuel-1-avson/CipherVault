@@ -1310,6 +1310,51 @@
           <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; max-height: 170px; overflow-y: auto; color: var(--accent-cyan);">Loading…</pre>
         </div>
         <div class="form-group">
+          <label class="form-label">Role matrix</label>
+          <div class="table-card" style="margin-top: 4px;">
+            <table class="data-table" id="table-role-matrix" aria-label="Membership role capabilities">
+              <thead>
+                <tr>
+                  <th>Capability</th>
+                  <th>Owner</th>
+                  <th>Admin</th>
+                  <th>Editor</th>
+                  <th>Viewer</th>
+                  <th>Recovery</th>
+                </tr>
+              </thead>
+              <tbody id="table-role-matrix-body">
+                <tr><td colspan="6" class="loading-placeholder">Loading role matrix…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="form-help">Minimum roles enforced by the account service. Recovery sessions must enroll a device before any change.</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="table-approvals-body">Approval queue</label>
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+            <button class="btn-action secondary small" id="btn-refresh-approvals" type="button">Refresh queue</button>
+            <span id="approvals-status" class="form-help" style="margin:0;">Not loaded.</span>
+          </div>
+          <div class="table-card" style="margin-top: 4px;">
+            <table class="data-table" id="table-approvals" aria-label="Pending approval challenges">
+              <thead>
+                <tr>
+                  <th>Challenge</th>
+                  <th>Action</th>
+                  <th>Vault</th>
+                  <th>Expires</th>
+                  <th>Operator</th>
+                </tr>
+              </thead>
+              <tbody id="table-approvals-body">
+                <tr><td colspan="5" class="loading-placeholder">Loading approval queue…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="form-help">Out-of-band approvals are submitted with the CLI guardian ceremony; this view is read-only.</p>
+        </div>
+        <div class="form-group">
           <label class="form-label">Recovery codes</label>
           <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
           <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; margin-top: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; color: var(--accent-amber);" hidden></pre>

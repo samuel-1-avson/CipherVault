@@ -497,6 +497,38 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(wsHtml.includes('Backend-Vault'), 'Workspace dropdown must list non-active vaults');
   assert(wsHtml.includes('ACTIVE'), 'Active workspace must have ACTIVE badge');
 
+  // =========================================================================
+  // 14. Team Role Matrix + Approval Queue Tests (R14)
+  // =========================================================================
+  vm.runInContext('renderRoleMatrix()', context);
+  const matrixHtml = getElementById('table-role-matrix-body').innerHTML;
+  assert(matrixHtml.includes('Invite members'), 'Role matrix must list the invite capability');
+  assert(matrixHtml.includes('Editor or below'), 'Role matrix must show the admin grant ceiling');
+  assert(matrixHtml.includes('Link vault'), 'Role matrix must list the vault-link capability');
+
+  response = { ok: true, json: async () => ({ operators: [
+    { endpoint: 'op-1', status: 'online', challenges: [{
+      challenge_id: 'abcdef1234567890abcdef1234567890',
+      action: 'EmergencyRecovery',
+      vault_id_hex: 'vv'.repeat(32),
+      requester_device_id_hex: 'dd'.repeat(32),
+      created_at_utc: 1789250000,
+      expires_at_utc: 1789260000,
+      details: 'Lost device recovery',
+    }] },
+    { endpoint: 'op-2', status: 'unavailable', error: 'connection refused', challenges: [] },
+  ] }) };
+  await vm.runInContext('fetchApprovals()', context);
+  const queueHtml = getElementById('table-approvals-body').innerHTML;
+  assert(queueHtml.includes('EmergencyRecovery'), 'Approval queue must render the challenge action');
+  assert(queueHtml.includes('abcdef123456'), 'Approval queue must render the truncated challenge id');
+  assert(queueHtml.includes('op-2'), 'Approval queue must surface unavailable operators');
+  assert(!queueHtml.includes('No pending approval challenges.'), 'Non-empty queue must not show the empty state');
+
+  response = { ok: true, json: async () => ({ operators: [] }) };
+  await vm.runInContext('fetchApprovals()', context);
+  assert(getElementById('table-approvals-body').innerHTML.includes('No pending approval challenges.'), 'Empty queue must show the empty state');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
