@@ -1,106 +1,62 @@
-# CipherVault — Automated Windows Installer
+# CipherVault - verified Windows installer/updater
 # Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
-
-# Enforce TLS 1.2 for legacy Windows PowerShell hosts
-try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-} catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 
 $Repo = "samuel-1-avson/CipherVault"
-$Tag = "v1.0.0"
 $Target = "x86_64-pc-windows-msvc"
-$PkgName = "ciphervault-$Tag-$Target.zip"
-$DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$PkgName"
-$RawBinaryUrl = "https://raw.githubusercontent.com/$Repo/main/dist/bin/ciphervault.exe"
-
+$Headers = @{ "Accept" = "application/vnd.github+json"; "User-Agent" = "CipherVault-Installer" }
 $InstallDir = Join-Path $HOME ".ciphervault"
 $BinDir = Join-Path $InstallDir "bin"
 $TargetExe = Join-Path $BinDir "ciphervault.exe"
 
+$release = Invoke-RestMethod -Headers $Headers -Uri "https://api.github.com/repos/$Repo/releases/latest"
+$Tag = [string]$release.tag_name
+if ([string]::IsNullOrWhiteSpace($Tag)) { throw "GitHub did not return a latest CipherVault release." }
+$PkgName = "ciphervault-$Tag-$Target.zip"
+$asset = @($release.assets) | Where-Object { $_.name -eq $PkgName } | Select-Object -First 1
+if ($null -eq $asset) { throw "The latest release $Tag has no Windows x64 archive ($PkgName)." }
+
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host "  Installing CipherVault $Tag (Windows x64)" -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
-# Ensure installation directory exists
-if (-not (Test-Path -Path $BinDir)) {
-    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ciphervault-install-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+try {
+    $archive = Join-Path $tempRoot $PkgName
+    Invoke-WebRequest -Headers $Headers -Uri ([string]$asset.browser_download_url) -OutFile $archive -UseBasicParsing
+    $sumsUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt"
+    $sums = (Invoke-WebRequest -Headers $Headers -Uri $sumsUrl -UseBasicParsing).Content
+    $expectedLine = $sums -split "`r?`n" | Where-Object { $_ -match "s*?$([regex]::Escape($PkgName))$" } | Select-Object -First 1
+    $expected = ($expectedLine -split "s+" | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($expected)) { throw "Release checksum does not list $PkgName." }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+    if ($actual -ne $expected.ToLowerInvariant()) { throw "Release checksum mismatch for $PkgName." }
+
+    $extract = Join-Path $tempRoot "extract"
+    Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+    $binary = Get-ChildItem -LiteralPath $extract -Filter "ciphervault.exe" -Recurse -File | Select-Object -First 1
+    if ($null -eq $binary) { throw "The verified release archive does not contain ciphervault.exe." }
+    Copy-Item -LiteralPath $binary.FullName -Destination $TargetExe -Force
+
+    # Double-clicking a console executable is expected to close when it exits.
+    # This wrapper gives PowerShell and Command Prompt users a stable entry point.
+    $wrapper = Join-Path $BinDir "ciphervault.cmd"
+    Set-Content -LiteralPath $wrapper -Value "@echo off`r`n`"%~dp0ciphervault.exe`" %*`r`n" -Encoding ASCII
+} finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$TempZip = Join-Path ([System.IO.Path]::GetTempPath()) $PkgName
-
-# Check if a local binary is in the current working directory or dist/bin
-$LocalCandidate = "dist\bin\ciphervault.exe"
-if (Test-Path -Path $LocalCandidate -PathType Leaf) {
-    Write-Host "Found local release binary in workspace. Copying..." -ForegroundColor Yellow
-    Copy-Item -Path "dist\bin\*.exe" -Destination $BinDir -Force
-} else {
-    Write-Host "Downloading CipherVault from GitHub ($Repo)..." -ForegroundColor Cyan
-    $Downloaded = $false
-    try {
-        Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempZip -UseBasicParsing
-        Expand-Archive -Path $TempZip -DestinationPath $InstallDir -Force
-        Get-ChildItem -Path $InstallDir -Filter "*.exe" -Recurse | ForEach-Object {
-            if ($_.DirectoryName -ne $BinDir) {
-                Copy-Item -Path $_.FullName -Destination $BinDir -Force
-            }
-        }
-        Remove-Item -Path $TempZip -Force -ErrorAction SilentlyContinue
-        $Downloaded = $true
-    } catch {
-        Write-Host "Release archive not yet attached or failed. Trying standalone release binary..." -ForegroundColor Yellow
-    }
-
-    if (-not $Downloaded) {
-        $ReleaseBinaryUrl = "https://github.com/$Repo/releases/download/$Tag/ciphervault.exe"
-        try {
-            Invoke-WebRequest -Uri $ReleaseBinaryUrl -OutFile $TargetExe -UseBasicParsing
-            Write-Host "Downloaded standalone release binary." -ForegroundColor Green
-            $Downloaded = $true
-        } catch {
-            Write-Host "Release binary not found. Downloading raw binary from repository..." -ForegroundColor Yellow
-            try {
-                Invoke-WebRequest -Uri $RawBinaryUrl -OutFile $TargetExe -UseBasicParsing
-                Write-Host "Downloaded standalone binary from repository." -ForegroundColor Green
-                $Downloaded = $true
-            } catch {
-                if (Get-Command cargo -ErrorAction SilentlyContinue) {
-                    Write-Host "Building locally via cargo..." -ForegroundColor Yellow
-                    cargo build --release --locked -p ciphervault-cli
-                    Copy-Item -Path "target\release\ciphervault.exe" -Destination $BinDir -Force
-                    $Downloaded = $true
-                } else {
-                    throw "Could not download CipherVault. Please check your internet connection or visit https://github.com/$Repo"
-                }
-            }
-        }
-    }
-}
-
-# Add to User PATH if not present
 $UserPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
 if ($UserPath -notlike "*$BinDir*") {
-    Write-Host "Adding $BinDir to User PATH..." -ForegroundColor Cyan
-    $NewUserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) {
-        $BinDir
-    } elseif ($UserPath.TrimEnd().EndsWith(";")) {
-        "$UserPath$BinDir"
-    } else {
-        "$UserPath;$BinDir"
-    }
+    $NewUserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) { $BinDir } else { "$($UserPath.TrimEnd(';'));$BinDir" }
     [Environment]::SetEnvironmentVariable("Path", $NewUserPath, [EnvironmentVariableTarget]::User)
     $env:Path = "$env:Path;$BinDir"
 }
 
-Write-Host ""
-Write-Host "[+] CipherVault successfully installed to $BinDir!" -ForegroundColor Green
-Write-Host ""
-Write-Host "Quickstart:" -ForegroundColor Yellow
-Write-Host "  ciphervault init                    # Initialize vault in current repository"
-Write-Host "  ciphervault track .env              # Track confidential files"
-Write-Host "  ciphervault push -m 'Initial'       # Encrypt and replicate snapshot"
-Write-Host "  ciphervault ui                      # Launch local web dashboard"
-Write-Host ""
-
+Write-Host "[+] CipherVault $Tag installed to $BinDir" -ForegroundColor Green
+Write-Host "Run 'ciphervault --help' from a terminal. To update later, run 'ciphervault update' or rerun this installer." -ForegroundColor Yellow
 

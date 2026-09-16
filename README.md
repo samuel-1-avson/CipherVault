@@ -5,7 +5,7 @@
 [![Live Web Dashboard](https://img.shields.io/badge/Live%20Web%20Dashboard-vault.cipherv.online-00f0ff.svg?style=for-the-badge&logo=googlecloud)](https://vault.cipherv.online)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Security Audit](https://img.shields.io/badge/Security%20Audit-Hardened%20v1.0.0-emerald.svg)](dist/SECURITY_AUDIT_REPORT.md)
+[![Security Audit](https://img.shields.io/badge/Security%20Audit-Hardened%20v1.0.4-emerald.svg)](dist/SECURITY_AUDIT_REPORT.md)
 [![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(28%20Suites)-success.svg)](dist/RELEASE_NOTES.md)
 [![Status: Production Ready](https://img.shields.io/badge/Status-Production%20Ready-success.svg)](dist/RELEASE_NOTES.md)
 
@@ -39,13 +39,13 @@ Install the standalone `ciphervault` CLI binary on any operating system with a s
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.0/dist/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.4/dist/scripts/install.ps1 | iex
 ```
 *(Or via Winget: `winget install CipherVault.CipherVault`)*
 
 ### macOS & Linux (Bash)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.0/dist/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.4/dist/scripts/install.sh | bash
 ```
 *(Or via Homebrew: `brew install samuel-1-avson/tap/ciphervault`)*
 
@@ -53,6 +53,38 @@ curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.0/d
 ```bash
 cargo install --git https://github.com/samuel-1-avson/CipherVault.git ciphervault-cli
 ```
+
+After installing, run the CLI from a terminal (do not double-click the
+Windows executable; a console window closes when a command exits). The
+release archive also includes a `ciphervault.cmd` wrapper for Command Prompt.
+
+### Connect to the production account service
+
+The account key remains in the local OS keystore. From a directory containing
+an initialized vault, enroll the account and current device with the hosted
+service:
+
+```bash
+ciphervault auth connect --endpoint https://vault.cipherv.online/api/account
+```
+
+Then open the [production dashboard](https://vault.cipherv.online), choose
+**Passkey sign in** or **Authenticator sign in**, and use the account ID shown
+by the CLI. The account ID alone is not a password and cannot create an
+account that has not been connected by the signed CLI ceremony.
+
+### Update an installed CLI
+
+The CLI checks the GitHub release feed and verifies the archive against the
+published SHA-256 manifest before replacing the executable:
+
+```bash
+ciphervault update --check
+ciphervault update
+```
+
+You can also rerun the official installer command; it always resolves the
+latest release instead of a hard-coded old tag.
 
 ---
 
@@ -638,3 +670,4 @@ Dual-licensed under either:
 - **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
 
 at your option.
+

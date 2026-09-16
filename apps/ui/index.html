@@ -88,6 +88,7 @@
         </div>
         <div class="account-actions" aria-label="Account controls">
           <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key">Device sign in</button>
+          <button class="btn-action secondary small" id="btn-account-connect" type="button" title="Connect a local CLI account to the hosted service" hidden>Connect account</button>
           <button class="btn-action secondary small" id="btn-account-passkey" type="button" title="Sign in to a hosted CipherVault account with a passkey" hidden>Passkey sign in</button>
           <button class="btn-action secondary small" id="btn-account-totp" type="button" title="Sign in with an authenticator app code" hidden>Authenticator sign in</button>
           <button class="btn-action secondary small" id="btn-account-register-passkey" type="button" title="Register a passkey on this device" hidden>Register passkey</button>
@@ -1206,6 +1207,28 @@
         <span class="terminal-prompt">ciphervault&gt;</span>
         <input type="text" id="terminal-cmd-input" class="terminal-input" placeholder="Type a CLI command (e.g. diff, status, audit, push)..." aria-label="CLI Command Input">
         <button class="btn-terminal-exec" id="btn-terminal-exec">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Hosted account bootstrap -->
+  <div class="modal-backdrop" id="modal-account-connect" role="dialog" aria-modal="true" aria-labelledby="modal-account-connect-title" hidden>
+    <div class="modal-card" style="max-width: 620px;">
+      <div class="modal-header">
+        <h3 id="modal-account-connect-title" class="modal-title">Connect your CipherVault account</h3>
+        <button class="btn-modal-close" id="btn-close-modal-account-connect" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+          Production account enrollment is signed by the account key and the current vault device. The key stays in your OS keystore; the browser never receives it.
+        </p>
+        <p class="form-help">Run this from the CipherVault repository that contains your vault, then return here and choose a sign-in method:</p>
+        <pre class="terminal-output" style="white-space: pre-wrap; user-select: all; margin-top: 12px;"><code>ciphervault auth connect --endpoint https://vault.cipherv.online/api/account</code></pre>
+        <p class="form-help" style="margin-top: 12px;">If the command is unavailable, install the latest release with the official installer, or run <code>ciphervault update</code>.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-account-connect">Close</button>
+        <button class="btn-action primary" id="btn-refresh-account-connect">Refresh account status</button>
       </div>
     </div>
   </div>

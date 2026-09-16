@@ -5,6 +5,7 @@ use colored::*;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use reqwest::Client as HttpClient;
+use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -56,6 +57,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Check for and install the latest signed GitHub release for this platform
+    Update {
+        #[arg(long, help = "Only check the latest release; do not install it")]
+        check: bool,
+    },
+
     /// Manage the optional CipherVault control-plane account on this device
     Auth {
         #[command(subcommand)]
@@ -524,6 +531,24 @@ enum AuthSubcommand {
         name: Option<String>,
     },
 
+    /// Register this account and the current vault device with the hosted
+    /// production account service. Private keys never leave this machine.
+    Connect {
+        #[arg(
+            long,
+            default_value = "https://vault.cipherv.online/api/account",
+            help = "Hosted account endpoint (the production dashboard proxy by default)"
+        )]
+        endpoint: String,
+
+        #[arg(
+            long,
+            default_value = "CipherVault device",
+            help = "Label for the enrolled device"
+        )]
+        label: String,
+    },
+
     /// Unlock the local account key and create a short-lived device-bound session
     Login,
 
@@ -695,8 +720,12 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Update { check } => cmd_update(check).await,
         Commands::Auth { sub } => match sub {
             AuthSubcommand::Init { name } => cmd_auth_init(name),
+            AuthSubcommand::Connect { endpoint, label } => {
+                cmd_auth_connect(&endpoint, &label).await
+            }
             AuthSubcommand::Login => cmd_auth_login(),
             AuthSubcommand::Logout => cmd_auth_logout(),
             AuthSubcommand::Status => cmd_auth_status(),
@@ -1126,16 +1155,333 @@ fn cmd_auth_login() -> Result<()> {
     } else {
         println!("  Session:    account-only (link a vault to bind this device)");
     }
-    if let Ok(endpoint) = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT") {
-        if !endpoint.trim().is_empty() {
-            println!(
-                "  Hosted endpoint: {} (remote exchange remains deployment work)",
-                endpoint
-            );
-        }
-    } else {
-        println!("  Hosted endpoint: not configured; this is a local account session");
+    let endpoint = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| account.hosted_endpoint().map(str::to_owned));
+    println!(
+        "  Hosted endpoint: {}",
+        endpoint
+            .as_deref()
+            .unwrap_or("not connected; run `ciphervault auth connect`")
+    );
+    Ok(())
+}
+
+fn hosted_endpoint_value(raw: &str) -> Result<String> {
+    let endpoint = raw.trim().trim_end_matches('/');
+    if endpoint.is_empty() {
+        bail!("Hosted account endpoint is empty");
     }
+    let parsed = reqwest::Url::parse(endpoint)
+        .with_context(|| format!("Invalid hosted account endpoint '{endpoint}'"))?;
+    if parsed.scheme() != "https" && parsed.host_str() != Some("localhost") {
+        bail!("Hosted account endpoint must use HTTPS (or localhost for development)");
+    }
+    if parsed.host_str().is_none() {
+        bail!("Hosted account endpoint must include a host");
+    }
+    Ok(endpoint.to_string())
+}
+
+async fn cmd_auth_connect(endpoint_raw: &str, label: &str) -> Result<()> {
+    let endpoint = hosted_endpoint_value(endpoint_raw)?;
+    let mut account =
+        AccountStore::open(None).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let (vault_id, device_id, device_pk) = current_device_identity().context(
+        "a vault is required for hosted device enrollment; run this from a CipherVault vault",
+    )?;
+    let client = HttpClient::builder()
+        .timeout(Duration::from_secs(10))
+        .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    let register = client
+        .post(format!("{endpoint}/register"))
+        .json(&serde_json::json!({
+            "display_name": account.record().display_name,
+            "account_public_key_hex": account.public_key_hex(),
+        }))
+        .send()
+        .await
+        .context("registering the account with the hosted CipherVault service")?;
+    if register.status() != reqwest::StatusCode::CREATED
+        && register.status() != reqwest::StatusCode::CONFLICT
+    {
+        let status = register.status();
+        let body = register.text().await.unwrap_or_default();
+        bail!("hosted account registration failed ({status}): {body}");
+    }
+
+    let challenge_response = client
+        .post(format!(
+            "{endpoint}/{}/devices/challenge",
+            account.account_id()
+        ))
+        .json(&serde_json::json!({
+            "device_id_hex": device_id,
+            "public_key_hex": device_pk,
+            "label": label,
+        }))
+        .send()
+        .await
+        .context("requesting hosted device enrollment challenge")?;
+    let challenge_status = challenge_response.status();
+    let challenge: serde_json::Value = challenge_response
+        .json()
+        .await
+        .context("decoding hosted device enrollment challenge")?;
+    if !challenge_status.is_success() {
+        bail!(
+            "hosted device challenge failed ({}): {}",
+            challenge_status,
+            challenge
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    let challenge_id = challenge
+        .get("challenge_id")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted device challenge did not include challenge_id")?;
+    let nonce_hex = challenge
+        .get("nonce_hex")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted device challenge did not include nonce_hex")?;
+    let signing_bytes = serde_json::to_vec(&(
+        account.account_id(),
+        Some(device_id.as_str()),
+        Some(device_pk.as_str()),
+        challenge_id,
+        nonce_hex,
+    ))?;
+    let signature = account
+        .sign_challenge(b"account_device_enrollment", &signing_bytes)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let enrollment = client
+        .post(format!("{endpoint}/{}/devices", account.account_id()))
+        .json(&serde_json::json!({
+            "device_id_hex": device_id,
+            "public_key_hex": device_pk,
+            "label": label,
+            "challenge_id": challenge_id,
+            "proof_signature_hex": hex::encode(signature),
+        }))
+        .send()
+        .await
+        .context("enrolling the device with the hosted CipherVault service")?;
+    let enrollment_status = enrollment.status();
+    let enrollment_body: serde_json::Value = enrollment
+        .json()
+        .await
+        .context("decoding hosted device enrollment response")?;
+    if !enrollment_status.is_success() {
+        bail!(
+            "hosted device enrollment failed ({}): {}",
+            enrollment_status,
+            enrollment_body
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    account
+        .set_hosted_endpoint(Some(&endpoint))
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!(
+        "{}",
+        "CipherVault account connected to hosted service."
+            .bold()
+            .green()
+    );
+    println!("  Account ID: {}", account.account_id().yellow());
+    println!("  Device:     {}", device_id.cyan());
+    println!("  Endpoint:   {}", endpoint);
+    println!(
+        "\nOpen https://vault.cipherv.online/ and sign in with this account using a passkey or authenticator."
+    );
+    let _ = vault_id;
+    Ok(())
+}
+
+async fn cmd_update(check_only: bool) -> Result<()> {
+    let (target, archive_suffix) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => ("x86_64-pc-windows-msvc", "zip"),
+        ("linux", "x86_64") => ("x86_64-unknown-linux-gnu", "tar.gz"),
+        ("linux", "aarch64") => ("aarch64-unknown-linux-gnu", "tar.gz"),
+        ("macos", "x86_64") => ("x86_64-apple-darwin", "tar.gz"),
+        ("macos", "aarch64") => ("aarch64-apple-darwin", "tar.gz"),
+        (os, arch) => bail!("No published CipherVault release for {os}/{arch}"),
+    };
+    let client = HttpClient::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let release: serde_json::Value = client
+        .get("https://api.github.com/repos/samuel-1-avson/CipherVault/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .context("checking the CipherVault release feed")?
+        .error_for_status()
+        .context("GitHub did not return the latest CipherVault release")?
+        .json()
+        .await
+        .context("decoding the CipherVault release feed")?;
+    let tag = release
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)
+        .context("latest release did not include a tag")?;
+    let current = env!("CARGO_PKG_VERSION");
+    println!("Current CipherVault: {current}; latest release: {tag}");
+    let current_version = current
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let latest_version = tag
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let current_tuple = (
+        *current_version.first().unwrap_or(&0),
+        *current_version.get(1).unwrap_or(&0),
+        *current_version.get(2).unwrap_or(&0),
+    );
+    let latest_tuple = (
+        *latest_version.first().unwrap_or(&0),
+        *latest_version.get(1).unwrap_or(&0),
+        *latest_version.get(2).unwrap_or(&0),
+    );
+    if check_only {
+        if latest_tuple <= current_tuple {
+            println!("Already at or ahead of the latest published release.");
+        } else {
+            println!("Run `ciphervault update` to install the verified release.");
+        }
+        return Ok(());
+    }
+    if latest_tuple <= current_tuple {
+        println!("Already at or ahead of the latest published release.");
+        return Ok(());
+    }
+    let archive_name = format!("ciphervault-{tag}-{target}.{archive_suffix}");
+    let sums_name = "SHA256SUMS.txt";
+    let base_url = format!("https://github.com/samuel-1-avson/CipherVault/releases/download/{tag}");
+    let archive = client
+        .get(format!("{base_url}/{archive_name}"))
+        .send()
+        .await
+        .context("downloading the latest CipherVault archive")?
+        .error_for_status()
+        .context("latest CipherVault archive is unavailable")?
+        .bytes()
+        .await
+        .context("reading the latest CipherVault archive")?;
+    let sums = client
+        .get(format!("{base_url}/{sums_name}"))
+        .send()
+        .await
+        .context("downloading the CipherVault release checksum")?
+        .error_for_status()
+        .context("latest CipherVault checksum is unavailable")?
+        .text()
+        .await
+        .context("reading the CipherVault release checksum")?;
+    let expected = sums
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let digest = fields.next()?;
+            let name = fields.next()?.trim_start_matches("*");
+            (name == archive_name).then_some(digest.to_ascii_lowercase())
+        })
+        .context("release checksum does not contain the selected archive")?;
+    let actual = hex::encode(Sha256::digest(&archive));
+    if expected != actual {
+        bail!("release checksum mismatch for {archive_name}");
+    }
+
+    let temp_root = std::env::temp_dir().join(format!(
+        "ciphervault-update-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::create_dir_all(&temp_root)?;
+    let archive_path = temp_root.join(&archive_name);
+    fs::write(&archive_path, &archive)?;
+    let extract_dir = temp_root.join("extract");
+    fs::create_dir_all(&extract_dir)?;
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+                &archive_path.to_string_lossy(),
+                &extract_dir.to_string_lossy(),
+            ])
+            .status()
+            .context("extracting the Windows release archive")?;
+        if !status.success() {
+            bail!("Windows release archive extraction failed");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let status = std::process::Command::new("tar")
+            .args([
+                "-xzf",
+                &archive_path.to_string_lossy(),
+                "-C",
+                &extract_dir.to_string_lossy(),
+            ])
+            .status()
+            .context("extracting the release archive")?;
+        if !status.success() {
+            bail!("release archive extraction failed");
+        }
+    }
+    let binary_name = if cfg!(windows) {
+        "ciphervault.exe"
+    } else {
+        "ciphervault"
+    };
+    let extracted_binary = walkdir::WalkDir::new(&extract_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().is_file() && entry.file_name() == binary_name)
+        .map(|entry| entry.into_path())
+        .context("release archive did not contain the CipherVault CLI")?;
+    let current_exe = std::env::current_exe().context("locating the running CipherVault CLI")?;
+    #[cfg(windows)]
+    {
+        let replacement = current_exe.with_extension("exe.new");
+        fs::copy(&extracted_binary, &replacement)?;
+        let script = current_exe.with_extension("update.cmd");
+        let script_body = format!(
+            "@echo off\r\n:wait\r\nmove /Y \"{}\" \"{}\" >nul 2>&1\r\nif errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\ndel \"%~f0\"\r\n",
+            replacement.display(),
+            current_exe.display()
+        );
+        fs::write(&script, script_body)?;
+        std::process::Command::new("cmd.exe")
+            .args(["/C", "start", "", "/B", &script.to_string_lossy()])
+            .spawn()
+            .context("starting the Windows update helper")?;
+        println!("Verified {tag}; the new CLI will be installed after this process exits.");
+    }
+    #[cfg(not(windows))]
+    {
+        let replacement = current_exe.with_extension("new");
+        fs::copy(&extracted_binary, &replacement)?;
+        fs::rename(replacement, current_exe)?;
+        println!("Verified and installed CipherVault {tag}.");
+    }
+    let _ = fs::remove_dir_all(temp_root);
     Ok(())
 }
 
@@ -1155,6 +1501,10 @@ fn cmd_auth_status() -> Result<()> {
     println!("  Account ID:   {}", account.account_id().yellow());
     println!("  Display name: {}", account.record().display_name);
     println!("  Public key:   {}", account.public_key_hex());
+    println!(
+        "  Hosted endpoint: {}",
+        account.hosted_endpoint().unwrap_or("not connected")
+    );
     println!("  Metadata:     {}", AccountStore::default_path().display());
     println!("  Devices:      {}", account.record().devices.len());
     println!("  Vault links:  {}", account.record().vaults.len());
@@ -5576,6 +5926,43 @@ async fn api_account_capabilities_handler() -> axum::response::Response {
     .await
 }
 
+/// Public bootstrap endpoint. The account service derives the account ID from
+/// the supplied public key; no private key or vault data is accepted here.
+async fn api_account_register_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(reqwest::Method::POST, "/v1/accounts", &headers, Some(body)).await
+}
+
+async fn api_account_device_challenge_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/devices/challenge"),
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_device_enrollment_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        &format!("/v1/accounts/{account_id}/devices"),
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
 async fn api_account_session_handler(headers: axum::http::HeaderMap) -> axum::response::Response {
     proxy_account_request(reqwest::Method::GET, "/v1/sessions", &headers, None).await
 }
@@ -5789,6 +6176,10 @@ fn private_ui_router() -> axum::Router {
             "/api/account/capabilities",
             get(api_account_capabilities_handler),
         )
+        .route(
+            "/api/account/register",
+            axum::routing::post(api_account_register_handler),
+        )
         .route("/api/account/session", get(api_account_session_handler))
         .route(
             "/api/account/:account_id",
@@ -5833,6 +6224,14 @@ fn private_ui_router() -> axum::Router {
         .route(
             "/api/account/:account_id/webauthn/registration/options",
             axum::routing::post(api_account_webauthn_registration_options_handler),
+        )
+        .route(
+            "/api/account/:account_id/devices/challenge",
+            axum::routing::post(api_account_device_challenge_handler),
+        )
+        .route(
+            "/api/account/:account_id/devices",
+            axum::routing::post(api_account_device_enrollment_handler),
         )
         .route(
             "/api/account/:account_id/webauthn/registration/verify",
@@ -5937,6 +6336,10 @@ fn public_ui_router() -> axum::Router {
             "/api/account/capabilities",
             get(api_account_capabilities_handler),
         )
+        .route(
+            "/api/account/register",
+            axum::routing::post(api_account_register_handler),
+        )
         .route("/api/account/session", get(api_account_session_handler))
         .route(
             "/api/account/:account_id",
@@ -5977,6 +6380,14 @@ fn public_ui_router() -> axum::Router {
         .route(
             "/api/account/:account_id/webauthn/registration/options",
             axum::routing::post(api_account_webauthn_registration_options_handler),
+        )
+        .route(
+            "/api/account/:account_id/devices/challenge",
+            axum::routing::post(api_account_device_challenge_handler),
+        )
+        .route(
+            "/api/account/:account_id/devices",
+            axum::routing::post(api_account_device_enrollment_handler),
         )
         .route(
             "/api/account/:account_id/webauthn/registration/verify",
@@ -6415,6 +6826,7 @@ async fn private_ui_request_guard(
     let is_account_bootstrap = matches!(
         path,
         "/api/account/status"
+            | "/api/account/register"
             | "/api/account/login"
             | "/api/account/logout"
             | "/api/account/capabilities"
@@ -6425,7 +6837,9 @@ async fn private_ui_request_guard(
             | "/api/account/totp/authentication/verify"
     ) || (path.starts_with("/api/account/")
         && path.ends_with("/webauthn/registration/options"))
-        || (path.starts_with("/api/account/") && path.ends_with("/webauthn/registration/verify"));
+        || (path.starts_with("/api/account/") && path.ends_with("/webauthn/registration/verify"))
+        || (path.starts_with("/api/account/") && path.ends_with("/devices/challenge"))
+        || (path.starts_with("/api/account/") && path.ends_with("/devices"));
     let session_valid = if is_api && !is_context && !is_account_bootstrap {
         let session = private_ui_session_snapshot();
         let private_cookie_valid = headers

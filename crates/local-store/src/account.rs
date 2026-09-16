@@ -65,6 +65,11 @@ pub struct AccountRecord {
     pub devices: Vec<AccountDevice>,
     #[serde(default)]
     pub vaults: Vec<AccountVault>,
+    /// Same-origin hosted account service used for signed account/device
+    /// enrollment.  This is metadata only; the account signing key remains
+    /// in the separate OS-protected key file.
+    #[serde(default)]
+    pub hosted_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,6 +186,7 @@ impl AccountStore {
             created_at_utc: now_utc(),
             devices: Vec::new(),
             vaults: Vec::new(),
+            hosted_endpoint: None,
         };
         let protected = protect_secret(&signing_key.to_bytes())
             .map_err(|e| AccountError::KeyProtection(e.to_string()))?;
@@ -238,6 +244,18 @@ impl AccountStore {
 
     pub fn public_key_hex(&self) -> &str {
         &self.record.account_public_key_hex
+    }
+
+    pub fn hosted_endpoint(&self) -> Option<&str> {
+        self.record.hosted_endpoint.as_deref()
+    }
+
+    pub fn set_hosted_endpoint(&mut self, endpoint: Option<&str>) -> Result<(), AccountError> {
+        self.record.hosted_endpoint = endpoint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_end_matches('/').to_string());
+        self.persist_record()
     }
 
     /// Signs a hosted login or device-enrollment challenge with the account

@@ -1,94 +1,37 @@
 #!/usr/bin/env bash
-# CipherVault — Automated Linux & macOS Installer
+# CipherVault - verified Linux & macOS installer/updater
 # Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
-
 set -euo pipefail
 
 REPO="samuel-1-avson/CipherVault"
-TAG="v1.0.0"
-
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
-
-case "$OS" in
-    linux)
-        case "$ARCH" in
-            x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
-            aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
-            *) echo "Unsupported Linux architecture: $ARCH" >&2; exit 1 ;;
-        esac
-        ;;
-    darwin)
-        case "$ARCH" in
-            x86_64) TARGET="x86_64-apple-darwin" ;;
-            arm64) TARGET="aarch64-apple-darwin" ;;
-            *) echo "Unsupported macOS architecture: $ARCH" >&2; exit 1 ;;
-        esac
-        ;;
-    *)
-        echo "Unsupported operating system: $OS" >&2
-        exit 1
-        ;;
+case "$OS:$ARCH" in
+  linux:x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
+  linux:aarch64|linux:arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+  darwin:x86_64) TARGET="x86_64-apple-darwin" ;;
+  darwin:arm64) TARGET="aarch64-apple-darwin" ;;
+  *) echo "Unsupported platform: $OS/$ARCH" >&2; exit 1 ;;
 esac
 
+command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+TAG="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+[ -n "$TAG" ] || { echo "GitHub did not return a latest CipherVault release" >&2; exit 1; }
 PKG_NAME="ciphervault-${TAG}-${TARGET}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${PKG_NAME}"
+BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
-echo "======================================================="
-echo "  Installing CipherVault ${TAG} (${OS} ${ARCH})"
-echo "======================================================="
+if [ -w /usr/local/bin ]; then INSTALL_DIR=/usr/local/bin; else INSTALL_DIR="${HOME}/.local/bin"; mkdir -p "$INSTALL_DIR"; fi
+TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
+curl -fsSL "$BASE/$PKG_NAME" -o "$TMP_DIR/$PKG_NAME"
+curl -fsSL "$BASE/SHA256SUMS.txt" -o "$TMP_DIR/SHA256SUMS.txt"
+EXPECTED="$(awk -v name="$PKG_NAME" '$2==name || $2=="*"name {print $1; exit}' "$TMP_DIR/SHA256SUMS.txt")"
+[ -n "$EXPECTED" ] || { echo "Release checksum does not list $PKG_NAME" >&2; exit 1; }
+ACTUAL="$(sha256sum "$TMP_DIR/$PKG_NAME" | awk '{print $1}')"
+[ "$EXPECTED" = "$ACTUAL" ] || { echo "Release checksum mismatch" >&2; exit 1; }
+tar -xzf "$TMP_DIR/$PKG_NAME" -C "$TMP_DIR"
+BINARY="$(find "$TMP_DIR" -type f -name ciphervault -perm -u+x | head -n1)"
+[ -n "$BINARY" ] || { echo "Verified release archive has no ciphervault binary" >&2; exit 1; }
+install -m 0755 "$BINARY" "$INSTALL_DIR/ciphervault"
+echo "CipherVault $TAG installed to $INSTALL_DIR/ciphervault"
+echo "Run 'ciphervault --help'. To update later, run 'ciphervault update' or rerun this installer."
 
-# Choose installation directory
-if [ -w "/usr/local/bin" ]; then
-    INSTALL_DIR="/usr/local/bin"
-else
-    INSTALL_DIR="${HOME}/.local/bin"
-    mkdir -p "${INSTALL_DIR}"
-    if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
-        echo "Note: Ensure ${INSTALL_DIR} is in your PATH (e.g. in ~/.bashrc or ~/.zshrc)"
-    fi
-fi
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
-
-echo "Downloading ${DOWNLOAD_URL}..."
-INSTALLED=false
-
-if curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${PKG_NAME}"; then
-    tar -xzf "${TMP_DIR}/${PKG_NAME}" -C "${TMP_DIR}"
-    find "${TMP_DIR}" -type f -name "ciphervault*" -exec cp {} "${INSTALL_DIR}/" \;
-    chmod +x "${INSTALL_DIR}"/ciphervault*
-    INSTALLED=true
-fi
-
-if [ "$INSTALLED" = "false" ]; then
-    echo "Release archive not yet attached or failed. Checking standalone release binary..."
-    STANDALONE_URL="https://github.com/${REPO}/releases/download/${TAG}/ciphervault-${TARGET}"
-    if curl -fsSL "${STANDALONE_URL}" -o "${INSTALL_DIR}/ciphervault"; then
-        chmod +x "${INSTALL_DIR}/ciphervault"
-        INSTALLED=true
-    fi
-fi
-
-if [ "$INSTALLED" = "false" ]; then
-    echo "Pre-built binary not found for ${TAG}. Attempting cargo install from GitHub..."
-    if command -v cargo >/dev/null 2>&1; then
-        cargo install --locked --git "https://github.com/${REPO}.git" ciphervault-cli --root "${INSTALL_DIR}/.."
-        INSTALLED=true
-    else
-        echo "Error: Could not download pre-built binary and cargo is not installed." >&2
-        echo "Please install Rust (https://rustup.rs) or download a release from https://github.com/${REPO}/releases" >&2
-        exit 1
-    fi
-fi
-
-echo ""
-echo "✓ CipherVault installed successfully to ${INSTALL_DIR}!"
-echo ""
-echo "Quickstart:"
-echo "  ciphervault init                    # Initialize vault in current repository"
-echo "  ciphervault track .env              # Track confidential files"
-echo "  ciphervault push -m 'Initial'       # Encrypt and replicate snapshot"
-echo "  ciphervault ui                      # Launch local web dashboard"
-echo ""

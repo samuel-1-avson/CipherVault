@@ -207,6 +207,7 @@ function renderAccountStatus(account) {
   const text = document.getElementById('account-status-text');
   const dot = document.getElementById('account-pulse-dot');
   const loginButton = document.getElementById('btn-account-login');
+  const connectButton = document.getElementById('btn-account-connect');
   const passkeyButton = document.getElementById('btn-account-passkey');
   const totpButton = document.getElementById('btn-account-totp');
   const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
@@ -221,6 +222,7 @@ function renderAccountStatus(account) {
     text.textContent = 'Account: Local-only';
     if (dot) dot.style.background = 'var(--text-muted)';
     if (loginButton) loginButton.hidden = true;
+    if (connectButton) connectButton.hidden = true;
     if (passkeyButton) passkeyButton.hidden = state.accountService == null;
     if (totpButton) totpButton.hidden = !totpAvailable;
     if (registerPasskeyButton) registerPasskeyButton.hidden = true;
@@ -246,6 +248,7 @@ function renderAccountStatus(account) {
     loginButton.hidden = hosted || authenticated || !account.required;
     loginButton.disabled = !account.required;
   }
+  if (connectButton) connectButton.hidden = !hosted || authenticated;
   if (passkeyButton) passkeyButton.hidden = !hosted || authenticated;
   // The authenticator flow is an entry point for unauthenticated hosted
   // accounts.  The `totp_enabled` flag is only returned after an account
@@ -259,6 +262,7 @@ function renderAccountStatus(account) {
 
 function initAccountControls() {
   const loginButton = document.getElementById('btn-account-login');
+  const connectButton = document.getElementById('btn-account-connect');
   const passkeyButton = document.getElementById('btn-account-passkey');
   const totpButton = document.getElementById('btn-account-totp');
   const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
@@ -281,6 +285,7 @@ function initAccountControls() {
       }
     });
   }
+  if (connectButton) connectButton.addEventListener('click', openHostedAccountConnectModal);
   if (passkeyButton) {
     passkeyButton.addEventListener('click', () => openHostedPasskeyModal('authenticate'));
   }
@@ -391,6 +396,15 @@ function initAccountControls() {
   document.getElementById('btn-start-totp-enrollment')?.addEventListener('click', startTotpEnrollment);
   document.getElementById('btn-confirm-totp-enrollment')?.addEventListener('click', confirmTotpEnrollment);
   document.getElementById('btn-revoke-totp')?.addEventListener('click', revokeTotpEnrollment);
+  document.getElementById('btn-close-modal-account-connect')?.addEventListener('click', closeHostedAccountConnectModal);
+  document.getElementById('btn-cancel-modal-account-connect')?.addEventListener('click', closeHostedAccountConnectModal);
+  document.getElementById('btn-refresh-account-connect')?.addEventListener('click', async () => {
+    closeHostedAccountConnectModal();
+    await fetchAllData();
+  });
+  document.getElementById('modal-account-connect')?.addEventListener('click', event => {
+    if (event.target?.id === 'modal-account-connect') closeHostedAccountConnectModal();
+  });
   document.getElementById('btn-copy-totp-uri')?.addEventListener('click', async () => {
     const uri = state.totpEnrollment && state.totpEnrollment.otpauth_uri;
     if (!uri) return;
@@ -418,6 +432,20 @@ function initAccountControls() {
       }
     });
   }
+}
+
+function openHostedAccountConnectModal() {
+  const modal = document.getElementById('modal-account-connect');
+  if (!modal) return;
+  modal.hidden = false;
+  openModal(modal, document.activeElement);
+}
+
+function closeHostedAccountConnectModal() {
+  const modal = document.getElementById('modal-account-connect');
+  if (!modal) return;
+  closeModal(modal);
+  modal.hidden = true;
 }
 
 function closeAccountManagementModal() {
@@ -556,7 +584,7 @@ function openHostedPasskeyModal(mode = 'authenticate') {
   submit.textContent = mode === 'register' ? 'Register passkey' : 'Continue with passkey';
   if (help) help.textContent = mode === 'register'
     ? 'Registration requires an active account session on an enrolled device.'
-    : 'Your browser will ask for the passkey enrolled on this account.';
+    : 'Connect the account from the CipherVault CLI first, then your browser will ask for the passkey enrolled on this account.';
   modal.dataset.mode = mode;
   modal.hidden = false;
   openModal(modal, document.activeElement);
