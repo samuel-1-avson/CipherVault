@@ -62,6 +62,25 @@ impl Default for FastCdcConfig {
     }
 }
 
+/// Named chunking profiles: `small` (2/8/32 KiB) for tiny secret files,
+/// `default` (4/16/64 KiB), and `large` (16/64/256 KiB) for big blobs.
+/// Unknown names fall back to `default` so a typo never breaks snapshots.
+pub fn config_from_profile(profile: &str) -> FastCdcConfig {
+    match profile.trim().to_ascii_lowercase().as_str() {
+        "small" => FastCdcConfig::new(2 * 1024, 8 * 1024, 32 * 1024),
+        "large" => FastCdcConfig::new(16 * 1024, 64 * 1024, 256 * 1024),
+        _ => FastCdcConfig::default(),
+    }
+}
+
+/// Chunking profile from `CIPHERVAULT_CHUNK_PROFILE`, defaulting to `default`.
+pub fn config_from_env() -> FastCdcConfig {
+    match std::env::var("CIPHERVAULT_CHUNK_PROFILE") {
+        Ok(profile) => config_from_profile(&profile),
+        Err(_) => FastCdcConfig::default(),
+    }
+}
+
 /// Chunks a contiguous slice into content-defined slices using FastCDC.
 pub fn fastcdc_chunk<'a>(data: &'a [u8], config: &FastCdcConfig) -> Vec<&'a [u8]> {
     if data.is_empty() {
@@ -221,5 +240,24 @@ mod tests {
             identical_chunks,
             base_chunks.len()
         );
+    }
+
+    #[test]
+    fn test_chunk_profiles_select_expected_sizes() {
+        let small = config_from_profile("small");
+        assert_eq!(
+            (small.min_size, small.avg_size, small.max_size),
+            (2048, 8192, 32768)
+        );
+        let large = config_from_profile(" LARGE ");
+        assert_eq!(
+            (large.min_size, large.avg_size, large.max_size),
+            (16384, 65536, 262144)
+        );
+        assert_eq!(config_from_profile("nope"), FastCdcConfig::default());
+        let data = vec![0xABu8; 200_000];
+        for chunk in fastcdc_chunk(&data, &small) {
+            assert!(chunk.len() <= small.max_size);
+        }
     }
 }

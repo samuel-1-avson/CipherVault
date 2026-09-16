@@ -304,3 +304,18 @@ Every fresh lockout emits two alert signals: an `auth_rate_lockout` row in `audi
 `account auth rate lockout: ceremony=... source=... blocked_until_utc=...`. Ship stderr
 to the log aggregator and page on lockout spikes per source; the audit row is the
 per-account source of truth for incident review.
+
+## 12. Performance Tuning (Caps + Chunking)
+
+Three operator caps are runtime-tunable via environment (plain bytes or `KB`/`MB`
+suffixes); invalid or below-floor values warn on stderr and fall back to defaults:
+
+- `CIPHERVAULT_MAX_OBJECT_SIZE` (default 4 MiB, floor 512 KiB): largest single
+  chunk/manifest object. Lower it to bound memory on small nodes.
+- `CIPHERVAULT_MAX_RECOVERY_RECORD_SIZE` (default 64 KiB, floor 4 KiB).
+- `CIPHERVAULT_MAX_RECOVERY_RESPONSE_BYTES` (default 16 MiB, floor 1 MiB).
+
+Chunking profile via `CIPHERVAULT_CHUNK_PROFILE`: `small` (2/8/32 KiB) for tiny
+secret files, `default` (4/16/64 KiB), `large` (16/64/256 KiB) for big blobs.
+Pairing rule: the `large` profile needs the default 4 MiB object cap (or at least
+512 KiB); lowering the cap below a profile's max chunk rejects uploads.

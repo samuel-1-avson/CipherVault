@@ -6,7 +6,7 @@ use ciphervault_format::{compute_digest, ChunkWireObject, PROTOCOL_VERSION};
 
 use crate::error::SnapshotError;
 use crate::fastcdc::{
-    fastcdc_chunk, FastCdcConfig, DEFAULT_AVG_SIZE, DEFAULT_MAX_SIZE, DEFAULT_MIN_SIZE,
+    config_from_env, fastcdc_chunk, DEFAULT_AVG_SIZE, DEFAULT_MAX_SIZE, DEFAULT_MIN_SIZE,
 };
 
 pub const MIN_CHUNK_SIZE: usize = DEFAULT_MIN_SIZE; // 4 KiB
@@ -57,7 +57,7 @@ pub fn chunk_and_encrypt_file(
         (plaintext.to_vec(), raw_length)
     };
 
-    let config = FastCdcConfig::default();
+    let config = config_from_env();
     let raw_chunks: Vec<&[u8]> = fastcdc_chunk(&padded_bytes, &config);
     let total_chunks = raw_chunks.len() as u32;
 

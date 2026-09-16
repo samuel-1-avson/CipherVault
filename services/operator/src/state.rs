@@ -27,6 +27,61 @@ pub const MAX_RECOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RELAYED_CHECKPOINTS: usize = 5_000;
 pub const MAX_ACTIVE_PEERS: usize = 128;
 
+/// Parses a byte size: plain bytes (`8388608`) or suffixed kilobytes/megabytes
+/// (`64KB`, `8MB`, case-insensitive, trailing `B` optional). Else `None`.
+pub fn parse_byte_size(value: &str) -> Option<usize> {
+    let mut text = value.trim();
+    text = text.strip_suffix(['B', 'b']).unwrap_or(text);
+    let (digits, multiplier) = if let Some(number) = text.strip_suffix(['M', 'm']) {
+        (number, 1024 * 1024)
+    } else if let Some(number) = text.strip_suffix(['K', 'k']) {
+        (number, 1024)
+    } else {
+        (text, 1)
+    };
+    let number: usize = digits.trim().parse().ok()?;
+    number.checked_mul(multiplier)
+}
+
+/// Reads a byte-size operator limit from the environment. Missing, invalid, or
+/// below-`floor` values fall back to `default` with a stderr warning, so a typo
+/// can never silently zero a limit.
+pub fn operator_limit_from_env(name: &str, default: usize, floor: usize) -> usize {
+    let raw = match std::env::var(name).ok().map(|value| value.trim().to_string()) {
+        Some(value) if !value.is_empty() => value,
+        _ => return default,
+    };
+    match parse_byte_size(&raw) {
+        Some(bytes) if bytes >= floor => bytes,
+        _ => {
+            eprintln!("operator limit {name}={raw} invalid or below floor {floor}; using default {default}");
+            default
+        }
+    }
+}
+
+/// Maximum accepted object size. Must fit the largest FastCDC profile chunk
+/// (256 KiB) plus encryption/CBOR overhead; the floor enforces that.
+pub fn max_object_size() -> usize {
+    operator_limit_from_env("CIPHERVAULT_MAX_OBJECT_SIZE", MAX_OBJECT_SIZE, 512 * 1024)
+}
+
+pub fn max_recovery_record_size() -> usize {
+    operator_limit_from_env(
+        "CIPHERVAULT_MAX_RECOVERY_RECORD_SIZE",
+        MAX_RECOVERY_RECORD_SIZE,
+        4 * 1024,
+    )
+}
+
+pub fn max_recovery_response_bytes() -> usize {
+    operator_limit_from_env(
+        "CIPHERVAULT_MAX_RECOVERY_RESPONSE_BYTES",
+        MAX_RECOVERY_RESPONSE_BYTES,
+        1024 * 1024,
+    )
+}
+
 fn valid_account_id(value: &str) -> bool {
     let value = value.trim();
     value.len() == 39
@@ -851,10 +906,11 @@ impl OperatorState {
     }
 
     pub fn put_object(&self, cid_hex: &str, bytes: &[u8]) -> Result<(), String> {
-        if bytes.len() > MAX_OBJECT_SIZE {
+        let limit = max_object_size();
+        if bytes.len() > limit {
             return Err(format!(
                 "Object exceeds maximum size limit of {} bytes",
-                MAX_OBJECT_SIZE
+                limit
             ));
         }
         if cid_hex.len() != 64 {
@@ -1033,10 +1089,11 @@ impl OperatorState {
         if locator_hex.len() != 64 || hex::decode(locator_hex).is_err() {
             return Err("Invalid recovery locator (must be 64 hex characters)".into());
         }
-        if record.len() > MAX_RECOVERY_RECORD_SIZE {
+        let limit = max_recovery_record_size();
+        if record.len() > limit {
             return Err(format!(
                 "Record exceeds maximum size limit of {} bytes",
-                MAX_RECOVERY_RECORD_SIZE
+                limit
             ));
         }
 
@@ -1890,6 +1947,31 @@ mod tests {
 
         drop(reopened);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn byte_size_limits_parse_and_clamp() {
+        assert_eq!(parse_byte_size("8388608"), Some(8_388_608));
+        assert_eq!(parse_byte_size("8MB"), Some(8 * 1024 * 1024));
+        assert_eq!(parse_byte_size("64kb"), Some(64 * 1024));
+        assert_eq!(parse_byte_size("512"), Some(512));
+        assert_eq!(parse_byte_size(""), None);
+        assert_eq!(parse_byte_size("nope"), None);
+        std::env::set_var("CIPHERVAULT_TEST_LIMIT_BYTES", "2MB");
+        assert_eq!(
+            operator_limit_from_env("CIPHERVAULT_TEST_LIMIT_BYTES", 1024, 512),
+            2 * 1024 * 1024
+        );
+        std::env::set_var("CIPHERVAULT_TEST_LIMIT_BYTES", "1");
+        assert_eq!(
+            operator_limit_from_env("CIPHERVAULT_TEST_LIMIT_BYTES", 1024, 512),
+            1024
+        );
+        std::env::remove_var("CIPHERVAULT_TEST_LIMIT_BYTES");
+        assert_eq!(
+            operator_limit_from_env("CIPHERVAULT_TEST_LIMIT_BYTES", 1024, 512),
+            1024
+        );
     }
 
     #[test]

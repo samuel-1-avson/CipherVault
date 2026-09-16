@@ -90,6 +90,6 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
                     axum::http::HeaderName::from_static("x-ciphervault-service-token"),
                 ]),
         )
-        .layer(DefaultBodyLimit::max(state::MAX_OBJECT_SIZE))
+.layer(DefaultBodyLimit::max(state::max_object_size()))
         .with_state(state)
 }

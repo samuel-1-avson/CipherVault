@@ -437,7 +437,8 @@ pub async fn get_recovery_records(
     let mut truncated = false;
     for record in records {
         let encoded = hex::encode(record);
-        if encoded_bytes.saturating_add(encoded.len()) > crate::state::MAX_RECOVERY_RESPONSE_BYTES {
+        let response_cap = crate::state::max_recovery_response_bytes();
+        if encoded_bytes.saturating_add(encoded.len()) > response_cap {
             truncated = true;
             break;
         }
