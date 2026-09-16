@@ -26,6 +26,10 @@ pub const MAX_RECORDS_PER_LOCATOR: usize = 10_000;
 pub const MAX_RECOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RELAYED_CHECKPOINTS: usize = 5_000;
 pub const MAX_ACTIVE_PEERS: usize = 128;
+/// Number of striped filesystem locks sharding operator disk I/O (R8).
+/// Distinct CIDs/locators hash to different stripes so concurrent uploads
+/// for different objects no longer serialize on a single global lock.
+pub const IO_STRIPE_COUNT: usize = 64;
 
 /// Parses a byte size: plain bytes (`8388608`) or suffixed kilobytes/megabytes
 /// (`64KB`, `8MB`, case-insensitive, trailing `B` optional). Else `None`.
@@ -163,7 +167,13 @@ pub struct OperatorState {
     pub operator_id: String,
     pub signing_key: SigningKey,
     pub data_dir: PathBuf,
-    io_lock: Mutex<()>,
+    // Serializes the single identities.json store (fixed temp-file persist).
+    identity_lock: Mutex<()>,
+    // Leaf lock serializing appends to events.log; never held while
+    // acquiring any other lock (lock order is always stripe -> event).
+    event_lock: Mutex<()>,
+    // Per-key striped locks for objects, leases, and recovery logs.
+    io_stripes: Box<[Mutex<()>]>,
     // Active challenges are bound to the requested vault and device key.
     challenges: Mutex<HashMap<String, ChallengeRecord>>,
     // Active sessions: token -> expires_at_utc
@@ -200,7 +210,12 @@ impl OperatorState {
             operator_id,
             signing_key,
             data_dir,
-            io_lock: Mutex::new(()),
+            identity_lock: Mutex::new(()),
+            event_lock: Mutex::new(()),
+            io_stripes: (0..IO_STRIPE_COUNT)
+                .map(|_| Mutex::new(()))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
             challenges: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             session_keys: Mutex::new(HashMap::new()),
@@ -220,6 +235,18 @@ impl OperatorState {
 
     fn identity_store_path(&self) -> PathBuf {
         self.data_dir.join("identities.json")
+    }
+
+    /// Returns the I/O stripe serializing one filesystem key (CID, lease ID,
+    /// or recovery locator). FNV-1a keeps this dependency-free; only the
+    /// same-key-same-stripe property matters, not cross-process stability.
+    fn io_stripe(&self, key: &str) -> &Mutex<()> {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in key.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        &self.io_stripes[(hash as usize) % self.io_stripes.len()]
     }
 
     fn load_enrolled_identities(&self) {
@@ -345,7 +372,7 @@ impl OperatorState {
             return Err("public_key_hex must be 32-byte hex".into());
         }
         let (account_id, device_id_hex) = normalize_identity_binding(account_id, device_id_hex)?;
-        let _io_guard = self.io_lock.lock().map_err(|e| e.to_string())?;
+        let _identity_guard = self.identity_lock.lock().map_err(|e| e.to_string())?;
         let mut identities = self.enrolled_identities.lock().unwrap();
         if let Some(existing) = identities.iter_mut().find(|identity| {
             identity.vault_id_hex == vault_id_hex && identity.public_key_hex == public_key_hex
@@ -388,7 +415,7 @@ impl OperatorState {
         let vault_id_hex = vault_id_hex.trim().to_ascii_lowercase();
         let public_key_hex = public_key_hex.trim().to_ascii_lowercase();
         let now = Utc::now().timestamp().max(0) as u64;
-        let _io_guard = self.io_lock.lock().unwrap();
+        let _identity_guard = self.identity_lock.lock().unwrap();
         let mut identities = self.enrolled_identities.lock().unwrap();
         let mut changed = false;
         for identity in identities.iter_mut().filter(|identity| {
@@ -632,6 +659,12 @@ impl OperatorState {
     }
 
     fn audit_event(&self, event: &str, fields: serde_json::Value) {
+        // Leaf serialization for concurrent events.log appends. This lock is
+        // taken here only and never held while acquiring another lock.
+        let _event_guard = self
+            .event_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let path = self.data_dir.join("events.log");
         let payload = serde_json::json!({
             "event": event,
@@ -926,7 +959,7 @@ impl OperatorState {
             return Err("Digest mismatch".into());
         }
 
-        let _guard = self.io_lock.lock().map_err(|e| e.to_string())?;
+        let _stripe_guard = self.io_stripe(cid_hex).lock().map_err(|e| e.to_string())?;
         let obj_path = self.data_dir.join("objects").join(cid_hex);
         if fs::read(&obj_path).ok().as_deref() != Some(bytes) {
             self.persist_atomic(&obj_path, bytes)?;
@@ -1031,7 +1064,7 @@ impl OperatorState {
         {
             return Err("Invalid closure digest or retention term".into());
         }
-        let _guard = self.io_lock.lock().map_err(|e| e.to_string())?;
+        let _stripe_guard = self.io_stripe(closure_digest_hex).lock().map_err(|e| e.to_string())?;
         let now = Utc::now().timestamp() as u64;
         self.persist_lease(LeaseReceipt {
             lease_id: hex::encode(rand::random::<[u8; 16]>()),
@@ -1054,7 +1087,7 @@ impl OperatorState {
         if lease_id.len() != 32 || hex::decode(lease_id).is_err() || additional_days == 0 {
             return Err("Invalid lease ID or retention term".into());
         }
-        let _guard = self.io_lock.lock().map_err(|e| e.to_string())?;
+        let _stripe_guard = self.io_stripe(lease_id).lock().map_err(|e| e.to_string())?;
         let path = self
             .data_dir
             .join("leases")
@@ -1266,7 +1299,7 @@ impl OperatorState {
             }
         }
 
-        let _guard = self.io_lock.lock().unwrap();
+        let _stripe_guard = self.io_stripe(locator_hex).lock().unwrap();
         let log_path = self
             .data_dir
             .join("recovery")
@@ -1301,7 +1334,7 @@ impl OperatorState {
         if locator_hex.len() != 64 || hex::decode(locator_hex).is_err() {
             return Vec::new();
         }
-        let _guard = self.io_lock.lock().unwrap();
+        let _stripe_guard = self.io_stripe(locator_hex).lock().unwrap();
         let log_path = self
             .data_dir
             .join("recovery")
@@ -2023,5 +2056,32 @@ mod tests {
 
         drop(reopened);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn io_stripes_shard_by_key() {
+        let root = std::env::temp_dir().join(format!("cv-stripes-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        // Distinct keys must spread across stripes so concurrent uploads for
+        // different CIDs do not serialize on one lock.
+        let mut shards = std::collections::HashSet::new();
+        for index in 0..256u32 {
+            shards.insert(state.io_stripe(&format!("{index:064x}")) as *const _ as usize);
+        }
+        assert!(
+            shards.len() > 16,
+            "expected striped locks to spread 256 keys, got {}",
+            shards.len()
+        );
+        // The same key must always resolve to the same stripe.
+        let first = state.io_stripe(&"ab".repeat(32)) as *const _ as usize;
+        let second = state.io_stripe(&"ab".repeat(32)) as *const _ as usize;
+        assert_eq!(first, second);
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
