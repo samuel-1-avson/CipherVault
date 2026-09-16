@@ -1222,7 +1222,7 @@
         <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
           Production account enrollment is signed by the account key and the current vault device. The key stays in your OS keystore; the browser never receives it.
         </p>
-        <p class="form-help">Run this from the CipherVault repository that contains your vault, then return here and choose a sign-in method:</p>
+        <p class="form-help">Run this from the CipherVault repository that contains your vault. The command signs a short-lived browser handoff locally and prints a one-time production link; open that link to finish sign-in and enroll your passkey or authenticator:</p>
         <pre class="terminal-output" style="white-space: pre-wrap; user-select: all; margin-top: 12px;"><code>ciphervault auth connect --endpoint https://vault.cipherv.online/api/account</code></pre>
         <p class="form-help" style="margin-top: 12px;">If the command is unavailable, install the latest release with the official installer, or run <code>ciphervault update</code>.</p>
       </div>

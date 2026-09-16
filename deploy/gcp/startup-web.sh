@@ -148,4 +148,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now ciphervault-ui.service
+# The unit can already be active when the metadata startup hook runs after a
+# reboot. Restart after writing the environment so the service cannot keep
+# using the previous release's image digests.
+systemctl enable ciphervault-ui.service
+systemctl restart ciphervault-ui.service

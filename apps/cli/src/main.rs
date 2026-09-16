@@ -1289,6 +1289,114 @@ async fn cmd_auth_connect(endpoint_raw: &str, label: &str) -> Result<()> {
     account
         .set_hosted_endpoint(Some(&endpoint))
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    // Finish the bootstrap with a short-lived browser handoff. The account
+    // key signs the normal hosted login challenge locally; only the resulting
+    // one-time handoff URL is shown to the user, never the private key or the
+    // managed session token.
+    let login_challenge_response = client
+        .post(format!("{endpoint}/sessions/challenge"))
+        .json(&serde_json::json!({
+            "account_id": account.account_id(),
+            "device_id_hex": device_id,
+        }))
+        .send()
+        .await
+        .context("requesting hosted browser-login challenge")?;
+    let login_challenge_status = login_challenge_response.status();
+    let login_challenge: serde_json::Value = login_challenge_response
+        .json()
+        .await
+        .context("decoding hosted browser-login challenge")?;
+    if !login_challenge_status.is_success() {
+        bail!(
+            "hosted browser-login challenge failed ({}): {}",
+            login_challenge_status,
+            login_challenge
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    let login_challenge_id = login_challenge
+        .get("challenge_id")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted browser-login challenge did not include challenge_id")?;
+    let login_nonce_hex = login_challenge
+        .get("nonce_hex")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted browser-login challenge did not include nonce_hex")?;
+    let login_signing_bytes = serde_json::to_vec(&(
+        account.account_id(),
+        Some(device_id.as_str()),
+        Option::<&str>::None,
+        login_challenge_id,
+        login_nonce_hex,
+    ))?;
+    let login_signature = account
+        .sign_challenge(b"account_login", &login_signing_bytes)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let login_response = client
+        .post(format!("{endpoint}/sessions/login"))
+        .json(&serde_json::json!({
+            "challenge_id": login_challenge_id,
+            "signature_hex": hex::encode(login_signature),
+        }))
+        .send()
+        .await
+        .context("creating hosted browser-login session")?;
+    let login_status = login_response.status();
+    let login: serde_json::Value = login_response
+        .json()
+        .await
+        .context("decoding hosted browser-login session")?;
+    if !login_status.is_success() {
+        bail!(
+            "hosted browser-login failed ({}): {}",
+            login_status,
+            login
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    let login_token = login
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted browser-login response did not include a session token")?;
+    let handoff_response = client
+        .post(format!("{endpoint}/sessions/handoff"))
+        .bearer_auth(login_token)
+        .send()
+        .await
+        .context("creating hosted browser handoff")?;
+    let handoff_status = handoff_response.status();
+    let handoff: serde_json::Value = handoff_response
+        .json()
+        .await
+        .context("decoding hosted browser handoff")?;
+    if !handoff_status.is_success() {
+        bail!(
+            "hosted browser handoff failed ({}): {}",
+            handoff_status,
+            handoff
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    let handoff_code = handoff
+        .get("handoff_code")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted browser handoff did not include a code")?;
+    let dashboard_url = std::env::var("CIPHERVAULT_DASHBOARD_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "https://vault.cipherv.online/".to_string());
+    let browser_url = format!(
+        "{}?ciphervault_handoff={handoff_code}",
+        dashboard_url.trim_end_matches('/')
+    );
     println!(
         "{}",
         "CipherVault account connected to hosted service."
@@ -1299,7 +1407,8 @@ async fn cmd_auth_connect(endpoint_raw: &str, label: &str) -> Result<()> {
     println!("  Device:     {}", device_id.cyan());
     println!("  Endpoint:   {}", endpoint);
     println!(
-        "\nOpen https://vault.cipherv.online/ and sign in with this account using a passkey or authenticator."
+        "\nOpen this one-time browser link within two minutes to finish hosted sign-in:\n  {}",
+        browser_url
     );
     let _ = vault_id;
     Ok(())
@@ -5967,6 +6076,51 @@ async fn api_account_session_handler(headers: axum::http::HeaderMap) -> axum::re
     proxy_account_request(reqwest::Method::GET, "/v1/sessions", &headers, None).await
 }
 
+async fn api_account_session_challenge_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/sessions/challenge",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+async fn api_account_session_login_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(reqwest::Method::POST, "/v1/sessions", &headers, Some(body)).await
+}
+
+async fn api_account_session_handoff_handler(
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/sessions/handoff",
+        &headers,
+        None,
+    )
+    .await
+}
+
+async fn api_account_session_handoff_consume_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/sessions/handoff/consume",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
 async fn api_account_resource_get_handler(
     axum::extract::Path(account_id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
@@ -6182,6 +6336,22 @@ fn private_ui_router() -> axum::Router {
         )
         .route("/api/account/session", get(api_account_session_handler))
         .route(
+            "/api/account/sessions/challenge",
+            axum::routing::post(api_account_session_challenge_handler),
+        )
+        .route(
+            "/api/account/sessions/login",
+            axum::routing::post(api_account_session_login_handler),
+        )
+        .route(
+            "/api/account/sessions/handoff",
+            axum::routing::post(api_account_session_handoff_handler),
+        )
+        .route(
+            "/api/account/session/handoff",
+            axum::routing::post(api_account_session_handoff_consume_handler),
+        )
+        .route(
             "/api/account/:account_id",
             get(api_account_resource_get_handler),
         )
@@ -6341,6 +6511,22 @@ fn public_ui_router() -> axum::Router {
             axum::routing::post(api_account_register_handler),
         )
         .route("/api/account/session", get(api_account_session_handler))
+        .route(
+            "/api/account/sessions/challenge",
+            axum::routing::post(api_account_session_challenge_handler),
+        )
+        .route(
+            "/api/account/sessions/login",
+            axum::routing::post(api_account_session_login_handler),
+        )
+        .route(
+            "/api/account/sessions/handoff",
+            axum::routing::post(api_account_session_handoff_handler),
+        )
+        .route(
+            "/api/account/session/handoff",
+            axum::routing::post(api_account_session_handoff_consume_handler),
+        )
         .route(
             "/api/account/:account_id",
             get(api_account_resource_get_handler),
@@ -6831,6 +7017,10 @@ async fn private_ui_request_guard(
             | "/api/account/logout"
             | "/api/account/capabilities"
             | "/api/account/session"
+            | "/api/account/session/handoff"
+            | "/api/account/sessions/challenge"
+            | "/api/account/sessions/login"
+            | "/api/account/sessions/handoff"
             | "/api/account/webauthn/authentication/options"
             | "/api/account/webauthn/authentication/verify"
             | "/api/account/totp/authentication/options"

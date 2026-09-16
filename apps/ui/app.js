@@ -59,7 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initWorkspaceSwitcher();
   
   // Initial data load and periodic polling
-  fetchAllData();
+  consumeHostedBrowserHandoff().finally(() => fetchAllData());
   state.pollTimer = setInterval(() => {
     if (!document.hidden) fetchAllData();
   }, 30000);
@@ -431,6 +431,28 @@ function initAccountControls() {
         logoutButton.disabled = false;
       }
     });
+  }
+}
+
+async function consumeHostedBrowserHandoff() {
+  const url = new URL(window.location.href);
+  const handoffCode = url.searchParams.get('ciphervault_handoff');
+  if (!handoffCode) return;
+  try {
+    const response = await fetch('/api/account/session/handoff', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handoff_code: handoffCode }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Browser handoff failed (${response.status})`);
+    try { window.localStorage.setItem('ciphervault_account_id', result.session?.account_id || ''); } catch (_) { /* optional */ }
+    showToast('Hosted account signed in from the CipherVault CLI.');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Browser handoff failed');
+  } finally {
+    url.searchParams.delete('ciphervault_handoff');
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
   }
 }
 

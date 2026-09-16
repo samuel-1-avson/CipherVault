@@ -35,6 +35,7 @@ mod totp;
 
 const SESSION_TTL_SECONDS: u64 = 30 * 60;
 const CHALLENGE_TTL_SECONDS: u64 = 5 * 60;
+const SESSION_HANDOFF_TTL_SECONDS: u64 = 2 * 60;
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const SESSION_COOKIE_NAME: &str = "ciphervault_account_session";
 const TOTP_KEY_ENV: &str = "CIPHERVAULT_ACCOUNT_TOTP_KEY";
@@ -150,6 +151,16 @@ impl AccountState {
                  issued_at_utc INTEGER NOT NULL,
                  expires_at_utc INTEGER NOT NULL,
                  revoked_at_utc INTEGER,
+                 FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS session_handoffs (
+                 handoff_hash_hex TEXT PRIMARY KEY,
+                 account_id TEXT NOT NULL,
+                 device_id_hex TEXT,
+                 auth_method TEXT NOT NULL,
+                 created_at_utc INTEGER NOT NULL,
+                 expires_at_utc INTEGER NOT NULL,
+                 used_at_utc INTEGER,
                  FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
              );
              CREATE TABLE IF NOT EXISTS webauthn_credentials (
@@ -365,6 +376,17 @@ pub struct SessionView {
 pub struct SessionResponse {
     pub token: String,
     pub session: SessionView,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionHandoffResponse {
+    pub handoff_code: String,
+    pub expires_at_utc: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionHandoffConsumeRequest {
+    pub handoff_code: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2194,6 +2216,162 @@ pub async fn post_session_revoke(
     }
 }
 
+/// Mint a short-lived, single-use browser handoff after the CLI has
+/// authenticated with the account signing key. The handoff contains no
+/// account secret; it only authorizes the browser to receive a fresh managed
+/// session for the already-authenticated device.
+pub async fn post_session_handoff(
+    State(state): State<AccountState>,
+    headers: HeaderMap,
+) -> Response {
+    let session = match authenticated_session(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let now = now_utc();
+    let handoff_code = random_hex(32);
+    let expires_at = now + SESSION_HANDOFF_TTL_SECONDS;
+    if let Err(error) = db.execute(
+        "INSERT INTO session_handoffs(handoff_hash_hex, account_id, device_id_hex, auth_method, created_at_utc, expires_at_utc)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            hash_token(&handoff_code),
+            session.account_id,
+            session.device_id_hex,
+            session.auth_method,
+            now,
+            expires_at
+        ],
+    ) {
+        return service_error(error.into());
+    }
+    if let Err(error) = audit_event(
+        &db,
+        &session.account_id,
+        "session_handoff_issued",
+        serde_json::json!({"expires_at_utc": expires_at}),
+    ) {
+        return service_error(error.into());
+    }
+    Json(SessionHandoffResponse {
+        handoff_code,
+        expires_at_utc: expires_at,
+    })
+    .into_response()
+}
+
+/// Exchange a CLI-issued handoff for a normal HttpOnly browser session. Codes
+/// are hashed at rest, expire quickly, and are consumed atomically before the
+/// new session is returned.
+pub async fn post_session_handoff_consume(
+    State(state): State<AccountState>,
+    Json(request): Json<SessionHandoffConsumeRequest>,
+) -> Response {
+    let handoff_code = request.handoff_code.trim();
+    if handoff_code.len() != 64 || hex::decode(handoff_code).is_err() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "INVALID_HANDOFF_CODE",
+            "handoff_code must be a 32-byte hexadecimal value",
+        );
+    }
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let now = now_utc();
+    let handoff = match db
+        .query_row(
+            "SELECT account_id, device_id_hex, auth_method, expires_at_utc, used_at_utc
+             FROM session_handoffs WHERE handoff_hash_hex = ?1",
+            params![hash_token(handoff_code)],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "HANDOFF_INVALID",
+                "Browser handoff is unknown or expired",
+            )
+        }
+        Err(error) => return service_error(error.into()),
+    };
+    if handoff.3 <= now || handoff.4.is_some() {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "HANDOFF_EXPIRED",
+            "Browser handoff is expired or already used",
+        );
+    }
+    let consumed = match db.execute(
+        "UPDATE session_handoffs SET used_at_utc = ?2
+         WHERE handoff_hash_hex = ?1 AND used_at_utc IS NULL AND expires_at_utc > ?2",
+        params![hash_token(handoff_code), now],
+    ) {
+        Ok(changed) => changed == 1,
+        Err(error) => return service_error(error.into()),
+    };
+    if !consumed {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "HANDOFF_REPLAY",
+            "Browser handoff was already consumed",
+        );
+    }
+    let token = random_hex(32);
+    let expires_at = now + SESSION_TTL_SECONDS;
+    if let Err(error) = db.execute(
+        "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc)
+         VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+        params![
+            hash_token(&token),
+            handoff.0,
+            handoff.1,
+            handoff.2,
+            now,
+            expires_at
+        ],
+    ) {
+        return service_error(error.into());
+    }
+    if let Err(error) = audit_event(
+        &db,
+        &handoff.0,
+        "session_handoff_consumed",
+        serde_json::json!({}),
+    ) {
+        return service_error(error.into());
+    }
+    let mut response = Json(SessionResponse {
+        token: token.clone(),
+        session: SessionView {
+            account_id: handoff.0,
+            device_id_hex: handoff.1,
+            auth_method: handoff.2,
+            issued_at_utc: now,
+            expires_at_utc: expires_at,
+        },
+    })
+    .into_response();
+    attach_session_cookie(&mut response, &token);
+    response
+}
+
 pub async fn post_vault_link(
     State(state): State<AccountState>,
     headers: HeaderMap,
@@ -3991,6 +4169,11 @@ pub fn create_router(state: AccountState) -> axum::Router {
         .route("/v1/sessions/challenge", post(post_login_challenge))
         .route("/v1/sessions", post(post_login).get(get_session))
         .route("/v1/sessions/revoke", post(post_session_revoke))
+        .route("/v1/sessions/handoff", post(post_session_handoff))
+        .route(
+            "/v1/sessions/handoff/consume",
+            post(post_session_handoff_consume),
+        )
         .route(
             "/v1/accounts/:account_id/webauthn/registration/options",
             post(post_webauthn_registration_options),

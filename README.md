@@ -5,7 +5,7 @@
 [![Live Web Dashboard](https://img.shields.io/badge/Live%20Web%20Dashboard-vault.cipherv.online-00f0ff.svg?style=for-the-badge&logo=googlecloud)](https://vault.cipherv.online)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Security Audit](https://img.shields.io/badge/Security%20Audit-Hardened%20v1.0.4-emerald.svg)](dist/SECURITY_AUDIT_REPORT.md)
+[![Security Audit](https://img.shields.io/badge/Security%20Audit-Hardened%20v1.0.5-emerald.svg)](dist/SECURITY_AUDIT_REPORT.md)
 [![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(28%20Suites)-success.svg)](dist/RELEASE_NOTES.md)
 [![Status: Production Ready](https://img.shields.io/badge/Status-Production%20Ready-success.svg)](dist/RELEASE_NOTES.md)
 
@@ -39,13 +39,13 @@ Install the standalone `ciphervault` CLI binary on any operating system with a s
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.4/dist/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.5/dist/scripts/install.ps1 | iex
 ```
 *(Or via Winget: `winget install CipherVault.CipherVault`)*
 
 ### macOS & Linux (Bash)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.4/dist/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/v1.0.5/dist/scripts/install.sh | bash
 ```
 *(Or via Homebrew: `brew install samuel-1-avson/tap/ciphervault`)*
 
@@ -68,10 +68,13 @@ service:
 ciphervault auth connect --endpoint https://vault.cipherv.online/api/account
 ```
 
-Then open the [production dashboard](https://vault.cipherv.online), choose
-**Passkey sign in** or **Authenticator sign in**, and use the account ID shown
-by the CLI. The account ID alone is not a password and cannot create an
-account that has not been connected by the signed CLI ceremony.
+The command prints a short-lived, one-time browser link. Open that link to
+create the first hosted dashboard session; it is signed by the local account
+key and does not expose the key or the session token. After the handoff, use
+the dashboard to register a passkey and enroll an authenticator. Later visits
+can use either factor from the [production dashboard](https://vault.cipherv.online).
+The account ID alone is not a password and cannot create an account that has
+not been connected by the signed CLI ceremony.
 
 ### Update an installed CLI
 
