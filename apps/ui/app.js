@@ -247,7 +247,11 @@ function renderAccountStatus(account) {
     loginButton.disabled = !account.required;
   }
   if (passkeyButton) passkeyButton.hidden = !hosted || authenticated;
-  if (totpButton) totpButton.hidden = !totpAvailable || authenticated || account.totp_enabled !== true;
+  // The authenticator flow is an entry point for unauthenticated hosted
+  // accounts.  The `totp_enabled` flag is only returned after an account
+  // session exists, so requiring it here would hide the login control from
+  // every anonymous visitor and make TOTP login unreachable.
+  if (totpButton) totpButton.hidden = !totpAvailable || authenticated;
   if (registerPasskeyButton) registerPasskeyButton.hidden = !hosted || !authenticated;
   if (manageButton) manageButton.hidden = !hosted || !authenticated;
   if (logoutButton) logoutButton.hidden = !authenticated;
