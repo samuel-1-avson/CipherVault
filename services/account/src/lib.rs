@@ -657,6 +657,20 @@ fn account_role_for(
     Ok((session, role))
 }
 
+/// Mutations require a strong (non-recovery) session even when the role gate
+/// passes: recovery sessions read as their account's implicit owner, but must
+/// enroll a device before changing account state.
+fn require_strong_session(session: &SessionView) -> Result<(), Response> {
+    if session.auth_method == "recovery" {
+        return Err(error_response(
+            StatusCode::FORBIDDEN,
+            "RECOVERY_STEP_UP_REQUIRED",
+            "Recovery sessions must enroll a device before account changes",
+        ));
+    }
+    Ok(())
+}
+
 fn decode_32(value: &str, field: &str) -> Result<[u8; 32], AccountServiceError> {
     let bytes = hex::decode(value.trim())
         .map_err(|_| AccountServiceError::Invalid(format!("{field} must be 32-byte hex")))?;
@@ -2459,8 +2473,12 @@ pub async fn post_vault_link(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    if let Err(response) = account_role_for(&state, &headers, &account_id, "owner") {
-        return *response;
+    let (session, _) = match account_role_for(&state, &headers, &account_id, "owner") {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Err(response) = require_strong_session(&session) {
+        return response;
     }
     if let Err(error) = decode_32(&request.vault_id_hex, "vault_id_hex") {
         return service_error(error);
@@ -2545,10 +2563,13 @@ pub async fn post_invitation(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let (_session, actor_role) = match account_role_for(&state, &headers, &account_id, "admin") {
+    let (session, actor_role) = match account_role_for(&state, &headers, &account_id, "admin") {
         Ok(value) => value,
         Err(response) => return *response,
     };
+    if let Err(response) = require_strong_session(&session) {
+        return response;
+    }
     let invitee = match normalize_account_id(&request.invitee_account_id) {
         Ok(value) => value,
         Err(error) => return service_error(error),
@@ -2806,6 +2827,9 @@ pub async fn post_membership_revoke(
         Ok(value) => value,
         Err(response) => return *response,
     };
+    if let Err(response) = require_strong_session(&session) {
+        return response;
+    }
     if session.account_id == member_account_id {
         return error_response(
             StatusCode::FORBIDDEN,
@@ -5467,6 +5491,161 @@ mod tests {
             && event["details"]["session_ttl_secs"] == RECOVERY_SESSION_TTL_SECONDS));
         assert!(events.iter().any(|event| event["event"] == "device_enrolled"
             && event["details"]["enrollment"] == "recovery_session"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn role_matrix_covers_gated_routes() {
+        use StatusCode::{CREATED, FORBIDDEN, NO_CONTENT, OK, UNAUTHORIZED};
+        let root = std::env::temp_dir().join(format!("cv-account-matrix-{}", random_hex(8)));
+        let state = AccountState::open(&root).expect("state");
+        let app = create_router(state.clone());
+        let owner = format!("cvacct_{}", "11".repeat(16));
+        let admin = format!("cvacct_{}", "33".repeat(16));
+        let editor = format!("cvacct_{}", "55".repeat(16));
+        let viewer = format!("cvacct_{}", "22".repeat(16));
+        let doomed_a = format!("cvacct_{}", "66".repeat(16));
+        let doomed_b = format!("cvacct_{}", "77".repeat(16));
+        let outsider = format!("cvacct_{}", "88".repeat(16));
+        let invitee = format!("cvacct_{}", "44".repeat(16));
+        let owner_token = random_hex(32);
+        let admin_token = random_hex(32);
+        let editor_token = random_hex(32);
+        let viewer_token = random_hex(32);
+        let outsider_token = random_hex(32);
+        let recovery_token = random_hex(32);
+        {
+            let db = state.connection().expect("db");
+            for (account_id, key) in [
+                (&owner, "aa".repeat(32)),
+                (&admin, "bb".repeat(32)),
+                (&editor, "cc".repeat(32)),
+                (&viewer, "dd".repeat(32)),
+                (&doomed_a, "ee".repeat(32)),
+                (&doomed_b, "ff".repeat(32)),
+                (&outsider, "ab".repeat(32)),
+                (&invitee, "cd".repeat(32)),
+            ] {
+                db.execute(
+                    "INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc)
+                     VALUES(?1, ?2, ?3, ?4)",
+                    params![account_id, account_id, key, now_utc() as i64],
+                )
+                .unwrap();
+            }
+            for (token, account_id, kind, device) in [
+                (&owner_token, &owner, "device", Some("99".repeat(32))),
+                (&admin_token, &admin, "device", Some("99".repeat(32))),
+                (&editor_token, &editor, "device", Some("99".repeat(32))),
+                (&viewer_token, &viewer, "device", Some("99".repeat(32))),
+                (&outsider_token, &outsider, "device", Some("99".repeat(32))),
+                (&recovery_token, &owner, "recovery", None),
+            ] {
+                db.execute(
+                    "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc)
+                     VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+                    params![hash_token(token), account_id, device, kind, now_utc() as i64, (now_utc() + 3600) as i64],
+                )
+                .unwrap();
+            }
+            for (member, role) in [
+                (&admin, "admin"),
+                (&editor, "editor"),
+                (&viewer, "viewer"),
+                (&doomed_a, "viewer"),
+                (&doomed_b, "viewer"),
+            ] {
+                db.execute(
+                    "INSERT INTO memberships(account_id, member_account_id, role, status, invited_at_utc, accepted_at_utc)
+                     VALUES(?1, ?2, ?3, 'active', ?4, ?4)",
+                    params![owner, member, role, now_utc() as i64],
+                )
+                .unwrap();
+            }
+        }
+        // Actor index: 0 owner, 1 admin, 2 editor, 3 viewer, 4 outsider, 5 recovery.
+        let token_for = |actor: usize| {
+            match actor {
+                0 => owner_token.clone(),
+                1 => admin_token.clone(),
+                2 => editor_token.clone(),
+                3 => viewer_token.clone(),
+                4 => outsider_token.clone(),
+                _ => recovery_token.clone(),
+            }
+        };
+        let uri_members = format!("/v1/accounts/{owner}/memberships");
+        let uri_invites = format!("/v1/accounts/{owner}/invitations");
+        let uri_vaults = format!("/v1/accounts/{owner}/vaults");
+        let uri_revoke_a = format!("/v1/accounts/{owner}/memberships/{doomed_a}/revoke");
+        let uri_revoke_b = format!("/v1/accounts/{owner}/memberships/{doomed_b}/revoke");
+        let uri_codes = format!("/v1/accounts/{owner}/recovery/codes");
+        let vault_body =
+            serde_json::json!({"vault_id_hex": "55".repeat(32), "alias": "x", "role": "viewer"})
+                .to_string();
+        let invite_body =
+            serde_json::json!({"invitee_account_id": invitee, "role": "viewer"}).to_string();
+        let codes_body = r#"{"count":4}"#.to_string();
+        let cases: Vec<(&str, String, Option<String>, Option<usize>, StatusCode)> = vec![
+            ("GET", uri_members.clone(), None, Some(0), OK),
+            ("GET", uri_members.clone(), None, Some(1), OK),
+            ("GET", uri_members.clone(), None, Some(2), OK),
+            ("GET", uri_members.clone(), None, Some(3), OK),
+            ("GET", uri_members.clone(), None, Some(4), FORBIDDEN),
+            ("GET", uri_members.clone(), None, Some(5), OK),
+            ("GET", uri_members.clone(), None, None, UNAUTHORIZED),
+            ("GET", uri_invites.clone(), None, Some(0), OK),
+            ("GET", uri_invites.clone(), None, Some(1), OK),
+            ("GET", uri_invites.clone(), None, Some(2), FORBIDDEN),
+            ("GET", uri_invites.clone(), None, Some(3), FORBIDDEN),
+            ("GET", uri_invites.clone(), None, Some(4), FORBIDDEN),
+            ("GET", uri_invites.clone(), None, Some(5), OK),
+            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(0), CREATED),
+            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(1), CREATED),
+            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(2), FORBIDDEN),
+            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(3), FORBIDDEN),
+            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(4), FORBIDDEN),
+            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(5), FORBIDDEN),
+            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(0), NO_CONTENT),
+            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(1), FORBIDDEN),
+            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(2), FORBIDDEN),
+            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(3), FORBIDDEN),
+            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(4), FORBIDDEN),
+            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(5), FORBIDDEN),
+            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(0), OK),
+            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(1), FORBIDDEN),
+            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(2), FORBIDDEN),
+            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(3), FORBIDDEN),
+            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(4), FORBIDDEN),
+            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(5), FORBIDDEN),
+            ("POST", uri_revoke_b.clone(), None, Some(2), FORBIDDEN),
+            ("POST", uri_revoke_b.clone(), None, Some(3), FORBIDDEN),
+            ("POST", uri_revoke_b.clone(), None, Some(4), FORBIDDEN),
+            ("POST", uri_revoke_b.clone(), None, Some(5), FORBIDDEN),
+            ("POST", uri_revoke_b.clone(), None, None, UNAUTHORIZED),
+            ("POST", uri_revoke_b.clone(), None, Some(1), OK),
+            ("POST", uri_revoke_a.clone(), None, Some(0), OK),
+        ];
+        for (method, uri, body, actor, expected) in cases {
+            let mut builder = if method == "GET" {
+                Request::get(uri.as_str())
+            } else {
+                Request::post(uri.as_str())
+            };
+            if let Some(index) = actor {
+                let header = format!("Bearer {}", token_for(index));
+                builder = builder.header("authorization", header);
+            }
+            let request = match body {
+                Some(payload) => builder
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload)),
+                None => builder.body(Body::empty()),
+            }
+            .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected, "{method} {uri}");
+        }
         let _ = fs::remove_dir_all(root);
     }
 }
