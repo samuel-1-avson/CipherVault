@@ -279,6 +279,17 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
     'Only explicit verification evidence may produce a confirmed checkpoint state',
   );
 
+  vm.runInContext(`renderRelayerCheckpoints({
+    relayer_status: { public_read_only: true, target_network: 'Arbitrum One', canary_status: 'stale', newest_checkpoint_at_utc: 1 },
+    checkpoints: []
+  })`, context);
+  assert(getElementById('relayer-canary-display').textContent.includes('STALE'), 'Stale canary must raise a visible alarm');
+  vm.runInContext(`renderRelayerCheckpoints({
+    relayer_status: { public_read_only: true, target_network: 'Arbitrum One', canary_status: 'ok', newest_checkpoint_at_utc: 1999999999 },
+    checkpoints: []
+  })`, context);
+  assert(getElementById('relayer-canary-display').textContent.includes('fresh'), 'Fresh canary must clear the alarm');
+
   // =========================================================================
   // 7. Secret Revision Diff Engine Tests
   // =========================================================================

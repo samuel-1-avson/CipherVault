@@ -7831,6 +7831,25 @@ struct PublicCheckpointFeedEnvelope {
     signature_hex: String,
 }
 
+/// Returns true when the feed publisher key matches the independently pinned
+/// publisher key. A feed signature only proves the holder of the embedded key
+/// signed it; pinning proves it is the deployment's intended publisher.
+/// Unconfigured pinning (`None`) preserves the legacy verify-only behavior.
+fn public_checkpoint_publisher_key_pinned(feed_key_hex: &str, pinned_key_hex: Option<&str>) -> bool {
+    let Some(pinned) = pinned_key_hex.map(str::trim).filter(|key| !key.is_empty()) else {
+        return true;
+    };
+    let normalize = |key: &str| key.trim().trim_start_matches("0x").to_ascii_lowercase();
+    normalize(feed_key_hex) == normalize(pinned)
+}
+
+fn pinned_public_checkpoint_publisher_key() -> Option<String> {
+    std::env::var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY")
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+}
+
 fn verify_public_checkpoint_feed(
     feed: &PublicCheckpointFeedEnvelope,
 ) -> Result<Vec<serde_json::Value>, String> {
@@ -7855,6 +7874,12 @@ fn verify_public_checkpoint_feed(
         .map_err(|_| "Public checkpoint publisher key is not valid hex".to_string())?;
     if publisher_key.len() != 32 {
         return Err("Public checkpoint publisher key must be 32 bytes".to_string());
+    }
+    if !public_checkpoint_publisher_key_pinned(
+        &feed.publisher_key_hex,
+        pinned_public_checkpoint_publisher_key().as_deref(),
+    ) {
+        return Err("Public checkpoint publisher key is not the pinned publisher key".to_string());
     }
     let mut publisher_key_arr = [0u8; 32];
     publisher_key_arr.copy_from_slice(&publisher_key);
@@ -7939,10 +7964,268 @@ fn load_public_checkpoint_feed() -> Result<Option<Vec<serde_json::Value>>, Strin
     verify_public_checkpoint_feed(&feed).map(Some)
 }
 
+const CHECKPOINT_FINALITY_CACHE_TTL: Duration = Duration::from_secs(60);
+const DEFAULT_FINALITY_CONFIRMATIONS: u64 = 12;
+const DEFAULT_CHECKPOINT_CANARY_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+
+static CHECKPOINT_RPC_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
+
+/// Shared client for independent Arbitrum receipt queries. Receipt fetching is
+/// read-only evidence collection; RPC failures degrade to `unknown`, never errors.
+fn checkpoint_rpc_http_client() -> HttpClient {
+    CHECKPOINT_RPC_HTTP_CLIENT
+        .get_or_init(|| {
+            HttpClient::builder()
+                .timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(120))
+                .pool_max_idle_per_host(4)
+                .build()
+                .unwrap_or_else(|_| HttpClient::new())
+        })
+        .clone()
+}
+
+/// Parses an Ethereum JSON-RPC quantity (`0x`-hex string or JSON number).
+fn parse_rpc_quantity(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::String(text) => {
+            let digits = text.trim().trim_start_matches("0x");
+            if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            u64::from_str_radix(digits, 16).ok()
+        }
+        serde_json::Value::Number(number) => number.as_u64(),
+        _ => None,
+    }
+}
+
+/// Outcome of one independent `eth_getTransactionReceipt` observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiptFetch {
+    /// The transaction has no receipt yet (pending or unknown to the node).
+    Pending,
+    /// Receipt observed; `status_ok` mirrors receipt `status` (1 = success).
+    Observed { status_ok: bool, block_number: u64 },
+    /// RPC failed or returned an unparseable receipt; evidence unavailable.
+    Failed,
+}
+
+/// Classifies a JSON-RPC `result` for `eth_getTransactionReceipt`.
+fn classify_receipt_result(result: &serde_json::Value) -> ReceiptFetch {
+    if result.is_null() {
+        return ReceiptFetch::Pending;
+    }
+    let receipt = match result.as_object() {
+        Some(object) => object,
+        None => return ReceiptFetch::Failed,
+    };
+    let status = receipt.get("status").and_then(parse_rpc_quantity);
+    let block_number = receipt.get("blockNumber").and_then(parse_rpc_quantity);
+    match (status, block_number) {
+        (Some(status), Some(block_number)) => ReceiptFetch::Observed {
+            status_ok: status == 1,
+            block_number,
+        },
+        _ => ReceiptFetch::Failed,
+    }
+}
+
+/// Maps one receipt observation + chain tip to
+/// `(finality_status, receipt_block, confirmations)`.
+fn checkpoint_finality(
+    fetch: ReceiptFetch,
+    tip_block: Option<u64>,
+    required_confirmations: u64,
+) -> (&'static str, Option<u64>, Option<u64>) {
+    match fetch {
+        ReceiptFetch::Pending => ("pending", None, None),
+        ReceiptFetch::Failed => ("unknown", None, None),
+        ReceiptFetch::Observed {
+            status_ok: false,
+            block_number,
+        } => (
+            "failed",
+            Some(block_number),
+            tip_block.map(|tip| tip.saturating_sub(block_number)),
+        ),
+        ReceiptFetch::Observed {
+            status_ok: true,
+            block_number,
+        } => {
+            let confirmations = tip_block.map(|tip| tip.saturating_sub(block_number));
+            let finalized = confirmations.is_some_and(|count| count >= required_confirmations);
+            (
+                if finalized { "finalized" } else { "confirmed" },
+                Some(block_number),
+                confirmations,
+            )
+        }
+    }
+}
+
+fn finality_confirmations_required() -> u64 {
+    std::env::var("CIPHERVAULT_FINALITY_CONFIRMATIONS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|confirmations| *confirmations > 0)
+        .unwrap_or(DEFAULT_FINALITY_CONFIRMATIONS)
+}
+
+fn checkpoint_canary_max_age_secs() -> u64 {
+    std::env::var("CIPHERVAULT_CHECKPOINT_CANARY_MAX_AGE_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|max_age| *max_age > 0)
+        .unwrap_or(DEFAULT_CHECKPOINT_CANARY_MAX_AGE_SECS)
+}
+
+/// Canary over checkpoint freshness: `ok` when the newest checkpoint is within
+/// `max_age_secs`, `stale` when older, `missing` when no checkpoint exists.
+fn checkpoint_canary_status(
+    newest_published_at_utc: Option<u64>,
+    now_utc: u64,
+    max_age_secs: u64,
+) -> &'static str {
+    match newest_published_at_utc {
+        None => "missing",
+        Some(published) if now_utc.saturating_sub(published) <= max_age_secs => "ok",
+        Some(_) => "stale",
+    }
+}
+
+fn newest_checkpoint_published_at(checkpoints: &[serde_json::Value]) -> Option<u64> {
+    checkpoints
+        .iter()
+        .filter_map(|checkpoint| checkpoint.get("published_at_utc")?.as_u64())
+        .max()
+}
+
+async fn fetch_receipt_observation(
+    client: &HttpClient,
+    rpc_url: &str,
+    tx_hash_hex: String,
+) -> ReceiptFetch {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getTransactionReceipt",
+        "params": [tx_hash_hex],
+    });
+    let response = match client.post(rpc_url).json(&body).send().await {
+        Ok(response) => response,
+        Err(_) => return ReceiptFetch::Failed,
+    };
+    let payload: serde_json::Value = match response.json().await {
+        Ok(payload) => payload,
+        Err(_) => return ReceiptFetch::Failed,
+    };
+    if payload.get("error").is_some() {
+        return ReceiptFetch::Failed;
+    }
+    match payload.get("result") {
+        Some(result) => classify_receipt_result(result),
+        None => ReceiptFetch::Failed,
+    }
+}
+
+async fn fetch_chain_tip_block(client: &HttpClient, rpc_url: &str) -> Option<u64> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_blockNumber",
+        "params": [],
+    });
+    let response = client.post(rpc_url).json(&body).send().await.ok()?;
+    let payload: serde_json::Value = response.json().await.ok()?;
+    if payload.get("error").is_some() {
+        return None;
+    }
+    payload.get("result").and_then(parse_rpc_quantity)
+}
+
+static CHECKPOINT_FINALITY_CACHE: OnceLock<tokio::sync::Mutex<Option<FinalityCacheEntry>>> =
+    OnceLock::new();
+
+#[derive(Clone)]
+struct FinalityCacheEntry {
+    cached_at: Instant,
+    checkpoints: Vec<serde_json::Value>,
+}
+
+/// Loads the verified feed and, when `CIPHERVAULT_ARBITRUM_RPC_URL` is set,
+/// enriches transaction-bearing checkpoints with independent receipt finality.
+/// Results are cached briefly; without an RPC URL this is the plain feed.
+async fn load_public_feed_with_finality() -> Result<Option<Vec<serde_json::Value>>, String> {
+    let checkpoints = match load_public_checkpoint_feed()? {
+        Some(checkpoints) => checkpoints,
+        None => return Ok(None),
+    };
+    let rpc_url = std::env::var("CIPHERVAULT_ARBITRUM_RPC_URL")
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty());
+    let Some(rpc_url) = rpc_url else {
+        return Ok(Some(checkpoints));
+    };
+
+    let cache = CHECKPOINT_FINALITY_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
+    if let Some(entry) = cache.lock().await.clone() {
+        if entry.cached_at.elapsed() < CHECKPOINT_FINALITY_CACHE_TTL {
+            return Ok(Some(entry.checkpoints));
+        }
+    }
+
+    let client = checkpoint_rpc_http_client();
+    let required = finality_confirmations_required();
+    let tip = fetch_chain_tip_block(&client, &rpc_url).await;
+    let tx_hashes: Vec<Option<String>> = checkpoints
+        .iter()
+        .map(|checkpoint| {
+            checkpoint
+                .get("tx_hash_hex")
+                .and_then(|hash| hash.as_str())
+                .filter(|hash| !hash.is_empty())
+                .map(str::to_string)
+        })
+        .collect();
+    let targets: Vec<(usize, String)> = tx_hashes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, hash)| hash.clone().map(|hash| (index, hash)))
+        .collect();
+    let mut enriched = checkpoints;
+    for chunk in targets.chunks(8) {
+        let fetches = chunk
+            .iter()
+            .map(|(_, hash)| fetch_receipt_observation(&client, &rpc_url, hash.clone()));
+        let observations = join_all(fetches).await;
+        for ((index, _), fetch) in chunk.iter().zip(observations) {
+            let (status, block, confirmations) = checkpoint_finality(fetch, tip, required);
+            let Some(record) = enriched.get_mut(*index) else {
+                continue;
+            };
+            let Some(object) = record.as_object_mut() else {
+                continue;
+            };
+            object.insert("finality_status".to_string(), serde_json::json!(status));
+            object.insert("receipt_block_number".to_string(), serde_json::json!(block));
+            object.insert("confirmations".to_string(), serde_json::json!(confirmations));
+        }
+    }
+
+    let entry = FinalityCacheEntry {
+        cached_at: Instant::now(),
+        checkpoints: enriched.clone(),
+    };
+    *cache.lock().await = Some(entry);
+    Ok(Some(enriched))
+}
+
 async fn api_public_anchors_handler() -> axum::response::Response {
     use axum::{http::StatusCode, response::IntoResponse};
 
-    match load_public_checkpoint_feed() {
+    match load_public_feed_with_finality().await {
         Ok(Some(checkpoints)) => axum::Json(checkpoints).into_response(),
         Ok(None) => axum::Json(serde_json::json!([])).into_response(),
         Err(error) => (
@@ -7960,7 +8243,7 @@ async fn api_public_anchors_handler() -> axum::response::Response {
 async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
     use axum::{http::StatusCode, response::IntoResponse};
 
-    match load_public_checkpoint_feed() {
+    match load_public_feed_with_finality().await {
         Ok(Some(checkpoints)) => {
             let checkpoint_count = checkpoints.len();
             let network = checkpoints
@@ -7968,6 +8251,13 @@ async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
                 .and_then(|checkpoint| checkpoint.get("network"))
                 .and_then(|network| network.as_str())
                 .unwrap_or("Published checkpoint feed");
+            let newest_checkpoint = newest_checkpoint_published_at(&checkpoints);
+            let now_utc = Utc::now().timestamp().max(0) as u64;
+            let canary_max_age = checkpoint_canary_max_age_secs();
+            let canary = checkpoint_canary_status(newest_checkpoint, now_utc, canary_max_age);
+            let rpc_configured = std::env::var("CIPHERVAULT_ARBITRUM_RPC_URL")
+                .ok()
+                .is_some_and(|url| !url.trim().is_empty());
             axum::Json(serde_json::json!({
                 "status": "ok",
                 "access_mode": "public",
@@ -7975,11 +8265,14 @@ async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
                     "public_read_only": true,
                     "target_network": network,
                     "verification_status": "publisher_signed",
-                    "finality_status": "unverified",
+                    "finality_status": if rpc_configured { "independent_rpc" } else { "unverified" },
+                    "canary_status": canary,
+                    "canary_max_age_secs": canary_max_age,
+                    "newest_checkpoint_at_utc": newest_checkpoint,
                 },
                 "checkpoints": checkpoints,
                 "count": checkpoint_count,
-                "message": "Checkpoint records are signed by the configured publisher; chain receipt and finality remain independently unverified.",
+                "message": "Checkpoint records are signed by the configured publisher; per-checkpoint finality reflects independent RPC receipts when an Arbitrum RPC URL is configured.",
             }))
             .into_response()
         }
@@ -7990,6 +8283,8 @@ async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
                 "public_read_only": true,
                 "target_network": "No public checkpoint feed configured",
                 "verification_status": "unavailable",
+                "canary_status": "missing",
+                "newest_checkpoint_at_utc": serde_json::Value::Null,
             },
             "checkpoints": [],
             "count": 0,
@@ -8005,6 +8300,8 @@ async fn api_public_relayer_checkpoints_handler() -> axum::response::Response {
                     "public_read_only": true,
                     "target_network": "Public checkpoint feed unavailable",
                     "verification_status": "invalid",
+                    "canary_status": "missing",
+                    "newest_checkpoint_at_utc": serde_json::Value::Null,
                 },
                 "checkpoints": [],
                 "count": 0,
@@ -9599,6 +9896,71 @@ mod ui_router_tests {
         let mut tampered = feed.clone();
         tampered.checkpoints[0].block_number = Some(124);
         assert!(verify_public_checkpoint_feed(&tampered).is_err());
+    }
+
+    #[test]
+    fn checkpoint_publisher_pinning_matches_exact_key_only() {
+        let key = "ab".repeat(32);
+        assert!(public_checkpoint_publisher_key_pinned(&key, None));
+        assert!(public_checkpoint_publisher_key_pinned(&key, Some("")));
+        assert!(public_checkpoint_publisher_key_pinned(&key, Some(&key)));
+        assert!(public_checkpoint_publisher_key_pinned(&key, Some(&format!("0x{key}"))));
+        assert!(public_checkpoint_publisher_key_pinned(&key, Some(&key.to_ascii_uppercase())));
+        assert!(!public_checkpoint_publisher_key_pinned(&key, Some(&"00".repeat(32))));
+    }
+
+    #[test]
+    fn receipt_quantities_and_finality_classification() {
+        assert_eq!(parse_rpc_quantity(&serde_json::json!("0x10")), Some(16));
+        assert_eq!(parse_rpc_quantity(&serde_json::json!("0x0")), Some(0));
+        assert_eq!(parse_rpc_quantity(&serde_json::json!(7)), Some(7));
+        assert_eq!(parse_rpc_quantity(&serde_json::json!("zz")), None);
+        assert_eq!(parse_rpc_quantity(&serde_json::Value::Null), None);
+        assert_eq!(classify_receipt_result(&serde_json::Value::Null), ReceiptFetch::Pending);
+        let observed = serde_json::json!({"status": "0x1", "blockNumber": "0x64"});
+        assert_eq!(
+            classify_receipt_result(&observed),
+            ReceiptFetch::Observed { status_ok: true, block_number: 100 }
+        );
+        let failed_tx = serde_json::json!({"status": "0x0", "blockNumber": "0x64"});
+        assert_eq!(
+            classify_receipt_result(&failed_tx),
+            ReceiptFetch::Observed { status_ok: false, block_number: 100 }
+        );
+        assert_eq!(
+            classify_receipt_result(&serde_json::json!({"blockNumber": "0x64"})),
+            ReceiptFetch::Failed
+        );
+        assert_eq!(checkpoint_finality(ReceiptFetch::Pending, Some(200), 12).0, "pending");
+        assert_eq!(checkpoint_finality(ReceiptFetch::Failed, Some(200), 12).0, "unknown");
+        let obs = ReceiptFetch::Observed { status_ok: true, block_number: 100 };
+        assert_eq!(checkpoint_finality(obs, Some(200), 12).0, "finalized");
+        assert_eq!(checkpoint_finality(obs, Some(105), 12).0, "confirmed");
+        assert_eq!(checkpoint_finality(obs, None, 12).0, "confirmed");
+        let reverted = ReceiptFetch::Observed { status_ok: false, block_number: 100 };
+        assert_eq!(checkpoint_finality(reverted, Some(200), 12).0, "failed");
+    }
+
+    #[test]
+    fn checkpoint_canary_tracks_freshness() {
+        let now = 2_000_000_000u64;
+        assert_eq!(checkpoint_canary_status(None, now, 3_600), "missing");
+        assert_eq!(checkpoint_canary_status(Some(now - 100), now, 3_600), "ok");
+        assert_eq!(checkpoint_canary_status(Some(now - 3_600), now, 3_600), "ok");
+        assert_eq!(checkpoint_canary_status(Some(now - 3_601), now, 3_600), "stale");
+        assert_eq!(checkpoint_canary_status(Some(now + 60), now, 3_600), "ok");
+    }
+
+    #[test]
+    fn newest_checkpoint_selects_max_timestamp() {
+        let checkpoints = serde_json::json!([
+            {"published_at_utc": 10},
+            {"published_at_utc": 30},
+            {"published_at_utc": 20},
+        ]);
+        let list = checkpoints.as_array().unwrap().clone();
+        assert_eq!(newest_checkpoint_published_at(&list), Some(30));
+        assert_eq!(newest_checkpoint_published_at(&[]), None);
     }
 
     #[test]

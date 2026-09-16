@@ -1861,6 +1861,26 @@ function renderRelayerCheckpoints(data) {
     networkTag.textContent = response.relayer_status.target_network;
   }
 
+  const canaryDisplay = document.getElementById('relayer-canary-display');
+  if (canaryDisplay && response.relayer_status) {
+    const canary = typeof response.relayer_status.canary_status === 'string'
+      ? response.relayer_status.canary_status
+      : '';
+    if (canary === 'ok') {
+      canaryDisplay.textContent = 'Checkpoint canary: fresh';
+      canaryDisplay.style.color = 'var(--accent-emerald)';
+    } else if (canary === 'stale') {
+      canaryDisplay.textContent = 'Checkpoint canary: STALE - no recent checkpoint';
+      canaryDisplay.style.color = 'var(--accent-amber)';
+    } else if (canary === 'missing') {
+      canaryDisplay.textContent = 'Checkpoint canary: MISSING - feed unavailable';
+      canaryDisplay.style.color = 'var(--accent-rose)';
+    } else {
+      canaryDisplay.textContent = 'Checkpoint canary: not reported';
+      canaryDisplay.style.color = 'var(--text-muted)';
+    }
+  }
+
   const relayerPulse = document.getElementById('relayer-pulse-dot');
   if (relayerPulse) {
     const status = response.relayer_status || {};

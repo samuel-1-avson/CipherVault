@@ -226,3 +226,29 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
 - Identity self-signatures expire 24h after issuance (`/v1/info`); expiry affects display
   freshness only, never lease validity. Persistent `expired` on a reachable node means its
   clock or `/v1/info` signer is broken - investigate before rotating.
+
+## 9. Checkpoint Publisher, Finality & Canary
+
+### Deploying the signed publisher
+1. Generate a dedicated Ed25519 publisher key offline; fund nothing - it only signs feed JSON.
+2. Set `CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX` on the publisher worker and run
+   `deploy/docker/entrypoint-public-feed-publisher.sh` (default 60 s refresh into the file
+   referenced by the dashboard's `CIPHERVAULT_PUBLIC_CHECKPOINT_FEED`).
+3. Pin the publisher on the dashboard with `CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY`
+   (64-hex of the publisher verifying key). A feed signed by any other key is rejected.
+4. Confirm `/api/anchors` returns records with `verification_status: publisher_signed`.
+
+### Independent finality (optional but recommended)
+- Set `CIPHERVAULT_ARBITRUM_RPC_URL` to a trusted Arbitrum RPC endpoint. The dashboard then
+  queries `eth_getTransactionReceipt` per checkpoint transaction plus `eth_blockNumber`,
+  and reports `finality_status`: `finalized` (>= `CIPHERVAULT_FINALITY_CONFIRMATIONS`,
+  default 12), `confirmed`, `pending`, `failed` (reverted receipt), or `unknown` (RPC error).
+- Receipts are fetched in bounded batches and cached for 60 s; without an RPC URL the feed
+  keeps the legacy `unverified` finality and nothing else changes.
+
+### Canary alarm
+- `relayer_status.canary_status` is `ok`, `stale`, or `missing`, computed from the newest
+  checkpoint age against `CIPHERVAULT_CHECKPOINT_CANARY_MAX_AGE_SECS` (default 86400 = 24h).
+- The explorer renders amber `STALE` and red `MISSING` badges; treat either as a paging
+  alarm: the anchor daemon, publisher worker, or feed mount is broken.
+- Tune the max age to roughly 3x the anchor daemon interval (default daemon: 3600 s).
