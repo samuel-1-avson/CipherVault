@@ -88,6 +88,7 @@ fi
 readonly DASHBOARD_IMAGE="$(metadata_value ciphervault-dashboard-image)"
 readonly ACCOUNT_IMAGE="$(metadata_value ciphervault-account-image)"
 readonly OPERATORS="$(metadata_value operator-endpoints)"
+readonly TRUSTED_OPERATOR_IDENTITIES="$(metadata_value trusted-operator-identities | tr ';' ',')"
 readonly WEB_DOMAIN="$(metadata_value web-domain vault.example.com)"
 readonly ACME_EMAIL="$(metadata_value acme-email admin@example.com)"
 readonly WEBAUTHN_RP_ID="$(metadata_value webauthn-rp-id "$WEB_DOMAIN")"
@@ -117,6 +118,7 @@ ACME_EMAIL=$ACME_EMAIL
 CIPHERVAULT_DASHBOARD_IMAGE=$DASHBOARD_IMAGE
 CIPHERVAULT_ACCOUNT_IMAGE=$ACCOUNT_IMAGE
 CIPHERVAULT_OPERATORS=$OPERATORS
+CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES=$TRUSTED_OPERATOR_IDENTITIES
 CIPHERVAULT_WEBAUTHN_RP_ID=$WEBAUTHN_RP_ID
 CIPHERVAULT_WEBAUTHN_ORIGIN=$WEBAUTHN_ORIGIN
 CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=$ACCOUNT_ALLOWED_ORIGINS
