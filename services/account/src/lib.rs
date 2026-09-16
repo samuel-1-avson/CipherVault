@@ -1271,6 +1271,37 @@ fn auth_rate_failure_with_db(db: &Connection, key: &str) {
            updated_at_utc = excluded.updated_at_utc",
         params![key, window_started as i64, failures as i64, blocked_until as i64, now as i64],
     );
+    if failures == AUTH_RATE_MAX_FAILURES {
+        auth_rate_lockout_alert(db, key, now);
+    }
+}
+
+/// Alert sink for fresh authentication lockouts: a queryable audit event plus a
+/// stderr line for log aggregation. The rate key carries `ceremony:account:source`;
+/// only the ceremony and source reach the alert trail, never secrets.
+fn auth_rate_lockout_alert(db: &Connection, key: &str, now: u64) {
+    let mut parts = key.splitn(3, ':');
+    let ceremony = parts.next().unwrap_or("unknown");
+    let account_id = parts.next().unwrap_or("");
+    let source = parts.next().unwrap_or("unknown");
+    eprintln!(
+        "account auth rate lockout: ceremony={ceremony} source={source} blocked_until_utc={}",
+        now + AUTH_RATE_LOCK_SECONDS
+    );
+    if account_id.trim().is_empty() {
+        return;
+    }
+    let _ = audit_event(
+        db,
+        account_id,
+        "auth_rate_lockout",
+        serde_json::json!({
+            "ceremony": ceremony,
+            "source": source,
+            "failures": AUTH_RATE_MAX_FAILURES,
+            "blocked_until_utc": now + AUTH_RATE_LOCK_SECONDS,
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -5060,6 +5091,16 @@ mod tests {
             auth_rate_failure(&state, key);
         }
         assert!(auth_rate_allowed(&state, key).is_err());
+        let db = state.connection().expect("db");
+        let lockouts: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE event = 'auth_rate_lockout'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count lockouts");
+        assert_eq!(lockouts, 1);
+        drop(db);
         drop(state);
         let reopened = AccountState::open(&root).expect("reopened state");
         assert!(auth_rate_allowed(&reopened, key).is_err());

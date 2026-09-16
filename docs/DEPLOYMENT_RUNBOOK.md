@@ -288,3 +288,19 @@ live `vault.cipherv.online` cutover. Perform in order; stop on the first red che
 - R2: publisher deployed + key pinned; RPC finality live; canary ok; alarm tested (stale).
 - R3: live TOTP key served from Secret Manager mount; legacy value rotated away.
 - R4: live VM runs CI-built signed digests; rollback path tested.
+
+## 11. Multi-Replica Account Service & Abuse Alerts
+
+The account service is deployed as a single instance by default; the authentication
+rate limiter (`auth_rate_limits`) then needs no coordination beyond its SQLite store.
+For multi-replica deployments, all replicas MUST share one `CIPHERVAULT_ACCOUNT_DATA_DIR`
+volume so failure windows and lockouts stay consistent. SQLite single-writer semantics
+serialize concurrent limiter writes (WAL + busy timeout absorb bursts); if lock contention
+appears in logs, scale vertically or shard by account range - a Redis-backed limiter is
+future work, not implemented.
+
+Every fresh lockout emits two alert signals: an `auth_rate_lockout` row in `audit_events`
+(per-account, queryable via the account audit API) and a stderr line
+`account auth rate lockout: ceremony=... source=... blocked_until_utc=...`. Ship stderr
+to the log aggregator and page on lockout spikes per source; the audit row is the
+per-account source of truth for incident review.
