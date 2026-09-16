@@ -167,7 +167,19 @@ try {
     if (-not $running) {
         throw "The VM did not reach RUNNING state within five minutes."
     }
-    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; systemctl is-active --quiet ciphervault-ui.service; sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
+    $remoteHealthCommand = "set -eu; systemctl is-active --quiet ciphervault-ui.service; sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
+    $remoteReady = $false
+    for ($attempt = 1; $attempt -le 36; $attempt++) {
+        & gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command $remoteHealthCommand 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $remoteReady = $true
+            break
+        }
+        Start-Sleep -Seconds 10
+    }
+    if (-not $remoteReady) {
+        throw "The VM did not become SSH- and service-ready within six minutes."
+    }
 
     $healthUrl = "https://$DomainName/api/vault"
     for ($attempt = 1; $attempt -le 12; $attempt++) {
