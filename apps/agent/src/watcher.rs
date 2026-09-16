@@ -20,6 +20,19 @@ pub struct WatcherConfig {
     pub debounce: Duration,
     pub replicate_remote: bool,
     pub operators: Vec<String>,
+    /// Inspector mode: report captures without persisting or replicating anything.
+    pub dry_run: bool,
+}
+
+/// Inspector report: what a watcher capture would do, computed without
+/// persisting anything (R15 dry-run mode).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchInspection {
+    pub files: usize,
+    pub chunks: usize,
+    pub bytes: u64,
+    pub would_replicate: bool,
+    pub operator_count: usize,
 }
 
 /// In-memory cache of file content digests to avoid redundant snapshots.
@@ -111,6 +124,46 @@ impl VaultWatcher {
         Ok(changed)
     }
 
+    /// Builds the pending snapshot in memory and reports what a capture
+    /// would do. Persists nothing, touches no counters, replicates nothing.
+    pub fn inspect_pending_capture(&self) -> Result<WatchInspection> {
+        let vault_id = self.store.get_vault_id()?;
+        let (device_id, device_sk, counter, epoch) = self.store.get_device_state()?;
+        let epoch_key = self.store.get_epoch_key(epoch)?;
+        let tracked = self.store.list_tracked_files()?;
+
+        let active_head = self.store.get_active_head()?;
+        let parent_ids = match active_head {
+            Some(ref h) => vec![{
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&h.snapshot_id);
+                arr
+            }],
+            None => Vec::new(),
+        };
+
+        let output = create_snapshot(
+            &self.config.root_dir,
+            &tracked,
+            &vault_id,
+            epoch,
+            &epoch_key,
+            parent_ids,
+            &device_id,
+            counter + 1,
+            1,
+            &device_sk,
+        )?;
+        let bytes: u64 = output.chunks.iter().map(|chunk| chunk.payload.len() as u64).sum();
+        Ok(WatchInspection {
+            files: tracked.len(),
+            chunks: output.chunks.len(),
+            bytes,
+            would_replicate: self.config.replicate_remote && !self.config.operators.is_empty(),
+            operator_count: self.config.operators.len(),
+        })
+    }
+
     /// Triggers snapshot creation and optional multi-operator replication.
     pub async fn capture_and_sync(&self, _message: Option<String>) -> Result<[u8; 32]> {
         let vault_id = self.store.get_vault_id()?;
@@ -171,6 +224,16 @@ impl VaultWatcher {
             tracked.len(),
             output.chunks.len()
         );
+        let _ = self.store.record_activity(
+            "WATCH_SNAPSHOT",
+            &format!("Watcher captured snapshot {snapshot_hex}"),
+            &serde_json::json!({
+                "snapshot_id": snapshot_hex,
+                "files": tracked.len(),
+                "chunks": output.chunks.len(),
+            })
+            .to_string(),
+        );
 
         let snap_id_arr: [u8; 32] = {
             let mut a = [0u8; 32];
@@ -210,6 +273,12 @@ impl VaultWatcher {
                 Err(e) => {
                     let err_msg = e.to_string();
                     let _ = self.store.record_upload_failure(&snap_id_arr, &err_msg);
+                    let _ = self.store.record_activity(
+                        "WATCH_SYNC_FAILED",
+                        &format!("Watcher replication failed for snapshot {snapshot_hex}"),
+                        &serde_json::json!({ "snapshot_id": snapshot_hex, "error": err_msg })
+                            .to_string(),
+                    );
                     return Err(e.into());
                 }
             }
@@ -305,6 +374,15 @@ impl VaultWatcher {
             )
             .green()
         );
+
+        if self.config.dry_run {
+            println!(
+                "{}",
+                "DRY-RUN MODE: the watcher will inspect changes without capturing snapshots or replicating."
+                    .bold()
+                    .yellow()
+            );
+        }
 
         let tracked = self.store.list_tracked_files()?;
         println!(
@@ -404,23 +482,55 @@ impl VaultWatcher {
                                         "{} Content changed. Creating encrypted FastCDC snapshot...",
                                         "[SNAPSHOT]".bold().green()
                                     );
-                                    let commit_msg = format!("Auto-snapshot: updated {}", target_name);
-                                    match self.capture_and_sync(Some(commit_msg)).await {
-                                        Ok(cid) => {
-                                            let cid_short = hex::encode(&cid[..8]);
-                                            println!(
-                                                "{} [{}] Snapshot commit {} created & verified!",
-                                                "[SNAPSHOT]".bold().green(),
-                                                chrono::Local::now().format("%H:%M:%S").to_string().dimmed(),
-                                                cid_short.yellow()
-                                            );
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "{} Snapshot capture failed: {}",
+                                    if self.config.dry_run {
+                                        match self.inspect_pending_capture() {
+                                            Ok(report) => println!(
+                                                "{} [DRY-RUN] Would capture snapshot: {} file(s), {} chunk(s), {} byte(s){}",
+                                                "[INSPECT]".bold().yellow(),
+                                                report.files,
+                                                report.chunks,
+                                                report.bytes,
+                                                if report.would_replicate {
+                                                    format!(
+                                                        " + replicate to {} operator(s)",
+                                                        report.operator_count
+                                                    )
+                                                } else {
+                                                    " (local only)".to_string()
+                                                }
+                                            ),
+                                            Err(e) => eprintln!(
+                                                "{} Inspection failed: {}",
                                                 "[ERROR]".bold().red(),
                                                 e
-                                            );
+                                            ),
+                                        }
+                                    } else {
+                                        let commit_msg =
+                                            format!("Auto-snapshot: updated {}", target_name);
+                                        match self.capture_and_sync(Some(commit_msg)).await {
+                                            Ok(cid) => {
+                                                let cid_short = hex::encode(&cid[..8]);
+                                                println!(
+                                                    "{} [{}] Snapshot commit {} created & verified!",
+                                                    "[SNAPSHOT]".bold().green(),
+                                                    chrono::Local::now().format("%H:%M:%S").to_string().dimmed(),
+                                                    cid_short.yellow()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "{} Snapshot capture failed: {}",
+                                                    "[ERROR]".bold().red(),
+                                                    e
+                                                );
+                                                let _ = self.store.record_activity(
+                                                    "WATCH_CAPTURE_FAILED",
+                                                    "Watcher snapshot capture failed",
+                                                    &serde_json::json!({ "error": e.to_string() })
+                                                        .to_string(),
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -441,8 +551,10 @@ impl VaultWatcher {
                     if last_change.is_none() && last_poll.elapsed() >= Duration::from_secs(3) {
                         last_poll = Instant::now();
 
-                        // Retry any previously failed uploads
-                        let _ = self.retry_pending_uploads().await;
+                        // Retry any previously failed uploads (never in dry-run).
+                        if !self.config.dry_run {
+                            let _ = self.retry_pending_uploads().await;
+                        }
 
                         // Fallback check in case an OS event was dropped by the kernel
                         if let Ok(true) = self.check_for_changes() {

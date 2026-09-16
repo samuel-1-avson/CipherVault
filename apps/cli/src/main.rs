@@ -433,6 +433,9 @@ enum Commands {
             help = "Enable automatic remote replication to operators on snapshot"
         )]
         sync: bool,
+
+        #[arg(long, help = "Inspector mode: report captures without persisting or replicating")]
+        dry_run: bool,
     },
 
     /// Run a command with decrypted secrets injected into its environment (zero-disk exposure)
@@ -955,7 +958,11 @@ async fn run(cli: Cli) -> Result<()> {
             url,
         } => cmd_ui(host, port, no_browser, local, serve, url).await,
         Commands::Tui { poll_ms } => tui::run_tui(poll_ms).await,
-        Commands::Watch { debounce, sync } => cmd_watch(debounce, sync).await,
+        Commands::Watch {
+            debounce,
+            sync,
+            dry_run,
+        } => cmd_watch(debounce, sync, dry_run).await,
         Commands::Run {
             snapshot,
             env_file,
@@ -2155,7 +2162,7 @@ fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(discovered.into_iter().collect())
 }
 
-async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
+async fn cmd_watch(debounce_secs: u64, sync: bool, dry_run: bool) -> Result<()> {
     let root_dir = std::env::current_dir()?;
     let vault_db = root_dir.join(VAULT_DIR).join(DB_FILE);
     if !vault_db.exists() {
@@ -2209,6 +2216,12 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
             println!("    - {}", op.dimmed());
         }
     }
+    if dry_run {
+        println!(
+            "  Dry Run:       {}",
+            "Enabled (inspector only; nothing will be captured or replicated)".yellow()
+        );
+    }
     println!();
     println!(
         "{}",
@@ -2222,6 +2235,7 @@ async fn cmd_watch(debounce_secs: u64, sync: bool) -> Result<()> {
         debounce: std::time::Duration::from_secs(debounce_secs),
         replicate_remote: sync,
         operators,
+        dry_run,
     };
 
     let watcher = ciphervault_agent::VaultWatcher::new(config)?;

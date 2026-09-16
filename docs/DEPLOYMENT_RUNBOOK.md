@@ -441,3 +441,13 @@ only reclaims local disk.
 snapshots at it. Old epoch keys are retained so existing snapshots stay
 readable; device-key rotation remains manual (new device certificate ceremony).
 Pre-migration keys show unknown age and always warn: rotate once to baseline.
+
+## 15. File Watcher Inspector (R15)
+
+`ciphervault watch --dry-run` (or `ciphervault-agent --dry-run`) runs the
+watcher as an inspector: filesystem events still debounce and verify, but each
+trigger only builds the snapshot in memory and reports files/chunks/bytes plus
+whether replication would run. Nothing is persisted, no counters move, and
+pending-upload retries are skipped. Real captures record `WATCH_SNAPSHOT` /
+`WATCH_SYNC_FAILED` / `WATCH_CAPTURE_FAILED` rows in the vault activity log,
+visible in the dashboard activity feed (`/api/activity`).

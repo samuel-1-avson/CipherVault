@@ -551,6 +551,14 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   })`, context);
   assert.equal(getElementById('relayer-reorg-display').textContent, 'No reorg detected');
 
+  // =========================================================================
+  // 16. Watcher Event Log Tests (R15)
+  // =========================================================================
+  vm.runInContext(`renderActivity([{ event_type: 'WATCH_SNAPSHOT', summary: 'Watcher captured snapshot abc123', details_json: '{"files":1,"chunks":4}', created_at_utc: 1789250000 }])`, context);
+  const watchHtml = getElementById('activity-feed-list').innerHTML;
+  assert(watchHtml.includes('WATCH_SNAPSHOT'), 'Activity feed must render watcher snapshot events');
+  assert(watchHtml.includes('Watcher captured snapshot abc123'), 'Activity feed must render the watcher summary');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

@@ -32,6 +32,9 @@ struct Cli {
         help = "Enable automatic remote replication to operators on snapshot"
     )]
     sync: bool,
+
+    #[arg(long, help = "Inspector mode: report captures without persisting or replicating")]
+    dry_run: bool,
 }
 
 fn load_operators(vault_root: &Path) -> Vec<String> {
@@ -134,12 +137,16 @@ async fn main() -> Result<()> {
     if sync {
         println!("  Operators:     {}", operators.join(", ").dimmed());
     }
+    if cli.dry_run {
+        println!("  Mode:          {}.", "DRY-RUN (inspect only)".yellow());
+    }
 
     let config = WatcherConfig {
         root_dir,
         debounce: Duration::from_secs(debounce_secs),
         replicate_remote: sync,
         operators,
+        dry_run: cli.dry_run,
     };
 
     let watcher = VaultWatcher::new(config)?;
