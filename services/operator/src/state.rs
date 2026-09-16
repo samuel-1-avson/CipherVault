@@ -158,6 +158,8 @@ impl OperatorState {
         state.load_enrolled_identities();
         state.load_sessions();
         state.load_relayed_checkpoints();
+        state.load_peer_routing_table();
+        state.load_approval_challenges();
         state
     }
 
@@ -456,6 +458,89 @@ impl OperatorState {
     ) -> Result<(), String> {
         let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
         self.persist_atomic(&self.relayed_checkpoint_store_path(), &encoded)
+    }
+
+    fn peer_store_path(&self) -> PathBuf {
+        self.data_dir.join("peers.json")
+    }
+
+    fn load_peer_routing_table(&self) {
+        let Ok(bytes) = fs::read(self.peer_store_path()) else {
+            return;
+        };
+        let Ok(records) =
+            serde_json::from_slice::<HashMap<String, ciphervault_storage::PeerDescriptor>>(&bytes)
+        else {
+            return;
+        };
+        let now = Utc::now().timestamp() as u64;
+        let mut peers = self.peer_routing_table.lock().unwrap();
+        for (operator_id, peer) in records {
+            if peer.operator_id == operator_id
+                && peer.verify().is_ok()
+                && now.saturating_sub(peer.timestamp_utc) < 86400
+            {
+                peers.insert(operator_id, peer);
+            }
+        }
+    }
+
+    fn persist_peer_routing_table(
+        &self,
+        records: &HashMap<String, ciphervault_storage::PeerDescriptor>,
+    ) -> Result<(), String> {
+        let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
+        self.persist_atomic(&self.peer_store_path(), &encoded)
+    }
+
+    fn approval_store_path(&self) -> PathBuf {
+        self.data_dir.join("approvals.json")
+    }
+
+    fn load_approval_challenges(&self) {
+        let Ok(bytes) = fs::read(self.approval_store_path()) else {
+            return;
+        };
+        let Ok(records) = serde_json::from_slice::<
+            HashMap<
+                String,
+                (
+                    ciphervault_recovery::ApprovalChallenge,
+                    Vec<ciphervault_recovery::SignedApprovalReceipt>,
+                ),
+            >,
+        >(&bytes)
+        else {
+            return;
+        };
+        let now = Utc::now().timestamp() as u64;
+        let mut challenges = self.approval_challenges.lock().unwrap();
+        for (challenge_id, (challenge, receipts)) in records {
+            if challenge.challenge_id != challenge_id || challenge.expires_at_utc <= now {
+                continue;
+            }
+            let verified_receipts: Vec<_> = receipts
+                .into_iter()
+                .filter(|receipt| {
+                    receipt.challenge_id == challenge_id && receipt.verify(&challenge).is_ok()
+                })
+                .collect();
+            challenges.insert(challenge_id, (challenge, verified_receipts));
+        }
+    }
+
+    fn persist_approval_challenges(
+        &self,
+        records: &HashMap<
+            String,
+            (
+                ciphervault_recovery::ApprovalChallenge,
+                Vec<ciphervault_recovery::SignedApprovalReceipt>,
+            ),
+        >,
+    ) -> Result<(), String> {
+        let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
+        self.persist_atomic(&self.approval_store_path(), &encoded)
     }
 
     fn persist_sessions(&self) {
@@ -1339,7 +1424,13 @@ impl OperatorState {
         if !lock.contains_key(&peer.operator_id) && lock.len() >= MAX_ACTIVE_PEERS {
             return Err("Peer routing table capacity reached".into());
         }
-        lock.insert(peer.operator_id.clone(), peer);
+        let peer_id = peer.operator_id.clone();
+        lock.insert(peer_id.clone(), peer);
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_peer_routing_table(&snapshot) {
+            lock.remove(&peer_id);
+            return Err(format!("Unable to persist peer routing table: {error}"));
+        }
         Ok(lock.len())
     }
 
@@ -1362,7 +1453,13 @@ impl OperatorState {
         let mut lock = self.approval_challenges.lock().unwrap();
         let now = Utc::now().timestamp() as u64;
         lock.retain(|_, (c, _)| c.expires_at_utc > now);
-        lock.insert(challenge.challenge_id.clone(), (challenge, Vec::new()));
+        let challenge_id = challenge.challenge_id.clone();
+        lock.insert(challenge_id.clone(), (challenge, Vec::new()));
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_approval_challenges(&snapshot) {
+            lock.remove(&challenge_id);
+            return Err(format!("Unable to persist approval challenges: {error}"));
+        }
         Ok(())
     }
 
@@ -1393,21 +1490,34 @@ impl OperatorState {
         &self,
         receipt: ciphervault_recovery::SignedApprovalReceipt,
     ) -> Result<usize, String> {
+        let challenge_id = receipt.challenge_id.clone();
         let mut lock = self.approval_challenges.lock().unwrap();
-        if let Some((challenge, receipts)) = lock.get_mut(&receipt.challenge_id) {
+        let (already_recorded, count) = if let Some((challenge, receipts)) =
+            lock.get_mut(&challenge_id)
+        {
             receipt
                 .verify(challenge)
                 .map_err(|e| format!("Invalid receipt: {}", e))?;
-            if !receipts
+            let already_recorded = receipts
                 .iter()
-                .any(|r| r.approver_pk_hex == receipt.approver_pk_hex)
-            {
+                .any(|r| r.approver_pk_hex == receipt.approver_pk_hex);
+            if !already_recorded {
                 receipts.push(receipt);
             }
-            Ok(receipts.len())
+            (already_recorded, receipts.len())
         } else {
-            Err("Challenge ID not found or already expired".into())
+            return Err("Challenge ID not found or already expired".into());
+        };
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_approval_challenges(&snapshot) {
+            if !already_recorded {
+                if let Some((_, receipts)) = lock.get_mut(&challenge_id) {
+                    receipts.pop();
+                }
+            }
+            return Err(format!("Unable to persist approval challenges: {error}"));
         }
+        Ok(count)
     }
 }
 
@@ -1766,7 +1876,19 @@ mod tests {
         bad_peer.signature_hex = hex::encode([0x00u8; 64]);
         assert!(state.register_peer(bad_peer).is_err());
 
+        // Routing state survives an operator restart.
         drop(state);
+        let reopened = OperatorState::new(
+            "test-op".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        let peers = reopened.get_active_peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].operator_id, "peer-1");
+        assert_eq!(peers[0].endpoint, "http://127.0.0.1:8102");
+
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1806,7 +1928,18 @@ mod tests {
         assert_eq!(status.1.len(), 1);
         assert_eq!(status.1[0].approver_name, "Alice Lead");
 
+        // Challenge + receipts survive an operator restart.
         drop(state);
+        let reopened = OperatorState::new(
+            "test-op".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        let status = reopened.get_challenge_status(&challenge.challenge_id).unwrap();
+        assert_eq!(status.1.len(), 1);
+        assert_eq!(status.1[0].approver_name, "Alice Lead");
+
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 }
