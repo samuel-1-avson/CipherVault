@@ -10,7 +10,7 @@ use ciphervault_format::{
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_operator::{create_router, OperatorState};
 use ciphervault_snapshot::create_snapshot;
-use ciphervault_storage::MultiOperatorPool;
+use ciphervault_storage::{LeaseReceipt, MultiOperatorPool};
 
 async fn spawn_operator(
     port: u16,
@@ -31,6 +31,37 @@ async fn spawn_operator(
     });
 
     (url, handle)
+}
+
+fn assert_quorum_receipts(receipts: &[LeaseReceipt], closure_digest: &[u8; 32]) {
+    assert_eq!(
+        receipts.len(),
+        3,
+        "All 3 operators should have verified replicas"
+    );
+    let operator_ids: Vec<&str> = receipts
+        .iter()
+        .map(|receipt| receipt.operator_id.as_str())
+        .collect();
+    let mut sorted_ids = operator_ids.clone();
+    sorted_ids.sort_unstable();
+    assert_eq!(
+        operator_ids, sorted_ids,
+        "Receipts must be sorted by operator_id for deterministic output"
+    );
+    sorted_ids.dedup();
+    assert_eq!(
+        sorted_ids.len(),
+        3,
+        "Each receipt must come from a distinct operator"
+    );
+    let expected_digest = hex::encode(closure_digest);
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.closure_digest_hex == expected_digest),
+        "All receipts must commit to the replicated closure digest"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -181,40 +212,43 @@ async fn test_concurrent_replication_reaches_quorum_with_stable_order() {
         .await
         .unwrap();
 
-    // Quorum must survive the concurrent pipeline: all 3 operators verify.
-    assert_eq!(
-        receipts.len(),
-        3,
-        "All 3 operators should have verified replicas"
-    );
+    // Quorum must survive the concurrent pipeline at default settings...
+    assert_quorum_receipts(&receipts, &closure_digest);
 
-    // Receipts must be deterministically ordered by operator ID so concurrent
-    // completion order never leaks into the result.
-    let operator_ids: Vec<&str> = receipts
-        .iter()
-        .map(|receipt| receipt.operator_id.as_str())
-        .collect();
-    let mut sorted_ids = operator_ids.clone();
-    sorted_ids.sort_unstable();
-    assert_eq!(
-        operator_ids, sorted_ids,
-        "Receipts must be sorted by operator_id for deterministic output"
-    );
+    // ...and at both ends of the object-concurrency range.
+    pool.set_object_concurrency(1);
+    let sequential = pool
+        .replicate_and_verify(
+            &vault_id,
+            &dev_sk,
+            &wire_objects,
+            &closure_digest,
+            snap_out.closure.total_bytes,
+            90,
+            &locator,
+            &head_cbor,
+            &recovery_set.records,
+            3,
+        )
+        .await
+        .unwrap();
+    assert_quorum_receipts(&sequential, &closure_digest);
 
-    // Each receipt must come from a distinct operator (per-operator dedup).
-    sorted_ids.dedup();
-    assert_eq!(
-        sorted_ids.len(),
-        3,
-        "Each receipt must come from a distinct operator"
-    );
-
-    // Every verified receipt must commit to the replicated closure.
-    let expected_digest = hex::encode(closure_digest);
-    assert!(
-        receipts
-            .iter()
-            .all(|receipt| receipt.closure_digest_hex == expected_digest),
-        "All receipts must commit to the replicated closure digest"
-    );
+    pool.set_object_concurrency(8);
+    let concurrent = pool
+        .replicate_and_verify(
+            &vault_id,
+            &dev_sk,
+            &wire_objects,
+            &closure_digest,
+            snap_out.closure.total_bytes,
+            90,
+            &locator,
+            &head_cbor,
+            &recovery_set.records,
+            3,
+        )
+        .await
+        .unwrap();
+    assert_quorum_receipts(&concurrent, &closure_digest);
 }

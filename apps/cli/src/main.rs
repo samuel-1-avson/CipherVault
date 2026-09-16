@@ -177,6 +177,12 @@ enum Commands {
 
         #[arg(long, help = "Hardware token user PIN for automated verification")]
         pin: Option<String>,
+
+        #[arg(
+            long,
+            help = "Per-operator object concurrency for replication (1-32, default 4)"
+        )]
+        concurrency: Option<usize>,
     },
 
     /// Display snapshot history DAG
@@ -785,7 +791,8 @@ async fn run(cli: Cli) -> Result<()> {
             anchor,
             reader,
             pin,
-        } => cmd_push(message, touch, local, anchor, reader, pin).await,
+            concurrency,
+        } => cmd_push(message, touch, local, anchor, reader, pin, concurrency).await,
         Commands::History => cmd_history(),
         Commands::Restore {
             snapshot,
@@ -2919,6 +2926,7 @@ pub async fn cmd_push(
     anchor: bool,
     reader: Option<String>,
     pin: Option<String>,
+    concurrency: Option<usize>,
 ) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
@@ -3072,6 +3080,15 @@ pub async fn cmd_push(
     );
 
     let pool = configured_operator_pool(operators.clone());
+    if let Some(requested) = concurrency {
+        if !(1..=ciphervault_storage::pool::MAX_OBJECT_CONCURRENCY).contains(&requested) {
+            eprintln!(
+                "warning: --concurrency {requested} out of range, clamped to 1-{}",
+                ciphervault_storage::pool::MAX_OBJECT_CONCURRENCY
+            );
+        }
+        pool.set_object_concurrency(requested);
+    }
 
     let wire_objects = store.recovery_objects(&recovery_set)?;
     let head_cbor = to_canonical_cbor(&head)?;
@@ -8752,6 +8769,7 @@ async fn api_create_snapshot_handler(
         false,
         false,
         payload.anchor.unwrap_or(false),
+        None,
         None,
         None,
     )

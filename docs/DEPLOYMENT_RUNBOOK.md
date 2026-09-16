@@ -319,3 +319,9 @@ Chunking profile via `CIPHERVAULT_CHUNK_PROFILE`: `small` (2/8/32 KiB) for tiny
 secret files, `default` (4/16/64 KiB), `large` (16/64/256 KiB) for big blobs.
 Pairing rule: the `large` profile needs the default 4 MiB object cap (or at least
 512 KiB); lowering the cap below a profile's max chunk rejects uploads.
+
+Replication throughput via `ciphervault push --concurrency N` (1-32, default 4):
+bounds how many objects upload and verify concurrently per operator. Raise toward
+16 on fast remotes, lower toward 1 on lossy links. Operators always replicate
+concurrently, and stragglers are abandoned once the remaining operators cannot
+reach quorum.

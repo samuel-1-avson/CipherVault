@@ -4,9 +4,17 @@ use crate::client::OperatorClient;
 use crate::error::StorageError;
 use crate::types::LeaseReceipt;
 use futures_util::future::join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Default per-operator object concurrency for replication pipelines.
+pub const DEFAULT_OBJECT_CONCURRENCY: usize = 4;
+/// Upper bound for per-operator object concurrency (`push --concurrency`).
+pub const MAX_OBJECT_CONCURRENCY: usize = 32;
 
 pub struct MultiOperatorPool {
     clients: Vec<OperatorClient>,
+    object_concurrency: AtomicUsize,
 }
 
 impl MultiOperatorPool {
@@ -18,7 +26,10 @@ impl MultiOperatorPool {
         endpoints.sort();
         endpoints.dedup();
         let clients = endpoints.into_iter().map(OperatorClient::new).collect();
-        Self { clients }
+        Self {
+            clients,
+            object_concurrency: AtomicUsize::new(DEFAULT_OBJECT_CONCURRENCY),
+        }
     }
 
     pub fn clients(&self) -> &[OperatorClient] {
@@ -45,6 +56,14 @@ impl MultiOperatorPool {
         for client in &self.clients {
             client.clear_account_identity();
         }
+    }
+
+    /// Bounds how many objects replicate concurrently per operator (1-32).
+    pub fn set_object_concurrency(&self, concurrency: usize) {
+        self.object_concurrency.store(
+            concurrency.clamp(1, MAX_OBJECT_CONCURRENCY),
+            Ordering::Relaxed,
+        );
     }
 
     /// Discovers active peer operators from current endpoints via P2P gossip and dynamically expands the pool.
@@ -122,31 +141,36 @@ impl MultiOperatorPool {
         locator: &[u8; 32],
         head_record_bytes: &[u8],
         recovery_records: &[Vec<u8>],
+        object_concurrency: usize,
     ) -> Option<([u8; 32], LeaseReceipt)> {
         // 1. Upload all objects (with bandwidth-conserving deduplication via PoS challenge)
-        for (cid, data) in objects {
-            let mut challenge_nonce = [0u8; 32];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge_nonce);
-            let expected_proof = crate::compute_pos_proof(cid, &challenge_nonce, data);
+        for chunk in objects.chunks(object_concurrency.max(1)) {
+            let uploads = chunk.iter().map(|(cid, data)| async move {
+                let mut challenge_nonce = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge_nonce);
+                let expected_proof = crate::compute_pos_proof(cid, &challenge_nonce, data);
 
-            let already_present = match client
-                .challenge_object_pos(token, cid, &challenge_nonce)
-                .await
-            {
-                Ok(proof) => proof.proof_hex == hex::encode(expected_proof),
-                Err(_) => false,
-            };
-
-            if !already_present {
-                if let Err(e) = client.put_object(token, cid, data.clone()).await {
+                let already_present = match client
+                    .challenge_object_pos(token, cid, &challenge_nonce)
+                    .await
+                {
+                    Ok(proof) => proof.proof_hex == hex::encode(expected_proof),
+                    Err(_) => false,
+                };
+                if already_present {
+                    return Ok(());
+                }
+                client.put_object(token, cid, data.clone()).await.map_err(|error| {
                     eprintln!(
                         "Upload to {} failed for object {}: {}",
                         client.endpoint(),
                         hex::encode(cid),
-                        e
+                        error
                     );
-                    return None;
-                }
+                })
+            });
+            if join_all(uploads).await.iter().any(|result| result.is_err()) {
+                return None;
             }
         }
 
@@ -182,28 +206,32 @@ impl MultiOperatorPool {
         }
 
         // 3. Mandatory Readback Verification (R04) via Bandwidth-Optimized Proof-of-Storage
-        for (cid, data) in objects {
-            let mut nonce = [0u8; 32];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
-            let expected_proof = crate::compute_pos_proof(cid, &nonce, data);
+        for chunk in objects.chunks(object_concurrency.max(1)) {
+            let verifications = chunk.iter().map(|(cid, data)| async move {
+                let mut nonce = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+                let expected_proof = crate::compute_pos_proof(cid, &nonce, data);
 
-            let verified = match client.challenge_object_pos(token, cid, &nonce).await {
-                Ok(receipt) => receipt.verify(&pk, &expected_proof).is_ok(),
-                Err(_) => {
-                    // Transparent fallback to full object readback for older operator versions
-                    match client.get_object(token, cid).await {
-                        Ok(bytes) => ciphervault_format::compute_digest(&bytes) == *cid,
-                        Err(_) => false,
+                let verified = match client.challenge_object_pos(token, cid, &nonce).await {
+                    Ok(receipt) => receipt.verify(&pk, &expected_proof).is_ok(),
+                    Err(_) => {
+                        // Transparent fallback to full object readback for older operator versions
+                        match client.get_object(token, cid).await {
+                            Ok(bytes) => ciphervault_format::compute_digest(&bytes) == *cid,
+                            Err(_) => false,
+                        }
                     }
+                };
+                if !verified {
+                    eprintln!(
+                        "Readback verification failed on {} for {}",
+                        client.endpoint(),
+                        hex::encode(cid),
+                    );
                 }
-            };
-
-            if !verified {
-                eprintln!(
-                    "Readback verification failed on {} for {}",
-                    client.endpoint(),
-                    hex::encode(cid),
-                );
+                verified
+            });
+            if join_all(verifications).await.iter().any(|verified| !verified) {
                 return None;
             }
         }
@@ -275,6 +303,9 @@ impl MultiOperatorPool {
         // Replicate to every authenticated operator concurrently. Each operator's
         // pipeline (upload, lease, readback, recovery log) is independent, so quorum
         // latency becomes the slowest operator instead of the sum of all operators.
+        // Completion order also drives quorum-aware early exit: once the remaining
+        // operators cannot possibly reach quorum, stragglers are abandoned.
+        let object_concurrency = self.object_concurrency.load(Ordering::Relaxed);
         let attempts = sessions.iter().map(|(client, token)| {
             Self::replicate_to_single_operator(
                 client,
@@ -286,16 +317,21 @@ impl MultiOperatorPool {
                 locator,
                 head_record_bytes,
                 recovery_records,
+                object_concurrency,
             )
         });
 
+        let mut pending: FuturesUnordered<_> = attempts.collect();
         let mut verified_receipts = Vec::new();
         let mut verified_keys = std::collections::HashSet::new();
-        for outcome in join_all(attempts).await {
+        while let Some(outcome) = pending.next().await {
             if let Some((operator_pk, receipt)) = outcome {
                 if verified_keys.insert(operator_pk) {
                     verified_receipts.push(receipt);
                 }
+            }
+            if verified_receipts.len() + pending.len() < required_replicas {
+                break;
             }
         }
         // Concurrent tasks complete in nondeterministic order; restore a stable
