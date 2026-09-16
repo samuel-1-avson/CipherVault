@@ -23,21 +23,21 @@ To guarantee continuous availability, zero single points of failure, and partiti
 ```text
                            DEVELOPER CLIENTS / CI/CD
                            
-             â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-             â”‚                         â”‚                        â”‚
-             â–¼ HTTP/HTTPS              â–¼ HTTP/HTTPS             â–¼ HTTP/HTTPS
-    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-    â”‚   cv-operator-1  â”‚      â”‚   cv-operator-2  â”‚     â”‚   cv-operator-3  â”‚
-    â”‚  Region:         â”‚      â”‚  Region:         â”‚     â”‚  Region:         â”‚
-    â”‚  us-central1-a   â”‚      â”‚  us-central1-b   â”‚     â”‚  us-east1-b      â”‚
-    â”‚  (Iowa, USA)     â”‚      â”‚  (Iowa, USA)     â”‚     â”‚  (S. Carolina)   â”‚
-    â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤      â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤     â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
-    â”‚ Caddy (TLS 443)  â”‚      â”‚ Caddy (TLS 443)  â”‚     â”‚ Caddy (TLS 443)  â”‚
-    â”‚ Operator (:8201) â”‚      â”‚ Operator (:8201) â”‚     â”‚ Operator (:8201) â”‚
-    â”‚ 20GB Persistent  â”‚      â”‚ 20GB Persistent  â”‚     â”‚ 20GB Persistent  â”‚
-    â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-             â”‚                         â”‚                        â”‚
-             â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ P2P Gossip / Quorum Consensus â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+             ┌─────────────────────────┬────────────────────────┐
+             │                         │                        │
+             ▼ HTTP/HTTPS              ▼ HTTP/HTTPS             ▼ HTTP/HTTPS
+    ┌──────────────────┐      ┌──────────────────┐     ┌──────────────────┐
+    │   cv-operator-1  │      │   cv-operator-2  │     │   cv-operator-3  │
+    │  Region:         │      │  Region:         │     │  Region:         │
+    │  us-central1-a   │      │  us-central1-b   │     │  us-east1-b      │
+    │  (Iowa, USA)     │      │  (Iowa, USA)     │     │  (S. Carolina)   │
+    ├──────────────────┤      ├──────────────────┤     ├──────────────────┤
+    │ Caddy (TLS 443)  │      │ Caddy (TLS 443)  │     │ Caddy (TLS 443)  │
+    │ Operator (:8201) │      │ Operator (:8201) │     │ Operator (:8201) │
+    │ 20GB Persistent  │      │ 20GB Persistent  │     │ 20GB Persistent  │
+    └────────┬─────────┘      └────────┬─────────┘     └────────┬─────────┘
+             │                         │                        │
+             └─────────── P2P Gossip / Quorum Consensus ────────┘
 ```
 
 ### High Availability Invariants
@@ -70,11 +70,11 @@ ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cip
 | Component | Sizing per Node | Unit Rate | Cost per Node / Mo | 3-Node Cluster Total |
 |---|---|---|---|---|
 | **Compute Engine (`e2-micro`)** | 2 vCPUs (shared), 1.0 GB RAM | ~$0.0084 / hour | ~$6.13 / month | **~$18.39 / mo** |
-| **Always Free Tier Credit** | 1 free `e2-micro` VM per month | â€” | -$6.13 / month | **-$6.13 / mo** |
+| **Always Free Tier Credit** | 1 free `e2-micro` VM per month | — | -$6.13 / month | **-$6.13 / mo** |
 | **Boot Disk (`pd-balanced` SSD)**| 20 GB SSD | $0.10 / GB / month | $2.00 / month | **$6.00 / mo** |
 | **In-Use External IPv4** | 1 Standard Public IP | $0.005 / hour | ~$3.65 / month | **~$10.95 / mo** |
 | **Network Egress (Bandwidth)** | First 100 GB/mo free | $0.00 | $0.00 | **$0.00** |
-| **Total Estimated Cost** | â€” | â€” | â€” | **~$29.21 / month** |
+| **Total Estimated Cost** | — | — | — | **~$29.21 / month** |
 
 > **Daily Burn Rate**: Approximately **~$0.97 / day** across all 3 nodes.
 
@@ -225,4 +225,4 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
   `expired`, `unverified`, or `not_observed` (unreachable). Cards render amber `Expiring soon`.
 - Identity self-signatures expire 24h after issuance (`/v1/info`); expiry affects display
   freshness only, never lease validity. Persistent `expired` on a reachable node means its
-  clock or `/v1/info` signer is broken â€” investigate before rotating.
+  clock or `/v1/info` signer is broken - investigate before rotating.

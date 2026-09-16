@@ -33,19 +33,19 @@ Unlike traditional cloud SaaS tools where developers must register centralized a
 ### The Two Developer Operating Modes
 
 ```text
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚                    DEVELOPER WORKSTATION                    â”‚
-â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
-â”‚  MODE 1: DELIBERATE MANUAL   â”‚  MODE 2: AUTONOMOUS SYNC     â”‚
-â”‚  (Like Git / Version Control)â”‚  (Like Dropbox / Continuous) â”‚
-â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
-â”‚ â€¢ ciphervault diff           â”‚ â€¢ ciphervault watch --sync   â”‚
-â”‚   (Inspect masked revisions) â”‚   (Background kernel daemon) â”‚
-â”‚ â€¢ ciphervault push -m "msg"  â”‚ â€¢ Auto-detects editor saves  â”‚
-â”‚   (Deliberate snapshot sync) â”‚ â€¢ 2-second sliding debounce  â”‚
-â”‚ â€¢ Custom commit messages     â”‚ â€¢ FastCDC chunk dedup & push â”‚
-â”‚ â€¢ Explicit team coordination â”‚ â€¢ Hands-off silent backup    â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+┌─────────────────────────────────────────────────────────────┐
+│                    DEVELOPER WORKSTATION                    │
+├──────────────────────────────┬──────────────────────────────┤
+│  MODE 1: DELIBERATE MANUAL   │  MODE 2: AUTONOMOUS SYNC     │
+│  (Like Git / Version Control)│  (Like Dropbox / Continuous) │
+├──────────────────────────────┼──────────────────────────────┤
+│ • ciphervault diff           │ • ciphervault watch --sync   │
+│   (Inspect masked revisions) │   (Background kernel daemon) │
+│ • ciphervault push -m "msg"  │ • Auto-detects editor saves  │
+│   (Deliberate snapshot sync) │ • 2-second sliding debounce  │
+│ • Custom commit messages     │ • FastCDC chunk dedup & push │
+│ • Explicit team coordination │ • Hands-off silent backup    │
+└──────────────────────────────┴──────────────────────────────┘
 ```
 
 ### System Architecture Map
@@ -270,14 +270,14 @@ sequenceDiagram
 
     CLI->>Ops: Replicate SnapshotRecord to Quorum
     CLI->>Store: Update Local Head, commit SQLite WAL transaction
-    CLI-->>Dev: âœ“ Snapshot confirmed across 3/3 operators
+    CLI-->>Dev: ✓ Snapshot confirmed across 3/3 operators
 ```
 </details>
 
 **Key Performance & Efficiency Gains:**
 * **FastCDC Boundary Realignment**: Modifying a line in a file only changes 1 chunk; all other chunks retain identical CIDs.
 * **Deterministic Version Keying**: Chunks are deduplicated across snapshots for the same vault, while remaining cryptographically isolated across different vaults.
-* **PoS Readback Challenge**: Replaced 1â€“4 MB full chunk readbacks with a 461-byte cryptographic handshake.
+* **PoS Readback Challenge**: Replaced 1–4 MB full chunk readbacks with a 461-byte cryptographic handshake.
 
 ---
 
@@ -323,7 +323,7 @@ sequenceDiagram
     end
     
     CLI->>Store: Record verified on-chain block receipt & explorer URL
-    CLI-->>Dev: âœ“ Checkpoint SequencerConfirmed on Arbitrum L2
+    CLI-->>Dev: ✓ Checkpoint SequencerConfirmed on Arbitrum L2
 ```
 </details>
 
@@ -419,7 +419,7 @@ sequenceDiagram
     CLI->>Target: Atomic Move / Rename (Replace destination files atomically)
     CLI->>Restore: Clean up temporary staging directory
     CLI->>CLI: Zeroize all recovery keys, R, and Epoch keys from RAM
-    CLI-->>Dev: âœ“ Disaster Recovery Complete: All secrets restored bit-for-bit
+    CLI-->>Dev: ✓ Disaster Recovery Complete: All secrets restored bit-for-bit
 ```
 </details>
 
@@ -555,18 +555,18 @@ sequenceDiagram
     Ops-->>CLI: Quorum of signed head records
     CLI->>CLI: Cryptographically select authentic latest head
     alt Local Head == Remote Head
-        CLI-->>Dev: âœ“ Already up to date with operator cluster
+        CLI-->>Dev: ✓ Already up to date with operator cluster
     else Newer Remote Head Found
         CLI->>FS: Check for uncommitted local modifications
         alt Uncommitted dirty files exist and !force
-            CLI-->>Dev: âœ— Abort: Local tracked files modified (use --force)
+            CLI-->>Dev: ✗ Abort: Local tracked files modified (use --force)
         else Clean or --force
             CLI->>Ops: Fetch missing chunk objects by CID
             Ops-->>CLI: Encrypted chunk wire objects
             CLI->>CLI: Decrypt manifest & verify closure integrity
             CLI->>FS: Atomically restore updated secrets into workspace
             CLI->>Store: Save snapshot, chunks, and advance local active head
-            CLI-->>Dev: âœ“ Successfully synchronized with operator cluster
+            CLI-->>Dev: ✓ Successfully synchronized with operator cluster
         end
     end
 ```
@@ -720,40 +720,40 @@ powershell -ExecutionPolicy Bypass -File scripts/gcp/deploy-operators.ps1
 
 ```text
 CipherVault/
-â”œâ”€â”€ apps/
-â”‚   â”œâ”€â”€ cli/                         # Unified Developer CLI & Interactive TUI
-â”‚   â”‚   â”œâ”€â”€ src/main.rs              # CLI entry point, subcommands, dispatch
-â”‚   â”‚   â”œâ”€â”€ src/dotenv.rs            # In-memory zero-disk dotenv parser
-â”‚   â”‚   â”œâ”€â”€ src/diff.rs              # Format-aware secret diffing engine
-â”‚   â”‚   â””â”€â”€ src/tui/                 # Terminal User Interface (ratatui / crossterm)
-â”‚   â”œâ”€â”€ agent/                       # Autonomous File Watcher Daemon (ciphervault watch)
-â”‚   â””â”€â”€ ui/                          # Web Dashboard (WCAG 2.1 AA accessible)
-â”‚
-â”œâ”€â”€ crates/
-â”‚   â”œâ”€â”€ crypto/                      # Cryptographic Primitives (ChaCha20, Argon2, Shamir, PIV)
-â”‚   â”œâ”€â”€ format/                      # Canonical CBOR Wire Schemas (Genesis, Head, Snapshot)
-â”‚   â”œâ”€â”€ snapshot/                    # FastCDC Dual-Mask Chunker, Dedup & Restore Engine
-â”‚   â”œâ”€â”€ storage/                     # MultiOperatorPool, PoS Challenges, P2P Gossip, L2 Chain
-â”‚   â”œâ”€â”€ recovery/                    # Zero-Disk Kit, M-of-N Guardians, Push Approvals
-â”‚   â””â”€â”€ local-store/                 # SQLite WAL with Windows DPAPI / Linux AEAD Keyring
-â”‚
-â”œâ”€â”€ services/
-â”‚   â”œâ”€â”€ operator/                    # Storage Node Daemon (ciphervault-operator, CAS store)
-â”‚   â””â”€â”€ maintenance/                 # Autonomous Durability & Self-Repair Daemon
-â”‚
-â”œâ”€â”€ contracts/                       # Arbitrum L2 Settlement Smart Contracts (Solidity)
-â”œâ”€â”€ deploy/                          # Production Infrastructure & GCP Automation
-â”‚   â”œâ”€â”€ gcp/                         # GCP VPS Cloud-Init Startup & Caddy Ingress
-â”‚   â”œâ”€â”€ docker/                      # Production Dockerfiles (Non-root UID 10001)
-â”‚   â””â”€â”€ caddy/                       # Production Caddy Ingress configs
-â”‚
-â”œâ”€â”€ scripts/                         # Provisioning, Deployment, and Verification Scripts
-â”‚   â”œâ”€â”€ gcp/deploy-operators.ps1     # Automated GCP VPS provisioner (Windows)
-â”‚   â”œâ”€â”€ gcp/deploy-operators.sh      # Automated GCP VPS provisioner (Linux/macOS)
-â”‚   â”œâ”€â”€ gcp/teardown-operators.ps1   # GCP decommission script
-â”‚   â””â”€â”€ verify-cluster.ps1           # End-to-end cluster validation probe
-â”‚
-â””â”€â”€ docs/                            # Production Operations & Technical Specifications
+├── apps/
+│   ├── cli/                         # Unified Developer CLI & Interactive TUI
+│   │   ├── src/main.rs              # CLI entry point, subcommands, dispatch
+│   │   ├── src/dotenv.rs            # In-memory zero-disk dotenv parser
+│   │   ├── src/diff.rs              # Format-aware secret diffing engine
+│   │   └── src/tui/                 # Terminal User Interface (ratatui / crossterm)
+│   ├── agent/                       # Autonomous File Watcher Daemon (ciphervault watch)
+│   └── ui/                          # Web Dashboard (WCAG 2.1 AA accessible)
+│
+├── crates/
+│   ├── crypto/                      # Cryptographic Primitives (ChaCha20, Argon2, Shamir, PIV)
+│   ├── format/                      # Canonical CBOR Wire Schemas (Genesis, Head, Snapshot)
+│   ├── snapshot/                    # FastCDC Dual-Mask Chunker, Dedup & Restore Engine
+│   ├── storage/                     # MultiOperatorPool, PoS Challenges, P2P Gossip, L2 Chain
+│   ├── recovery/                    # Zero-Disk Kit, M-of-N Guardians, Push Approvals
+│   └── local-store/                 # SQLite WAL with Windows DPAPI / Linux AEAD Keyring
+│
+├── services/
+│   ├── operator/                    # Storage Node Daemon (ciphervault-operator, CAS store)
+│   └── maintenance/                 # Autonomous Durability & Self-Repair Daemon
+│
+├── contracts/                       # Arbitrum L2 Settlement Smart Contracts (Solidity)
+├── deploy/                          # Production Infrastructure & GCP Automation
+│   ├── gcp/                         # GCP VPS Cloud-Init Startup & Caddy Ingress
+│   ├── docker/                      # Production Dockerfiles (Non-root UID 10001)
+│   └── caddy/                       # Production Caddy Ingress configs
+│
+├── scripts/                         # Provisioning, Deployment, and Verification Scripts
+│   ├── gcp/deploy-operators.ps1     # Automated GCP VPS provisioner (Windows)
+│   ├── gcp/deploy-operators.sh      # Automated GCP VPS provisioner (Linux/macOS)
+│   ├── gcp/teardown-operators.ps1   # GCP decommission script
+│   └── verify-cluster.ps1           # End-to-end cluster validation probe
+│
+└── docs/                            # Production Operations & Technical Specifications
 ```
 
 ---
@@ -777,7 +777,7 @@ ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cip
 
 ## 10. Master Production Readiness Assessment
 
-### Overall Verdict: **SECURITY-FOCUSED BETA (7.4 / 10.0)** â€” see note
+### Overall Verdict: **SECURITY-FOCUSED BETA (7.4 / 10.0)** - see note
 
 > **2026-09-16 correction:** the prior "10.0 / 10.0 PRODUCTION READY" verdict overstated
 > production evidence. Per `PROJECT_AUDIT_2026-09-16.md` and the deep-dive report
