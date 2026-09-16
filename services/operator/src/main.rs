@@ -44,6 +44,12 @@ struct Args {
         help = "Rotate the persistent signing key after moving the old key to a timestamped backup"
     )]
     rotate_key: bool,
+
+    #[arg(
+        long,
+        help = "Print the persistent operator identity registry entry and exit without binding"
+    )]
+    print_identity: bool,
 }
 
 fn write_private_key(path: &std::path::Path, bytes: &[u8; 32]) -> io::Result<()> {
@@ -79,6 +85,12 @@ fn ensure_private_key_permissions(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Formats the `operator-id=public-key-hex` trust-registry entry printed by
+/// `--print-identity` for `CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES`.
+fn format_identity_registry_entry(operator_id: &str, public_key_hex: &str) -> String {
+    format!("{operator_id}={public_key_hex}")
+}
+
 fn strict_auth_enabled() -> bool {
     std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
         .ok()
@@ -109,7 +121,9 @@ fn validate_security_configuration() -> io::Result<()> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    validate_security_configuration()?;
+    if !args.print_identity {
+        validate_security_configuration()?;
+    }
 
     fs::create_dir_all(&args.data_dir)?;
 
@@ -139,6 +153,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_private_key_permissions(&key_file)?;
 
     let pk_hex = hex::encode(signing_key.verifying_key().as_bytes());
+    if args.print_identity {
+        println!(
+            "{}",
+            format_identity_registry_entry(&args.operator_id, &pk_hex)
+        );
+        return Ok(());
+    }
     let state = Arc::new(OperatorState::new(
         args.operator_id.clone(),
         args.data_dir.clone(),
@@ -171,4 +192,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::format_identity_registry_entry;
+
+    #[test]
+    fn registry_entry_pairs_operator_id_with_public_key() {
+        assert_eq!(format_identity_registry_entry("op_8201", "ABCD"), "op_8201=ABCD");
+    }
 }

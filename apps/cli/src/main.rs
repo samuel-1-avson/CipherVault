@@ -7202,6 +7202,30 @@ fn trusted_public_operator_identity(operator_id: &str, public_key_hex: &str) -> 
         })
 }
 
+const PUBLIC_OPERATOR_IDENTITY_EXPIRING_SOON_SECS: u64 = 6 * 60 * 60;
+
+/// Maps pinning + expiry evidence to one dashboard-facing identity status.
+/// `verified` requires both a valid self-signature (via `identity_pinned`) and
+/// an unexpired identity; `expiring_soon` warns within 6h of expiry so rotation
+/// can happen before the explorer flips an operator to `expired`.
+fn public_operator_identity_status(
+    identity_pinned: bool,
+    expires_at_utc: u64,
+    now_utc: u64,
+) -> &'static str {
+    if expires_at_utc != 0 && now_utc > expires_at_utc {
+        return "expired";
+    }
+    if !identity_pinned {
+        return "unverified";
+    }
+    let seconds_to_expiry = expires_at_utc.saturating_sub(now_utc);
+    if expires_at_utc != 0 && seconds_to_expiry < PUBLIC_OPERATOR_IDENTITY_EXPIRING_SOON_SECS {
+        return "expiring_soon";
+    }
+    "verified"
+}
+
 const PUBLIC_OPERATOR_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PUBLIC_OPERATOR_CACHE_TTL: Duration = Duration::from_secs(30);
 const PUBLIC_OPERATOR_PERSISTED_MAX_AGE: Duration = Duration::from_secs(90);
@@ -7656,6 +7680,15 @@ async fn probe_public_operators_uncached() -> Vec<serde_json::Value> {
                                 &info.operator_id,
                                 &info.operator_signing_pk_hex,
                             );
+                        let now_utc = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_secs())
+                            .unwrap_or(0);
+                        let identity_status = public_operator_identity_status(
+                            identity_pinned,
+                            info.identity_expires_at_utc,
+                            now_utc,
+                        );
                         serde_json::json!({
                         "display_name": format!("Operator {}", index + 1),
                         "operator_id": public_operator_id(&info.operator_id, index),
@@ -7664,6 +7697,7 @@ async fn probe_public_operators_uncached() -> Vec<serde_json::Value> {
                         "identity_verification": if identity_pinned { "verified" } else { "unverified" },
                         "identity_self_signature": if self_signed { "valid" } else { "invalid" },
                         "identity_trust": if identity_pinned { "pinned" } else { "not_pinned" },
+                        "identity_status": identity_status,
                         "identity_expires_at_utc": info.identity_expires_at_utc,
                         "identity_signature_present": !info.identity_signature_hex.is_empty(),
                         "latency_ms": start.elapsed().as_millis(),
@@ -7678,6 +7712,7 @@ async fn probe_public_operators_uncached() -> Vec<serde_json::Value> {
                         "identity_verification": "not_observed",
                         "identity_self_signature": "not_observed",
                         "identity_trust": "not_observed",
+                        "identity_status": "not_observed",
                         "identity_signature_present": false,
                         "latency_ms": serde_json::Value::Null,
                         "probe_attempts": attempts,
@@ -9593,6 +9628,17 @@ mod ui_router_tests {
         assert!(trusted_public_operator_identity_from_registry(
             &key_hex, "any-id", &key_hex,
         ));
+    }
+
+    #[test]
+    fn public_operator_identity_status_tracks_pinning_and_expiry() {
+        let now = 1_800_000_000u64;
+        assert_eq!(public_operator_identity_status(true, 0, now), "verified");
+        assert_eq!(public_operator_identity_status(true, now + 7 * 60 * 60, now), "verified");
+        assert_eq!(public_operator_identity_status(true, now + 5 * 60 * 60, now), "expiring_soon");
+        assert_eq!(public_operator_identity_status(true, now - 1, now), "expired");
+        assert_eq!(public_operator_identity_status(false, 0, now), "unverified");
+        assert_eq!(public_operator_identity_status(false, now - 1, now), "expired");
     }
 
     #[test]

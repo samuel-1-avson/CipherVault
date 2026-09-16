@@ -23,21 +23,21 @@ To guarantee continuous availability, zero single points of failure, and partiti
 ```text
                            DEVELOPER CLIENTS / CI/CD
                            
-             ┌─────────────────────────┬────────────────────────┐
-             │                         │                        │
-             ▼ HTTP/HTTPS              ▼ HTTP/HTTPS             ▼ HTTP/HTTPS
-    ┌──────────────────┐      ┌──────────────────┐     ┌──────────────────┐
-    │   cv-operator-1  │      │   cv-operator-2  │     │   cv-operator-3  │
-    │  Region:         │      │  Region:         │     │  Region:         │
-    │  us-central1-a   │      │  us-central1-b   │     │  us-east1-b      │
-    │  (Iowa, USA)     │      │  (Iowa, USA)     │     │  (S. Carolina)   │
-    ├──────────────────┤      ├──────────────────┤     ├──────────────────┤
-    │ Caddy (TLS 443)  │      │ Caddy (TLS 443)  │     │ Caddy (TLS 443)  │
-    │ Operator (:8201) │      │ Operator (:8201) │     │ Operator (:8201) │
-    │ 20GB Persistent  │      │ 20GB Persistent  │     │ 20GB Persistent  │
-    └────────┬─────────┘      └────────┬─────────┘     └────────┬─────────┘
-             │                         │                        │
-             └─────────── P2P Gossip / Quorum Consensus ────────┘
+             â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+             â”‚                         â”‚                        â”‚
+             â–¼ HTTP/HTTPS              â–¼ HTTP/HTTPS             â–¼ HTTP/HTTPS
+    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+    â”‚   cv-operator-1  â”‚      â”‚   cv-operator-2  â”‚     â”‚   cv-operator-3  â”‚
+    â”‚  Region:         â”‚      â”‚  Region:         â”‚     â”‚  Region:         â”‚
+    â”‚  us-central1-a   â”‚      â”‚  us-central1-b   â”‚     â”‚  us-east1-b      â”‚
+    â”‚  (Iowa, USA)     â”‚      â”‚  (Iowa, USA)     â”‚     â”‚  (S. Carolina)   â”‚
+    â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤      â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤     â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+    â”‚ Caddy (TLS 443)  â”‚      â”‚ Caddy (TLS 443)  â”‚     â”‚ Caddy (TLS 443)  â”‚
+    â”‚ Operator (:8201) â”‚      â”‚ Operator (:8201) â”‚     â”‚ Operator (:8201) â”‚
+    â”‚ 20GB Persistent  â”‚      â”‚ 20GB Persistent  â”‚     â”‚ 20GB Persistent  â”‚
+    â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+             â”‚                         â”‚                        â”‚
+             â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ P2P Gossip / Quorum Consensus â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### High Availability Invariants
@@ -70,11 +70,11 @@ ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cip
 | Component | Sizing per Node | Unit Rate | Cost per Node / Mo | 3-Node Cluster Total |
 |---|---|---|---|---|
 | **Compute Engine (`e2-micro`)** | 2 vCPUs (shared), 1.0 GB RAM | ~$0.0084 / hour | ~$6.13 / month | **~$18.39 / mo** |
-| **Always Free Tier Credit** | 1 free `e2-micro` VM per month | — | -$6.13 / month | **-$6.13 / mo** |
+| **Always Free Tier Credit** | 1 free `e2-micro` VM per month | â€” | -$6.13 / month | **-$6.13 / mo** |
 | **Boot Disk (`pd-balanced` SSD)**| 20 GB SSD | $0.10 / GB / month | $2.00 / month | **$6.00 / mo** |
 | **In-Use External IPv4** | 1 Standard Public IP | $0.005 / hour | ~$3.65 / month | **~$10.95 / mo** |
 | **Network Egress (Bandwidth)** | First 100 GB/mo free | $0.00 | $0.00 | **$0.00** |
-| **Total Estimated Cost** | — | — | — | **~$29.21 / month** |
+| **Total Estimated Cost** | â€” | â€” | â€” | **~$29.21 / month** |
 
 > **Daily Burn Rate**: Approximately **~$0.97 / day** across all 3 nodes.
 
@@ -195,3 +195,34 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
 1. Pings operator health endpoints (`/v1/info`) every 30 seconds.
 2. If an operator reports degraded durability, triggers a Proof-of-Storage audit across all stored CIDs.
 3. Automatically replicates missing chunk replicas from surviving quorum nodes to restore 3-of-3 durability.
+
+## 8. Operator Identity Ceremony & Rotation
+
+### Provisioning a new operator identity
+1. Start the operator once so it generates `operator.key` (mode `0600`) in its data directory.
+2. Print the trust-registry entry offline (no ports bound, no service token needed):
+   ```sh
+   ciphervault-operator --data-dir ./data/op1 --operator-id op_8201 --print-identity
+   # op_8201=<64-hex-public-key>
+   ```
+3. Append the entry to the dashboard environment `CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES`
+   (comma-separated `operator-id=key` entries or bare keys), then restart the dashboard.
+4. Confirm the explorer operator card flips from `Unverified` to `Verified` for that node.
+
+### Rotation (also the revocation procedure)
+1. Rotate and print the replacement entry in one step (the old key moves to a
+   timestamped `operator.key.previous-*` backup):
+   ```sh
+   ciphervault-operator --data-dir ./data/op1 --rotate-key --print-identity
+   ```
+2. Add the new fingerprint to `CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES` alongside the old
+   one, restart the dashboard, and confirm `Verified`.
+3. Remove the old fingerprint from the registry. Registry removal **is** revocation at this
+   scale: if the retired key ever reappears, the dashboard reports `Unverified`.
+
+### Monitoring
+- `/api/operators` reports `identity_status`: `verified`, `expiring_soon` (< 6h to expiry),
+  `expired`, `unverified`, or `not_observed` (unreachable). Cards render amber `Expiring soon`.
+- Identity self-signatures expire 24h after issuance (`/v1/info`); expiry affects display
+  freshness only, never lease validity. Persistent `expired` on a reachable node means its
+  clock or `/v1/info` signer is broken â€” investigate before rotating.

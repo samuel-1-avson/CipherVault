@@ -367,6 +367,17 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(getElementById('operators-grid').innerHTML.includes('HTTPS configured'), 'Operator card must display observed transport security');
   assert(getElementById('operators-grid').innerHTML.includes('card-operator-1'), 'Operator card 1 must be rendered in grid');
 
+  vm.runInContext(`
+    renderOperators([
+      { operator_id: 'cv-operator-1', endpoint: 'https://vault.cipherv.online/op/1', status: 'online', latency_ms: 12, transport_security: 'https', identity_verification: 'verified' },
+      { operator_id: 'cv-operator-2', endpoint: 'https://vault.cipherv.online/op/2', status: 'online', latency_ms: 14, transport_security: 'https', identity_status: 'expiring_soon', identity_verification: 'verified' },
+      { operator_id: 'cv-operator-3', endpoint: 'https://vault.cipherv.online/op/3', status: 'online', latency_ms: 32, transport_security: 'https', identity_status: 'expired', identity_verification: 'verified' }
+    ]);
+  `, context);
+  assert(getElementById('operators-grid').innerHTML.includes('Verified'), 'Operator card must show verified identity from client fallback');
+  assert(getElementById('operators-grid').innerHTML.includes('Expiring soon'), 'Operator card must warn when server reports expiring_soon');
+  assert(getElementById('operators-grid').innerHTML.includes('Expired'), 'Operator card must flag server-reported expired identity');
+
   // =========================================================================
   // 9. Snapshot Deep Inspector Drawer Tests
   // =========================================================================

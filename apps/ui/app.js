@@ -1222,8 +1222,10 @@ function renderOperators(operators) {
     const identityExpired = Number.isFinite(Number(op.identity_expires_at_utc))
       && Number(op.identity_expires_at_utc) > 0
       && Number(op.identity_expires_at_utc) * 1000 < Date.now();
-    const identityLabel = identityExpired
-      ? 'Expired'
+    const serverIdentityStatus = typeof op.identity_status === 'string' ? op.identity_status : '';
+    const identityLabel = serverIdentityStatus === 'verified' ? 'Verified'
+      : serverIdentityStatus === 'expiring_soon' ? 'Expiring soon'
+      : serverIdentityStatus === 'expired' || identityExpired ? 'Expired'
       : (op.identity_verification === 'verified' ? 'Verified' : 'Unverified');
     const transportLabel = op.transport_security === 'https' ? 'HTTPS configured' : 'Transport not reported';
 
@@ -1262,7 +1264,7 @@ function renderOperators(operators) {
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Identity</span>
-            <span class="op-meta-val" style="color: ${identityLabel === 'Verified' ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${identityLabel}</span>
+            <span class="op-meta-val" style="color: ${identityLabel === 'Verified' ? 'var(--accent-emerald)' : identityLabel === 'Expiring soon' ? 'var(--accent-amber)' : 'var(--accent-rose)'};">${identityLabel}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Location</span>
