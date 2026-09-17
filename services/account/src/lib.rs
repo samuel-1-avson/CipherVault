@@ -5521,7 +5521,13 @@ mod tests {
 
     #[tokio::test]
     async fn role_matrix_covers_gated_routes() {
-        use StatusCode::{CREATED, FORBIDDEN, NO_CONTENT, OK, UNAUTHORIZED};
+        // `StatusCode` is a struct with associated constants, so the terse
+        // aliases used by the case matrix below are bound as local constants.
+        const OK: StatusCode = StatusCode::OK;
+        const CREATED: StatusCode = StatusCode::CREATED;
+        const NO_CONTENT: StatusCode = StatusCode::NO_CONTENT;
+        const FORBIDDEN: StatusCode = StatusCode::FORBIDDEN;
+        const UNAUTHORIZED: StatusCode = StatusCode::UNAUTHORIZED;
         let root = std::env::temp_dir().join(format!("cv-account-matrix-{}", random_hex(8)));
         let state = AccountState::open(&root).expect("state");
         let app = create_router(state.clone());

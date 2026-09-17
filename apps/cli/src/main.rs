@@ -2761,7 +2761,10 @@ impl StatusReport {
             device_counter,
             active_head_hex: active_head.map(hex::encode),
             tracked_files,
-            operators: operators.iter().map(mask_operator_endpoint).collect(),
+            operators: operators
+                .iter()
+                .map(|op| mask_operator_endpoint(op))
+                .collect::<Vec<_>>(),
             pending_uploads,
             active_epoch_age_days: age_days,
             active_epoch_stale: stale,
