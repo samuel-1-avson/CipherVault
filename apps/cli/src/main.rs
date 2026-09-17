@@ -1504,6 +1504,77 @@ async fn cmd_auth_connect(endpoint_raw: &str, label: &str, vault_alias: &str) ->
     Ok(())
 }
 
+/// Release version for update comparison: numeric core plus an optional
+/// prerelease suffix (`v1.0.7-beta.1` -> core (1,0,7), pre "beta.1").
+/// Splitting the suffix out matters: parsing "7-beta" as a number yields 0,
+/// which previously made every prerelease tag compare older than any release.
+struct ReleaseVersion {
+    core: (u64, u64, u64),
+    pre: Option<String>,
+}
+
+impl ReleaseVersion {
+    fn parse(tag: &str) -> Self {
+        let tag = tag.trim().trim_start_matches('v');
+        let (core_part, pre_part) = match tag.split_once('-') {
+            Some((core, pre)) => (core, Some(pre.to_string())),
+            None => (tag, None),
+        };
+        let mut nums = core_part
+            .split('.')
+            .map(|part| part.trim().parse::<u64>().unwrap_or(0));
+        Self {
+            core: (
+                nums.next().unwrap_or(0),
+                nums.next().unwrap_or(0),
+                nums.next().unwrap_or(0),
+            ),
+            pre: pre_part.filter(|part| !part.is_empty()),
+        }
+    }
+
+    /// True when `self` is a newer release than `other`, following semver
+    /// precedence: a higher core wins; for equal cores a final release beats
+    /// any prerelease, and prereleases compare identifier by identifier.
+    fn is_newer_than(&self, other: &Self) -> bool {
+        if self.core != other.core {
+            return self.core > other.core;
+        }
+        match (&self.pre, &other.pre) {
+            (None, None) => false,
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (Some(a), Some(b)) => compare_pre_release(a, b) == std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+/// Compares dot-separated prerelease identifiers with numeric-aware ordering
+/// (`beta.2` < `beta.10`); numeric identifiers sort below alphanumeric ones.
+fn compare_pre_release(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut a_parts = a.split('.');
+    let mut b_parts = b.split('.');
+    loop {
+        match (a_parts.next(), b_parts.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(xn), Ok(yn)) => xn.cmp(&yn),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+}
+
 async fn cmd_update(check_only: bool) -> Result<()> {
     let (target, archive_suffix) = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => ("x86_64-pc-windows-msvc", "zip"),
@@ -1534,34 +1605,17 @@ async fn cmd_update(check_only: bool) -> Result<()> {
         .context("latest release did not include a tag")?;
     let current = env!("CARGO_PKG_VERSION");
     println!("Current CipherVault: {current}; latest release: {tag}");
-    let current_version = current
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    let latest_version = tag
-        .trim_start_matches('v')
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    let current_tuple = (
-        *current_version.first().unwrap_or(&0),
-        *current_version.get(1).unwrap_or(&0),
-        *current_version.get(2).unwrap_or(&0),
-    );
-    let latest_tuple = (
-        *latest_version.first().unwrap_or(&0),
-        *latest_version.get(1).unwrap_or(&0),
-        *latest_version.get(2).unwrap_or(&0),
-    );
+    let current_version = ReleaseVersion::parse(current);
+    let latest_version = ReleaseVersion::parse(tag);
     if check_only {
-        if latest_tuple <= current_tuple {
+        if !latest_version.is_newer_than(&current_version) {
             println!("Already at or ahead of the latest published release.");
         } else {
             println!("Run `ciphervault update` to install the verified release.");
         }
         return Ok(());
     }
-    if latest_tuple <= current_tuple {
+    if !latest_version.is_newer_than(&current_version) {
         println!("Already at or ahead of the latest published release.");
         return Ok(());
     }
@@ -10286,6 +10340,49 @@ async fn api_workspaces_scan_handler() -> impl axum::response::IntoResponse {
         "count": vaults.len(),
         "workspaces": vaults
     }))
+}
+
+#[cfg(test)]
+mod update_version_tests {
+    use super::*;
+
+    fn offers_update(current: &str, latest_tag: &str) -> bool {
+        ReleaseVersion::parse(latest_tag).is_newer_than(&ReleaseVersion::parse(current))
+    }
+
+    #[test]
+    fn prerelease_tag_with_higher_core_is_offered() {
+        // Regression: "7-beta" used to parse as 0, so v1.0.7-beta.1 compared
+        // older than 1.0.6 and no user was ever offered the beta.
+        assert!(offers_update("1.0.6", "v1.0.7-beta.1"));
+        assert_eq!(ReleaseVersion::parse("v1.0.7-beta.1").core, (1, 0, 7));
+    }
+
+    #[test]
+    fn same_prerelease_is_not_offered() {
+        assert!(!offers_update("1.0.7-beta.1", "v1.0.7-beta.1"));
+    }
+
+    #[test]
+    fn prerelease_moves_forward_within_pre_suffix() {
+        assert!(offers_update("1.0.7-beta.1", "v1.0.7-beta.2"));
+        // Numeric identifiers compare numerically, not lexicographically.
+        assert!(offers_update("1.0.7-beta.2", "v1.0.7-beta.10"));
+        assert!(!offers_update("1.0.7-beta.10", "v1.0.7-beta.2"));
+    }
+
+    #[test]
+    fn final_release_beats_its_prerelease_but_never_downgrades() {
+        assert!(offers_update("1.0.7-beta.1", "v1.0.7"));
+        assert!(!offers_update("1.0.7", "v1.0.7-beta.1"));
+    }
+
+    #[test]
+    fn plain_release_comparison_still_works() {
+        assert!(offers_update("1.0.6", "v1.0.7"));
+        assert!(!offers_update("1.0.6", "v1.0.6"));
+        assert!(!offers_update("1.0.7", "v1.0.6"));
+    }
 }
 
 #[cfg(test)]
