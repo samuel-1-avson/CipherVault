@@ -170,8 +170,20 @@ try {
     $remoteHealthCommand = "set -eu; systemctl is-active --quiet ciphervault-ui.service; sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
     $remoteReady = $false
     for ($attempt = 1; $attempt -le 36; $attempt++) {
-        & gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command $remoteHealthCommand 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        # Windows PowerShell 5.1 turns redirected native stderr into a
+        # terminating error under $ErrorActionPreference = "Stop", which would
+        # abort this retry poll on the first unreachable attempt instead of
+        # waiting for boot. Relax it around the probe so the exit code below
+        # drives the retry; explicit throws elsewhere are unaffected.
+        $previousEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command $remoteHealthCommand 2>$null | Out-Null
+            $sshExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+        if ($sshExit -eq 0) {
             $remoteReady = $true
             break
         }
