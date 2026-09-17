@@ -67,6 +67,12 @@ operator-data*/
 readiness-*.log
 docs/review-evidence/
 
+# Coverage artifacts
+coverage/
+lcov.info
+tarpaulin-report*.html
+cobertura.xml
+
 # ==============================================================================
 # Node.js & Tooling
 # ==============================================================================
@@ -85,6 +91,12 @@ broadcast/
 # ==============================================================================
 .DS_Store
 Thumbs.db
+*.orig
+*.rej
+*.bak
+*~
+__pycache__/
+.venv/
 Microsoft/
 .idea/
 .vscode/
