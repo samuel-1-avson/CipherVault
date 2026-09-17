@@ -109,3 +109,11 @@ secrets/credentials.json
 config/credentials.json
 
 .tmp-toolchain/
+operator-data-1/operator.key
+operator-data-2/operator.key
+operator-data-3/operator.key
+guardians/guardian_share_1_of_5.txt
+guardians/guardian_share_2_of_5.txt
+guardians/guardian_share_3_of_5.txt
+guardians/guardian_share_4_of_5.txt
+guardians/guardian_share_5_of_5.txt
