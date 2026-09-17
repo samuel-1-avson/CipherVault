@@ -6,5 +6,7 @@
 pub mod db;
 pub mod engine;
 
-pub use db::{AuditRecord, FleetSummary, MaintenanceDb, OperatorNodeRecord, TrackedVault};
+pub use db::{
+    AuditRecord, FleetSummary, MaintenanceDb, OperatorNodeRecord, TrackedVault, sqlite_busy_retries,
+};
 pub use engine::{AuditReport, MaintenanceEngine, ObjectReplicaStatus, RepairResult};

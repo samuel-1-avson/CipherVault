@@ -2,6 +2,7 @@ use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ciphervault_crypto::VaultEpochKey;
 use ciphervault_format::{
@@ -17,6 +18,31 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0)
+}
+
+/// SQLite lock-contention waits since process start (B7). Installed as the
+/// connection busy handler in [`LocalVaultStore::open`]: each lock wait bumps
+/// the counter, the handler sleeps 5 ms (SQLite does not sleep for custom
+/// handlers — returning `true` without sleeping would hot-spin), and it gives
+/// up after ~1000 waits to preserve the historical 5 s timeout. `synchronous`
+/// deliberately stays at the default FULL: the secret-bearing vault database
+/// keeps crash durability, and load gates assert this counter instead of
+/// weakening persistence.
+static SQLITE_BUSY_RETRIES: AtomicU64 = AtomicU64::new(0);
+
+fn counting_busy_handler(prior_waits: i32) -> bool {
+    SQLITE_BUSY_RETRIES.fetch_add(1, Ordering::Relaxed);
+    if prior_waits >= 1000 {
+        return false;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    true
+}
+
+/// Total SQLite busy-handler waits since process start. Soak gates assert this
+/// stays at zero under sustained push load.
+pub fn sqlite_busy_retries() -> u64 {
+    SQLITE_BUSY_RETRIES.load(Ordering::Relaxed)
 }
 
 pub struct LocalVaultStore {
@@ -70,9 +96,9 @@ impl LocalVaultStore {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
-            PRAGMA busy_timeout = 5000;
             "#,
         )?;
+        conn.busy_handler(Some(counting_busy_handler))?;
         let store = Self { conn };
         store.init_tables()?;
         store.run_migrations()?;

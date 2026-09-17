@@ -8,6 +8,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,8 +110,37 @@ impl FleetSummary {
             "ciphervault_fleet_last_repair_lag_seconds {}\n",
             self.last_repair_lag_secs
         ));
+        out.push_str("# HELP ciphervault_fleet_sqlite_busy_retries_total SQLite busy-handler lock waits since process start.\n");
+        out.push_str("# TYPE ciphervault_fleet_sqlite_busy_retries_total gauge\n");
+        out.push_str(&format!(
+            "ciphervault_fleet_sqlite_busy_retries_total {}\n",
+            sqlite_busy_retries()
+        ));
         out
     }
+}
+
+/// SQLite lock-contention waits since process start (B7). Installed as the
+/// connection busy handler in [`MaintenanceDb::open`]: each lock wait bumps the
+/// counter, the handler sleeps 5 ms (SQLite does not sleep for custom handlers
+/// — returning `true` without sleeping would hot-spin), and it gives up after
+/// ~1000 waits to preserve the historical 5 s timeout. `synchronous`
+/// deliberately stays at the default FULL; the fleet exports this counter in
+/// [`FleetSummary::to_prometheus`] instead of weakening persistence.
+static SQLITE_BUSY_RETRIES: AtomicU64 = AtomicU64::new(0);
+
+fn counting_busy_handler(prior_waits: i32) -> bool {
+    SQLITE_BUSY_RETRIES.fetch_add(1, Ordering::Relaxed);
+    if prior_waits >= 1000 {
+        return false;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    true
+}
+
+/// Total SQLite busy-handler waits since process start.
+pub fn sqlite_busy_retries() -> u64 {
+    SQLITE_BUSY_RETRIES.load(Ordering::Relaxed)
 }
 
 pub struct MaintenanceDb {
@@ -129,9 +159,10 @@ impl MaintenanceDb {
             path.display()
         ))?;
 
-        // Initialize WAL mode and busy timeout for high concurrency
+        // Initialize WAL mode; the counting busy handler below preserves the
+        // historical 5 s lock wait while recording contention for metrics.
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
+        conn.busy_handler(Some(counting_busy_handler))?;
 
         conn.execute_batch(
             r#"

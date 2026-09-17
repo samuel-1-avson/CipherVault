@@ -272,6 +272,11 @@ async fn bench_push_sequential_vs_concurrent() {
             .expect("soak run must reach quorum");
         assert_eq!(receipts.len(), 3);
     }
+    assert_eq!(
+        ciphervault_local_store::sqlite_busy_retries(),
+        0,
+        "soak must not hit SQLite lock contention"
+    );
 
     let speedup = sequential.as_secs_f64() / concurrent.as_secs_f64().max(1e-9);
     println!("push_bench: {object_count} x {object_kb} KiB objects on 3 loopback operators");
@@ -286,6 +291,7 @@ async fn bench_push_sequential_vs_concurrent() {
             "speedup": speedup,
             "soak_iters": soak_iters,
             "quorum": 3,
+            "sqlite_busy_retries": ciphervault_local_store::sqlite_busy_retries(),
         })
     );
     if speedup < 2.0 {
