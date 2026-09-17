@@ -142,7 +142,10 @@ enum Commands {
 
     /// Display current vault status and tracked files
     Status {
-        #[arg(long, help = "Emit machine-readable JSON for editor gutter feeds and CI")]
+        #[arg(
+            long,
+            help = "Emit machine-readable JSON for editor gutter feeds and CI"
+        )]
         json: bool,
     },
 
@@ -208,7 +211,10 @@ enum Commands {
         #[arg(long, help = "Only report key ages without rotating")]
         check: bool,
 
-        #[arg(long, help = "Warn when the active epoch key is older than D days (default 90)")]
+        #[arg(
+            long,
+            help = "Warn when the active epoch key is older than D days (default 90)"
+        )]
         warn_days: Option<u64>,
     },
 
@@ -437,7 +443,10 @@ enum Commands {
         )]
         sync: bool,
 
-        #[arg(long, help = "Inspector mode: report captures without persisting or replicating")]
+        #[arg(
+            long,
+            help = "Inspector mode: report captures without persisting or replicating"
+        )]
         dry_run: bool,
     },
 
@@ -2995,10 +3004,7 @@ async fn cmd_doctor(json: bool) -> Result<()> {
                         checks.push(DoctorCheck {
                             name: "anchors",
                             ok: true,
-                            detail: format!(
-                                "newest evidence age={age}s count={}",
-                                evidence.len()
-                            ),
+                            detail: format!("newest evidence age={age}s count={}", evidence.len()),
                         });
                     }
                     None => checks.push(DoctorCheck {
@@ -3023,10 +3029,7 @@ async fn cmd_doctor(json: bool) -> Result<()> {
 
     let failures = checks.iter().filter(|check| !check.ok).count();
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&doctor_report(&checks))?
-        );
+        println!("{}", serde_json::to_string_pretty(&doctor_report(&checks))?);
     } else {
         println!("{}", "CipherVault Doctor".bold());
         println!("--------------------------------------------------");
@@ -3424,7 +3427,10 @@ fn cmd_prune(keep_last: Option<usize>, keep_days: Option<u64>, dry_run: bool) ->
         return Ok(());
     }
     let outcome = store.prune_snapshots(&targets)?;
-    println!("  Removed:        {} snapshot(s)", outcome.snapshots_removed);
+    println!(
+        "  Removed:        {} snapshot(s)",
+        outcome.snapshots_removed
+    );
     println!(
         "  Skipped:        {} protected snapshot(s)",
         outcome.snapshots_skipped_protected
@@ -3463,7 +3469,11 @@ fn cmd_rekey(check: bool, warn_days: Option<u64>) -> Result<()> {
     let mut stale_current = false;
     for info in &epochs {
         let (age, stale) = epoch_key_status(info.created_at_utc, warn_days, now_utc);
-        let marker = if info.epoch == current_epoch { " (active)" } else { "" };
+        let marker = if info.epoch == current_epoch {
+            " (active)"
+        } else {
+            ""
+        };
         match age {
             Some(days) => println!(
                 "  Epoch {:>4}{}: {} day(s) old{}",
@@ -8343,7 +8353,10 @@ struct PublicCheckpointFeedEnvelope {
 /// publisher key. A feed signature only proves the holder of the embedded key
 /// signed it; pinning proves it is the deployment's intended publisher.
 /// Unconfigured pinning (`None`) preserves the legacy verify-only behavior.
-fn public_checkpoint_publisher_key_pinned(feed_key_hex: &str, pinned_key_hex: Option<&str>) -> bool {
+fn public_checkpoint_publisher_key_pinned(
+    feed_key_hex: &str,
+    pinned_key_hex: Option<&str>,
+) -> bool {
     let Some(pinned) = pinned_key_hex.map(str::trim).filter(|key| !key.is_empty()) else {
         return true;
     };
@@ -8751,25 +8764,36 @@ async fn load_public_feed_with_finality() -> Result<Option<Vec<serde_json::Value
             };
             object.insert("finality_status".to_string(), serde_json::json!(status));
             object.insert("receipt_block_number".to_string(), serde_json::json!(block));
-            object.insert("confirmations".to_string(), serde_json::json!(confirmations));
+            object.insert(
+                "confirmations".to_string(),
+                serde_json::json!(confirmations),
+            );
         }
     }
 
     let current: Vec<(String, String, Option<u64>)> = enriched
         .iter()
         .filter_map(|record| {
-            let tx = record.get("tx_hash_hex")?.as_str().filter(|hash| !hash.is_empty())?;
+            let tx = record
+                .get("tx_hash_hex")?
+                .as_str()
+                .filter(|hash| !hash.is_empty())?;
             let status = record
                 .get("finality_status")
                 .and_then(|value| value.as_str())
                 .unwrap_or("unknown");
-            let block = record.get("receipt_block_number").and_then(|value| value.as_u64());
+            let block = record
+                .get("receipt_block_number")
+                .and_then(|value| value.as_u64());
             Some((tx.to_string(), status.to_string(), block))
         })
         .collect();
     let suspects = detect_reorg_suspects(&previous_finalized, &current);
     for record in enriched.iter_mut() {
-        let tx = record.get("tx_hash_hex").and_then(|hash| hash.as_str()).unwrap_or("");
+        let tx = record
+            .get("tx_hash_hex")
+            .and_then(|hash| hash.as_str())
+            .unwrap_or("");
         if suspects.iter().any(|suspect| suspect == tx) {
             if let Some(object) = record.as_object_mut() {
                 object.insert(
@@ -10269,6 +10293,33 @@ mod ui_router_tests {
     use super::*;
     use axum::http::StatusCode;
 
+    /// Panic-safe `CIPHERVAULT_ACCOUNT_PATH` override. The private guard also
+    /// validates the ambient hosted account session when a store exists, so
+    /// guard tests must not inherit the developer's real account state.
+    struct AccountPathGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl AccountPathGuard {
+        fn isolate() -> Self {
+            let prior = std::env::var_os("CIPHERVAULT_ACCOUNT_PATH");
+            std::env::set_var(
+                "CIPHERVAULT_ACCOUNT_PATH",
+                std::env::temp_dir().join(format!("cv-no-account-{}", std::process::id())),
+            );
+            Self { prior }
+        }
+    }
+
+    impl Drop for AccountPathGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_PATH", value),
+                None => std::env::remove_var("CIPHERVAULT_ACCOUNT_PATH"),
+            }
+        }
+    }
+
     async fn start_public_test_server() -> (tokio::task::JoinHandle<()>, String) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -10400,6 +10451,7 @@ mod ui_router_tests {
 
     #[tokio::test]
     async fn private_router_requires_loopback_origin_for_mutations() {
+        let _account_isolation = AccountPathGuard::isolate();
         let (server, base_url) = start_private_test_server().await;
         let client = reqwest::Client::new();
 
@@ -10587,8 +10639,14 @@ mod ui_router_tests {
     #[test]
     fn epoch_key_status_flags_stale_and_unknown() {
         let now = 2_000_000_000u64;
-        assert_eq!(epoch_key_status(now - 10 * 86_400, 90, now), (Some(10), false));
-        assert_eq!(epoch_key_status(now - 90 * 86_400, 90, now), (Some(90), true));
+        assert_eq!(
+            epoch_key_status(now - 10 * 86_400, 90, now),
+            (Some(10), false)
+        );
+        assert_eq!(
+            epoch_key_status(now - 90 * 86_400, 90, now),
+            (Some(90), true)
+        );
         assert_eq!(
             epoch_key_status(now - 200 * 86_400, 90, now),
             (Some(200), true)
@@ -10651,9 +10709,18 @@ mod ui_router_tests {
         assert!(public_checkpoint_publisher_key_pinned(&key, None));
         assert!(public_checkpoint_publisher_key_pinned(&key, Some("")));
         assert!(public_checkpoint_publisher_key_pinned(&key, Some(&key)));
-        assert!(public_checkpoint_publisher_key_pinned(&key, Some(&format!("0x{key}"))));
-        assert!(public_checkpoint_publisher_key_pinned(&key, Some(&key.to_ascii_uppercase())));
-        assert!(!public_checkpoint_publisher_key_pinned(&key, Some(&"00".repeat(32))));
+        assert!(public_checkpoint_publisher_key_pinned(
+            &key,
+            Some(&format!("0x{key}"))
+        ));
+        assert!(public_checkpoint_publisher_key_pinned(
+            &key,
+            Some(&key.to_ascii_uppercase())
+        ));
+        assert!(!public_checkpoint_publisher_key_pinned(
+            &key,
+            Some(&"00".repeat(32))
+        ));
     }
 
     #[test]
@@ -10663,28 +10730,49 @@ mod ui_router_tests {
         assert_eq!(parse_rpc_quantity(&serde_json::json!(7)), Some(7));
         assert_eq!(parse_rpc_quantity(&serde_json::json!("zz")), None);
         assert_eq!(parse_rpc_quantity(&serde_json::Value::Null), None);
-        assert_eq!(classify_receipt_result(&serde_json::Value::Null), ReceiptFetch::Pending);
+        assert_eq!(
+            classify_receipt_result(&serde_json::Value::Null),
+            ReceiptFetch::Pending
+        );
         let observed = serde_json::json!({"status": "0x1", "blockNumber": "0x64"});
         assert_eq!(
             classify_receipt_result(&observed),
-            ReceiptFetch::Observed { status_ok: true, block_number: 100 }
+            ReceiptFetch::Observed {
+                status_ok: true,
+                block_number: 100
+            }
         );
         let failed_tx = serde_json::json!({"status": "0x0", "blockNumber": "0x64"});
         assert_eq!(
             classify_receipt_result(&failed_tx),
-            ReceiptFetch::Observed { status_ok: false, block_number: 100 }
+            ReceiptFetch::Observed {
+                status_ok: false,
+                block_number: 100
+            }
         );
         assert_eq!(
             classify_receipt_result(&serde_json::json!({"blockNumber": "0x64"})),
             ReceiptFetch::Failed
         );
-        assert_eq!(checkpoint_finality(ReceiptFetch::Pending, Some(200), 12).0, "pending");
-        assert_eq!(checkpoint_finality(ReceiptFetch::Failed, Some(200), 12).0, "unknown");
-        let obs = ReceiptFetch::Observed { status_ok: true, block_number: 100 };
+        assert_eq!(
+            checkpoint_finality(ReceiptFetch::Pending, Some(200), 12).0,
+            "pending"
+        );
+        assert_eq!(
+            checkpoint_finality(ReceiptFetch::Failed, Some(200), 12).0,
+            "unknown"
+        );
+        let obs = ReceiptFetch::Observed {
+            status_ok: true,
+            block_number: 100,
+        };
         assert_eq!(checkpoint_finality(obs, Some(200), 12).0, "finalized");
         assert_eq!(checkpoint_finality(obs, Some(105), 12).0, "confirmed");
         assert_eq!(checkpoint_finality(obs, None, 12).0, "confirmed");
-        let reverted = ReceiptFetch::Observed { status_ok: false, block_number: 100 };
+        let reverted = ReceiptFetch::Observed {
+            status_ok: false,
+            block_number: 100,
+        };
         assert_eq!(checkpoint_finality(reverted, Some(200), 12).0, "failed");
     }
 
@@ -10693,8 +10781,14 @@ mod ui_router_tests {
         let now = 2_000_000_000u64;
         assert_eq!(checkpoint_canary_status(None, now, 3_600), "missing");
         assert_eq!(checkpoint_canary_status(Some(now - 100), now, 3_600), "ok");
-        assert_eq!(checkpoint_canary_status(Some(now - 3_600), now, 3_600), "ok");
-        assert_eq!(checkpoint_canary_status(Some(now - 3_601), now, 3_600), "stale");
+        assert_eq!(
+            checkpoint_canary_status(Some(now - 3_600), now, 3_600),
+            "ok"
+        );
+        assert_eq!(
+            checkpoint_canary_status(Some(now - 3_601), now, 3_600),
+            "stale"
+        );
         assert_eq!(checkpoint_canary_status(Some(now + 60), now, 3_600), "ok");
     }
 
@@ -10743,11 +10837,23 @@ mod ui_router_tests {
     fn public_operator_identity_status_tracks_pinning_and_expiry() {
         let now = 1_800_000_000u64;
         assert_eq!(public_operator_identity_status(true, 0, now), "verified");
-        assert_eq!(public_operator_identity_status(true, now + 7 * 60 * 60, now), "verified");
-        assert_eq!(public_operator_identity_status(true, now + 5 * 60 * 60, now), "expiring_soon");
-        assert_eq!(public_operator_identity_status(true, now - 1, now), "expired");
+        assert_eq!(
+            public_operator_identity_status(true, now + 7 * 60 * 60, now),
+            "verified"
+        );
+        assert_eq!(
+            public_operator_identity_status(true, now + 5 * 60 * 60, now),
+            "expiring_soon"
+        );
+        assert_eq!(
+            public_operator_identity_status(true, now - 1, now),
+            "expired"
+        );
         assert_eq!(public_operator_identity_status(false, 0, now), "unverified");
-        assert_eq!(public_operator_identity_status(false, now - 1, now), "expired");
+        assert_eq!(
+            public_operator_identity_status(false, now - 1, now),
+            "expired"
+        );
     }
 
     #[test]

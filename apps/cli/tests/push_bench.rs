@@ -52,9 +52,11 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+type BenchObjects = (Vec<([u8; 32], Vec<u8>)>, u64);
+
 /// Deterministic pseudo-random object bytes; distinct per (seed, index) so
 /// every bench run uploads fresh CIDs (no PoS dedup short-circuit).
-fn bench_objects(seed: u64, count: usize, size: usize) -> (Vec<([u8; 32], Vec<u8>)>, u64) {
+fn bench_objects(seed: u64, count: usize, size: usize) -> BenchObjects {
     let mut objects = Vec::with_capacity(count);
     let mut total = 0u64;
     for index in 0..count {

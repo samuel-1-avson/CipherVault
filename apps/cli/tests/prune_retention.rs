@@ -42,7 +42,7 @@ fn prune_retains_head_pending_and_shared_chunks() {
     let dev_id = [0x66u8; 32];
     let epoch_key = VaultEpochKey::generate();
 
-    let store = LocalVaultStore::open(&vault_dir.join("vault.db")).unwrap();
+    let store = LocalVaultStore::open(vault_dir.join("vault.db")).unwrap();
     store
         .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
         .unwrap();
@@ -86,7 +86,11 @@ fn prune_retains_head_pending_and_shared_chunks() {
     let v1_cid = snap1.record.compute_record_cid().unwrap();
 
     // Snapshot v2 with changed content.
-    fs::write(&test_file, "PRUNE_V2_SECRET=beta-longer-content-to-shift-chunks\n").unwrap();
+    fs::write(
+        &test_file,
+        "PRUNE_V2_SECRET=beta-longer-content-to-shift-chunks\n",
+    )
+    .unwrap();
     let tracked = store.list_tracked_files().unwrap();
     let snap2 = create_snapshot(
         &vault_dir,
