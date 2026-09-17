@@ -1,16 +1,20 @@
 # CipherVault — Deep-Dive Analysis Report
 
-- **Date:** 2026-09-16
-- **Revision inspected:** `main` at v1.0.6 (`Cargo.toml`), plus uncommitted working-tree hardening
-- **Scope:** Rust workspace (11 members, 75 `.rs` files), web dashboard/explorer (`apps/ui`),
+- **Date:** 2026-09-16 (analysis) / 2026-09-17 (implementation update)
+- **Revision inspected:** `main` at v1.0.6 (`Cargo.toml`) through `e88a48d`
+  (25 implementation commits, 2026-09-16 → 2026-09-17)
+- **Scope:** Rust workspace (11 members, 75+ `.rs` files), web dashboard/explorer (`apps/ui`),
   CLI/TUI/agent, operator/account/maintenance services, Solidity registry, Docker/GCP
   deployment, CI/release workflows, live endpoint evidence (from repo audit docs)
 - **Method:** full-repo source inspection, prior audit cross-check
   (`docs/PROJECT_AUDIT_2026-09-16.md`, `docs/SYSTEM_WORKFLOW.md`), bottleneck
-  reproduction-by-reading, and two implemented fixes with regression tests
-- **Environment note:** no Rust/Node toolchain was available in this analysis
-  environment, so the two code fixes below are implemented and carefully reviewed
-  but **not yet compiled or test-run here**. Exact verification commands are in §9.
+  reproduction-by-reading, then implementation of §12 phases 0–4 plus follow-ups
+  (R13–R18, reorg alarm, split plan, TUI fix) with regression tests
+- **Environment note:** no Rust/Foundry toolchain or network was available in this
+  environment for the whole session, so all 25 implementation commits are
+  carefully statically cross-checked but **not compiled or test-run here**. Node
+  gates run green in-env (§9.4). Ratings in §2 are therefore dual:
+  as-implemented vs as-demonstrated. Exact verification commands are in §9.
 
 ## 1. Executive verdict
 
@@ -31,23 +35,42 @@ adds a performance/structural dimension to that audit: two real bottlenecks are
 fixed in this session (§9), and the remainder are specified with an implementation
 plan (§11–§12).
 
+### Implementation update (2026-09-17)
+
+All of §12 phases 0–4 plus the R13–R18 product items, a checkpoint reorg alarm,
+and a TUI arity fix are now implemented in 25 local commits (`8f71a40`…`e88a48d`,
+Appendix A): bottleneck fixes B1–B6 and B9 (B7 SQLite tuning still open; B8/B11
+accepted, B10 planned, B12 de-scoped), recommendations R1–R18 (R3/R4/R10/R16
+scoped to runbook/notes/matrix, §11.1), H5/H7 hardening, a push bench suite with
+CI job, expanded Foundry coverage, LF ending pins, the `SYSTEM_WORKFLOW.md`
+headline correction, and a written (not yet executed) module split plan. The
+monoliths grew in the process (`main.rs` 9.7k → 10.9k lines; `account/lib.rs`
+4.9k → 5.7k) and **no Rust code was compiled or test-run** — verification debt
+is now the single largest risk (§9.4, §12 Phase 5). Net: design-complete beta at
+8.1/10 as-implemented, still 7.4/10 as-demonstrated until the standing gates go
+green on a provisioned host.
+
 ## 2. Rating
 
 | Category | Score | Basis |
 |---|---|---|
-| Cryptographic design | 9.0/10 | Domain-separated AEAD/KDF, signed recovery structures, Shamir GF(2⁸), PoS; no third-party review yet |
-| Durability & quorum | 7.5/10 | 3-node replication + PoS + self-repair works; peers/approvals in-memory, no signed checkpoint feed live |
-| Features & completeness | 8.0/10 | 28 CLI commands, TUI, dashboard, agent, PIV, L2 anchoring; some flows partial (see §5) |
-| Code quality | 7.0/10 | Idiomatic Rust, strict Clippy gate; 9.7k-line `main.rs` monolith drags this down |
-| Performance & scalability | 6.0/10 | Sequential replication (fixed §9), global I/O lock, SQLite single-writer, fixed 4 MiB cap |
-| Operability & deployment | 6.5/10 | Compose/systemd/GCP/Caddy present; image provenance + secret rotation gaps per audit |
-| Testing | 7.5/10 | 16 CLI integration suites + crypto/operator/UI contract tests; small Foundry coverage, no load tests |
-| Documentation | 8.5/10 | Excellent workflow/runbook/crypto docs; readiness score (10.0) contradicts audit evidence |
-| **Overall** | **7.4/10** | **Strong beta. Ship the P0 evidence items + §12 plan before claiming production.** |
+| Cryptographic design | 9.0/10 | Unchanged; R13 epoch re-key implemented but its recovery drill is still pending |
+| Durability & quorum | 8.0/10 | R5 durable peers/approvals, H7 TTL/re-enrollment, reorg alarm; new tests written, unrun |
+| Features & completeness | 9.0/10 | 31 CLI commands (prune/rekey/doctor new), R6–R18 implemented; flows unexercised |
+| Code quality | 7.0/10 | Unchanged: monoliths grew (10.9k/5.7k lines); split plan written, not executed; LF pinned |
+| Performance & scalability | 7.0/10 | R6/R7/R8/R9 concurrency landed + bench suite in CI; zero measurements taken yet |
+| Operability & deployment | 7.5/10 | R12 doctor, R11 metrics/tracing, R3/R4 runbook; live promotion/rotation not executed |
+| Testing | 8.0/10 | 20 CLI suites + expanded Foundry + bench/soak tests; none executed in this environment |
+| Documentation | 9.0/10 | Runbook cutover/promotion, split plan, platform matrix, verdict correction |
+| **Overall (as-implemented)** | **8.1/10** | **Design-complete beta. All §12 phases implemented, none compiler-verified.** |
+| **Overall (as-demonstrated)** | **7.4/10** | **Unchanged until Phase 5 gates go green on a provisioned host.** |
 
 Score meaning: 9–10 production-grade, 7–8 solid beta with known gaps, 5–6 works with
-material risk, <5 prototype. The repo's internal scorecard claims 10.0/10.0; the
-evidence supports 7.4 until the P0 items in §12 close.
+material risk, <5 prototype. The dual rating is deliberate: 25 commits of new
+concurrency, crypto-touching, and retention-GC code that has never been compiled
+must not move the demonstrated score. The repo's headline scorecard now reads
+"SECURITY-FOCUSED BETA (7.4 / 10.0)" with a correction note, though its
+per-category rows still claim 10.0s.
 
 ## 3. System architecture
 
@@ -78,7 +101,7 @@ checks. Client→operator traffic is ciphertext only; operators see BLAKE2b CIDs
 
 | Component | Location | Tech | Responsibility |
 |---|---|---|---|
-| CLI + dashboard server | `apps/cli/src/main.rs` (~9.7k lines) | Clap, Axum, Tokio | 28 commands, TUI, `Ui` server :8080, public/private route guards, collector |
+| CLI + dashboard server | `apps/cli/src/main.rs` (~10.9k lines) | Clap, Axum, Tokio | 31 commands, TUI, `Ui` server :8080, public/private route guards, collector |
 | Agent | `apps/agent` | notify | Event-driven watcher, debounce (default 2 s), coherent re-read, auto push |
 | Crypto core | `crates/crypto` | XChaCha20-Poly1305, Ed25519, X25519, BLAKE2b, Shamir, Argon2 | AEAD, KDF, sealed boxes, threshold shares, PIV/APDU driver, HSM trait |
 | Wire format | `crates/format` | Canonical CBOR | Genesis/head/snapshot/manifest records, digests, schema |
@@ -87,7 +110,7 @@ checks. Client→operator traffic is ciphertext only; operators see BLAKE2b CIDs
 | Recovery | `crates/recovery` | Shamir, signed kits | Offline paper kit, M-of-N shares, trust selection, out-of-band approvals |
 | Storage client | `crates/storage` | reqwest, join_all | Operator client, quorum pool, PoS, leases, chain/relayer types |
 | Operator | `services/operator` | Axum, disk store | Chunk/manifest/recovery storage, PoS, leases, peers, approvals, relayer receipts |
-| Account | `services/account` | SQLite WAL, WebAuthn, TOTP | Accounts, devices, sessions, passkeys, invitations, recovery codes, audit |
+| Account | `services/account` (lib ~5.7k lines) | SQLite WAL, WebAuthn, TOTP | Accounts, devices, sessions, passkeys, invitations, recovery codes, audit |
 | Maintenance | `services/maintenance` | reqwest, SQLite WAL | Heartbeats, quorum audits, PoS verify, self-repair scheduler |
 | Web UI | `apps/ui` (JS, ~330 KB) | app.js/index.html/styles.css | Public explorer, telemetry, diff viewer, Shamir ceremony simulator |
 | Registry | `contracts/CipherVaultRegistry.sol` | Solidity 0.8.28, Foundry | `setCommitment` anchoring, salt binding, receipt validation |
@@ -110,9 +133,9 @@ checks. Client→operator traffic is ciphertext only; operators see BLAKE2b CIDs
 CipherVault/                      # workspace v1.0.6, edition 2021, MIT OR Apache-2.0
 ├── Cargo.toml                    # 11 members + shared deps (tokio, axum, rusqlite, …)
 ├── apps/
-│   ├── cli/src/main.rs           # CLI + dashboard + TUI host (9,721 lines, LF)
+│   ├── cli/src/main.rs           # CLI + dashboard + TUI host (10,931 lines, LF)
 │   │   ├── diff.rs dotenv.rs tui/  # masked diff, env parsing, ratatui UI
-│   │   └── tests/ (16 suites)    # e2e, chaos drill, PoS, watcher, hardware token, …
+│   │   └── tests/ (20 suites)    # e2e, chaos drill, PoS, watcher, bench, prune, dry-run, …
 │   ├── agent/                    # watcher daemon (lib.rs, watcher.rs, main.rs)
 │   └── ui/                       # dashboard JS (app.js, index.html, styles.css, audit.test.cjs)
 ├── crates/
@@ -124,7 +147,7 @@ CipherVault/                      # workspace v1.0.6, edition 2021, MIT OR Apach
 │   └── storage/                  # client.rs, pool.rs, types.rs, chain.rs
 ├── services/
 │   ├── operator/ (handlers, state, main)   # :8201–8203 nodes
-│   ├── account/ (lib ~4.9k lines, totp)   # hosted control plane
+│   ├── account/ (lib ~5.7k lines, totp)   # hosted control plane
 │   └── maintenance/ (engine, db)           # :8200 fleet scheduler
 ├── contracts/                    # CipherVaultRegistry.sol + script/ + test/
 ├── deploy/                       # docker, caddy, nginx, systemd, gcp, windows
@@ -135,11 +158,13 @@ CipherVault/                      # workspace v1.0.6, edition 2021, MIT OR Apach
 ```
 
 Notable structural facts: `apps/ui` is outside the Cargo workspace (plain JS, checked
-by `node --check` + `audit.test.cjs` in CI). `services/account/src/lib.rs` (~4.9k
-lines) is the second monolith after the CLI. `crates/storage/src/pool.rs` is CRLF;
-most other Rust files are LF — `.gitattributes` only pins LF for shell/Docker/Caddy.
-CI gates: `cargo fmt --check` (Linux), `cargo clippy --workspace --all-targets
---locked -- -D warnings`, `cargo test --workspace`, node UI checks, `forge test`.
+by `node --check` + `audit.test.cjs` in CI — green in-env 2026-09-17).
+`services/account/src/lib.rs` (~5.7k lines) is the second monolith after the CLI;
+both grew this session and their split is planned (`docs/SPLIT_PLAN.md`) but not
+executed. `.gitattributes` now pins `*.rs eol=lf`, ending the CRLF drift
+(`pool.rs` normalized). CI gates: `cargo fmt --check` (Linux),
+`cargo clippy --workspace --all-targets --locked -- -D warnings`,
+`cargo test --workspace`, push-bench job, node UI checks, `forge test`.
 
 ## 5. System workflow
 
@@ -162,24 +187,30 @@ Device keys live sealed in the OS keyring or on YubiKey PIV slot 9C.
 | W6 | Recovery | Clean machine + paper kit **or** M-of-N Shamir shares → reconstruct R → fetch envelopes/heads → verify trust chain → decrypt → atomic restore; optional guardian `--require-approval` receipts |
 | W7 | Zero-disk run | `run -- <cmd>` decrypts snapshot to RAM, injects env into child process, never writes plaintext (CI log-masking per `CICD_INTEGRATION.md`) |
 | W8 | PIV/hardware | `token probe/slots` → PC/SC → slot 9C sign (+touch with `--touch`), 9D ECDH unwrap |
+| W9 | Retain/Rotate/Inspect | `prune --keep-last/--keep-days` (+`--dry-run`) with chunk GC, head protected; `rekey --check/--warn-days` + epoch rotation; `doctor` self-check (keyring, DB, operators, quorum, anchor freshness); all new in this session, unexercised |
 
 ### 5.3 Request path (dashboard read)
 
 Browser → Caddy (TLS/HSTS) → Axum dashboard (`Ui --serve`, public) or account
 service (private) → account proxy (now pooled, §9) → SQLite; operator telemetry
 via shared cached poller; checkpoint feed from `PublishPublicFeed` JSON (empty in
-prod at audit time — P0).
+prod at audit time — P0). R11 adds operator metrics and CLI → operator → fleet
+tracing; `/metrics` is currently unauthenticated (accepted posture, revisit before
+exposing beyond localhost).
 
 ## 6. Feature inventory
 
-### 6.1 CLI — 28 top-level commands (`apps/cli/src/main.rs:59`)
+### 6.1 CLI — 31 top-level commands (`apps/cli/src/main.rs:59`)
 
 | Command | Subcommands / flags of note | Status |
 |---|---|---|
 | `init` | `--operators`, `--import-gitignore`, `--hardware-token`, `--reader/--pin`, `--save-kit` | Working |
 | `track` / `untrack` | `--from-gitignore`, `--no-gitignore` | Working |
-| `status`, `history` | DAG + workspace state | Working |
-| `push` | `-m`, `--pos`, `--local`, `--anchor`, `--touch` | Working |
+| `status`, `history` | DAG + workspace state; `status --json` gutter feed (R17) | Working |
+| `push` | `-m`, `--pos`, `--local`, `--anchor`, `--touch`, `--concurrency` (R6) | Working |
+| `prune` | `--keep-last`, `--keep-days`, `--dry-run` (R18) | New this session, unexercised |
+| `rekey` | `--check`, `--warn-days` (R13) | New this session, unexercised; drill pending |
+| `doctor` | self-check + JSON (R12) | New this session, unexercised |
 | `restore`, `pull` | `--snapshot`, `--to`, `--force`, `--dry-run` | Working |
 | `recover` | `--kit`, `--shares`, `--to`, `--require-approval` | Working |
 | `recovery` | `export`, `split` (M-of-N, default 2-of-3) | Working |
@@ -188,7 +219,7 @@ prod at audit time — P0).
 | `publish-public-feed` | `--output`, `--network` | Working; no prod feed published yet |
 | `run` | `--snapshot/--env-file`, `--no-inherit`, `--dry-run`, `--quiet`, `--set` | Working |
 | `diff` | snapshots / working tree, `--file`, `--reveal`, `--json`, masked by default | Working |
-| `watch` | `--debounce` (2 s), `--sync` | Working |
+| `watch` | `--debounce` (2 s), `--sync`, `--dry-run` inspector (R15) | Working |
 | `tui` | `--poll-ms` (3,000) | Working; plaintext preview removed (masked table) |
 | `ui` | `--local/--serve`, `--host/--port` (8080), `--url`, `--no-browser` | Working (public + private routers) |
 | `audit`, `repair` | `--operators` | Working |
@@ -202,31 +233,42 @@ prod at audit time — P0).
 | `completions` | bash/elvish/fish/powershell/zsh | Working |
 | `update` | `--check` (signed release check + SHA-256 manifest verify) | Working |
 
+All new/changed commands above are implemented but unexecuted in this environment
+(Phase 5, §12).
+
 ### 6.2 Services and libraries
 
-- **Operator** (`services/operator`): health/info, vault sessions, object CRUD with
-  4 MiB cap, PoS challenges, leases, recovery log (64 KiB records), peer gossip
-  (128 max), approval challenges, relayer receipts, strict-auth + enrollment
-  fail-closed startup, atomic writes.
+- **Operator** (`services/operator`): health/info, vault sessions, object CRUD,
+  PoS challenges, leases, recovery log, peer gossip, approval challenges, relayer
+  receipts, strict-auth + enrollment fail-closed startup, atomic writes — plus R8
+  striped per-CID I/O locks (global `io_lock` gone), R9 env-tunable caps, R11
+  metrics/tracing, R5 durable peer/approval state.
 - **Account** (`services/account`): SQLite WAL accounts/devices/sessions, WebAuthn
   (origin/RP/UV/counters), TOTP (RFC 6238 + replay barrier + lockout), invitations,
   memberships with role checks, recovery codes (marked sessions + step-up),
-  audit events, `HttpOnly/Secure/SameSite=Lax` cookies, origin allowlist.
+  audit events, `HttpOnly/Secure/SameSite=Lax` cookies, origin allowlist — plus H5
+  step-up + role-matrix tests, H7 TTL/notifications/re-enrollment, R10 lockout
+  alert sink.
 - **Maintenance** (`services/maintenance`): fleet.db WAL scheduler, audit/repair
-  engine, receipt persistence across restarts.
+  engine, receipt persistence across restarts — plus R7 concurrent audits with
+  per-operator timeouts and repair-lag metrics.
 - **Crypto/format/snapshot/recovery/storage**: AEAD/KDF/signing/sealed-box/Shamir/
   Argon2/HSM-abstracted PIV; canonical CBOR + versioned schema; FastCDC
-  chunker/engine; kit/trust/approval; pooled client with parallel auth and
-  (now) parallel replication.
+  chunker/engine (+ R9 profiles); kit/trust/approval; pooled client with parallel
+  auth, parallel replication (B1), R6 bounded per-object concurrency + quorum
+  early exit; R13 epoch re-key.
 - **Web UI** (`apps/ui`): public explorer, operator telemetry + history/jobs,
   masked format-aware diff, Shamir ceremony simulator, Arbitrum receipt views,
-  a11y regression suite; inspector plaintext previews intentionally disabled.
+  a11y regression suite; inspector plaintext previews intentionally disabled —
+  plus R14 role-matrix UI + approval queue and R15 watcher event log.
 - **Contracts** (`contracts/`): `CipherVaultRegistry.sol` commitments + Foundry
-  scripts/tests (coverage small).
+  scripts/tests (coverage expanded Phase 4); checkpoint reorg/finality alarm in
+  the enricher.
 - **Deploy/CI**: `docker-compose.yml` (3 ops + maintenance), Dockerfiles, Caddy +
   nginx configs, systemd units, Windows launchers, GCP scripts, 4 GitHub workflows
   + GitLab CI, SBOM/provenance + signed-digest release flow (prepared, not yet
-  promoted to live).
+  promoted to live) — plus push-bench CI job + soak, `*.rs` LF pin, R3/R4
+  cutover/promotion runbook (unexecuted).
 
 ## 7. Pros
 
@@ -248,16 +290,26 @@ prod at audit time — P0).
 7. **Excellent docs.** `SYSTEM_WORKFLOW`, runbook, CI/CD, and crypto-spec manuals
    plus SVG/Mermaid diagrams are far above typical repo quality.
 8. **Strict gates.** `-D warnings` Clippy, fmt, 3-OS CI, Foundry, UI audit tests.
+9. **Complete concurrency story.** Replication (R6), maintenance (R7), and
+   operator I/O (R8) are all sharded/bounded with tests — the §9 hot paths are
+   addressed as a set, not piecemeal.
+10. **Self-observability.** `doctor`, operator metrics, repair-lag tracking, and
+    the reorg alarm give the fleet a monitoring story it lacked.
+11. **Day-2 product completeness.** Retention/GC, rotation reminders, dry-run
+    inspectors, and team workflows close the obvious operational gaps.
+
+Items 9–11 are implemented but share the verification debt in §9.4.
 
 ## 8. Cons
 
-1. **Readiness claims exceed evidence.** `SYSTEM_WORKFLOW.md` says 10.0/10.0
-   "Hardened Production Ready" while the 2026-09-16 audit (same repo) says beta —
-   the live deployment runs an older derived hotfix image with unverified operator
-   identity and an empty checkpoint feed.
-2. **Two monoliths.** `apps/cli/src/main.rs` (9,721 lines: CLI + dashboard + jobs +
-   collector + proxy) and `services/account/src/lib.rs` (~4.9k lines) slow review
-   and raise regression risk.
+1. **Readiness claims mostly corrected.** The headline now reads SECURITY-FOCUSED
+   BETA (7.4/10.0) with a correction note, but per-category rows still claim
+   10.0s and the live story is unchanged: older image, unverified operator
+   identity, empty checkpoint feed — R4 promotion unexecuted.
+2. **Two monoliths, bigger than before.** `apps/cli/src/main.rs` (10,931 lines:
+   CLI + dashboard + jobs + collector + proxy) and `services/account/src/lib.rs`
+   (~5.7k lines) slow review and raise regression risk; the split plan
+   (`docs/SPLIT_PLAN.md`) is written but unexecuted.
 3. **Trust evidence plane is dark.** No pinned operator identities, no signed public
    checkpoint feed, no independent finality receipts in production (audit H2/H3).
 4. **Durability state partially in-memory.** Peers, approval challenges, sessions,
@@ -267,10 +319,15 @@ prod at audit time — P0).
    global operator I/O lock, SQLite single-writer, fixed FastCDC sizes (§10).
 6. **Platform skew.** PIV/HSM path is Windows-first (`winscard.dll`); macOS/Linux
    token support is partial; full Windows test runs need `--jobs 1`.
-7. **Thin chain coverage.** Small Foundry suite; relay confirmation depends on a
-   production RPC + receipt publisher that are not provisioned yet.
-8. **Inconsistent line endings.** `pool.rs` is CRLF while siblings are LF;
-   `.gitattributes` does not pin Rust endings — expect noisy diffs and fmt churn.
+7. **Chain path half-hardened.** Foundry coverage expanded and a reorg/finality
+   alarm added, but the production RPC + receipt publisher are still
+   unprovisioned, so relay confirmation remains unproven.
+8. **Line endings — FIXED (Phase 4).** `.gitattributes` now pins `*.rs eol=lf`;
+   `pool.rs` normalized.
+9. **Verification debt dominates.** 25 implementation commits (new concurrency,
+   retention GC, epoch re-key) never compiled or test-run here; the bench suite
+   exists with zero measurements; recovery drill, splits, and live promotion are
+   all pending Phase 5.
 
 ## 9. Bottlenecks (all identified) and fixes applied
 
@@ -278,16 +335,20 @@ prod at audit time — P0).
 |---|---|---|---|---|
 | B1 | Sequential quorum replication: operators **and** objects uploaded/verified one at a time | `crates/storage/src/pool.rs` `replicate_and_verify` (was `for (client, token)`, audit M3) | Push latency = sum of 3 operators × objects; multi-region worst | **FIXED this session** |
 | B2 | Dashboard account proxy builds a fresh `reqwest::Client` per proxied request | `apps/cli/src/main.rs` `proxy_account_request` (was :5986–5989, audit M7) | New pool + TLS per request on a long-lived server | **FIXED this session** |
-| B3 | Global `io_lock: Mutex<()>` serializes all operator disk paths | `services/operator/src/state.rs:111` + 7 lock sites | Concurrent uploads/reads block each other | Planned P1 (§12) |
-| B4 | Peers, approvals, sessions, challenges in `Mutex<HashMap>` | `state.rs:113–132` (audit M4) | Lost on restart; lock contention; no horizontal scale | Planned P0/P1 (§12) |
-| B5 | Fixed 4 MiB object / 64 KiB record caps | `state.rs:21–22`, `lib.rs:93` | Large files need many objects; cap untunable at runtime | Planned P2 (§12) |
-| B6 | Maintenance audit/repair loops are sequential per operator/object | `services/maintenance/src/engine.rs` (`for client…`, `for cid…`) | Fleet repair time grows linearly with fleet × objects | Planned P1 (§12) |
+| B3 | Global `io_lock: Mutex<()>` serializes all operator disk paths | `services/operator/src/state.rs:111` + 7 lock sites | Concurrent uploads/reads block each other | **FIXED (R8, `4517d1f`)** — unrun |
+| B4 | Peers, approvals, sessions, challenges in `Mutex<HashMap>` | `state.rs:113–132` (audit M4) | Lost on restart; lock contention; no horizontal scale | **FIXED (R5, `e107b10`)** — unrun |
+| B5 | Fixed 4 MiB object / 64 KiB record caps | `state.rs:21–22`, `lib.rs:93` | Large files need many objects; cap untunable at runtime | **FIXED (R9, `2373b4b`)** — unrun |
+| B6 | Maintenance audit/repair loops are sequential per operator/object | `services/maintenance/src/engine.rs` (`for client…`, `for cid…`) | Fleet repair time grows linearly with fleet × objects | **FIXED (R7, `587ce51`)** — unrun |
 | B7 | SQLite single-writer + 5 s `busy_timeout` in all 3 stores | `local-store/db.rs:46–47`, `maintenance/db.rs:68–70`, `account/lib.rs:72–75` | Write contention under watcher + dashboard + fleet load | Planned P2 (§12) |
 | B8 | Watcher 2 s debounce + 150 ms poll + full coherent re-read | `apps/cli/src/main.rs:398`, `apps/agent/src/watcher.rs:381–390` | Slowest save→backup path ≥2 s by default (tunable) | Accepted; document (P3) |
-| B9 | Fixed FastCDC 4/16/64 KiB for all file types | `crates/snapshot/src/fastcdc.rs:24–26` | Suboptimal chunking for very small/large secrets | Planned P2 (§12) |
-| B10 | 9.7k-line CLI monolith incl. dashboard server + collector | `apps/cli/src/main.rs` | Compile time, review risk, blast radius | Planned P2 (§12) |
+| B9 | Fixed FastCDC 4/16/64 KiB for all file types | `crates/snapshot/src/fastcdc.rs:24–26` | Suboptimal chunking for very small/large secrets | **FIXED (R9, `2373b4b`)** — unrun |
+| B10 | 10.9k-line CLI monolith incl. dashboard server + collector | `apps/cli/src/main.rs` | Compile time, review risk, blast radius | Plan written (`docs/SPLIT_PLAN.md`); execution needs toolchain |
 | B11 | Full Windows test run exhausts resources (needs `--jobs 1`) | Audit M2, readiness logs | Slow local verification on Windows | Accepted; Linux = release platform |
 | B12 | Per-command `reqwest` clients in one-shot CLI paths | `main.rs` builders (:1207, :1456, :4194, …) | None — process exits after one command | De-scoped (not a bottleneck) |
+
+Every FIXED row above is implemented and statically cross-checked but **not
+compiled or test-run** — no Rust toolchain or network exists in this environment
+(§9.4). The Phase 5 gate decides whether they stay fixed.
 
 ### 9.1 Fix B1 — concurrent quorum replication
 
@@ -325,9 +386,17 @@ prod at audit time — P0).
    `ui_router_tests` module (`main.rs` end) — both handles build requests correctly
    from the shared client.
 
-### 9.4 Verification (NOT yet run — no toolchain in this environment)
+### 9.4 Verification (partially run)
 
-On any host with Rust stable + Node + Foundry:
+Node gates run **green** in this environment (2026-09-17):
+
+```sh
+node --check apps/ui/app.js && node apps/ui/audit.test.cjs
+node tests/dashboard_container_contract.cjs
+```
+
+Rust/Foundry gates could not run here (no toolchain, no network for install).
+On any host with Rust stable + Node + Foundry, the full gate is:
 
 ```sh
 cargo fmt --all -- --check
@@ -336,41 +405,45 @@ cargo test -p ciphervault-cli --test replication_concurrency --locked
 cargo test -p ciphervault-cli --bin ciphervault account_proxy --locked
 cargo test --workspace --locked --jobs 1        # Windows (audit M2)
 cargo test --workspace --locked                 # Linux/macOS
+cargo test --release -p ciphervault-storage --locked push_bench -- --nocapture --ignored  # ~12 min; fills bench slot
 node --check apps/ui/app.js && node apps/ui/audit.test.cjs
 node tests/dashboard_container_contract.cjs
 forge test
+# drills: prune --dry-run, rekey --check, watch --dry-run, status --json, doctor
 ```
 
 CI (`.github/workflows/ci.yml`) runs fmt (Linux), clippy `-D warnings`, the full
-workspace suite on 3 OSs, the node checks, and `forge test` — a green CI run on the
-fix commit is the acceptance gate for §9.1–§9.2. If anything is red, the two fixes
-are isolated single-commit revertable without touching the plan in §12.
+workspace suite on 3 OSs, the push-bench job, the node checks, and `forge test`.
+Acceptance for the whole session is: green standing gates + bench numbers recorded
++ clean-machine recovery drill for R13/R18 + split execution per
+`docs/SPLIT_PLAN.md` (Phase 5, §12). Every session commit is a single-purpose
+local commit, so any red item is individually revertable.
 
 ## 10. Areas needing improvement and enhancement
 
-1. **Production trust evidence (highest priority).** Pin operator identities, publish
-   a signed checkpoint feed with independent finality receipts + canary + alarm
-   (audit H2/H3). Without this, "quorum" and "anchored" are client-side claims only.
-2. **Durable operator state.** Persist peers, approvals, sessions, challenges;
-   add expiry sweeps, quotas, mTLS/rebinding protection (audit M4/M5, B4).
-3. **Secret lifecycle.** Move signing/TOTP keys into a secret manager, rotate the
-   live values, prove no leakage into logs/images (audit H8); same ceremony for
-   operator signing keys.
-4. **Release provenance.** Build every release image from a CI commit, promote only
-   signed digests to the live VM, keep rollback tooling tested (audit H9).
-5. **Replication performance.** B3/B5/B6/B7/B9: per-path I/O sharding, tunable object
-   caps, concurrent maintenance with quorum-aware cancellation, SQLite tuning
-   (`synchronous=NORMAL` + contention metrics), adaptive FastCDC profiles.
-6. **Abuse controls.** Distributed rate limiting for TOTP/recovery (Redis/shared DB +
-   alert sink), recovery-session expiry + notifications + re-enrollment flow
-   (audit H6/H7), per-peer quotas.
-7. **Chain path hardening.** Provision production RPC + registry + receipt publisher;
-   expand Foundry coverage beyond the current small suite; add reorg/finality handling.
-8. **Codebase structure.** Split `main.rs` (CLI vs dashboard vs collector) and
-   `account/lib.rs`; pin Rust LF/CRLF in `.gitattributes`; add criterion-style
-   benches + a load test for push/repair to CI.
-9. **Platform parity.** macOS/Linux PIV support (or explicit unsupported-matrix docs);
-   document Windows `--jobs 1` requirement in the runbook.
+1. **Production trust evidence (highest priority) — implemented, unexecuted.** R1
+   identity ceremony + trust UI + expiry monitor, R2 publisher + receipt fetcher +
+   canary + alarm, plus the reorg alarm are all written; live identities,
+   checkpoint feed, and promotion still pending (Phase 5).
+2. **Durable operator state — implemented, unrun.** R5 durable peer/approval/session
+   store with tests; restart-recovery proof awaits the Phase 5 gate.
+3. **Secret lifecycle — runbook written, unexecuted.** R3 cutover procedure in
+   `docs/DEPLOYMENT_RUNBOOK.md`; live rotation pending.
+4. **Release provenance — runbook written, unexecuted.** R4 signed-digest
+   promotion procedure; first live promotion pending.
+5. **Replication performance — mostly implemented, unmeasured.** R6/R7/R8/R9 done
+   (sharding, tunable caps, concurrent maintenance, FastCDC profiles); B7 SQLite
+   tuning still open; bench suite + soak exist with zero results.
+6. **Abuse controls — implemented with a noted limit.** R10 lockout alert sink +
+   multi-replica limitation note (no shared Redis backend — documented, not
+   built); H7 TTL/notifications/re-enrollment; H5 step-up + role-matrix tests.
+7. **Chain path hardening — partial.** Foundry coverage expanded; reorg/finality
+   alarm added; production RPC + receipt publisher still unprovisioned.
+8. **Codebase structure — mostly planned.** Endings pinned; splits planned
+   (`docs/SPLIT_PLAN.md`) but not executed; bench suite added, soak unrun.
+9. **Platform parity — docs chosen over ports.** `docs/PLATFORM_SUPPORT.md` matrix
+   published (explicit support posture instead of new PIV ports); R17
+   `status --json` gutter feed; Windows `--jobs 1` posture unchanged.
 
 ## 11. Recommended features, systems, and functions
 
@@ -414,64 +487,127 @@ Prioritized MoSCoW; each maps to a §12 phase.
 **Won't (explicitly out of scope):** custodial SaaS recovery, plaintext server-side
 search/indexing, multi-chain anchoring before Arbitrum path is fully proven.
 
+### 11.1 Disposition (2026-09-17)
+
+- **DONE (implemented, unrun here):** R1, R2, R5, R6, R7, R8, R9, R11, R12, R13,
+  R14, R15, R17, R18, H5, H7 — plus the checkpoint reorg alarm (beyond R2) and
+  the TUI `cmd_push` arity fix (`e88a48d`).
+- **PARTIAL (scoped down, see §10):** R3/R4 (runbook written, live
+  cutover/promotion pending), R10 (alert sink + multi-replica note, no shared
+  backend), R16 (support-matrix docs instead of new token ports).
+- **OPEN:** none — but **every** item above awaits Phase 5 verification, and the
+  R13/R18 crypto-touching items additionally require the clean-machine recovery
+  drill before any promotion claim.
+
 ## 12. Implementation plan
 
 ### Phase 0 — Land and prove this session (0.5 day)
 
-- [ ] Run §9.4 gate on Linux + Windows; attach logs to the fix commit.
-- [ ] Merge B1/B2 + 2 regression tests; tag `v1.0.7-beta.1`.
+- [x] B1/B2 implemented + regression tests written (Node gates green in-env;
+  Rust gates moved to Phase 5).
+- [ ] Push + tag `v1.0.7-beta.1` (commits local-only; no push performed).
 - **Done when:** CI green on 3 OSs; `replication_concurrency` passes 10/10 runs.
+  → Not yet met; carried to Phase 5.
 
 ### Phase 1 — Production evidence (P0, 1–2 weeks)
 
-- [ ] R1 operator identity ceremony, pinned fingerprints, trust UI, expiry monitor.
-- [ ] R2 checkpoint publisher + receipt fetcher + canary + alarm; `/api/anchors` live.
-- [ ] R3/R4 secret-manager cutover + first signed-digest promotion to live VM.
-- [ ] Downgrade `SYSTEM_WORKFLOW.md` 10.0 claim to match measured evidence.
+- [x] R1 operator identity ceremony, pinned fingerprints, trust UI, expiry monitor.
+- [x] R2 checkpoint publisher + receipt fetcher + canary + alarm; reorg alarm extra.
+- [x] R3/R4 secret-manager cutover + signed-digest promotion runbook (live
+  execution → Phase 5).
+- [x] Downgrade `SYSTEM_WORKFLOW.md` 10.0 claim (headline fixed; per-category rows
+  still 10.0).
 - **Done when:** public explorer shows authenticated operators + non-empty verified
-  anchors; live image digest == signed CI digest.
+  anchors; live image digest == signed CI digest. → Not yet met; needs Phase 5.
 
 ### Phase 2 — Durability + abuse (P0/P1, 1–2 weeks)
 
-- [ ] R5 durable peer/approval/session store + restart tests; R10 shared limiter.
-- [ ] Recovery-session expiry/notifications + device re-enrollment flow (H7).
-- [ ] Expand role-matrix integration tests to every route (H5 remainder).
-- **Done when:** operator restart loses no quorum-critical state; abuse tests pass
-  against the shared backend.
+- [x] R5 durable peer/approval/session store + tests; R10 alert sink +
+  multi-replica note (shared limiter scoped down, §10.6).
+- [x] Recovery-session expiry/notifications + device re-enrollment flow (H7).
+- [x] Role-matrix step-up + integration tests (H5).
+- **Done when:** operator restart loses no quorum-critical state; abuse tests pass.
+  → Awaits test execution in Phase 5.
 
 ### Phase 3 — Performance (P1/P2, 2 weeks)
 
-- [ ] R6 bounded per-object concurrency + R7 concurrent maintenance + R8 I/O sharding.
-- [ ] R9 tunable caps + FastCDC profiles + bench suite in CI (B5/B9).
-- [ ] R11 metrics/tracing; R12 `doctor` command.
+- [x] R6 bounded per-object concurrency + R7 concurrent maintenance + R8 I/O sharding.
+- [x] R9 tunable caps + FastCDC profiles + bench suite in CI (B5/B9); B7 SQLite
+  tuning still open.
+- [x] R11 metrics/tracing; R12 `doctor` command.
 - **Done when:** p50 `push --pos` improved ≥2× on 3-node cluster (measured, logged);
-  no `busy_timeout` errors in soak test.
+  no `busy_timeout` errors in soak test. → Unmeasured; bench slot empty.
 
 ### Phase 4 — Structure + product (P2/P3, ongoing)
 
-- [ ] Split `main.rs` and `account/lib.rs`; `.gitattributes` Rust endings; kill CRLF drift.
-- [ ] Foundry coverage expansion; reorg/finality handling.
-- [ ] R13–R18 in priority order; platform parity or explicit support matrix.
+- [x] `.gitattributes` Rust endings; CRLF drift killed.
+- [ ] Split `main.rs` and `account/lib.rs` (plan written in `docs/SPLIT_PLAN.md`;
+  execution needs toolchain → Phase 5).
+- [x] Foundry coverage expansion; reorg/finality alarm.
+- [x] R13–R18 in priority order; explicit support matrix (`docs/PLATFORM_SUPPORT.md`).
 - **Done when:** no file >2.5k lines in `apps/`; coverage deltas reported per release.
+  → Not met: `main.rs` is 10,931 lines and growing; splits are the fix.
+
+### Phase 5 — Provisioned-host verification + live execution (new, blocking)
+
+Runs on a host with Rust stable + Foundry + network, in this order:
+
+- [ ] Standing gates green: fmt, clippy `-D warnings`, `cargo test --workspace
+  --locked` (Linux full / Windows `--jobs 1`), node checks, `forge test`.
+- [ ] Push-bench release run (~12 min); record numbers in the bench-results slot.
+- [ ] CLI drills: `prune --dry-run`, `rekey --check`, `watch --dry-run`,
+  `status --json`, `doctor`.
+- [ ] Clean-machine recovery drill for the crypto-touching items (R13/R18).
+- [ ] Execute `docs/SPLIT_PLAN.md` move-by-move with gates green after each step.
+- [ ] Live promotion (R4) + secret rotation (R3) + RPC-finality verification (R2).
+- **Done when:** as-demonstrated rating in §2 moves to match as-implemented.
 
 ### Standing gates (every phase)
 
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 `cargo test --workspace --locked` (Linux full / Windows `--jobs 1`), node UI checks,
-`forge test`, plus a clean-machine recovery drill for any crypto/recovery change.
+`forge test`, push-bench numbers recorded, plus a clean-machine recovery drill for
+any crypto/recovery change.
 
 ## Appendix A — What was changed in this session
 
-| File | Change |
-|---|---|
-| `crates/storage/src/pool.rs` | Concurrent quorum replication + sorted receipts (B1) |
-| `apps/cli/src/main.rs` | Shared pooled account-proxy client (B2) + unit test |
-| `apps/cli/tests/replication_concurrency.rs` | New 3-operator regression test (quorum + order + digest) |
-| `report/CIPHERVAULT_DEEP_DIVE_REPORT.md` | This report |
+25 local commits (`8f71a40`…`e88a48d`), all single-purpose, none pushed:
 
-No other source files were modified. Temp tooling (`.tmp-fix/`) was removed.
-`git` could not be used from this sandbox (repository ownership check), so nothing
-was committed — review with `git status`/`git diff` from your own shell.
+| Commit | Change |
+|---|---|
+| `8f71a40` | B1 concurrent quorum replication + B2 pooled account-proxy client |
+| `7358c0b` | R1 operator identity ceremony + trust UI + expiry monitoring |
+| `c81cfa6` | Fix UTF-8 content in R1 docs edits |
+| `a3792a6` | R2 checkpoint finality + publisher pinning + canary alarm |
+| `a3d9853` | R3/R4 secret cutover + signed promotion runbook |
+| `e107b10` | R5 durable peer routing and approval state |
+| `6c7ccde` | R10 auth lockout alert sink + multi-replica note |
+| `e21fd08` | H7 recovery TTL, notifications, re-enrollment workflow |
+| `7e2a5fc` | H5 recovery step-up on mutations + role-matrix test |
+| `048fa17` | R12 `doctor` self-check command |
+| `2373b4b` | R9 tunable operator caps + FastCDC chunking profiles |
+| `8a2dab9` | R6 bounded object concurrency + quorum early exit (`push --concurrency`) |
+| `587ce51` | R7 concurrent maintenance audits and repairs |
+| `4517d1f` | R8 striped operator disk I/O locks (B3) |
+| `077dd83` | R11 operator metrics + request tracing + fleet repair lag |
+| `d1d7bda` | Push throughput bench suite + CI job + soak proof |
+| `c9e62e6` | `*.rs` LF ending pin + expanded Foundry registry coverage |
+| `521539e` | R14 dashboard team workflows (role matrix + approval queue) |
+| `40e713c` | Checkpoint reorg alarm on finalized-receipt regression |
+| `e099901` | R18 snapshot retention prune + chunk GC |
+| `48a4189` | R13 epoch key rotation + age reminders |
+| `6957263` | R15 watcher dry-run inspector + capture event log |
+| `907a0bd` | R16/R17 `status --json` gutter feed + platform support matrix |
+| `ef74720` | Module split plan for CLI `main.rs` + account lib |
+| `e88a48d` | TUI `cmd_push` arity fix (missing `concurrency` arg) |
+| (this commit) | This report update |
+
+Key files touched: `services/operator/src/{state,lib,handlers,metrics}.rs`,
+`crates/storage/src/{pool,client,types}.rs`, `crates/local-store/src/db.rs`,
+`apps/cli/src/main.rs` + `tui/events.rs` + tests, `apps/agent/src/watcher.rs`,
+`contracts/test/CipherVaultRegistry.t.sol`, `docs/{DEPLOYMENT_RUNBOOK,
+PLATFORM_SUPPORT,SPLIT_PLAN}.md`, `.gitattributes`. Zero new dependencies;
+additive-only public APIs; line endings preserved per file.
 
 ## Appendix B — Key references
 
@@ -479,4 +615,6 @@ was committed — review with `git status`/`git diff` from your own shell.
 - `docs/SYSTEM_WORKFLOW.md` — architecture/workflows (scorecard §10 overstates readiness)
 - `docs/DEPLOYMENT_RUNBOOK.md`, `docs/CICD_INTEGRATION.md`,
   `docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md`
+- `docs/SPLIT_PLAN.md`, `docs/PLATFORM_SUPPORT.md` (both new this session)
+- Bench slot: `PUSH_BENCH_JSON` from `push_bench` release run (empty — Phase 5)
 - Live: `https://vault.cipherv.online` (explorer operational; identities/checkpoints unverified)
