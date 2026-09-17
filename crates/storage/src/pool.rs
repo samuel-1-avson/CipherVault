@@ -258,12 +258,26 @@ impl MultiOperatorPool {
         }
 
         // Publish bootstrap records before the head, and verify discovery readback.
+        // A prior interrupted push may have left a partial log (for example a
+        // genesis record whose device certificate never landed because quorum
+        // early-exit cancelled this operator in flight). The operator then
+        // rejects already-registered records with 400 while still accepting
+        // the missing suffix, so a rejection must not abort the pipeline: skip
+        // the record and let the discovery readback below decide. A rejection
+        // proves the operator is alive; transport errors still fail fast.
         for record in recovery_records {
-            if client
+            if let Err(e) = client
                 .append_recovery_record(token, locator, record.clone())
                 .await
-                .is_err()
             {
+                if matches!(e, StorageError::ServerError { .. }) {
+                    eprintln!(
+                        "Warning: operator {} rejected a bootstrap record ({}); continuing, discovery readback will decide",
+                        client.endpoint(),
+                        e
+                    );
+                    continue;
+                }
                 return None;
             }
         }
@@ -280,12 +294,26 @@ impl MultiOperatorPool {
             return None;
         }
 
-        let Ok(discovered) = client.get_recovery_records(locator).await else {
-            return None;
+        let discovered = match client.get_recovery_records(locator).await {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!(
+                    "Warning: discovery readback failed on {}: {}",
+                    client.endpoint(),
+                    e
+                );
+                return None;
+            }
         };
         if !discovered.iter().any(|r| r == head_record_bytes)
             || !recovery_records.iter().all(|r| discovered.contains(r))
         {
+            eprintln!(
+                "Warning: discovery mismatch on {}: log holds {} records, {} bootstrap plus head required",
+                client.endpoint(),
+                discovered.len(),
+                recovery_records.len()
+            );
             return None;
         }
 

@@ -33,6 +33,42 @@ async fn spawn_operator(
     (url, handle)
 }
 
+struct ReplicationFixture {
+    op_dirs: Vec<std::path::PathBuf>,
+    operators: Vec<String>,
+    vault_id: [u8; 32],
+    dev_sk: ed25519_dalek::SigningKey,
+    wire_objects: Vec<([u8; 32], Vec<u8>)>,
+    closure_digest: [u8; 32],
+    total_bytes: u64,
+    locator: [u8; 32],
+    head_cbor: Vec<u8>,
+    recovery_records: Vec<Vec<u8>>,
+    _handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl ReplicationFixture {
+    async fn replicate(
+        &self,
+        pool: &MultiOperatorPool,
+        required: usize,
+    ) -> Result<Vec<LeaseReceipt>, ciphervault_storage::StorageError> {
+        pool.replicate_and_verify(
+            &self.vault_id,
+            &self.dev_sk,
+            &self.wire_objects,
+            &self.closure_digest,
+            self.total_bytes,
+            90,
+            &self.locator,
+            &self.head_cbor,
+            &self.recovery_records,
+            required,
+        )
+        .await
+    }
+}
+
 fn assert_quorum_receipts(receipts: &[LeaseReceipt], closure_digest: &[u8; 32]) {
     assert_eq!(
         receipts.len(),
@@ -64,8 +100,7 @@ fn assert_quorum_receipts(receipts: &[LeaseReceipt], closure_digest: &[u8; 32]) 
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_concurrent_replication_reaches_quorum_with_stable_order() {
+async fn setup_replication_fixture() -> ReplicationFixture {
     let test_dir = std::env::temp_dir().join(format!(
         "cv_repl_conc_test_{}",
         std::time::SystemTime::now()
@@ -80,9 +115,9 @@ async fn test_concurrent_replication_reaches_quorum_with_stable_order() {
     let op2_dir = test_dir.join("op2");
     let op3_dir = test_dir.join("op3");
 
-    let (url1, _h1) = spawn_operator(8501, op1_dir).await;
-    let (url2, _h2) = spawn_operator(8502, op2_dir).await;
-    let (url3, _h3) = spawn_operator(8503, op3_dir).await;
+    let (url1, h1) = spawn_operator(8501, op1_dir.clone()).await;
+    let (url2, h2) = spawn_operator(8502, op2_dir.clone()).await;
+    let (url3, h3) = spawn_operator(8503, op3_dir.clone()).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let operators = vec![url1, url2, url3];
@@ -182,8 +217,7 @@ async fn test_concurrent_replication_reaches_quorum_with_stable_order() {
     store.save_device_certificate(&cert).unwrap();
     let recovery_set = store.prepare_recovery_set(&snap_out.record).unwrap();
 
-    // 3. Replicate across all 3 operators through the concurrent pipeline
-    let pool = MultiOperatorPool::new(operators.clone());
+    // 3. Wire objects for the concurrent pipeline (replication happens per-test)
     let mut wire_objects = Vec::new();
     for chunk in &snap_out.chunks {
         let cid = chunk.compute_cid().unwrap();
@@ -196,59 +230,68 @@ async fn test_concurrent_replication_reaches_quorum_with_stable_order() {
     let closure_digest = snap_out.closure.compute_base_closure_digest().unwrap();
     let head_cbor = to_canonical_cbor(&head).unwrap();
 
-    let receipts = pool
-        .replicate_and_verify(
-            &vault_id,
-            &dev_sk,
-            &wire_objects,
-            &closure_digest,
-            snap_out.closure.total_bytes,
-            90,
-            &locator,
-            &head_cbor,
-            &recovery_set.records,
-            3,
-        )
-        .await
-        .unwrap();
+    ReplicationFixture {
+        op_dirs: vec![op1_dir, op2_dir, op3_dir],
+        operators,
+        vault_id,
+        dev_sk,
+        wire_objects,
+        closure_digest,
+        total_bytes: snap_out.closure.total_bytes,
+        locator,
+        head_cbor,
+        recovery_records: recovery_set.records,
+        _handles: vec![h1, h2, h3],
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_replication_reaches_quorum_with_stable_order() {
+    let fixture = setup_replication_fixture().await;
+
+    // 3. Replicate across all 3 operators through the concurrent pipeline
+    let pool = MultiOperatorPool::new(fixture.operators.clone());
+
+    let receipts = fixture.replicate(&pool, 3).await.unwrap();
 
     // Quorum must survive the concurrent pipeline at default settings...
-    assert_quorum_receipts(&receipts, &closure_digest);
+    assert_quorum_receipts(&receipts, &fixture.closure_digest);
 
     // ...and at both ends of the object-concurrency range.
     pool.set_object_concurrency(1);
-    let sequential = pool
-        .replicate_and_verify(
-            &vault_id,
-            &dev_sk,
-            &wire_objects,
-            &closure_digest,
-            snap_out.closure.total_bytes,
-            90,
-            &locator,
-            &head_cbor,
-            &recovery_set.records,
-            3,
-        )
-        .await
-        .unwrap();
-    assert_quorum_receipts(&sequential, &closure_digest);
+    let sequential = fixture.replicate(&pool, 3).await.unwrap();
+    assert_quorum_receipts(&sequential, &fixture.closure_digest);
 
     pool.set_object_concurrency(8);
-    let concurrent = pool
-        .replicate_and_verify(
-            &vault_id,
-            &dev_sk,
-            &wire_objects,
-            &closure_digest,
-            snap_out.closure.total_bytes,
-            90,
-            &locator,
-            &head_cbor,
-            &recovery_set.records,
-            3,
-        )
-        .await
-        .unwrap();
-    assert_quorum_receipts(&concurrent, &closure_digest);
+    let concurrent = fixture.replicate(&pool, 3).await.unwrap();
+    assert_quorum_receipts(&concurrent, &fixture.closure_digest);
+}
+
+/// A push cancelled mid-flight (for example by quorum early-exit when a
+/// sibling operator fails) leaves a partial recovery log behind. The next
+/// push must heal that operator instead of failing quorum: the operator
+/// rejects the already-registered records with 400, the client skips them,
+/// appends the missing suffix, and the discovery readback confirms the set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_replication_heals_operator_with_partial_recovery_log() {
+    let fixture = setup_replication_fixture().await;
+    let pool = MultiOperatorPool::new(fixture.operators.clone());
+
+    // First push completes everywhere.
+    let receipts = fixture.replicate(&pool, 3).await.unwrap();
+    assert_quorum_receipts(&receipts, &fixture.closure_digest);
+
+    // Simulate a push cancelled after its first record: truncate op1's log to
+    // the genesis record alone (records are u32-big-endian length-prefixed).
+    let log_path = fixture.op_dirs[0]
+        .join("recovery")
+        .join(format!("{}.log", hex::encode(fixture.locator)));
+    let bytes = fs::read(&log_path).unwrap();
+    assert!(bytes.len() > 4, "expected a populated recovery log");
+    let first_len = u32::from_be_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    fs::write(&log_path, &bytes[..4 + first_len]).unwrap();
+
+    // The next push must heal the partial log and still reach quorum.
+    let healed = fixture.replicate(&pool, 3).await.unwrap();
+    assert_quorum_receipts(&healed, &fixture.closure_digest);
 }
