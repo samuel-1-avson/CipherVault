@@ -585,13 +585,16 @@ Runs on a host with Rust stable + Foundry + network, in this order:
   stopped); `status --json` exit 0 (valid JSON, 9 tracked files, stale epoch
   flagged); `doctor` exit 0 (5/5 PASS incl. live 3/3 operators + quorum).
   `replication_concurrency` passes 10/10 (Phase 0 carryover closed).
-- [ ] Ignored-secret backup + production verify (2026-09-17): `track
-  --from-gitignore` + 5 guardian shares captured into encrypted local snapshot
-  `95d4140b…` (12 files, 11 chunks) but replication failed — all 3 operators at
-  `vault.cipherv.online` unreachable (HTTPS timeout; proxy healthy, no recent
-  deploy per GitHub Actions). Local snapshot safe; retry `push` when operators
-  return. `git push` also blocked in-sandbox (no GitHub credentials); 5 commits
-  atop `origin/main` await push from a credentialed terminal.
+- [x] Ignored-secret backup (2026-09-17): `track --from-gitignore` + 5 guardian
+  shares captured and replicated `RemoteDurable (3/3 verified and read back)`
+  — snapshot `8c23bc68…` (12 files, 11 chunks). The earlier operator timeout was
+  sandbox-path-only; production never went down (`/v1/info` healthy, no recent
+  deploy per Actions). `git push` done from a credentialed terminal.
+- [ ] Deploy account-service fixes (next): tag `v1.0.7-beta.1` once CI is green
+  on the push, let `release.yml` publish signed GHCR images, then R4-promote
+  only `-AccountImage` (dashboard/operator code unchanged) with recorded
+  rollback digests; verify explorer + `/api/anchors` + `/api/operators` +
+  `docker inspect` + `doctor`.
 - [ ] Clean-machine recovery drill for the crypto-touching items (R13/R18).
 - [ ] Execute `docs/SPLIT_PLAN.md` move-by-move with gates green after each step.
 - [ ] Live promotion (R4) + secret rotation (R3) + RPC-finality verification (R2).
