@@ -578,8 +578,13 @@ Runs on a host with Rust stable + Foundry + network, in this order:
   4 clippy lints (commits `1312d98`…`f71bdbb`).
 - [x] Push-bench release run; numbers in the bench-results slot (Appendix B):
   speedup 3.13x (target ≥2.0x), `sqlite_busy_retries` 0 across soak.
-- [ ] CLI drills: `prune --dry-run`, `rekey --check`, `watch --dry-run`,
-  `status --json`, `doctor`.
+- [x] CLI drills (2026-09-17, debug CLI, workspace vault): `prune --dry-run`
+  exit 0 (0 targets, no changes); `rekey --check` exit 0 (flags unknown-age
+  epoch key, correct pre-rotation verdict); `watch --dry-run` starts in
+  inspector mode (daemon blocks by design; verified DRY-RUN banner, then
+  stopped); `status --json` exit 0 (valid JSON, 9 tracked files, stale epoch
+  flagged); `doctor` exit 0 (5/5 PASS incl. live 3/3 operators + quorum).
+  `replication_concurrency` passes 10/10 (Phase 0 carryover closed).
 - [ ] Clean-machine recovery drill for the crypto-touching items (R13/R18).
 - [ ] Execute `docs/SPLIT_PLAN.md` move-by-move with gates green after each step.
 - [ ] Live promotion (R4) + secret rotation (R3) + RPC-finality verification (R2).
