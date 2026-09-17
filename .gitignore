@@ -85,6 +85,7 @@ broadcast/
 # ==============================================================================
 .DS_Store
 Thumbs.db
+Microsoft/
 .idea/
 .vscode/
 .agents/

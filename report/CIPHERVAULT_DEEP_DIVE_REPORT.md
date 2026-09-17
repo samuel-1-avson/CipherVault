@@ -551,7 +551,10 @@ search/indexing, multi-chain anchoring before Arbitrum path is fully proven.
   contention counters + soak assertion done, `synchronous=FULL` retained.
 - [x] R11 metrics/tracing; R12 `doctor` command.
 - **Done when:** p50 `push --pos` improved ≥2× on 3-node cluster (measured, logged);
-  no `busy_timeout` errors in soak test. → Unmeasured; bench slot empty.
+  no `busy_timeout` errors in soak test. → Measured 2026-09-17: concurrent(c=8)
+  3.13x over sequential(c=1) on 48 x 16 KiB / 3 loopback operators (release);
+  `sqlite_busy_retries` 0 across soak. Loopback-only, not a 3-node cluster —
+  cluster p50 still unmeasured.
 
 ### Phase 4 — Structure + product (P2/P3, ongoing)
 
@@ -567,10 +570,14 @@ search/indexing, multi-chain anchoring before Arbitrum path is fully proven.
 
 Runs on a host with Rust stable + Foundry + network, in this order:
 
-- [ ] Standing gates green: fmt, clippy `-D warnings`, `cargo test --workspace
-  --locked` (Linux full / Windows `--jobs 1`), node checks, `forge test`.
-- [ ] Push-bench release run (~12 min); record numbers in the bench-results slot
-  (soak asserts zero SQLite contention via `sqlite_busy_retries`).
+- [x] Standing gates green: fmt, clippy `-D warnings`, `cargo test --workspace
+  --locked` (Windows `--jobs 1`; socket-binding bins verified in an unsandboxed
+  run since the sandbox forbids loopback bind), node checks, `forge test` 8/8.
+  Fixed en route: recovery-enrollment re-entrant deadlock, lockout-alert FK
+  silence on unknown accounts, loopback-test ambient account dependence,
+  4 clippy lints (commits `1312d98`…`f71bdbb`).
+- [x] Push-bench release run; numbers in the bench-results slot (Appendix B):
+  speedup 3.13x (target ≥2.0x), `sqlite_busy_retries` 0 across soak.
 - [ ] CLI drills: `prune --dry-run`, `rekey --check`, `watch --dry-run`,
   `status --json`, `doctor`.
 - [ ] Clean-machine recovery drill for the crypto-touching items (R13/R18).
@@ -636,5 +643,8 @@ additive-only public APIs; line endings preserved per file.
 - `docs/DEPLOYMENT_RUNBOOK.md`, `docs/CICD_INTEGRATION.md`,
   `docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md`
 - `docs/SPLIT_PLAN.md`, `docs/PLATFORM_SUPPORT.md` (both new this session)
-- Bench slot: `PUSH_BENCH_JSON` from `push_bench` release run (empty — Phase 5)
+- Bench slot: `PUSH_BENCH_JSON` from `push_bench` release run (2026-09-17,
+  Windows x64, 3 loopback operators, defaults 48 x 16 KiB, soak 2 iters):
+  `{"objects":48,"object_kb":16,"sequential_secs":0.2108,"concurrent_secs":0.0674,"speedup":3.13,"soak_iters":2,"quorum":3,"sqlite_busy_retries":0}` —
+  speedup 3.13x clears the 2.0x target; soak asserts zero SQLite contention.
 - Live: `https://vault.cipherv.online` (explorer operational; identities/checkpoints unverified)
