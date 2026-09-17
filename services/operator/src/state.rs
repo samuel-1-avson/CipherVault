@@ -147,6 +147,17 @@ struct PersistedSession {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedChallenge {
+    challenge_id: String,
+    nonce_hex: String,
+    expires_at_utc: u64,
+    vault_id_hex: String,
+    public_key_hex: String,
+    account_id: Option<String>,
+    device_id_hex: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EnrolledIdentity {
     pub vault_id_hex: String,
     pub public_key_hex: String,
@@ -231,6 +242,7 @@ impl OperatorState {
         };
         state.load_enrolled_identities();
         state.load_sessions();
+        state.load_challenges();
         state.load_relayed_checkpoints();
         state.load_peer_routing_table();
         state.load_approval_challenges();
@@ -475,6 +487,10 @@ impl OperatorState {
         self.data_dir.join("sessions.json")
     }
 
+    fn challenge_store_path(&self) -> PathBuf {
+        self.data_dir.join("challenges.json")
+    }
+
     fn load_sessions(&self) {
         let Ok(bytes) = fs::read(self.session_store_path()) else {
             return;
@@ -502,6 +518,39 @@ impl OperatorState {
             sessions.insert(record.token.clone(), record.expires_at_utc);
             keys.insert(record.token.clone(), key);
             vaults.insert(record.token, record.vault_id_hex);
+        }
+    }
+
+    fn load_challenges(&self) {
+        let Ok(bytes) = fs::read(self.challenge_store_path()) else {
+            return;
+        };
+        let Ok(records) = serde_json::from_slice::<Vec<PersistedChallenge>>(&bytes) else {
+            return;
+        };
+        let now = Utc::now().timestamp() as u64;
+        let mut challenges = self.challenges.lock().unwrap();
+        for record in records {
+            if record.expires_at_utc <= now || record.challenge_id.is_empty() {
+                continue;
+            }
+            if hex::decode(&record.nonce_hex).map(|b| b.len()) != Ok(32)
+                || hex::decode(&record.vault_id_hex).map(|b| b.len()) != Ok(32)
+                || hex::decode(&record.public_key_hex).map(|b| b.len()) != Ok(32)
+            {
+                continue;
+            }
+            challenges.insert(
+                record.challenge_id,
+                ChallengeRecord {
+                    nonce_hex: record.nonce_hex,
+                    expires_at_utc: record.expires_at_utc,
+                    vault_id_hex: record.vault_id_hex,
+                    public_key_hex: record.public_key_hex,
+                    account_id: record.account_id,
+                    device_id_hex: record.device_id_hex,
+                },
+            );
         }
     }
 
@@ -662,6 +711,38 @@ impl OperatorState {
         }
     }
 
+    fn persist_challenges(&self) {
+        let challenges = self.challenges.lock().unwrap();
+        let records: Vec<PersistedChallenge> = challenges
+            .iter()
+            .map(|(challenge_id, record)| PersistedChallenge {
+                challenge_id: challenge_id.clone(),
+                nonce_hex: record.nonce_hex.clone(),
+                expires_at_utc: record.expires_at_utc,
+                vault_id_hex: record.vault_id_hex.clone(),
+                public_key_hex: record.public_key_hex.clone(),
+                account_id: record.account_id.clone(),
+                device_id_hex: record.device_id_hex.clone(),
+            })
+            .collect();
+        let Ok(encoded) = serde_json::to_vec(&records) else {
+            return;
+        };
+        let tmp = self.data_dir.join("challenges.json.tmp");
+        if fs::write(&tmp, encoded).is_ok() {
+            let _ = fs::remove_file(self.challenge_store_path());
+            if fs::rename(tmp, self.challenge_store_path()).is_ok() {
+                #[cfg(unix)]
+                {
+                    let _ = fs::set_permissions(
+                        self.challenge_store_path(),
+                        fs::Permissions::from_mode(0o600),
+                    );
+                }
+            }
+        }
+    }
+
     fn audit_event(&self, event: &str, fields: serde_json::Value) {
         // Leaf serialization for concurrent events.log appends. This lock is
         // taken here only and never held while acquiring another lock.
@@ -753,6 +834,8 @@ impl OperatorState {
                 device_id_hex: device_id_hex.clone(),
             },
         );
+        drop(lock);
+        self.persist_challenges();
         self.audit_event(
             "challenge_issued",
             serde_json::json!({
@@ -777,6 +860,7 @@ impl OperatorState {
             let mut lock = self.challenges.lock().unwrap();
             lock.remove(challenge_id)?
         };
+        self.persist_challenges();
 
         if now > challenge.expires_at_utc {
             return None;
