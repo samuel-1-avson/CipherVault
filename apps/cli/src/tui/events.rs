@@ -208,6 +208,7 @@ async fn execute_quick_push() -> anyhow::Result<String> {
         false,
         None,
         None,
+        None,
     )
     .await?;
     Ok("✓ Encrypted snapshot created and confirmed across operator quorum.".into())
