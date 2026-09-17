@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -64,13 +65,37 @@ pub enum AccountServiceError {
     Invalid(String),
 }
 
+/// SQLite lock-contention waits since process start (B7). Installed as the
+/// connection busy handler in [`AccountState::open`]: each lock wait bumps the
+/// counter, the handler sleeps 5 ms (SQLite does not sleep for custom handlers
+/// — returning `true` without sleeping would hot-spin), and it gives up after
+/// ~1000 waits to preserve the historical 5 s timeout. `synchronous`
+/// deliberately stays at the default FULL: the account database keeps crash
+/// durability, and load gates assert this counter instead of weakening
+/// persistence.
+static SQLITE_BUSY_RETRIES: AtomicU64 = AtomicU64::new(0);
+
+fn counting_busy_handler(prior_waits: i32) -> bool {
+    SQLITE_BUSY_RETRIES.fetch_add(1, Ordering::Relaxed);
+    if prior_waits >= 1000 {
+        return false;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    true
+}
+
+/// Total SQLite busy-handler waits since process start.
+pub fn sqlite_busy_retries() -> u64 {
+    SQLITE_BUSY_RETRIES.load(Ordering::Relaxed)
+}
+
 impl AccountState {
     pub fn open(data_dir: impl Into<PathBuf>) -> Result<Self, AccountServiceError> {
         let data_dir = data_dir.into();
         fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("accounts.sqlite3");
         let connection = Connection::open(db_path.clone())?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.busy_handler(Some(counting_busy_handler))?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
