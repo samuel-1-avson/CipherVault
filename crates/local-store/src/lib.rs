@@ -12,7 +12,7 @@ pub use account::{
     AccountDevice, AccountError, AccountRecord, AccountSessionStatus, AccountStore, AccountVault,
 };
 pub use db::{
-    ActivityEntry, LocalVaultStore, PendingUpload, RecoveryDescriptors, sqlite_busy_retries,
+    sqlite_busy_retries, ActivityEntry, LocalVaultStore, PendingUpload, RecoveryDescriptors,
 };
 pub use error::LocalStoreError;
 pub use keyring::{protect_secret, unprotect_secret};

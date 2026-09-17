@@ -91,7 +91,10 @@ async fn test_watch_dry_run_inspects_without_persisting() {
         root_dir: root_dir.clone(),
         debounce: Duration::from_millis(50),
         replicate_remote: true,
-        operators: vec!["http://127.0.0.1:8101".into(), "http://127.0.0.1:8102".into()],
+        operators: vec![
+            "http://127.0.0.1:8101".into(),
+            "http://127.0.0.1:8102".into(),
+        ],
         dry_run: true,
     };
     let watcher = VaultWatcher::new(config).unwrap();
@@ -111,7 +114,9 @@ async fn test_watch_dry_run_inspects_without_persisting() {
     let watcher = VaultWatcher::new(config).unwrap();
     watcher.capture_and_sync(None).await.unwrap();
     let events = store.list_activity(10).unwrap();
-    assert!(events.iter().any(|event| event.event_type == "WATCH_SNAPSHOT"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "WATCH_SNAPSHOT"));
 
     let _ = fs::remove_dir_all(test_dir);
 }

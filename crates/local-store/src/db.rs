@@ -1057,7 +1057,10 @@ impl LocalVaultStore {
     /// rows, then garbage-collects chunks unreferenced by retained recovery
     /// sets. Chunk GC is skipped entirely when any retained snapshot lacks a
     /// recovery set (its references are unknowable).
-    pub fn prune_snapshots(&self, record_cids: &[[u8; 32]]) -> Result<PruneOutcome, LocalStoreError> {
+    pub fn prune_snapshots(
+        &self,
+        record_cids: &[[u8; 32]],
+    ) -> Result<PruneOutcome, LocalStoreError> {
         use std::collections::HashSet;
 
         let active_head_cid: Option<[u8; 32]> = self
@@ -1162,7 +1165,8 @@ impl LocalVaultStore {
         let mut bytes_reclaimed = 0u64;
         if sets_complete {
             let doomed: Vec<([u8; 32], i64)> = {
-                let mut stmt = tx.prepare("SELECT chunk_cid, length(chunk_cbor) FROM local_chunks")?;
+                let mut stmt =
+                    tx.prepare("SELECT chunk_cid, length(chunk_cbor) FROM local_chunks")?;
                 let rows = stmt.query_map([], |row| {
                     let blob: Vec<u8> = row.get(0)?;
                     let len: i64 = row.get(1)?;

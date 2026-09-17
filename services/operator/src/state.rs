@@ -11,13 +11,13 @@ use std::sync::Mutex;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use crate::metrics::OperatorMetrics;
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::{
     compute_digest, from_canonical_cbor, DeviceCertificate, EpochEnvelope, GenesisRecord,
     HeadRecord, SnapshotRecord, PROTOCOL_VERSION,
 };
 use ciphervault_storage::types::LeaseReceipt;
-use crate::metrics::OperatorMetrics;
 
 pub const MAX_OBJECT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB max per chunk/manifest object
 pub const MAX_RECOVERY_RECORD_SIZE: usize = 64 * 1024; // 64 KiB max per recovery record
@@ -52,7 +52,10 @@ pub fn parse_byte_size(value: &str) -> Option<usize> {
 /// below-`floor` values fall back to `default` with a stderr warning, so a typo
 /// can never silently zero a limit.
 pub fn operator_limit_from_env(name: &str, default: usize, floor: usize) -> usize {
-    let raw = match std::env::var(name).ok().map(|value| value.trim().to_string()) {
+    let raw = match std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+    {
         Some(value) if !value.is_empty() => value,
         _ => return default,
     };
@@ -644,8 +647,7 @@ impl OperatorState {
                     Vec<ciphervault_recovery::SignedApprovalReceipt>,
                 ),
             >,
-        >(&bytes)
-        else {
+        >(&bytes) else {
             return;
         };
         let now = Utc::now().timestamp() as u64;
@@ -1097,8 +1099,7 @@ impl OperatorState {
     ) -> Result<ciphervault_storage::ProofOfStorageReceipt, String> {
         let started = std::time::Instant::now();
         let outcome = self.generate_pos_proof_inner(cid_hex, nonce);
-        self.metrics
-            .observe_pos(started.elapsed(), outcome.is_ok());
+        self.metrics.observe_pos(started.elapsed(), outcome.is_ok());
         outcome
     }
 
@@ -1201,7 +1202,10 @@ impl OperatorState {
         {
             return Err("Invalid closure digest or retention term".into());
         }
-        let _stripe_guard = self.io_stripe(closure_digest_hex).lock().map_err(|e| e.to_string())?;
+        let _stripe_guard = self
+            .io_stripe(closure_digest_hex)
+            .lock()
+            .map_err(|e| e.to_string())?;
         let now = Utc::now().timestamp() as u64;
         self.persist_lease(LeaseReceipt {
             lease_id: hex::encode(rand::random::<[u8; 16]>()),
@@ -1267,8 +1271,7 @@ impl OperatorState {
         record: &[u8],
         caller_pk: Option<&[u8; 32]>,
     ) -> Result<u64, String> {
-        let outcome =
-            self.append_authorized_recovery_record_inner(locator_hex, record, caller_pk);
+        let outcome = self.append_authorized_recovery_record_inner(locator_hex, record, caller_pk);
         self.metrics
             .observe_recovery_append(record.len() as u64, outcome.is_ok());
         outcome
@@ -1749,22 +1752,21 @@ impl OperatorState {
     ) -> Result<usize, String> {
         let challenge_id = receipt.challenge_id.clone();
         let mut lock = self.approval_challenges.lock().unwrap();
-        let (already_recorded, count) = if let Some((challenge, receipts)) =
-            lock.get_mut(&challenge_id)
-        {
-            receipt
-                .verify(challenge)
-                .map_err(|e| format!("Invalid receipt: {}", e))?;
-            let already_recorded = receipts
-                .iter()
-                .any(|r| r.approver_pk_hex == receipt.approver_pk_hex);
-            if !already_recorded {
-                receipts.push(receipt);
-            }
-            (already_recorded, receipts.len())
-        } else {
-            return Err("Challenge ID not found or already expired".into());
-        };
+        let (already_recorded, count) =
+            if let Some((challenge, receipts)) = lock.get_mut(&challenge_id) {
+                receipt
+                    .verify(challenge)
+                    .map_err(|e| format!("Invalid receipt: {}", e))?;
+                let already_recorded = receipts
+                    .iter()
+                    .any(|r| r.approver_pk_hex == receipt.approver_pk_hex);
+                if !already_recorded {
+                    receipts.push(receipt);
+                }
+                (already_recorded, receipts.len())
+            } else {
+                return Err("Challenge ID not found or already expired".into());
+            };
         let snapshot = lock.clone();
         if let Err(error) = self.persist_approval_challenges(&snapshot) {
             if !already_recorded {
@@ -2217,7 +2219,9 @@ mod tests {
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
         );
-        let status = reopened.get_challenge_status(&challenge.challenge_id).unwrap();
+        let status = reopened
+            .get_challenge_status(&challenge.challenge_id)
+            .unwrap();
         assert_eq!(status.1.len(), 1);
         assert_eq!(status.1[0].approver_name, "Alice Lead");
 

@@ -109,8 +109,7 @@ impl MaintenanceEngine {
             if !discovery_ok {
                 discovery_missing.push(endpoint.clone());
             }
-            if discovery_ok
-                && objects.operator_counts.get(endpoint) == Some(&objects.total_objects)
+            if discovery_ok && objects.operator_counts.get(endpoint) == Some(&objects.total_objects)
             {
                 if let Some(key) = pk {
                     if verified_keys.insert(key) {
@@ -402,8 +401,7 @@ impl MaintenanceEngine {
             .map(|c| (c.endpoint().to_string(), c.clone()))
             .collect();
 
-        let mut repair_outcomes: HashMap<[u8; 32], (bool, Vec<PlacementUpdate>)> =
-            HashMap::new();
+        let mut repair_outcomes: HashMap<[u8; 32], (bool, Vec<PlacementUpdate>)> = HashMap::new();
         for batch in audit.degraded_objects.chunks(4) {
             let mut tasks = JoinSet::new();
             for item in batch {

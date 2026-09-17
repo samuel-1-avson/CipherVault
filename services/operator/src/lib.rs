@@ -166,6 +166,6 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
                     axum::http::HeaderName::from_static("x-ciphervault-trace-id"),
                 ]),
         )
-.layer(DefaultBodyLimit::max(state::max_object_size()))
+        .layer(DefaultBodyLimit::max(state::max_object_size()))
         .with_state(state)
 }

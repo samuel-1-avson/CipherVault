@@ -55,10 +55,7 @@ async fn metrics_endpoint_and_trace_echo() {
         )
         .await
         .unwrap();
-    assert!(dropped
-        .headers()
-        .get("x-ciphervault-trace-id")
-        .is_none());
+    assert!(dropped.headers().get("x-ciphervault-trace-id").is_none());
 
     let response = app
         .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())

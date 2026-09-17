@@ -174,14 +174,17 @@ impl MultiOperatorPool {
                 if already_present {
                     return Ok(());
                 }
-                client.put_object(token, cid, data.clone()).await.map_err(|error| {
-                    eprintln!(
-                        "Upload to {} failed for object {}: {}",
-                        client.endpoint(),
-                        hex::encode(cid),
-                        error
-                    );
-                })
+                client
+                    .put_object(token, cid, data.clone())
+                    .await
+                    .map_err(|error| {
+                        eprintln!(
+                            "Upload to {} failed for object {}: {}",
+                            client.endpoint(),
+                            hex::encode(cid),
+                            error
+                        );
+                    })
             });
             if join_all(uploads).await.iter().any(|result| result.is_err()) {
                 return None;
@@ -245,7 +248,11 @@ impl MultiOperatorPool {
                 }
                 verified
             });
-            if join_all(verifications).await.iter().any(|verified| !verified) {
+            if join_all(verifications)
+                .await
+                .iter()
+                .any(|verified| !verified)
+            {
                 return None;
             }
         }

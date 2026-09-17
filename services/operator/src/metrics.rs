@@ -305,8 +305,7 @@ impl OperatorMetrics {
             &mut out,
             "ciphervault_operator_recovery_records_read_total",
             "Recovery records returned by reads.",
-            self.recovery_records_read_total
-                .load(Ordering::Relaxed),
+            self.recovery_records_read_total.load(Ordering::Relaxed),
         );
         render_counter(
             &mut out,

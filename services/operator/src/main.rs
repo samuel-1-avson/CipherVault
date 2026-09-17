@@ -200,6 +200,9 @@ mod identity_tests {
 
     #[test]
     fn registry_entry_pairs_operator_id_with_public_key() {
-        assert_eq!(format_identity_registry_entry("op_8201", "ABCD"), "op_8201=ABCD");
+        assert_eq!(
+            format_identity_registry_entry("op_8201", "ABCD"),
+            "op_8201=ABCD"
+        );
     }
 }

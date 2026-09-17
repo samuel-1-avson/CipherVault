@@ -33,7 +33,10 @@ struct Cli {
     )]
     sync: bool,
 
-    #[arg(long, help = "Inspector mode: report captures without persisting or replicating")]
+    #[arg(
+        long,
+        help = "Inspector mode: report captures without persisting or replicating"
+    )]
     dry_run: bool,
 }
 

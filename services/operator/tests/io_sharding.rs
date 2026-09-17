@@ -18,14 +18,15 @@ fn concurrent_puts_across_keys_stay_consistent() {
         let state = Arc::clone(&state);
         handles.push(std::thread::spawn(move || {
             for item in 0..32u32 {
-                let mut payload =
-                    format!("shard payload thread={thread} item={item}").into_bytes();
+                let mut payload = format!("shard payload thread={thread} item={item}").into_bytes();
                 payload.extend(vec![thread as u8; 1024]);
                 let cid_hex = hex::encode(ciphervault_format::compute_digest(&payload));
                 state.put_object(&cid_hex, &payload).unwrap();
                 // Same-key concurrent writers serialize on one stripe.
                 state.put_object(&cid_hex, &payload).unwrap();
-                let read_back = state.get_object(&cid_hex).expect("stored object reads back");
+                let read_back = state
+                    .get_object(&cid_hex)
+                    .expect("stored object reads back");
                 assert_eq!(read_back, payload);
             }
         }));
@@ -40,8 +41,7 @@ fn concurrent_puts_across_keys_stay_consistent() {
         let state = Arc::clone(&state);
         handles.push(std::thread::spawn(move || {
             for item in 0..8u32 {
-                let vault_hex =
-                    format!("{:064x}", u64::from(thread) * 1000 + u64::from(item) + 1);
+                let vault_hex = format!("{:064x}", u64::from(thread) * 1000 + u64::from(item) + 1);
                 let key_hex = format!(
                     "{:064x}",
                     u64::from(thread) * 1_000_000 + u64::from(item) + 0x9e37
@@ -62,8 +62,7 @@ fn concurrent_puts_across_keys_stay_consistent() {
         let state = Arc::clone(&state);
         handles.push(std::thread::spawn(move || {
             for item in 0..8u32 {
-                let vault_hex =
-                    format!("{:064x}", u64::from(thread) * 1000 + u64::from(item) + 1);
+                let vault_hex = format!("{:064x}", u64::from(thread) * 1000 + u64::from(item) + 1);
                 let key_hex = format!(
                     "{:064x}",
                     u64::from(thread) * 1_000_000 + u64::from(item) + 0x9e37

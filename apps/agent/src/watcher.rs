@@ -154,7 +154,11 @@ impl VaultWatcher {
             1,
             &device_sk,
         )?;
-        let bytes: u64 = output.chunks.iter().map(|chunk| chunk.payload.len() as u64).sum();
+        let bytes: u64 = output
+            .chunks
+            .iter()
+            .map(|chunk| chunk.payload.len() as u64)
+            .sum();
         Ok(WatchInspection {
             files: tracked.len(),
             chunks: output.chunks.len(),
