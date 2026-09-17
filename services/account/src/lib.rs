@@ -685,13 +685,13 @@ fn account_role_for(
 /// Mutations require a strong (non-recovery) session even when the role gate
 /// passes: recovery sessions read as their account's implicit owner, but must
 /// enroll a device before changing account state.
-fn require_strong_session(session: &SessionView) -> Result<(), Response> {
+fn require_strong_session(session: &SessionView) -> Result<(), Box<Response>> {
     if session.auth_method == "recovery" {
-        return Err(error_response(
+        return Err(Box::new(error_response(
             StatusCode::FORBIDDEN,
             "RECOVERY_STEP_UP_REQUIRED",
             "Recovery sessions must enroll a device before account changes",
-        ));
+        )));
     }
     Ok(())
 }
@@ -1331,6 +1331,12 @@ fn auth_rate_lockout_alert(db: &Connection, key: &str, now: u64) {
     if account_id.trim().is_empty() {
         return;
     }
+    // audit_events.account_id is FK-bound: lockouts for unknown accounts
+    // (probing, typos) keep the stderr alert above but have no account row
+    // to hang a queryable event on.
+    if !account_exists(db, account_id).unwrap_or(false) {
+        return;
+    }
     let _ = audit_event(
         db,
         account_id,
@@ -1464,6 +1470,19 @@ fn authenticated_session(
     state: &AccountState,
     headers: &HeaderMap,
 ) -> Result<SessionView, Response> {
+    let db = state.connection().map_err(service_error)?;
+    authenticated_session_with_db(&db, headers)
+}
+
+/// Session lookup against an already-held connection. Callers that hold the
+/// [`AccountState`] database guard (e.g. device enrollment's recovery branch)
+/// must use this variant: `authenticated_session` would deadlock re-locking
+/// the non-reentrant guard on the same thread.
+#[allow(clippy::result_large_err)]
+fn authenticated_session_with_db(
+    db: &Connection,
+    headers: &HeaderMap,
+) -> Result<SessionView, Response> {
     let token = session_token(headers).ok_or_else(|| {
         error_response(
             StatusCode::UNAUTHORIZED,
@@ -1473,8 +1492,7 @@ fn authenticated_session(
     })?;
     let token_hash = hash_token(&token);
     let now = now_utc();
-    let db = state.connection().map_err(service_error)?;
-    if let Err(error) = prune_expired(&db, now) {
+    if let Err(error) = prune_expired(db, now) {
         return Err(service_error(error.into()));
     }
     let session = db
@@ -1990,7 +2008,7 @@ pub async fn post_device_enrollment(
     // the new device key itself proves possession of the enrolled keypair.
     let mut enrolled_via_recovery = false;
     if !account_proof_valid {
-        let recovery_authorized = authenticated_session(&state, &headers)
+        let recovery_authorized = authenticated_session_with_db(&db, &headers)
             .ok()
             .is_some_and(|session| {
                 session.account_id == account_id && session.auth_method == "recovery"
@@ -2006,9 +2024,9 @@ pub async fn post_device_enrollment(
             Ok(key) => key,
             Err(error) => return service_error(error),
         };
-        let device_key = match VerifyingKey::from_bytes(&device_key_bytes).map_err(|_| {
-            AccountServiceError::Invalid("device public key is invalid".into())
-        }) {
+        let device_key = match VerifyingKey::from_bytes(&device_key_bytes)
+            .map_err(|_| AccountServiceError::Invalid("device public key is invalid".into()))
+        {
             Ok(key) => key,
             Err(error) => return service_error(error),
         };
@@ -2503,7 +2521,7 @@ pub async fn post_vault_link(
         Err(response) => return *response,
     };
     if let Err(response) = require_strong_session(&session) {
-        return response;
+        return *response;
     }
     if let Err(error) = decode_32(&request.vault_id_hex, "vault_id_hex") {
         return service_error(error);
@@ -2593,7 +2611,7 @@ pub async fn post_invitation(
         Err(response) => return *response,
     };
     if let Err(response) = require_strong_session(&session) {
-        return response;
+        return *response;
     }
     let invitee = match normalize_account_id(&request.invitee_account_id) {
         Ok(value) => value,
@@ -2853,7 +2871,7 @@ pub async fn post_membership_revoke(
         Err(response) => return *response,
     };
     if let Err(response) = require_strong_session(&session) {
-        return response;
+        return *response;
     }
     if session.account_id == member_account_id {
         return error_response(
@@ -5188,12 +5206,30 @@ mod tests {
     fn authentication_rate_limiter_blocks_repeated_failures() {
         let root = std::env::temp_dir().join(format!("cv-account-rate-{}", random_hex(8)));
         let state = AccountState::open(&root).expect("state");
+        // Lockout audit events are FK-bound to accounts: seed the account the
+        // rate key names so the alert lands in the audit trail.
+        state
+            .connection()
+            .expect("db")
+            .execute(
+                "INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc) VALUES(?1, 'Test', ?2, 1)",
+                params!["cvacct_test", random_hex(32)],
+            )
+            .expect("seed account");
         let key = "totp-login:cvacct_test:unknown";
         for _ in 0..AUTH_RATE_MAX_FAILURES {
             assert!(auth_rate_allowed(&state, key).is_ok());
             auth_rate_failure(&state, key);
         }
         assert!(auth_rate_allowed(&state, key).is_err());
+        // Unknown accounts still lock out, but there is no account row to hang
+        // an audit event on: the stderr alert fires, the audit count is unchanged.
+        let unknown_key = "totp-login:cvacct_missing:unknown";
+        for _ in 0..AUTH_RATE_MAX_FAILURES {
+            assert!(auth_rate_allowed(&state, unknown_key).is_ok());
+            auth_rate_failure(&state, unknown_key);
+        }
+        assert!(auth_rate_allowed(&state, unknown_key).is_err());
         let db = state.connection().expect("db");
         let lockouts: i64 = db
             .query_row(
@@ -5214,8 +5250,8 @@ mod tests {
 
     #[tokio::test]
     async fn recovery_session_enrolls_replacement_device() {
-        let root = std::env::temp_dir()
-            .join(format!("cv-account-recovery-enroll-{}", random_hex(8)));
+        let root =
+            std::env::temp_dir().join(format!("cv-account-recovery-enroll-{}", random_hex(8)));
         let state = AccountState::open(&root).expect("state");
         let app = create_router(state);
         let account_key = generate_signing_key();
@@ -5512,10 +5548,14 @@ mod tests {
             .and_then(|events| events.as_array())
             .unwrap()
             .clone();
-        assert!(events.iter().any(|event| event["event"] == "recovery_code_redeemed"
-            && event["details"]["session_ttl_secs"] == RECOVERY_SESSION_TTL_SECONDS));
-        assert!(events.iter().any(|event| event["event"] == "device_enrolled"
-            && event["details"]["enrollment"] == "recovery_session"));
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "recovery_code_redeemed"
+                && event["details"]["session_ttl_secs"] == RECOVERY_SESSION_TTL_SECONDS));
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "device_enrolled"
+                && event["details"]["enrollment"] == "recovery_session"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -5595,15 +5635,13 @@ mod tests {
             }
         }
         // Actor index: 0 owner, 1 admin, 2 editor, 3 viewer, 4 outsider, 5 recovery.
-        let token_for = |actor: usize| {
-            match actor {
-                0 => owner_token.clone(),
-                1 => admin_token.clone(),
-                2 => editor_token.clone(),
-                3 => viewer_token.clone(),
-                4 => outsider_token.clone(),
-                _ => recovery_token.clone(),
-            }
+        let token_for = |actor: usize| match actor {
+            0 => owner_token.clone(),
+            1 => admin_token.clone(),
+            2 => editor_token.clone(),
+            3 => viewer_token.clone(),
+            4 => outsider_token.clone(),
+            _ => recovery_token.clone(),
         };
         let uri_members = format!("/v1/accounts/{owner}/memberships");
         let uri_invites = format!("/v1/accounts/{owner}/invitations");
@@ -5617,7 +5655,8 @@ mod tests {
         let invite_body =
             serde_json::json!({"invitee_account_id": invitee, "role": "viewer"}).to_string();
         let codes_body = r#"{"count":4}"#.to_string();
-        let cases: Vec<(&str, String, Option<String>, Option<usize>, StatusCode)> = vec![
+        type RoleMatrixCase<'a> = (&'a str, String, Option<String>, Option<usize>, StatusCode);
+        let cases: Vec<RoleMatrixCase<'_>> = vec![
             ("GET", uri_members.clone(), None, Some(0), OK),
             ("GET", uri_members.clone(), None, Some(1), OK),
             ("GET", uri_members.clone(), None, Some(2), OK),
@@ -5631,24 +5670,132 @@ mod tests {
             ("GET", uri_invites.clone(), None, Some(3), FORBIDDEN),
             ("GET", uri_invites.clone(), None, Some(4), FORBIDDEN),
             ("GET", uri_invites.clone(), None, Some(5), OK),
-            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(0), CREATED),
-            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(1), CREATED),
-            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(2), FORBIDDEN),
-            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(3), FORBIDDEN),
-            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(4), FORBIDDEN),
-            ("POST", uri_invites.clone(), Some(invite_body.clone()), Some(5), FORBIDDEN),
-            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(0), NO_CONTENT),
-            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(1), FORBIDDEN),
-            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(2), FORBIDDEN),
-            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(3), FORBIDDEN),
-            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(4), FORBIDDEN),
-            ("POST", uri_vaults.clone(), Some(vault_body.clone()), Some(5), FORBIDDEN),
-            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(0), OK),
-            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(1), FORBIDDEN),
-            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(2), FORBIDDEN),
-            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(3), FORBIDDEN),
-            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(4), FORBIDDEN),
-            ("POST", uri_codes.clone(), Some(codes_body.clone()), Some(5), FORBIDDEN),
+            (
+                "POST",
+                uri_invites.clone(),
+                Some(invite_body.clone()),
+                Some(0),
+                CREATED,
+            ),
+            (
+                "POST",
+                uri_invites.clone(),
+                Some(invite_body.clone()),
+                Some(1),
+                CREATED,
+            ),
+            (
+                "POST",
+                uri_invites.clone(),
+                Some(invite_body.clone()),
+                Some(2),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_invites.clone(),
+                Some(invite_body.clone()),
+                Some(3),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_invites.clone(),
+                Some(invite_body.clone()),
+                Some(4),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_invites.clone(),
+                Some(invite_body.clone()),
+                Some(5),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_vaults.clone(),
+                Some(vault_body.clone()),
+                Some(0),
+                NO_CONTENT,
+            ),
+            (
+                "POST",
+                uri_vaults.clone(),
+                Some(vault_body.clone()),
+                Some(1),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_vaults.clone(),
+                Some(vault_body.clone()),
+                Some(2),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_vaults.clone(),
+                Some(vault_body.clone()),
+                Some(3),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_vaults.clone(),
+                Some(vault_body.clone()),
+                Some(4),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_vaults.clone(),
+                Some(vault_body.clone()),
+                Some(5),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_codes.clone(),
+                Some(codes_body.clone()),
+                Some(0),
+                OK,
+            ),
+            (
+                "POST",
+                uri_codes.clone(),
+                Some(codes_body.clone()),
+                Some(1),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_codes.clone(),
+                Some(codes_body.clone()),
+                Some(2),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_codes.clone(),
+                Some(codes_body.clone()),
+                Some(3),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_codes.clone(),
+                Some(codes_body.clone()),
+                Some(4),
+                FORBIDDEN,
+            ),
+            (
+                "POST",
+                uri_codes.clone(),
+                Some(codes_body.clone()),
+                Some(5),
+                FORBIDDEN,
+            ),
             ("POST", uri_revoke_b.clone(), None, Some(2), FORBIDDEN),
             ("POST", uri_revoke_b.clone(), None, Some(3), FORBIDDEN),
             ("POST", uri_revoke_b.clone(), None, Some(4), FORBIDDEN),
