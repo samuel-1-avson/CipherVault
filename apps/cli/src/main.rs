@@ -141,7 +141,10 @@ enum Commands {
     },
 
     /// Display current vault status and tracked files
-    Status,
+    Status {
+        #[arg(long, help = "Emit machine-readable JSON for editor gutter feeds and CI")]
+        json: bool,
+    },
 
     /// Create, encrypt, and replicate a snapshot across independent operators
     Push {
@@ -806,7 +809,7 @@ async fn run(cli: Cli) -> Result<()> {
             no_gitignore,
         } => cmd_track(paths, from_gitignore, no_gitignore),
         Commands::Untrack { paths } => cmd_untrack(paths),
-        Commands::Status => cmd_status(),
+        Commands::Status { json } => cmd_status(json),
         Commands::Push {
             message,
             touch,
@@ -2714,13 +2717,93 @@ fn cmd_untrack(paths: Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status() -> Result<()> {
+/// Machine-readable vault status for editor gutter feeds and CI (R17).
+/// Field names are the gutter data contract; see docs/PLATFORM_SUPPORT.md.
+#[derive(Debug, Clone, serde::Serialize)]
+struct StatusReport {
+    vault_id_hex: String,
+    device_id_hex: String,
+    current_epoch: u64,
+    device_counter: u64,
+    active_head_hex: Option<String>,
+    tracked_files: usize,
+    operators: Vec<String>,
+    pending_uploads: usize,
+    active_epoch_age_days: Option<u64>,
+    active_epoch_stale: bool,
+}
+
+impl StatusReport {
+    /// Builds a report, masking operator endpoints. Missing epoch metadata
+    /// degrades honestly (`stale: true`, `age_days: null`).
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        vault_id: &[u8; 32],
+        device_id: &[u8; 32],
+        current_epoch: u64,
+        device_counter: u64,
+        active_head: Option<[u8; 32]>,
+        tracked_files: usize,
+        operators: Vec<String>,
+        pending_uploads: usize,
+        active_epoch_created_at: Option<u64>,
+        warn_days: u64,
+        now_utc: u64,
+    ) -> Self {
+        let (age_days, stale) = match active_epoch_created_at {
+            Some(created) => epoch_key_status(created, warn_days, now_utc),
+            None => (None, true),
+        };
+        Self {
+            vault_id_hex: hex::encode(vault_id),
+            device_id_hex: hex::encode(device_id),
+            current_epoch,
+            device_counter,
+            active_head_hex: active_head.map(hex::encode),
+            tracked_files,
+            operators: operators.iter().map(mask_operator_endpoint).collect(),
+            pending_uploads,
+            active_epoch_age_days: age_days,
+            active_epoch_stale: stale,
+        }
+    }
+}
+
+fn cmd_status(json: bool) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (device_id, _, counter, epoch) = store.get_device_state()?;
     let tracked = store.list_tracked_files()?;
     let active_head = store.get_active_head()?;
     let operators = get_configured_operators();
+    let pending_uploads = store.list_pending_uploads()?.len();
+    let epoch_created_at = store
+        .list_epoch_keys()?
+        .into_iter()
+        .find(|info| info.epoch == epoch)
+        .map(|info| info.created_at_utc);
+    let now_utc = Utc::now().timestamp().max(0) as u64;
+    let head_cid: Option<[u8; 32]> = active_head
+        .as_ref()
+        .and_then(|head| head.snapshot_id.as_slice().try_into().ok());
+
+    if json {
+        let report = StatusReport::new(
+            &vault_id,
+            &device_id,
+            epoch,
+            counter,
+            head_cid,
+            tracked.len(),
+            operators,
+            pending_uploads,
+            epoch_created_at,
+            DEFAULT_REKEY_WARN_DAYS,
+            now_utc,
+        );
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
 
     println!("{}", "CipherVault Status".bold());
     println!("--------------------------------------------------");
@@ -10510,6 +10593,53 @@ mod ui_router_tests {
         assert_eq!(epoch_key_status(0, 90, now), (None, true));
         // Future timestamps saturate to age 0, never stale.
         assert_eq!(epoch_key_status(now + 86_400, 90, now), (Some(0), false));
+    }
+
+    #[test]
+    fn status_report_masks_operators_and_marks_stale_epoch() {
+        let report = StatusReport::new(
+            &[0x11u8; 32],
+            &[0x22u8; 32],
+            3,
+            42,
+            Some([0x33u8; 32]),
+            2,
+            vec!["http://192.0.2.10:8101".to_string()],
+            1,
+            Some(2_000_000_000 - 100 * 86_400),
+            90,
+            2_000_000_000,
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["vault_id_hex"], serde_json::json!("11".repeat(32)));
+        assert_eq!(json["current_epoch"], serde_json::json!(3));
+        assert_eq!(json["active_head_hex"], serde_json::json!("33".repeat(32)));
+        assert_eq!(json["tracked_files"], serde_json::json!(2));
+        assert_eq!(json["pending_uploads"], serde_json::json!(1));
+        assert_eq!(json["active_epoch_age_days"], serde_json::json!(100));
+        assert_eq!(json["active_epoch_stale"], serde_json::json!(true));
+        assert_eq!(
+            json["operators"][0],
+            serde_json::json!("Operator (192.***.***.10):8101")
+        );
+        // Missing epoch metadata degrades honestly.
+        let report = StatusReport::new(
+            &[0x11u8; 32],
+            &[0x22u8; 32],
+            3,
+            42,
+            None,
+            0,
+            Vec::new(),
+            0,
+            None,
+            90,
+            2_000_000_000,
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["active_head_hex"].is_null());
+        assert!(json["active_epoch_age_days"].is_null());
+        assert_eq!(json["active_epoch_stale"], serde_json::json!(true));
     }
 
     #[test]

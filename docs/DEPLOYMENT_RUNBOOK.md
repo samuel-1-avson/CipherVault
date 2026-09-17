@@ -451,3 +451,12 @@ whether replication would run. Nothing is persisted, no counters move, and
 pending-upload retries are skipped. Real captures record `WATCH_SNAPSHOT` /
 `WATCH_SYNC_FAILED` / `WATCH_CAPTURE_FAILED` rows in the vault activity log,
 visible in the dashboard activity feed (`/api/activity`).
+
+## 16. Platform Support & Editor Integration (R16/R17)
+
+Hardware-token support is Windows-only today (WinSCard PC/SC); macOS and Linux
+return an empty reader list with a clean platform error. OS key protection is
+DPAPI on Windows and a 0600 file-backed keystore elsewhere. The full support
+matrix, parity requirements, and the VS Code/git integration spec (gutter data
+contract over `ciphervault status --json`) live in
+`docs/PLATFORM_SUPPORT.md`.
