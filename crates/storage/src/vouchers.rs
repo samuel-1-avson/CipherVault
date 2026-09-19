@@ -36,6 +36,15 @@ fn forbidden(message: impl Into<String>) -> StorageError {
     }
 }
 
+/// Ledger-map keys must be canonical 32-byte lowercase hex nonces, matching
+/// the `decode_canonical_hex` rule vouchers themselves are verified under.
+fn valid_nonce_key(nonce: &str) -> bool {
+    nonce.len() == 64
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 /// Decodes a hex field, requiring lowercase-canonical form. Case variants
 /// decode to identical bytes, so without this rule one voucher would verify
 /// under 2^64 nonce spellings and the spend ledger (keyed by nonce string)
@@ -165,7 +174,7 @@ impl WriteVoucher {
 
 /// Spend terms pinned on first use: quota confusion via nonce reuse (same
 /// nonce, bigger quota) is rejected even though both vouchers verify.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct VoucherCharge {
     quota_bytes: u64,
     expires_utc: u64,
@@ -246,6 +255,31 @@ impl VoucherLedger {
     /// [`VoucherLedger::try_consume`]; also callable directly.
     pub fn prune_expired(&mut self, now_utc: u64) {
         self.spent.retain(|_, charge| charge.expires_utc >= now_utc);
+    }
+
+    /// Serializes the spend map for crash-safe persistence. Operator
+    /// policy (`max_quota_bytes`) is deliberately excluded: it comes from
+    /// current configuration at startup, never from last boot's file.
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(&self.spent).map_err(|error| error.to_string())
+    }
+
+    /// Restores spend state previously produced by [`VoucherLedger::encode`].
+    /// Entries with non-canonical nonce keys or impossible terms
+    /// (`spent_bytes > quota_bytes`) are skipped: a hand-edited or
+    /// half-written entry must not wedge the whole ledger, and skipping
+    /// only ever resets that voucher toward unspent (still bounded by its
+    /// own quota and expiry, re-verified on next use).
+    pub fn decode_into(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let spent: HashMap<String, VoucherCharge> =
+            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        self.spent = spent
+            .into_iter()
+            .filter(|(nonce, charge)| {
+                valid_nonce_key(nonce) && charge.spent_bytes <= charge.quota_bytes
+            })
+            .collect();
+        Ok(())
     }
 
     #[cfg(test)]
@@ -431,6 +465,60 @@ mod tests {
         assert_eq!(ledger.len(), 1);
         ledger.prune_expired(voucher.expires_utc + 1);
         assert_eq!(ledger.len(), 0);
+    }
+
+    #[test]
+    fn ledger_encode_decode_roundtrip_preserves_spend() {
+        let (voucher, key) = valid_voucher();
+        let pk = issuer_pk(&key);
+        let now = now_unix_secs();
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        assert!(ledger.try_consume(&voucher, &pk, now, 400_000).is_ok());
+        let encoded = ledger.encode().expect("encode");
+        // Policy comes from configuration, not the file: the restored cap
+        // stays whatever the constructor set.
+        let mut restored = VoucherLedger::new(123);
+        restored.decode_into(&encoded).expect("decode");
+        assert!(restored.try_consume(&voucher, &pk, now, 100).is_err());
+        let mut restored = VoucherLedger::new(u64::MAX);
+        restored.decode_into(&encoded).expect("decode");
+        // Spend survived: only 600k of the 1M quota remains.
+        assert!(restored.try_consume(&voucher, &pk, now, 600_000).is_ok());
+        assert!(restored.try_consume(&voucher, &pk, now, 1).is_err());
+        // Garbage is an error, never a panic or a silent empty ledger.
+        assert!(restored.decode_into(b"not json").is_err());
+        // Impossible terms are skipped while valid spend is kept.
+        let mut mixed = serde_json::Map::new();
+        mixed.insert(
+            voucher.nonce_hex.clone(),
+            serde_json::json!({
+                "quota_bytes": voucher.quota_bytes,
+                "expires_utc": voucher.expires_utc,
+                "spent_bytes": voucher.quota_bytes + 1,
+            }),
+        );
+        mixed.insert(
+            "ab".repeat(32),
+            serde_json::json!({
+                "quota_bytes": 50,
+                "expires_utc": now + 3600,
+                "spent_bytes": 50,
+            }),
+        );
+        mixed.insert(
+            "NOT-CANONICAL".to_string(),
+            serde_json::json!({
+                "quota_bytes": 50,
+                "expires_utc": now + 3600,
+                "spent_bytes": 0,
+            }),
+        );
+        let mixed = serde_json::Value::Object(mixed);
+        let mut filtered = VoucherLedger::new(u64::MAX);
+        filtered
+            .decode_into(&serde_json::to_vec(&mixed).unwrap())
+            .expect("decode");
+        assert_eq!(filtered.len(), 1);
     }
 
     /// Dumb-fuzz battery: 512 seeded byte-level mutations of a valid

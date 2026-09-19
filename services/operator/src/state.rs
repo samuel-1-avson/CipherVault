@@ -234,11 +234,11 @@ pub struct OperatorState {
     // Active P2P peers: operator_id -> PeerDescriptor
     pub peer_routing_table: Mutex<HashMap<String, ciphervault_storage::PeerDescriptor>>,
     // Write-voucher spend ledger (D4): nonce -> charge. Held across
-    // verify→charge so concurrent writes on one voucher cannot overspend.
-    // Memory-only by design: a restart resets spend to zero, so a voucher
-    // can be re-spent up to its quota after an operator restart. Bounded
-    // (never more than one quota per boot) and requires operator restart
-    // access; vouchers are opt-in (`vouchers_required`, default false).
+    // verify→charge→persist so concurrent writes on one voucher cannot
+    // overspend (in memory or in the file). Spend survives restarts via
+    // voucher-ledger.json; a corrupt file is backed up and the ledger
+    // starts empty (vouchers re-pin terms on next use). Vouchers are
+    // opt-in (`vouchers_required`, default false).
     voucher_ledger: Mutex<VoucherLedger>,
     // When true, writes without a voucher are rejected before persistence.
     // Default false: static mode keeps working byte-for-byte; mesh/testnet
@@ -299,6 +299,7 @@ impl OperatorState {
         state.load_relayed_checkpoints();
         state.load_peer_routing_table();
         state.load_approval_challenges();
+        state.load_voucher_ledger();
         state
     }
 
@@ -745,6 +746,39 @@ impl OperatorState {
         self.persist_atomic(&self.approval_store_path(), &encoded)
     }
 
+    fn voucher_ledger_store_path(&self) -> PathBuf {
+        self.data_dir.join("voucher-ledger.json")
+    }
+
+    fn load_voucher_ledger(&self) {
+        let path = self.voucher_ledger_store_path();
+        let Ok(bytes) = fs::read(&path) else {
+            return;
+        };
+        let mut ledger = lock_or_recover(&self.voucher_ledger, "voucher_ledger");
+        if let Err(error) = ledger.decode_into(&bytes) {
+            drop(ledger);
+            // Accident recovery, not a trust boundary: an attacker with
+            // disk write could delete the file anyway. Back the corrupt
+            // file up for forensics, start empty, and log loudly.
+            let backup = path.with_extension(format!(
+                "corrupt-{}-{:x}",
+                Utc::now().timestamp().max(0),
+                rand::random::<u32>()
+            ));
+            let _ = fs::rename(&path, &backup);
+            eprintln!(
+                "operator voucher ledger {path:?} is corrupt ({error}); moved to {backup:?}, starting empty"
+            );
+        }
+    }
+
+    fn persist_voucher_ledger(&self, encoded: &[u8]) -> Result<(), String> {
+        // Nonces and byte counts are operational state, not bearer
+        // secrets: plain atomic persist like the peer/approval stores.
+        self.persist_atomic(&self.voucher_ledger_store_path(), encoded)
+    }
+
     fn persist_sessions(&self) -> Result<(), String> {
         let sessions = lock_or_recover(&self.sessions, "sessions");
         let keys = lock_or_recover(&self.session_keys, "session_keys");
@@ -1154,6 +1188,21 @@ impl OperatorState {
                 let mut ledger = lock_or_recover(&self.voucher_ledger, "voucher_ledger");
                 let now = chrono::Utc::now().timestamp() as u64;
                 ledger.try_consume(voucher, &self.issuer_pk_hex(), now, bytes)?;
+                // Durable before bytes hit disk: the lock is held across
+                // the file persist (same convention as the relay/peer/
+                // approval stores) so concurrent charges cannot interleave
+                // file writes and lose spend on restart.
+                let encoded = ledger.encode().map_err(|error| StorageError::ServerError {
+                    status: 500,
+                    message: format!("Unable to encode voucher ledger: {error}"),
+                })?;
+                if let Err(error) = self.persist_voucher_ledger(&encoded) {
+                    ledger.release(&voucher.nonce_hex, bytes);
+                    return Err(StorageError::ServerError {
+                        status: 500,
+                        message: format!("Unable to persist voucher ledger: {error}"),
+                    });
+                }
                 Ok(Some((voucher.nonce_hex.clone(), bytes)))
             }
             None if self.vouchers_required() => Err(StorageError::ServerError {
@@ -1164,10 +1213,21 @@ impl OperatorState {
         }
     }
 
-    fn release_write(&self, charge: Option<(String, u64)>) {
-        if let Some((nonce, bytes)) = charge {
-            lock_or_recover(&self.voucher_ledger, "voucher_ledger").release(&nonce, bytes);
-        }
+    fn release_write(&self, charge: Option<(String, u64)>) -> Result<(), StorageError> {
+        let Some((nonce, bytes)) = charge else {
+            return Ok(());
+        };
+        let mut ledger = lock_or_recover(&self.voucher_ledger, "voucher_ledger");
+        ledger.release(&nonce, bytes);
+        let encoded = ledger.encode().map_err(|error| StorageError::ServerError {
+            status: 500,
+            message: format!("Unable to encode voucher ledger: {error}"),
+        })?;
+        self.persist_voucher_ledger(&encoded)
+            .map_err(|error| StorageError::ServerError {
+                status: 500,
+                message: format!("Unable to persist voucher ledger: {error}"),
+            })
     }
 
     /// Legacy policy gate for the original write methods: identical behavior
@@ -1279,12 +1339,18 @@ impl OperatorState {
         match outcome {
             Ok(net_new) => {
                 if !net_new {
-                    self.release_write(charge);
+                    self.release_write(charge)?;
                 }
                 Ok(())
             }
             Err(e) => {
-                self.release_write(charge);
+                // The write error is the true cause; a release-persist
+                // failure on top is logged loudly but must not mask it.
+                if let Err(release_error) = self.release_write(charge) {
+                    eprintln!(
+                        "operator voucher release persist failed after write error: {release_error}"
+                    );
+                }
                 Err(StorageError::ServerError {
                     status: 400,
                     message: e,
@@ -1616,7 +1682,13 @@ impl OperatorState {
         match outcome {
             Ok(sequence) => Ok(sequence),
             Err(e) => {
-                self.release_write(charge);
+                // The write error is the true cause; a release-persist
+                // failure on top is logged loudly but must not mask it.
+                if let Err(release_error) = self.release_write(charge) {
+                    eprintln!(
+                        "operator voucher release persist failed after write error: {release_error}"
+                    );
+                }
                 Err(StorageError::ServerError {
                     status: 400,
                     message: e,
@@ -2798,5 +2870,95 @@ mod tests {
         drop(state);
         fs::remove_dir_all(root).unwrap();
         std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
+    }
+
+    fn assert_quota_exhausted(result: Result<(), StorageError>, what: &str) {
+        match result {
+            Err(StorageError::ServerError { status, .. }) => {
+                assert_eq!(status, 429, "{what}");
+            }
+            other => panic!("expected 429 quota exhaustion for {what}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn voucher_spend_survives_restart() {
+        let root =
+            std::env::temp_dir().join(format!("cv-voucherrestart-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        let holder = hex::encode(
+            ciphervault_crypto::generate_signing_key()
+                .verifying_key()
+                .to_bytes(),
+        );
+        let payload = vec![0xABu8; 64];
+        let cid_hex = hex::encode(compute_digest(&payload));
+        let voucher = {
+            let state = OperatorState::new("test".into(), root.clone(), key.clone());
+            let voucher = state.issue_voucher(holder, 64, 3600).expect("issue");
+            state
+                .put_object_with_voucher(&cid_hex, &payload, Some(&voucher))
+                .expect("first write spends the quota");
+            // Control: exhaustion is enforced before any restart.
+            let extra = vec![0xCDu8; 1];
+            let extra_cid = hex::encode(compute_digest(&extra));
+            assert_quota_exhausted(
+                state.put_object_with_voucher(&extra_cid, &extra, Some(&voucher)),
+                "pre-restart over-quota write",
+            );
+            assert!(root.join("voucher-ledger.json").is_file());
+            voucher
+        };
+        let restarted = OperatorState::new("test".into(), root.clone(), key);
+        let extra = vec![0xCDu8; 1];
+        let extra_cid = hex::encode(compute_digest(&extra));
+        assert_quota_exhausted(
+            restarted.put_object_with_voucher(&extra_cid, &extra, Some(&voucher)),
+            "post-restart over-quota write",
+        );
+        drop(restarted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_voucher_ledger_starts_empty_with_backup() {
+        let root =
+            std::env::temp_dir().join(format!("cv-vouchercorrupt-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        drop(OperatorState::new("test".into(), root.clone(), key.clone()));
+        fs::write(root.join("voucher-ledger.json"), b"{oops").unwrap();
+        let reopened = OperatorState::new("test".into(), root.clone(), key);
+        let backups: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("voucher-ledger.corrupt-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(!root.join("voucher-ledger.json").exists());
+        // The ledger starts empty and accounts from zero.
+        let holder = hex::encode(
+            ciphervault_crypto::generate_signing_key()
+                .verifying_key()
+                .to_bytes(),
+        );
+        let voucher = reopened.issue_voucher(holder, 10, 3600).expect("issue");
+        let payload = b"0123456789".to_vec();
+        let cid_hex = hex::encode(compute_digest(&payload));
+        assert!(reopened
+            .put_object_with_voucher(&cid_hex, &payload, Some(&voucher))
+            .is_ok());
+        let extra = b"x".to_vec();
+        let extra_cid = hex::encode(compute_digest(&extra));
+        assert_quota_exhausted(
+            reopened.put_object_with_voucher(&extra_cid, &extra, Some(&voucher)),
+            "post-recovery over-quota write",
+        );
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
     }
 }
