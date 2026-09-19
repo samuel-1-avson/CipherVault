@@ -31,6 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
         TuiTab::Operators => render_operators_tab(frame, app, chunks[1]),
         TuiTab::FastCdc => render_fastcdc_tab(frame, app, chunks[1]),
         TuiTab::HardwareToken => render_token_tab(frame, app, chunks[1]),
+        TuiTab::Explorer => render_explorer_tab(frame, app, chunks[1]),
     }
 
     render_footer(frame, app, chunks[2]);
@@ -38,6 +39,8 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
     // Render modals if active
     if app.show_track_modal {
         render_track_modal(frame, app);
+    } else if app.show_explorer_search_modal {
+        render_explorer_search_modal(frame, app);
     } else if app.show_help {
         render_help_modal(frame);
     }
@@ -845,6 +848,468 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     frame.render_widget(guide, main_layout[1]);
 }
 
+fn render_explorer_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Length(11),
+            Constraint::Min(8),
+        ])
+        .split(area);
+
+    let cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[0]);
+    render_explorer_cluster_card(frame, app, cards[0]);
+    render_explorer_feed_card(frame, app, cards[1]);
+
+    render_explorer_object_panel(frame, app, rows[1]);
+
+    let tables = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(rows[2]);
+    render_explorer_operators_table(frame, app, tables[0]);
+    render_explorer_checkpoints_table(frame, app, tables[1]);
+}
+
+fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    let total = app.explorer_operators.len();
+    let reachable = app
+        .explorer_operators
+        .iter()
+        .filter(|operator| operator.reachable)
+        .count();
+    let health_color = if total > 0 && reachable == total {
+        Color::Green
+    } else if reachable > 0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+    let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
+
+    let text = vec![
+        Line::from(vec![
+            Span::styled("Operators:     ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{reachable}/{total} reachable"),
+                Style::default()
+                    .fg(health_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Observed:      ", Style::default().fg(Color::Gray)),
+            Span::styled(&app.explorer_observed_at, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Quorum policy: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{required} replicas"),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "Presence-only lookups; bytes never leave operators.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let card = Paragraph::new(text).block(
+        Block::default()
+            .title(" Cluster Health ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(card, area);
+}
+
+fn explorer_tx_snippet(tx_hash_hex: Option<&str>) -> String {
+    match tx_hash_hex {
+        Some(tx) if tx.len() > 18 => format!("{}...", &tx[..18]),
+        Some(tx) => tx.to_string(),
+        None => "not submitted".to_string(),
+    }
+}
+
+fn explorer_finality_color(status: &str) -> Color {
+    match status {
+        "finalized" | "publisher_signed" => Color::Green,
+        "unverified" => Color::Yellow,
+        "reorg_suspected" | "invalid" | "not_submitted" => Color::Red,
+        _ => Color::Gray,
+    }
+}
+
+fn render_explorer_feed_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Checkpoints: ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{}", app.explorer_checkpoints.len()),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
+    if !app.explorer_feed_configured {
+        lines.push(Line::from(Span::styled(
+            "No signed checkpoint feed configured.",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Set CIPHERVAULT_PUBLIC_CHECKPOINT_FEED.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if let Some(head) = app.explorer_checkpoints.first() {
+        lines.push(Line::from(vec![
+            Span::styled("Head: ", Style::default().fg(Color::Gray)),
+            Span::styled(head.network.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("  {}", explorer_tx_snippet(head.tx_hash_hex.as_deref())),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        let confirmations = head
+            .confirmations
+            .map(|count| format!(" ({count} conf)"))
+            .unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled("Finality: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}{}", head.finality_status, confirmations),
+                Style::default()
+                    .fg(explorer_finality_color(&head.finality_status))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Feed configured; no checkpoints published yet.",
+            Style::default().fg(Color::Gray),
+        )));
+    }
+
+    let card = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Anchor Feed Head ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+    frame.render_widget(card, area);
+}
+
+fn render_explorer_object_panel(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    let block = Block::default()
+        .title(" Object Quorum Lookup — [/] to search ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green));
+
+    let Some(result) = app.explorer_object.as_ref() else {
+        let hint = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press [/] to look up a 64-hex content ID across every operator.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                "Operators prove possession with a PoS challenge; object bytes are never fetched.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
+        .alignment(Alignment::Center)
+        .block(block);
+        frame.render_widget(hint, area);
+        return;
+    };
+
+    let (badge, badge_color) = if result.satisfied {
+        (" SATISFIED ", Color::Green)
+    } else {
+        (" QUORUM MISSING ", Color::Red)
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("CID: ", Style::default().fg(Color::Gray)),
+            Span::styled(result.cid_hex.clone(), Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Quorum: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!(
+                    "{}/{} present (required {}) ",
+                    result.present, result.checked, result.required
+                ),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                badge,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(badge_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    for replica in result.replicas.iter().take(6) {
+        let (marker, marker_color) = match replica.status.as_str() {
+            "present" => ("●", Color::Green),
+            "absent" => ("○", Color::Yellow),
+            _ => ("?", Color::Red),
+        };
+        let detail = match replica.status.as_str() {
+            "present" => {
+                let size = replica
+                    .size_bytes
+                    .map(format_bytes)
+                    .unwrap_or_else(|| "size unknown".to_string());
+                format!("{} ms · {}", replica.latency_ms, size)
+            }
+            _ => replica
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("{} ms", replica.latency_ms)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                marker,
+                Style::default()
+                    .fg(marker_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(replica.endpoint.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!(" → {} · {}", replica.status, detail),
+                Style::default().fg(Color::Gray),
+            ),
+        ]));
+    }
+    if result.replicas.len() > 6 {
+        lines.push(Line::from(Span::styled(
+            format!("…and {} more replicas", result.replicas.len() - 6),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_explorer_operators_table(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    let rows: Vec<Row> = app
+        .explorer_operators
+        .iter()
+        .map(|operator| {
+            let (status_span, latency_span) = if operator.reachable {
+                (
+                    Span::styled(
+                        "REACHABLE",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        operator
+                            .latency_ms
+                            .map(|latency| format!("{latency} ms"))
+                            .unwrap_or_else(|| "--".to_string()),
+                        Style::default().fg(Color::White),
+                    ),
+                )
+            } else {
+                (
+                    Span::styled(
+                        "UNREACHABLE",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("--", Style::default().fg(Color::DarkGray)),
+                )
+            };
+            Row::new(vec![
+                Span::styled(&operator.display_name, Style::default().fg(Color::White)),
+                Span::styled(&operator.region, Style::default().fg(Color::Gray)),
+                status_span,
+                latency_span,
+                Span::styled(&operator.identity, Style::default().fg(Color::Cyan)),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Min(10),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec!["Operator", "Region", "Status", "Latency", "Identity"])
+                .style(
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .bottom_margin(1),
+        )
+        .block(
+            Block::default()
+                .title(" Cluster Operators ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Green)),
+        );
+    frame.render_widget(table, area);
+}
+
+fn render_explorer_checkpoints_table(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    if app.explorer_checkpoints.is_empty() {
+        let message = if app.explorer_feed_configured {
+            "Feed configured; no checkpoints published yet."
+        } else {
+            "No signed checkpoint feed (CIPHERVAULT_PUBLIC_CHECKPOINT_FEED)."
+        };
+        let hint = Paragraph::new(message).alignment(Alignment::Center).block(
+            Block::default()
+                .title(" Published Checkpoints ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        );
+        frame.render_widget(hint, area);
+        return;
+    }
+
+    let rows: Vec<Row> = app
+        .explorer_checkpoints
+        .iter()
+        .enumerate()
+        .map(|(i, checkpoint)| {
+            let row_style = if i == app.explorer_checkpoint_index {
+                Style::default()
+                    .bg(Color::Rgb(30, 58, 138))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let published = if checkpoint.published_at_utc > 0 {
+                chrono::DateTime::from_timestamp(checkpoint.published_at_utc as i64, 0)
+                    .map(|moment| moment.format("%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "--".to_string())
+            } else {
+                "--".to_string()
+            };
+            Row::new(vec![
+                Span::styled(
+                    explorer_tx_snippet(checkpoint.tx_hash_hex.as_deref()),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(&checkpoint.network, Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    checkpoint.finality_status.clone(),
+                    Style::default().fg(explorer_finality_color(&checkpoint.finality_status)),
+                ),
+                Span::styled(
+                    checkpoint
+                        .confirmations
+                        .map(|count| count.to_string())
+                        .unwrap_or_else(|| "--".to_string()),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(published, Style::default().fg(Color::Gray)),
+            ])
+            .style(row_style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(21),
+        Constraint::Length(14),
+        Constraint::Length(14),
+        Constraint::Length(6),
+        Constraint::Min(10),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec!["Tx Hash", "Network", "Finality", "Conf", "Published"])
+                .style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .bottom_margin(1),
+        )
+        .block(
+            Block::default()
+                .title(" Published Checkpoints ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Magenta)),
+        )
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_widget(table, area);
+}
+
+fn render_explorer_search_modal(frame: &mut Frame, app: &TuiApp) {
+    let area = centered_rect(60, 24, frame.area());
+    frame.render_widget(Clear, area);
+
+    let modal_block = Block::default()
+        .title(" Inspect Object by Content ID ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(2),
+        ])
+        .margin(1)
+        .split(area);
+
+    frame.render_widget(modal_block, area);
+
+    let label = Paragraph::new("Enter 64-character hex content ID (presence-only lookup):");
+    frame.render_widget(label, inner[0]);
+
+    let input = Paragraph::new(Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Green)),
+        Span::styled(
+            &app.explorer_search_buffer,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("█", Style::default().fg(Color::Green)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::White)),
+    );
+    frame.render_widget(input, inner[1]);
+
+    let help = Paragraph::new("[Enter] Probe Quorum    [Esc] Cancel")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::Gray));
+    frame.render_widget(help, inner[2]);
+}
+
 fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let footer_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -872,7 +1337,7 @@ fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
-            "[1-6/Tab]",
+            "[1-7/Tab]",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -990,8 +1455,8 @@ fn render_help_modal(frame: &mut Frame) {
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("1 - 6      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Switch directly to tabs 1 through 6"),
+            Span::styled("1 - 7      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Switch directly to tabs 1 through 7"),
         ]),
         Line::from(vec![
             Span::styled("Tab        ", Style::default().fg(Color::Yellow)),
@@ -1016,6 +1481,10 @@ fn render_help_modal(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("r          ", Style::default().fg(Color::Yellow)),
             Span::raw("Force immediate refresh of local state & operator pings"),
+        ]),
+        Line::from(vec![
+            Span::styled("/          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Open the explorer object lookup (64-hex CID, presence-only)"),
         ]),
         Line::from(vec![
             Span::styled("l          ", Style::default().fg(Color::Yellow)),
@@ -1087,5 +1556,108 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.2} KiB", bytes as f64 / KIB as f64)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::app::{
+        ExplorerCheckpointRow, ExplorerObjectResult, ExplorerOperatorRow, ExplorerReplicaRow,
+    };
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn drawn_text(app: &mut TuiApp, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    fn seeded_explorer_app() -> TuiApp {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Explorer);
+        app.explorer_observed_at = "2026-09-19 12:00:00 UTC".into();
+        app.explorer_operators = vec![
+            ExplorerOperatorRow {
+                display_name: "Operator 1".into(),
+                operator_id: "op-1".into(),
+                region: "us-central1".into(),
+                reachable: true,
+                latency_ms: Some(42),
+                identity: "verified".into(),
+            },
+            ExplorerOperatorRow {
+                display_name: "Operator 2".into(),
+                reachable: false,
+                ..Default::default()
+            },
+        ];
+        app.explorer_feed_configured = true;
+        app.explorer_checkpoints = vec![ExplorerCheckpointRow {
+            network: "arbitrum-one".into(),
+            commitment_hex: "ab12".into(),
+            tx_hash_hex: Some("0x99".into()),
+            finality_status: "finalized".into(),
+            confirmations: Some(20),
+            published_at_utc: 1_757_000_000,
+        }];
+        app.explorer_object = Some(ExplorerObjectResult {
+            cid_hex: "ab".repeat(32),
+            present: 2,
+            checked: 3,
+            required: 2,
+            satisfied: true,
+            replicas: vec![ExplorerReplicaRow {
+                endpoint: "https://op.example".into(),
+                operator_id: Some("op-1".into()),
+                status: "present".into(),
+                latency_ms: 12,
+                size_bytes: Some(128),
+                error: None,
+            }],
+        });
+        app
+    }
+
+    #[test]
+    fn explorer_tab_renders_telemetry_quorum_and_checkpoints() {
+        let mut app = seeded_explorer_app();
+        let text = drawn_text(&mut app, 140, 44);
+        for needle in [
+            "7: Explorer",
+            "Cluster Health",
+            "1/2 reachable",
+            "Anchor Feed Head",
+            "arbitrum-one",
+            "finalized",
+            "Object Quorum Lookup",
+            "SATISFIED",
+            "2/3 present",
+            "Cluster Operators",
+            "Operator 1",
+            "Published Checkpoints",
+            "0x99",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?}");
+        }
+    }
+
+    #[test]
+    fn explorer_search_modal_renders_input() {
+        let mut app = seeded_explorer_app();
+        app.show_explorer_search_modal = true;
+        app.explorer_search_buffer = "ab12".into();
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("Inspect Object by Content ID"));
+        assert!(text.contains("ab12"));
     }
 }

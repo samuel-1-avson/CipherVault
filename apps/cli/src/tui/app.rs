@@ -13,16 +13,18 @@ pub enum TuiTab {
     Operators = 3,
     FastCdc = 4,
     HardwareToken = 5,
+    Explorer = 6,
 }
 
 impl TuiTab {
-    pub const ALL: [TuiTab; 6] = [
+    pub const ALL: [TuiTab; 7] = [
         TuiTab::Overview,
         TuiTab::Files,
         TuiTab::Snapshots,
         TuiTab::Operators,
         TuiTab::FastCdc,
         TuiTab::HardwareToken,
+        TuiTab::Explorer,
     ];
 
     pub fn title(&self) -> &'static str {
@@ -33,17 +35,19 @@ impl TuiTab {
             TuiTab::Operators => "4: Operators",
             TuiTab::FastCdc => "5: FastCDC",
             TuiTab::HardwareToken => "6: Token",
+            TuiTab::Explorer => "7: Explorer",
         }
     }
 
     pub fn from_index(idx: usize) -> Self {
-        match idx % 6 {
+        match idx % 7 {
             0 => TuiTab::Overview,
             1 => TuiTab::Files,
             2 => TuiTab::Snapshots,
             3 => TuiTab::Operators,
             4 => TuiTab::FastCdc,
-            _ => TuiTab::HardwareToken,
+            5 => TuiTab::HardwareToken,
+            _ => TuiTab::Explorer,
         }
     }
 }
@@ -117,6 +121,46 @@ pub struct HardwareTokenTuiStatus {
     pub slot_9d_ready: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ExplorerOperatorRow {
+    pub display_name: String,
+    pub operator_id: String,
+    pub region: String,
+    pub reachable: bool,
+    pub latency_ms: Option<u64>,
+    pub identity: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExplorerCheckpointRow {
+    pub network: String,
+    pub commitment_hex: String,
+    pub tx_hash_hex: Option<String>,
+    pub finality_status: String,
+    pub confirmations: Option<u64>,
+    pub published_at_utc: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExplorerReplicaRow {
+    pub endpoint: String,
+    pub operator_id: Option<String>,
+    pub status: String,
+    pub latency_ms: u64,
+    pub size_bytes: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExplorerObjectResult {
+    pub cid_hex: String,
+    pub present: usize,
+    pub checked: usize,
+    pub required: usize,
+    pub satisfied: bool,
+    pub replicas: Vec<ExplorerReplicaRow>,
+}
+
 pub struct TuiApp {
     pub active_tab: TuiTab,
     pub should_quit: bool,
@@ -160,9 +204,20 @@ pub struct TuiApp {
     // Token
     pub token_status: HardwareTokenTuiStatus,
 
+    // Network explorer (mirrors the public web explorer: cluster telemetry,
+    // checkpoint feed, and presence-only object quorum lookup)
+    pub explorer_observed_at: String,
+    pub explorer_operators: Vec<ExplorerOperatorRow>,
+    pub explorer_checkpoints: Vec<ExplorerCheckpointRow>,
+    pub explorer_checkpoint_index: usize,
+    pub explorer_feed_configured: bool,
+    pub explorer_object: Option<ExplorerObjectResult>,
+
     // Modal dialogs
     pub show_track_modal: bool,
     pub track_input_buffer: String,
+    pub show_explorer_search_modal: bool,
+    pub explorer_search_buffer: String,
     pub show_help: bool,
 
     // Background polling
@@ -175,7 +230,7 @@ impl TuiApp {
         let mut app = Self {
             active_tab: TuiTab::Overview,
             should_quit: false,
-            status_message: "Ready. Press [?] for keybindings, [Tab/1-6] to navigate.".into(),
+            status_message: "Ready. Press [?] for keybindings, [Tab/1-7] to navigate.".into(),
             status_level: StatusLevel::Info,
             last_status_update: Instant::now(),
 
@@ -213,8 +268,17 @@ impl TuiApp {
                 slot_9d_ready: false,
             },
 
+            explorer_observed_at: "Never".into(),
+            explorer_operators: Vec::new(),
+            explorer_checkpoints: Vec::new(),
+            explorer_checkpoint_index: 0,
+            explorer_feed_configured: false,
+            explorer_object: None,
+
             show_track_modal: false,
             track_input_buffer: String::new(),
+            show_explorer_search_modal: false,
+            explorer_search_buffer: String::new(),
             show_help: false,
 
             last_poll: Instant::now() - poll_interval, // trigger immediate poll
@@ -238,7 +302,7 @@ impl TuiApp {
 
     pub fn previous_tab(&mut self) {
         let current_idx = self.active_tab as usize;
-        let next_idx = if current_idx == 0 { 5 } else { current_idx - 1 };
+        let next_idx = if current_idx == 0 { 6 } else { current_idx - 1 };
         self.active_tab = TuiTab::from_index(next_idx);
     }
 
@@ -531,6 +595,180 @@ impl TuiApp {
             }
         }
     }
+
+    /// Refresh cluster telemetry and the signed checkpoint feed, reusing the
+    /// same collectors as the public web explorer. Telemetry is cached for
+    /// 30 s and finality for 60 s, so this stays cheap on the poll tick.
+    pub async fn refresh_explorer_async(&mut self) {
+        let telemetry = crate::public_operator_telemetry().await;
+        self.explorer_observed_at = telemetry
+            .observed_at
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string();
+        self.explorer_operators = explorer_operator_rows(&telemetry.operators);
+
+        match crate::load_public_feed_with_finality().await {
+            Ok(Some(checkpoints)) => {
+                self.explorer_feed_configured = true;
+                self.explorer_checkpoints = explorer_checkpoint_rows(&checkpoints);
+            }
+            Ok(None) => {
+                self.explorer_feed_configured = false;
+                self.explorer_checkpoints.clear();
+            }
+            Err(error) => {
+                self.explorer_feed_configured = true;
+                self.explorer_checkpoints.clear();
+                self.set_status(
+                    format!("Checkpoint feed unavailable: {error}"),
+                    StatusLevel::Warning,
+                );
+            }
+        }
+        if self.explorer_checkpoint_index >= self.explorer_checkpoints.len() {
+            self.explorer_checkpoint_index = 0;
+        }
+    }
+
+    /// Presence-only object lookup: PoS-challenge every configured operator
+    /// for the CID in the search buffer. Object bytes are never fetched.
+    pub async fn run_explorer_object_probe(&mut self) {
+        let query = self.explorer_search_buffer.trim().to_string();
+        let Some((cid, cid_hex)) = crate::parse_explorer_cid(&query) else {
+            self.explorer_object = None;
+            self.set_status(
+                "Explorer lookup needs a 64-character hex content ID.",
+                StatusLevel::Warning,
+            );
+            return;
+        };
+        let endpoints = crate::get_configured_operators();
+        if endpoints.is_empty() {
+            self.explorer_object = None;
+            self.set_status(
+                "Explorer has no operator endpoints configured.",
+                StatusLevel::Warning,
+            );
+            return;
+        }
+        self.set_status(
+            format!(
+                "Probing {} operator(s) for object presence...",
+                endpoints.len()
+            ),
+            StatusLevel::Info,
+        );
+        let replicas = futures_util::future::join_all(
+            endpoints
+                .into_iter()
+                .map(|endpoint| crate::probe_explorer_replica(endpoint, cid)),
+        )
+        .await;
+        let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
+        let result = explorer_object_result(&cid_hex, &replicas, required);
+        let verdict = if result.satisfied {
+            "quorum satisfied"
+        } else {
+            "quorum NOT satisfied"
+        };
+        self.set_status(
+            format!(
+                "Object {}...{}: {}/{} present ({}).",
+                &cid_hex[..8],
+                &cid_hex[cid_hex.len() - 8..],
+                result.present,
+                result.checked,
+                verdict
+            ),
+            if result.satisfied {
+                StatusLevel::Success
+            } else {
+                StatusLevel::Warning
+            },
+        );
+        self.explorer_object = Some(result);
+    }
+}
+
+fn explorer_json_str(value: &serde_json::Value, key: &str, fallback: &str) -> String {
+    value
+        .get(key)
+        .and_then(|field| field.as_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn explorer_operator_rows(operators: &[serde_json::Value]) -> Vec<ExplorerOperatorRow> {
+    operators
+        .iter()
+        .map(|operator| ExplorerOperatorRow {
+            display_name: explorer_json_str(operator, "display_name", "Operator"),
+            operator_id: explorer_json_str(operator, "operator_id", "--"),
+            region: explorer_json_str(operator, "region", "--"),
+            reachable: operator.get("status").and_then(|status| status.as_str())
+                == Some("reachable"),
+            latency_ms: operator.get("latency_ms").and_then(|value| value.as_u64()),
+            identity: explorer_json_str(operator, "identity_verification", "not_observed"),
+        })
+        .collect()
+}
+
+fn explorer_checkpoint_rows(checkpoints: &[serde_json::Value]) -> Vec<ExplorerCheckpointRow> {
+    checkpoints
+        .iter()
+        .map(|checkpoint| ExplorerCheckpointRow {
+            network: explorer_json_str(checkpoint, "network", "--"),
+            commitment_hex: explorer_json_str(checkpoint, "commitment_hex", ""),
+            tx_hash_hex: checkpoint
+                .get("tx_hash_hex")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            finality_status: explorer_json_str(checkpoint, "finality_status", "unverified"),
+            confirmations: checkpoint
+                .get("confirmations")
+                .and_then(|value| value.as_u64()),
+            published_at_utc: checkpoint
+                .get("published_at_utc")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        })
+        .collect()
+}
+
+fn explorer_object_result(
+    cid_hex: &str,
+    replicas: &[serde_json::Value],
+    required: usize,
+) -> ExplorerObjectResult {
+    let rows = replicas
+        .iter()
+        .map(|replica| ExplorerReplicaRow {
+            endpoint: explorer_json_str(replica, "endpoint", "--"),
+            operator_id: replica
+                .get("operator_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            status: explorer_json_str(replica, "status", "unknown"),
+            latency_ms: replica
+                .get("latency_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            size_bytes: replica.get("size_bytes").and_then(|value| value.as_u64()),
+            error: replica
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        })
+        .collect::<Vec<_>>();
+    let present = rows.iter().filter(|row| row.status == "present").count();
+    ExplorerObjectResult {
+        cid_hex: cid_hex.to_string(),
+        present,
+        checked: rows.len(),
+        required,
+        satisfied: present >= required,
+        replicas: rows,
+    }
 }
 
 fn build_operator_http_client() -> reqwest::Client {
@@ -639,4 +877,106 @@ fn compute_gear_hash(chunk: &[u8]) -> u64 {
         hash = (hash << 1).wrapping_add(GEAR_MATRIX[b as usize]);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_cycle_covers_explorer() {
+        assert_eq!(TuiTab::ALL.len(), 7);
+        assert_eq!(TuiTab::from_index(6), TuiTab::Explorer);
+        assert_eq!(TuiTab::from_index(7), TuiTab::Overview);
+        assert_eq!(TuiTab::Explorer.title(), "7: Explorer");
+
+        let mut app = TuiApp::new(Duration::from_secs(30));
+        app.switch_tab(TuiTab::HardwareToken);
+        app.next_tab();
+        assert_eq!(app.active_tab, TuiTab::Explorer);
+        app.next_tab();
+        assert_eq!(app.active_tab, TuiTab::Overview);
+        app.previous_tab();
+        assert_eq!(app.active_tab, TuiTab::Explorer);
+    }
+
+    #[test]
+    fn explorer_operator_rows_map_telemetry_shapes() {
+        let rows = explorer_operator_rows(&[
+            serde_json::json!({
+                "display_name": "Operator 1",
+                "operator_id": "op-1",
+                "region": "us-central1",
+                "status": "reachable",
+                "latency_ms": 42,
+                "identity_verification": "verified",
+            }),
+            serde_json::json!({
+                "display_name": "Operator 2",
+                "operator_id": "operator-2",
+                "status": "unreachable",
+                "latency_ms": null,
+            }),
+        ]);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].reachable);
+        assert_eq!(rows[0].latency_ms, Some(42));
+        assert_eq!(rows[0].identity, "verified");
+        assert!(!rows[1].reachable);
+        assert_eq!(rows[1].latency_ms, None);
+        assert_eq!(rows[1].region, "--");
+        assert_eq!(rows[1].identity, "not_observed");
+    }
+
+    #[test]
+    fn explorer_checkpoint_rows_default_missing_finality() {
+        let rows = explorer_checkpoint_rows(&[serde_json::json!({
+            "network": "arbitrum-one",
+            "commitment_hex": "ab12",
+            "tx_hash_hex": "0x99",
+            "finality_status": "finalized",
+            "confirmations": 20,
+            "published_at_utc": 1_700_000_000u64,
+        })]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].network, "arbitrum-one");
+        assert_eq!(rows[0].tx_hash_hex.as_deref(), Some("0x99"));
+        assert_eq!(rows[0].confirmations, Some(20));
+
+        let bare = explorer_checkpoint_rows(&[serde_json::json!({})]);
+        assert_eq!(bare[0].finality_status, "unverified");
+        assert_eq!(bare[0].tx_hash_hex, None);
+    }
+
+    #[test]
+    fn explorer_object_result_computes_quorum() {
+        let present = serde_json::json!({
+            "endpoint": "https://op.example",
+            "operator_id": "op-1",
+            "status": "present",
+            "size_bytes": 128,
+            "latency_ms": 12,
+        });
+        let absent = serde_json::json!({"endpoint": "https://op2.example", "status": "absent", "latency_ms": 9});
+        let cid = "ab".repeat(32);
+
+        let satisfied =
+            explorer_object_result(&cid, &[present.clone(), present, absent.clone()], 2);
+        assert_eq!((satisfied.present, satisfied.checked), (2, 3));
+        assert!(satisfied.satisfied);
+        assert_eq!(satisfied.replicas[0].size_bytes, Some(128));
+
+        let missing = explorer_object_result(&cid, &[absent], 2);
+        assert!(!missing.satisfied);
+        assert_eq!(missing.present, 0);
+    }
+
+    #[tokio::test]
+    async fn explorer_probe_rejects_malformed_cid_without_network() {
+        let mut app = TuiApp::new(Duration::from_secs(30));
+        app.explorer_search_buffer = "not-a-cid".into();
+        app.run_explorer_object_probe().await;
+        assert!(app.explorer_object.is_none());
+        assert_eq!(app.status_level, StatusLevel::Warning);
+    }
 }

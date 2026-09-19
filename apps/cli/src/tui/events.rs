@@ -67,6 +67,29 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
+    // If the explorer search modal is open, handle CID input
+    if app.show_explorer_search_modal {
+        match key.code {
+            KeyCode::Esc => {
+                app.show_explorer_search_modal = false;
+                app.explorer_search_buffer.clear();
+            }
+            KeyCode::Enter => {
+                app.show_explorer_search_modal = false;
+                app.run_explorer_object_probe().await;
+                app.explorer_search_buffer.clear();
+            }
+            KeyCode::Backspace => {
+                app.explorer_search_buffer.pop();
+            }
+            KeyCode::Char(c) => {
+                app.explorer_search_buffer.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Global Keybindings
     match key.code {
         // Quit
@@ -89,6 +112,18 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         KeyCode::Char('4') => app.switch_tab(TuiTab::Operators),
         KeyCode::Char('5') => app.switch_tab(TuiTab::FastCdc),
         KeyCode::Char('6') => app.switch_tab(TuiTab::HardwareToken),
+        KeyCode::Char('7') => {
+            app.switch_tab(TuiTab::Explorer);
+            app.refresh_explorer_async().await;
+        }
+
+        // Explorer object lookup
+        KeyCode::Char('/') => {
+            app.switch_tab(TuiTab::Explorer);
+            app.refresh_explorer_async().await;
+            app.show_explorer_search_modal = true;
+            app.explorer_search_buffer.clear();
+        }
 
         // Tab cycling
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
@@ -107,6 +142,10 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             }
             TuiTab::FastCdc if !app.fastcdc_chunks.is_empty() => {
                 app.chunk_table_index = (app.chunk_table_index + 1) % app.fastcdc_chunks.len();
+            }
+            TuiTab::Explorer if !app.explorer_checkpoints.is_empty() => {
+                app.explorer_checkpoint_index =
+                    (app.explorer_checkpoint_index + 1) % app.explorer_checkpoints.len();
             }
             _ => {}
         },
@@ -136,6 +175,13 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
                     app.chunk_table_index - 1
                 };
             }
+            TuiTab::Explorer if !app.explorer_checkpoints.is_empty() => {
+                app.explorer_checkpoint_index = if app.explorer_checkpoint_index == 0 {
+                    app.explorer_checkpoints.len() - 1
+                } else {
+                    app.explorer_checkpoint_index - 1
+                };
+            }
             _ => {}
         },
 
@@ -147,7 +193,11 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             );
             app.refresh_local_state();
             app.poll_operators_async().await;
-            app.set_status("✓ Local state and operators updated.", StatusLevel::Success);
+            app.refresh_explorer_async().await;
+            app.set_status(
+                "✓ Local state, operators, and explorer updated.",
+                StatusLevel::Success,
+            );
         }
 
         // Account session actions. Hosted TOTP login remains a browser

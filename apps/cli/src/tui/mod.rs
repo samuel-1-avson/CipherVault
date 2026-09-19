@@ -3,7 +3,7 @@ pub mod events;
 pub mod ui;
 
 use anyhow::Result;
-use app::TuiApp;
+use app::{TuiApp, TuiTab};
 use crossterm::{
     event::{self, Event},
     execute,
@@ -79,6 +79,12 @@ async fn run_loop<B: ratatui::backend::Backend>(
         // Periodic background polling for operator health
         if app.last_poll.elapsed() >= app.poll_interval {
             app.poll_operators_async().await;
+            // Explorer telemetry is cache-backed (30 s) and the checkpoint
+            // feed is cache-backed (60 s), so refreshing while visible is
+            // cheap and keeps the tab live without a manual keypress.
+            if app.active_tab == TuiTab::Explorer {
+                app.refresh_explorer_async().await;
+            }
             app.last_poll = Instant::now();
         }
     }
