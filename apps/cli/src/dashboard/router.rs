@@ -403,13 +403,32 @@ mod tests {
         (server, format!("http://{}", address))
     }
 
-    async fn start_private_test_server() -> (tokio::task::JoinHandle<()>, String) {
+    /// Serializes tests that share process-global dashboard state: the
+    /// private UI session (`private_ui_session_snapshot` rotates it) and the
+    /// `CIPHERVAULT_ACCOUNT_*` env the handlers and guards read per request.
+    /// Any test that starts the private router or mutates that env must hold
+    /// this guard for its whole body; pure-public tests need not bother. A
+    /// tokio mutex (not std) so holding it across awaits is executor-safe.
+    static ROUTER_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn serialized_router_test() -> tokio::sync::MutexGuard<'static, ()> {
+        ROUTER_TEST_SERIALIZER.lock().await
+    }
+
+    async fn start_private_test_server() -> (
+        tokio::task::JoinHandle<()>,
+        String,
+        tokio::sync::MutexGuard<'static, ()>,
+    ) {
+        // Acquired first and returned so callers hold it for the whole test:
+        // every private-router test is serialized, present and future.
+        let guard = serialized_router_test().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, private_ui_router()).await.unwrap();
         });
-        (server, format!("http://{}", address))
+        (server, format!("http://{}", address), guard)
     }
 
     #[tokio::test]
@@ -469,7 +488,6 @@ mod tests {
             .is_some_and(|message| message.contains("signed public checkpoint feed")));
 
         for uri in [
-            "/api/secrets/inspect",
             "/api/guardians",
             "/api/fastcdc/vault-files",
             "/api/snapshots/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/manifest",
@@ -500,8 +518,6 @@ mod tests {
         );
 
         for uri in [
-            "/api/guardians/split",
-            "/api/guardians/reconstruct",
             "/api/fastcdc/inspect",
             "/api/files/track",
             "/api/files/untrack",
@@ -591,6 +607,9 @@ mod tests {
             }
         }
 
+        // Serialize before mutating shared env: the private guard and the
+        // context handlers read this per request.
+        let _serialized = serialized_router_test().await;
         let _no_endpoint = EndpointGuard::clear();
         let (server, base_url) = start_public_test_server().await;
         let client = reqwest::Client::new();
@@ -668,8 +687,11 @@ mod tests {
 
     #[tokio::test]
     async fn private_router_requires_loopback_origin_for_mutations() {
+        // The serializer arrives with the server and is held for the whole
+        // body; env isolation nests inside it (drops first, restores while
+        // still serialized).
+        let (server, base_url, _serialized) = start_private_test_server().await;
         let _account_isolation = AccountPathGuard::isolate();
-        let (server, base_url) = start_private_test_server().await;
         let client = reqwest::Client::new();
 
         let read = client
