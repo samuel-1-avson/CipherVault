@@ -7,6 +7,14 @@ use colored::Colorize;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::{bail, Context, Result};
+use std::fs;
+
+use ciphervault_format::{from_canonical_cbor, SnapshotManifest};
+use ciphervault_snapshot::decrypt_snapshot;
+
+use crate::dotenv;
+use crate::util::get_vault_store;
 /// Type of change detected for a specific secret key or line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", content = "details")]
@@ -348,6 +356,256 @@ pub fn print_diff_report(report: &DiffReport) {
     );
 }
 
+pub fn generate_diff_report(
+    snapshot_a_opt: Option<String>,
+    snapshot_b_opt: Option<String>,
+    file_filter_opt: Option<String>,
+    reveal: bool,
+) -> Result<DiffReport> {
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (_, _, _, epoch) = store.get_device_state()?;
+    let epoch_key = store.get_epoch_key(epoch)?;
+
+    // Helper to decrypt snapshot files into a map of (relative_path -> Vec<u8>)
+    let decrypt_snap = |snap_id: &[u8; 32]| -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+        let (record, encrypted_manifest) = store.get_snapshot(snap_id)?;
+        let manifest_key = epoch_key.derive_manifest_key(record.epoch)?;
+        let aad = [
+            b"CipherVault-Manifest:",
+            vault_id.as_slice(),
+            &record.epoch.to_le_bytes(),
+        ]
+        .concat();
+        let manifest_bytes =
+            ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad)?;
+        let manifest: SnapshotManifest = from_canonical_cbor(&manifest_bytes)?;
+
+        let mut needed_cids = Vec::new();
+        for file in &manifest.files {
+            for cid_bytes in &file.chunk_cids {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(cid_bytes);
+                needed_cids.push(arr);
+            }
+        }
+        let chunks = store.get_chunks(&needed_cids)?;
+        let files = decrypt_snapshot(
+            &vault_id,
+            &epoch_key,
+            record.epoch,
+            &encrypted_manifest,
+            &chunks,
+        )?;
+
+        let mut map = std::collections::BTreeMap::new();
+        for f in files {
+            map.insert(f.relative_path.replace('\\', "/"), f.plaintext);
+        }
+        Ok(map)
+    };
+
+    let parse_snap_id = |s: &str| -> Result<[u8; 32]> {
+        let bytes = hex::decode(s.trim())?;
+        if bytes.len() != 32 {
+            bail!("Snapshot ID must be 32 bytes hex string (64 characters)");
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    };
+
+    let read_working_tree = || -> std::collections::BTreeMap<String, Vec<u8>> {
+        let mut map = std::collections::BTreeMap::new();
+        if let Ok(tracked) = store.list_tracked_files() {
+            for (p, _) in tracked {
+                let rel_str = p.display().to_string().replace('\\', "/");
+                if p.exists() {
+                    if let Ok(data) = fs::read(&p) {
+                        map.insert(rel_str, data);
+                    }
+                }
+            }
+        }
+        map
+    };
+
+    let get_head_cid = || -> Result<[u8; 32]> {
+        let head = store.get_active_head()?.context(
+            "Vault has no snapshots committed yet. Create a snapshot first with 'ciphervault push'",
+        )?;
+        if head.snapshot_id.len() != 32 {
+            bail!("Invalid snapshot ID length in active head");
+        }
+        let mut head_cid = [0u8; 32];
+        head_cid.copy_from_slice(&head.snapshot_id);
+        Ok(head_cid)
+    };
+
+    let snap_a_clean = snapshot_a_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let snap_b_clean = snapshot_b_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (old_label, new_label, old_files, new_files) =
+        match (snap_a_clean.as_deref(), snap_b_clean.as_deref()) {
+            (None, None)
+            | (Some("head"), None)
+            | (Some("head"), Some("working"))
+            | (None, Some("working")) => {
+                let head_cid = get_head_cid()?;
+                let old_map = decrypt_snap(&head_cid)?;
+                let new_map = read_working_tree();
+                (
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    "working tree".to_string(),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some("working"), Some("head")) => {
+                let head_cid = get_head_cid()?;
+                let old_map = read_working_tree();
+                let new_map = decrypt_snap(&head_cid)?;
+                (
+                    "working tree".to_string(),
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some(a_str), None) | (Some(a_str), Some("working")) => {
+                let a_id = parse_snap_id(a_str)?;
+                let old_map = decrypt_snap(&a_id)?;
+                let new_map = read_working_tree();
+                (
+                    format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                    "working tree".to_string(),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some("working"), Some(b_str)) => {
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = read_working_tree();
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    "working tree".to_string(),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some("head"), Some(b_str)) => {
+                let head_cid = get_head_cid()?;
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = decrypt_snap(&head_cid)?;
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some(a_str), Some("head")) => {
+                let a_id = parse_snap_id(a_str)?;
+                let head_cid = get_head_cid()?;
+                let old_map = decrypt_snap(&a_id)?;
+                let new_map = decrypt_snap(&head_cid)?;
+                (
+                    format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (Some(a_str), Some(b_str)) => {
+                let a_id = parse_snap_id(a_str)?;
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = decrypt_snap(&a_id)?;
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    format!("snapshot:{}", &hex::encode(a_id)[..8]),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+            (None, Some(b_str)) => {
+                let head_cid = get_head_cid()?;
+                let b_id = parse_snap_id(b_str)?;
+                let old_map = decrypt_snap(&head_cid)?;
+                let new_map = decrypt_snap(&b_id)?;
+                (
+                    format!("head:{}", &hex::encode(head_cid)[..8]),
+                    format!("snapshot:{}", &hex::encode(b_id)[..8]),
+                    old_map,
+                    new_map,
+                )
+            }
+        };
+
+    let mut report = DiffReport::new(old_label, new_label);
+
+    // Collect union of file paths
+    let mut all_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for p in old_files.keys() {
+        all_paths.insert(p.clone());
+    }
+    for p in new_files.keys() {
+        all_paths.insert(p.clone());
+    }
+
+    for path in all_paths {
+        if let Some(ref filter) = file_filter_opt {
+            let norm_filter = filter.replace('\\', "/");
+            if path != norm_filter && !path.ends_with(&format!("/{}", norm_filter)) {
+                continue;
+            }
+        }
+
+        let old_bytes = old_files.get(&path).cloned().unwrap_or_default();
+        let new_bytes = new_files.get(&path).cloned().unwrap_or_default();
+
+        let is_dotenv_file = {
+            let name = path.rsplit('/').next().unwrap_or(&path);
+            name == ".env" || name.starts_with(".env.") || name.ends_with(".env")
+        };
+
+        if is_dotenv_file {
+            let old_vars = dotenv::parse_dotenv_bytes(&old_bytes).unwrap_or_default();
+            let new_vars = dotenv::parse_dotenv_bytes(&new_bytes).unwrap_or_default();
+            let file_rep = diff_dotenv(&path, &old_vars, &new_vars, reveal);
+            report.add_file_report(file_rep);
+        } else {
+            let old_str = String::from_utf8_lossy(&old_bytes);
+            let new_str = String::from_utf8_lossy(&new_bytes);
+            let file_rep = diff_text(&path, &old_str, &new_str, reveal);
+            report.add_file_report(file_rep);
+        }
+    }
+
+    Ok(report)
+}
+
+pub(crate) fn cmd_diff(
+    snapshot_a_opt: Option<String>,
+    snapshot_b_opt: Option<String>,
+    file_filter_opt: Option<String>,
+    reveal: bool,
+    json_output: bool,
+) -> Result<()> {
+    let report = generate_diff_report(snapshot_a_opt, snapshot_b_opt, file_filter_opt, reveal)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_diff_report(&report);
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
