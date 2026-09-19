@@ -229,7 +229,16 @@
         <span class="tab-badge" id="badge-tab-operators">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1" data-private-surface>
+            <button class="tab-btn" id="tab-btn-explorer" data-target="tab-explorer" role="tab" aria-selected="false" aria-controls="tab-explorer" tabindex="-1">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        Explorer
+        <span class="tab-badge" id="badge-tab-explorer">Search</span>
+      </button>
+
+<button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1" data-private-surface>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="18" cy="18" r="3"></circle>
           <circle cx="6" cy="6" r="3"></circle>
@@ -356,6 +365,32 @@
         <div class="latency-bars-container" id="latency-bars-container">
           <!-- Populated by app.js -->
         </div>
+      </div>
+    </section>
+
+    <!-- Tab: Network Explorer -->
+    <section class="tab-content" id="tab-explorer" role="tabpanel" aria-labelledby="tab-btn-explorer" tabindex="0">
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">Network Explorer</h2>
+          <p class="section-subheading">Browse operators, objects, and anchors like a block explorer. Object bytes are never fetched or displayed — only presence, replicas, and quorum.</p>
+        </div>
+      </div>
+
+      <form class="explorer-search-row" id="explorer-search-form" role="search">
+        <input class="explorer-search-input" id="input-explorer-search" type="search" placeholder="Search 64-hex object CID, 0x anchor tx hash, or operator id…" autocomplete="off" spellcheck="false" aria-label="Explorer search">
+        <button class="explorer-search-button" id="btn-explorer-search" type="submit">Search</button>
+      </form>
+
+      <div class="operators-grid" id="explorer-overview-grid">
+        <div class="loading-placeholder">Loading network overview...</div>
+      </div>
+
+      <div id="explorer-result" aria-live="polite"></div>
+
+      <h3 class="card-subheading">Latest Anchors</h3>
+      <div id="explorer-anchors-strip">
+        <div class="loading-placeholder">Loading anchors...</div>
       </div>
     </section>
 

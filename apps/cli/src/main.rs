@@ -7549,6 +7549,11 @@ fn public_ui_router() -> axum::Router {
         )
         .route("/api/fleet", get(api_public_fleet_handler))
         .route("/api/stream", get(api_public_stream_handler))
+        .route("/api/explorer/overview", get(api_explorer_overview_handler))
+        .route(
+            "/api/explorer/object/:cid",
+            get(api_explorer_object_handler),
+        )
         .fallback(api_public_fallback_handler)
 }
 
@@ -8688,6 +8693,167 @@ async fn api_public_operators_jobs_handler() -> axum::Json<serde_json::Value> {
         "jobs": load_public_operator_jobs(),
         "job_limit": PUBLIC_OPERATOR_JOB_HISTORY_MAX,
         "message": "Collector job history is observational telemetry; it does not establish storage durability or quorum.",
+    }))
+}
+
+// ---- Explorer (blockchain-style read-only browsing) ----
+
+/// Anonymous read bearer for presence probes. CIDs are unguessable
+/// capabilities, so a PoS challenge reveals only presence to someone who
+/// already knows the CID; object bytes are never fetched or displayed.
+const EXPLORER_ANON_TOKEN: &str = "recovery_anonymous";
+const EXPLORER_PROBE_TIMEOUT_SECS: u64 = 8;
+
+fn explorer_error_response(
+    status: axum::http::StatusCode,
+    code: &str,
+    message: String,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "status": "error",
+            "code": code,
+            "error": message,
+        })),
+    )
+        .into_response()
+}
+
+fn parse_explorer_cid(raw: &str) -> Option<([u8; 32], String)> {
+    let normalized = raw.trim().to_lowercase();
+    let bytes = hex::decode(&normalized).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut cid = [0u8; 32];
+    cid.copy_from_slice(&bytes);
+    Some((cid, normalized))
+}
+
+async fn probe_explorer_replica(endpoint: String, cid: [u8; 32]) -> serde_json::Value {
+    let started = std::time::Instant::now();
+    let mut nonce = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let client = OperatorClient::new(endpoint.clone());
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(EXPLORER_PROBE_TIMEOUT_SECS),
+        client.challenge_object_pos(EXPLORER_ANON_TOKEN, &cid, &nonce),
+    )
+    .await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    match outcome {
+        Ok(Ok(receipt)) if receipt.cid_hex == hex::encode(cid) => serde_json::json!({
+            "endpoint": endpoint,
+            "status": "present",
+            "operator_id": receipt.operator_id,
+            "size_bytes": receipt.size_bytes,
+            "latency_ms": latency_ms,
+        }),
+        Ok(Ok(_)) => serde_json::json!({
+            "endpoint": endpoint,
+            "status": "unknown",
+            "latency_ms": latency_ms,
+            "error": "PoS receipt CID mismatch",
+        }),
+        Ok(Err(ciphervault_storage::StorageError::ServerError { status: 404, .. })) => {
+            serde_json::json!({
+                "endpoint": endpoint,
+                "status": "absent",
+                "latency_ms": latency_ms,
+            })
+        }
+        Ok(Err(error)) => serde_json::json!({
+            "endpoint": endpoint,
+            "status": "unknown",
+            "latency_ms": latency_ms,
+            "error": error.to_string(),
+        }),
+        Err(_) => serde_json::json!({
+            "endpoint": endpoint,
+            "status": "unknown",
+            "latency_ms": latency_ms,
+            "error": "probe timeout",
+        }),
+    }
+}
+
+async fn api_explorer_object_handler(
+    axum::extract::Path(cid_raw): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+    let Some((cid, cid_hex)) = parse_explorer_cid(&cid_raw) else {
+        return explorer_error_response(
+            StatusCode::BAD_REQUEST,
+            "INVALID_CID",
+            format!("Not a 64-character hex content ID: {cid_raw}"),
+        );
+    };
+    let endpoints = get_configured_operators();
+    if endpoints.is_empty() {
+        return explorer_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NO_OPERATORS_CONFIGURED",
+            "Explorer has no operator endpoints configured".to_string(),
+        );
+    }
+    let probes = endpoints
+        .into_iter()
+        .map(|endpoint| probe_explorer_replica(endpoint, cid));
+    let replicas = join_all(probes).await;
+    let present = replicas
+        .iter()
+        .filter(|replica| {
+            replica.get("status").and_then(|status| status.as_str()) == Some("present")
+        })
+        .count();
+    let checked = replicas.len();
+    let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
+    axum::Json(serde_json::json!({
+        "cid": cid_hex,
+        "checked_at_utc": Utc::now().to_rfc3339(),
+        "quorum": {
+            "present": present,
+            "checked": checked,
+            "required": required,
+            "satisfied": present >= required,
+        },
+        "replicas": replicas,
+        "note": "Presence only: the explorer proves possession via PoS challenge and never fetches object bytes.",
+    }))
+    .into_response()
+}
+
+async fn api_explorer_overview_handler() -> axum::Json<serde_json::Value> {
+    let telemetry = public_operator_telemetry().await;
+    let total = telemetry.operators.len();
+    let reachable = telemetry
+        .operators
+        .iter()
+        .filter(|operator| {
+            operator.get("status").and_then(|status| status.as_str()) == Some("reachable")
+        })
+        .count();
+    let checkpoints = load_public_feed_with_finality()
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let head = checkpoints
+        .first()
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    axum::Json(serde_json::json!({
+        "observed_at_utc": telemetry.observed_at.to_rfc3339(),
+        "operators": {
+            "total": total,
+            "reachable": reachable,
+        },
+        "anchors": {
+            "count": checkpoints.len(),
+            "head": head,
+        },
     }))
 }
 
@@ -10861,6 +11027,57 @@ mod ui_router_tests {
             );
         }
 
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn explorer_cid_parser_normalizes_and_validates() {
+        let (bytes, normalized) = parse_explorer_cid(&"AB".repeat(32)).unwrap();
+        assert_eq!(normalized, "ab".repeat(32));
+        assert_eq!(bytes, [0xabu8; 32]);
+        assert!(parse_explorer_cid("  ab12  ").is_none());
+        assert!(parse_explorer_cid(&"ab".repeat(31)).is_none());
+        assert!(parse_explorer_cid(&"zz".repeat(32)).is_none());
+    }
+
+    #[tokio::test]
+    async fn explorer_object_rejects_malformed_cid_without_probing() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        for bad in ["not-a-cid", "ab12", &"zz".repeat(32)] {
+            let response = client
+                .get(format!("{base_url}/api/explorer/object/{bad}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "explorer accepted malformed CID {bad}"
+            );
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "INVALID_CID");
+        }
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn explorer_overview_reports_operator_and_anchor_shape() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{base_url}/api/explorer/overview"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert!(body["observed_at_utc"].is_string());
+        assert!(body["operators"]["total"].is_number());
+        assert!(body["operators"]["reachable"].is_number());
+        assert!(body["anchors"]["count"].is_number());
         server.abort();
         let _ = server.await;
     }

@@ -559,6 +559,28 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(watchHtml.includes('WATCH_SNAPSHOT'), 'Activity feed must render watcher snapshot events');
   assert(watchHtml.includes('Watcher captured snapshot abc123'), 'Activity feed must render the watcher summary');
 
+  // =========================================================================
+  // 17. Explorer Search Classification Tests
+  // =========================================================================
+  const classifyObject = vm.runInContext(`classifyExplorerQuery('${'ab'.repeat(32)}')`, context);
+  assert.equal(classifyObject.kind, 'object');
+  assert.equal(classifyObject.cid, 'ab'.repeat(32));
+  const classifyUpper = vm.runInContext(`classifyExplorerQuery('${'AB'.repeat(32)}')`, context);
+  assert.equal(classifyUpper.cid, 'ab'.repeat(32));
+  const classifyTx = vm.runInContext(`classifyExplorerQuery('0x${'cd'.repeat(32)}')`, context);
+  assert.equal(classifyTx.kind, 'anchor-tx');
+  vm.runInContext(`state.operators = [{ operator_id: 'op_alpha_1', display_name: 'Operator 1' }]`, context);
+  const classifyOp = vm.runInContext(`classifyExplorerQuery('alpha')`, context);
+  assert.equal(classifyOp.kind, 'operator');
+  assert.equal(classifyOp.index, 0);
+  const classifyUnknown = vm.runInContext(`classifyExplorerQuery('---')`, context);
+  assert.equal(classifyUnknown.kind, 'unknown');
+
+  vm.runInContext(`state.explorerObject = { cid: '${'ab'.repeat(32)}', checked_at_utc: 'now', quorum: { present: 3, checked: 3, required: 3, satisfied: true }, replicas: [{ endpoint: 'http://op1:8201', status: 'present', operator_id: 'op_8201', size_bytes: 1024, latency_ms: 12 }] }; renderExplorerObject()`, context);
+  const explorerHtml = getElementById('explorer-result').innerHTML;
+  assert(explorerHtml.includes('QUORUM 3/3'), 'Explorer must render the quorum badge');
+  assert(explorerHtml.includes('op_8201'), 'Explorer must render replica operator ids');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

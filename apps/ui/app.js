@@ -35,6 +35,9 @@ const state = {
   diffReveal: false,
   terminalEventsCount: 0,
   drawerSnapshotId: null,
+  explorerOverview: null,
+  explorerObject: null,
+  explorerQuery: '',
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -54,6 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initFileManagement();
   initSnapshotDrawer();
   initActivityFeed();
+  initExplorer();
   initTerminalConsole();
   initKeyboardShortcuts();
   initWorkspaceSwitcher();
@@ -94,6 +98,7 @@ async function fetchAllData() {
       fetchOperators(),
       fetchAnchors(),
       fetchRelayerCheckpoints(),
+      fetchExplorerOverview(),
     ];
     if (isPublicExplorer()) {
       requests.push(fetchOperatorHistory());
@@ -2218,6 +2223,190 @@ function closeModal(modal) {
     lastFocusedElement.focus();
     lastFocusedElement = null;
   }
+}
+
+// -------------------------------------------------------------
+// Network Explorer (blockchain-style browsing)
+// -------------------------------------------------------------
+
+function classifyExplorerQuery(raw) {
+  const query = (raw || '').trim();
+  if (/^[0-9a-fA-F]{64}$/.test(query)) return { kind: 'object', cid: query.toLowerCase() };
+  if (/^0x[0-9a-fA-F]{64}$/.test(query)) return { kind: 'anchor-tx', txHash: query.toLowerCase() };
+  if (query.length >= 3) {
+    const needle = query.toLowerCase();
+    const match = (state.operators || []).findIndex(op =>
+      String(op.operator_id || '').toLowerCase().includes(needle)
+      || String(op.display_name || '').toLowerCase().includes(needle));
+    if (match >= 0) return { kind: 'operator', index: match };
+  }
+  return { kind: 'unknown', query };
+}
+
+async function fetchExplorerOverview() {
+  try {
+    const res = await fetch('/api/explorer/overview');
+    if (!res.ok) throw new Error(`Explorer overview request failed (${res.status})`);
+    state.explorerOverview = await res.json();
+  } catch (err) {
+    state.explorerOverview = { error: err.message };
+  }
+  renderExplorerOverview();
+  renderExplorerAnchors();
+}
+
+function renderExplorerOverview() {
+  const grid = document.getElementById('explorer-overview-grid');
+  if (!grid) return;
+  const overview = state.explorerOverview;
+  if (!overview || overview.error) {
+    const detail = overview && overview.error ? `Network overview unavailable: ${overview.error}` : 'Loading network overview...';
+    grid.innerHTML = `<div class="loading-placeholder">${escapeHtml(detail)}</div>`;
+    return;
+  }
+  const ops = overview.operators || {};
+  const anchors = overview.anchors || {};
+  const head = anchors.head || {};
+  const headTx = head.tx_hash_hex || head.tx_hash || '';
+  const reachable = Number(ops.reachable || 0);
+  const total = Number(ops.total || 0);
+  grid.innerHTML = `
+    <article class="operator-card">
+      <div class="op-header"><div class="op-title-wrap">
+        <span class="op-id">Operators</span>
+        <span class="${reachable > 0 ? 'badge-online' : 'badge-offline'}">${escapeHtml(String(ops.reachable ?? '--'))}/${escapeHtml(String(ops.total ?? '--'))} responding</span>
+      </div></div>
+      <div class="op-meta-row"><span class="op-meta-label">Observed</span><span class="op-meta-val">${escapeHtml(overview.observed_at_utc || 'recently')}</span></div>
+      <div class="op-meta-row"><span class="op-meta-label">Coverage</span><span class="op-meta-val">${total > 0 ? `${Math.round((reachable / total) * 100)}% of configured endpoints` : 'No endpoints configured'}</span></div>
+    </article>
+    <article class="operator-card">
+      <div class="op-header"><div class="op-title-wrap">
+        <span class="op-id">Anchors</span>
+        <span class="badge-online">${escapeHtml(String(anchors.count ?? 0))} checkpoints</span>
+      </div></div>
+      <div class="op-meta-row"><span class="op-meta-label">Head receipt</span><span class="op-meta-val">${headTx ? `<span title="${escapeHtml(headTx)}">${escapeHtml(truncateHash(headTx, 10, 8))}</span>` : 'No checkpoint feed published.'}</span></div>
+    </article>`;
+}
+
+async function lookupExplorerObject(cid) {
+  const result = document.getElementById('explorer-result');
+  if (result) result.innerHTML = `<div class="loading-placeholder">Probing replicas for <span title="${escapeHtml(cid)}">${escapeHtml(truncateHash(cid, 12, 10))}</span>...</div>`;
+  try {
+    const res = await fetch(`/api/explorer/object/${encodeURIComponent(cid)}`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Object lookup failed (${res.status})`);
+    state.explorerObject = body;
+  } catch (err) {
+    state.explorerObject = { error: err.message, cid };
+  }
+  renderExplorerObject();
+}
+
+function renderExplorerObject() {
+  const result = document.getElementById('explorer-result');
+  if (!result) return;
+  const object = state.explorerObject;
+  if (!object) {
+    result.innerHTML = '';
+    return;
+  }
+  if (object.error) {
+    result.innerHTML = `<div class="loading-placeholder">Object lookup failed: ${escapeHtml(object.error)}</div>`;
+    return;
+  }
+  const quorum = object.quorum || {};
+  const satisfied = quorum.satisfied === true;
+  const rows = (object.replicas || []).map(replica => {
+    const status = replica.status || 'unknown';
+    const badge = status === 'present' ? 'badge-online' : (status === 'absent' ? 'badge-offline' : 'badge-status-subtle');
+    const size = typeof replica.size_bytes === 'number' ? formatBytes(replica.size_bytes) : '--';
+    const latency = typeof replica.latency_ms === 'number' ? `${replica.latency_ms} ms` : '--';
+    const detail = replica.operator_id || replica.error || '';
+    return `<tr><td><span title="${escapeHtml(replica.endpoint || '')}">${escapeHtml(truncateHash(replica.endpoint || '', 24, 12))}</span></td>`
+      + `<td><span class="${badge}">${escapeHtml(status.toUpperCase())}</span></td>`
+      + `<td>${escapeHtml(size)}</td><td>${escapeHtml(latency)}</td>`
+      + `<td>${escapeHtml(detail)}</td></tr>`;
+  }).join('');
+  result.innerHTML = `
+    <article class="operator-card">
+      <div class="op-header"><div class="op-title-wrap">
+        <span class="op-id" title="${escapeHtml(object.cid || '')}">Object ${escapeHtml(truncateHash(object.cid || '', 12, 10))}</span>
+        <span class="${satisfied ? 'badge-online' : 'badge-offline'}">QUORUM ${escapeHtml(String(quorum.present ?? 0))}/${escapeHtml(String(quorum.required ?? 3))}</span>
+      </div></div>
+      <div class="op-meta-row"><span class="op-meta-label">Checked</span><span class="op-meta-val">${escapeHtml(object.checked_at_utc || '')} across ${escapeHtml(String(quorum.checked ?? 0))} endpoints</span></div>
+      <table class="data-table"><thead><tr><th>Endpoint</th><th>Status</th><th>Size</th><th>Latency</th><th>Operator / note</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">No replica reports.</td></tr>'}</tbody></table>
+      <p class="topology-subtext">Presence only: possession is proven by PoS challenge. Ciphertext bytes are never fetched.</p>
+    </article>`;
+}
+
+function renderExplorerAnchors() {
+  const strip = document.getElementById('explorer-anchors-strip');
+  if (!strip) return;
+  const anchors = Array.isArray(state.anchors) ? state.anchors.slice(-5).reverse() : [];
+  if (anchors.length === 0) {
+    strip.innerHTML = `<div class="loading-placeholder">No anchors published yet.</div>`;
+    return;
+  }
+  const rows = anchors.map(entry => {
+    const tx = normalizeTransactionHash(entry.tx_hash_hex || entry.tx_hash || '');
+    const usable = !isZeroTransactionHash(tx);
+    const block = Number(entry.reported_block_number ?? entry.block_number);
+    const display = checkpointDisplayState(entry, tx);
+    const url = checkpointExplorerUrl(entry, tx);
+    return `<tr><td>${usable ? `<a href="${escapeHtml(url || '#')}" target="_blank" rel="noopener" title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</a>` : '--'}</td>`
+      + `<td>${usable && Number.isFinite(block) && block > 0 ? `#${block.toLocaleString()}` : '--'}</td>`
+      + `<td>${escapeHtml(chainLabel(entry.chain_id))}</td>`
+      + `<td>${escapeHtml(display.label)}</td></tr>`;
+  }).join('');
+  strip.innerHTML = `<table class="data-table"><thead><tr><th>Receipt</th><th>Block</th><th>Chain</th><th>Finality</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderExplorerAnchorTx(txHash) {
+  const result = document.getElementById('explorer-result');
+  if (!result) return;
+  const match = (state.anchors || []).find(entry =>
+    normalizeTransactionHash(entry.tx_hash_hex || entry.tx_hash || '').toLowerCase() === txHash);
+  if (!match) {
+    result.innerHTML = `<div class="loading-placeholder">No anchor receipt matches <span title="${escapeHtml(txHash)}">${escapeHtml(truncateHash(txHash, 12, 10))}</span>.</div>`;
+    return;
+  }
+  const display = checkpointDisplayState(match, txHash);
+  const url = checkpointExplorerUrl(match, txHash);
+  const block = Number(match.reported_block_number ?? match.block_number);
+  result.innerHTML = `
+    <article class="operator-card">
+      <div class="op-header"><div class="op-title-wrap">
+        <span class="op-id" title="${escapeHtml(txHash)}">Receipt ${escapeHtml(truncateHash(txHash, 12, 10))}</span>
+        <span class="badge-online">${escapeHtml(display.label)}</span>
+      </div></div>
+      <div class="op-meta-row"><span class="op-meta-label">Block</span><span class="op-meta-val">${Number.isFinite(block) && block > 0 ? `#${block.toLocaleString()}` : '--'}</span></div>
+      <div class="op-meta-row"><span class="op-meta-label">Chain</span><span class="op-meta-val">${escapeHtml(chainLabel(match.chain_id))}</span></div>
+      <div class="op-meta-row"><span class="op-meta-label">Commitment</span><span class="op-meta-val">${isMeaningfulHex(match.commitment_hex) ? `<span title="${escapeHtml(match.commitment_hex)}">${escapeHtml(truncateHash(match.commitment_hex, 12, 10))}</span>` : '--'}</span></div>
+      ${url ? `<div class="op-meta-row"><span class="op-meta-label">On-chain</span><span class="op-meta-val"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">View receipt</a></span></div>` : ''}
+    </article>`;
+}
+
+function initExplorer() {
+  const form = document.getElementById('explorer-search-form');
+  const input = document.getElementById('input-explorer-search');
+  if (!form || !input) return;
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const verdict = classifyExplorerQuery(input.value);
+    state.explorerQuery = input.value;
+    if (verdict.kind === 'object') {
+      lookupExplorerObject(verdict.cid);
+    } else if (verdict.kind === 'anchor-tx') {
+      renderExplorerAnchorTx(verdict.txHash);
+    } else if (verdict.kind === 'operator') {
+      const tabBtn = document.getElementById('tab-btn-operators');
+      if (tabBtn && typeof tabBtn.click === 'function') tabBtn.click();
+      showToast(`Operator match: ${(state.operators[verdict.index] || {}).operator_id || `#${verdict.index + 1}`}.`);
+    } else {
+      showToast('Enter a 64-hex object CID, a 0x anchor receipt hash, or an operator id.', 'warning');
+    }
+  });
 }
 
 function initTabs() {

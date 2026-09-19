@@ -120,6 +120,17 @@ ciphervault tui                                  # live overview: files, snapsho
 ciphervault ui                                   # production web dashboard (or --local inspector)
 ```
 
+### Network Explorer (blockchain-style browsing)
+
+The dashboard's public **Explorer** tab works like a chain explorer:
+search a 64-hex object CID to see its PoS-proven replicas, sizes, and
+quorum badge; search a `0x` receipt hash to inspect an anchor; search an
+operator id to jump to its telemetry. Overview cards show reachable
+operators and the anchor head. Two read-only APIs back it
+(`GET /api/explorer/overview`, `GET /api/explorer/object/:cid`); object
+bytes are never fetched — possession is proven by PoS challenge, and
+vault identities, files, and snapshots stay private by design.
+
 ### Recovery and safety nets
 
 - **New machine:** install the binary, then
