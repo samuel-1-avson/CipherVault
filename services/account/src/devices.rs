@@ -387,3 +387,552 @@ pub async fn post_device_revoke(
     })
     .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::SESSION_COOKIE_NAME;
+    use crate::test_support::{cleanup, json, test_app};
+    use crate::util::b64_encode;
+    use axum::body::Body;
+    use axum::http::Request;
+    use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
+    use ed25519_dalek::Signer;
+    use sha2::{Digest, Sha256};
+    use tower05::ServiceExt;
+
+    #[tokio::test]
+    async fn account_device_proof_login_and_revocation_lifecycle() {
+        let (root, _state, app) = test_app("service");
+        let capabilities = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capabilities.status(), StatusCode::OK);
+        let capabilities_json = json(capabilities).await;
+        assert_eq!(capabilities_json["webauthn"], true);
+        assert_eq!(capabilities_json["managed_session_cookie"], true);
+        let account_key = generate_signing_key();
+        let account_pk = hex::encode(account_key.verifying_key().as_bytes());
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "display_name": "Alice",
+                            "account_public_key_hex": account_pk,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let account = json(created).await;
+        let account_id = account["account_id"].as_str().unwrap().to_string();
+        let unauthenticated_account = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/accounts/{account_id}").as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated_account.status(), StatusCode::UNAUTHORIZED);
+        let device_key = generate_signing_key();
+        let device_id = "aa".repeat(32);
+        let device_pk = hex::encode(device_key.verifying_key().as_bytes());
+        let challenge = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices/challenge").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_id,
+                            "public_key_hex": device_pk,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let challenge_json = json(challenge).await;
+        let challenge_id = challenge_json["challenge_id"].as_str().unwrap();
+        let nonce = challenge_json["nonce_hex"].as_str().unwrap();
+        let proof_bytes = challenge_signing_bytes(
+            &account_id,
+            Some(&device_id),
+            Some(&device_pk),
+            challenge_id,
+            nonce,
+        );
+        let proof = hex::encode(sign_with_domain(
+            &account_key,
+            b"account_device_enrollment",
+            &proof_bytes,
+        ));
+        let enrolled = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_id,
+                            "public_key_hex": device_pk,
+                            "challenge_id": challenge_id,
+                            "proof_signature_hex": proof,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enrolled.status(), StatusCode::CREATED);
+        let login_challenge = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/challenge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "account_id": account_id,
+                            "device_id_hex": device_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let login_json = json(login_challenge).await;
+        let login_id = login_json["challenge_id"].as_str().unwrap();
+        let login_nonce = login_json["nonce_hex"].as_str().unwrap();
+        let login_bytes =
+            challenge_signing_bytes(&account_id, Some(&device_id), None, login_id, login_nonce);
+        let login_signature = hex::encode(sign_with_domain(
+            &account_key,
+            b"account_login",
+            &login_bytes,
+        ));
+        let session = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "challenge_id": login_id,
+                            "signature_hex": login_signature,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::OK);
+        assert!(session
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("ciphervault_account_session=")));
+        let session_json = json(session).await;
+        let token = session_json["token"].as_str().unwrap().to_string();
+        let current = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/sessions")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(current.status(), StatusCode::OK);
+        let cookie_current = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/sessions")
+                    .header("cookie", format!("{SESSION_COOKIE_NAME}={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cookie_current.status(), StatusCode::OK);
+        let handoff = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/handoff")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(handoff.status(), StatusCode::OK);
+        let handoff_json = json(handoff).await;
+        let handoff_code = handoff_json["handoff_code"].as_str().unwrap().to_string();
+        let browser_handoff = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/handoff/consume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "handoff_code": handoff_code,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(browser_handoff.status(), StatusCode::OK);
+        assert!(browser_handoff
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("ciphervault_account_session=")));
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/handoff/consume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "handoff_code": handoff_code,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+        let registration_options = app
+            .clone()
+            .oneshot(
+                Request::post(
+                    format!("/v1/accounts/{account_id}/webauthn/registration/options").as_str(),
+                )
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registration_options.status(), StatusCode::OK);
+        let registration_options_json = json(registration_options).await;
+        let registration_challenge_id = registration_options_json["challenge_id"].as_str().unwrap();
+        let registration_challenge = registration_options_json["challenge"].as_str().unwrap();
+        let credential_id = vec![0x42; 32];
+        let mut authenticator_data = Vec::new();
+        authenticator_data.extend_from_slice(&Sha256::digest(b"localhost"));
+        authenticator_data.push(0x41); // user present + attested credential data
+        authenticator_data.extend_from_slice(&1u32.to_be_bytes());
+        authenticator_data.extend_from_slice(&[0u8; 16]);
+        authenticator_data.extend_from_slice(&(credential_id.len() as u16).to_be_bytes());
+        authenticator_data.extend_from_slice(&credential_id);
+        let cose_key = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Integer(1.into()),
+            ),
+            (
+                ciborium::Value::Integer(3.into()),
+                ciborium::Value::Integer((-8).into()),
+            ),
+            (
+                ciborium::Value::Integer((-1).into()),
+                ciborium::Value::Integer(6.into()),
+            ),
+            (
+                ciborium::Value::Integer((-2).into()),
+                ciborium::Value::Bytes(device_key.verifying_key().as_bytes().to_vec()),
+            ),
+        ]);
+        let mut cose_bytes = Vec::new();
+        ciborium::ser::into_writer(&cose_key, &mut cose_bytes).unwrap();
+        authenticator_data.extend_from_slice(&cose_bytes);
+        let attestation_object = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("fmt".into()),
+                ciborium::Value::Text("none".into()),
+            ),
+            (
+                ciborium::Value::Text("authData".into()),
+                ciborium::Value::Bytes(authenticator_data),
+            ),
+            (
+                ciborium::Value::Text("attStmt".into()),
+                ciborium::Value::Map(Vec::new()),
+            ),
+        ]);
+        let mut attestation_bytes = Vec::new();
+        ciborium::ser::into_writer(&attestation_object, &mut attestation_bytes).unwrap();
+        let client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": registration_challenge,
+            "origin": "http://localhost:8300",
+        });
+        let registration_verify = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/webauthn/registration/verify").as_str())
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "challenge_id": registration_challenge_id,
+                            "credential_id_b64": b64_encode(&credential_id),
+                            "client_data_json_b64": b64_encode(&serde_json::to_vec(&client_data).unwrap()),
+                            "attestation_object_b64": b64_encode(&attestation_bytes),
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registration_verify.status(), StatusCode::CREATED);
+        let authentication_options = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/webauthn/authentication/options")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"account_id": account_id})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authentication_options.status(), StatusCode::OK);
+        let authentication_options_json = json(authentication_options).await;
+        let authentication_challenge_id = authentication_options_json["challenge_id"]
+            .as_str()
+            .unwrap();
+        let authentication_challenge = authentication_options_json["challenge"].as_str().unwrap();
+        let client_data = serde_json::json!({
+            "type": "webauthn.get",
+            "challenge": authentication_challenge,
+            "origin": "http://localhost:8300",
+        });
+        let client_data_bytes = serde_json::to_vec(&client_data).unwrap();
+        let mut assertion_auth_data = Vec::new();
+        assertion_auth_data.extend_from_slice(&Sha256::digest(b"localhost"));
+        assertion_auth_data.push(0x01); // user present
+        assertion_auth_data.extend_from_slice(&2u32.to_be_bytes());
+        let mut signed_assertion = assertion_auth_data.clone();
+        signed_assertion.extend_from_slice(&Sha256::digest(&client_data_bytes));
+        let assertion_signature = device_key.sign(&signed_assertion);
+        let authentication_verify = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/webauthn/authentication/verify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "challenge_id": authentication_challenge_id,
+                            "credential_id_b64": b64_encode(&credential_id),
+                            "client_data_json_b64": b64_encode(&client_data_bytes),
+                            "authenticator_data_b64": b64_encode(&assertion_auth_data),
+                            "signature_b64": b64_encode(&assertion_signature.to_bytes()),
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authentication_verify.status(), StatusCode::OK);
+        let authentication_json = json(authentication_verify).await;
+        let webauthn_token = authentication_json["token"].as_str().unwrap().to_string();
+        let authentication_replay = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/webauthn/authentication/verify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "challenge_id": authentication_challenge_id,
+                            "credential_id_b64": b64_encode(&credential_id),
+                            "client_data_json_b64": b64_encode(&client_data_bytes),
+                            "authenticator_data_b64": b64_encode(&assertion_auth_data),
+                            "signature_b64": b64_encode(&assertion_signature.to_bytes()),
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authentication_replay.status(), StatusCode::UNAUTHORIZED);
+        let credential_revoke = app
+            .clone()
+            .oneshot(
+                Request::post(format!(
+                    "/v1/accounts/{account_id}/webauthn/credentials/{}/revoke",
+                    hex::encode(&credential_id)
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(credential_revoke.status(), StatusCode::OK);
+        let authentication_after_credential_revoke = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/webauthn/authentication/options")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"account_id": account_id})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            authentication_after_credential_revoke.status(),
+            StatusCode::NOT_FOUND
+        );
+        let account_view_response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/accounts/{account_id}").as_str())
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(account_view_response.status(), StatusCode::OK);
+        let account_view_json = json(account_view_response).await;
+        assert_eq!(account_view_json["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            account_view_json["webauthn_credentials"][0]["device_id_hex"],
+            device_id
+        );
+        let recovery_codes = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/recovery/codes").as_str())
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"count":4}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovery_codes.status(), StatusCode::OK);
+        let recovery_json = json(recovery_codes).await;
+        let recovery_code = recovery_json["codes"][0].as_str().unwrap().to_string();
+        let recovery_session = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/recovery/redeem")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "account_id": account_id,
+                            "code": recovery_code,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovery_session.status(), StatusCode::OK);
+        let recovery_replay = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/recovery/redeem")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "account_id": account_id,
+                            "code": recovery_json["codes"][0],
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovery_replay.status(), StatusCode::UNAUTHORIZED);
+        let audit_response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/accounts/{account_id}/audit").as_str())
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit_response.status(), StatusCode::OK);
+        let audit_json = json(audit_response).await;
+        let events = audit_json["events"].as_array().unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "account_created"));
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "device_enrolled"));
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "session_created"));
+        let revoke = app
+            .clone()
+            .oneshot(
+                Request::post(
+                    format!("/v1/accounts/{account_id}/devices/{device_id}/revoke").as_str(),
+                )
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::OK);
+        let after = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/sessions")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+        let webauthn_after = app
+            .oneshot(
+                Request::get("/v1/sessions")
+                    .header("authorization", format!("Bearer {webauthn_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(webauthn_after.status(), StatusCode::UNAUTHORIZED);
+        cleanup(root);
+    }
+}
