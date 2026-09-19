@@ -238,29 +238,76 @@ pub(crate) async fn api_account_resource_get_handler(
     .await
 }
 
-pub(crate) async fn api_account_management_get_handler(
-    axum::extract::Path((account_id, resource)): axum::extract::Path<(String, String)>,
-    headers: axum::http::HeaderMap,
+async fn proxy_account_resource(
+    method: reqwest::Method,
+    account_id: &str,
+    resource: &str,
+    headers: &axum::http::HeaderMap,
+    body: Option<Bytes>,
 ) -> axum::response::Response {
     proxy_account_request(
-        reqwest::Method::GET,
+        method,
         &format!("/v1/accounts/{account_id}/{resource}"),
+        headers,
+        body,
+    )
+    .await
+}
+
+pub(crate) async fn api_account_invitations_get_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_resource(
+        reqwest::Method::GET,
+        &account_id,
+        "invitations",
         &headers,
         None,
     )
     .await
 }
 
-pub(crate) async fn api_account_management_post_handler(
-    axum::extract::Path((account_id, resource)): axum::extract::Path<(String, String)>,
+pub(crate) async fn api_account_invitations_post_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
-    proxy_account_request(
+    proxy_account_resource(
         reqwest::Method::POST,
-        &format!("/v1/accounts/{account_id}/{resource}"),
+        &account_id,
+        "invitations",
         &headers,
         Some(body),
+    )
+    .await
+}
+
+pub(crate) async fn api_account_vaults_post_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_resource(
+        reqwest::Method::POST,
+        &account_id,
+        "vaults",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+pub(crate) async fn api_account_memberships_get_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_resource(
+        reqwest::Method::GET,
+        &account_id,
+        "memberships",
+        &headers,
+        None,
     )
     .await
 }

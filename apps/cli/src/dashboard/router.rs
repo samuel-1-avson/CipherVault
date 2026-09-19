@@ -4,15 +4,16 @@ use super::session::UiServerMode;
 use crate::{
     api_account_capabilities_handler, api_account_device_challenge_handler,
     api_account_device_enrollment_handler, api_account_invitation_accept_handler,
-    api_account_login_handler, api_account_logout_handler, api_account_management_get_handler,
-    api_account_management_post_handler, api_account_membership_revoke_handler,
-    api_account_recovery_codes_handler, api_account_register_handler,
-    api_account_resource_get_handler, api_account_session_challenge_handler,
-    api_account_session_handler, api_account_session_handoff_consume_handler,
-    api_account_session_handoff_handler, api_account_session_login_handler,
-    api_account_status_handler, api_account_totp_enrollment_handler,
-    api_account_totp_enrollment_verify_handler, api_account_totp_options_handler,
-    api_account_totp_revoke_handler, api_account_totp_verify_handler,
+    api_account_invitations_get_handler, api_account_invitations_post_handler,
+    api_account_login_handler, api_account_logout_handler, api_account_membership_revoke_handler,
+    api_account_memberships_get_handler, api_account_recovery_codes_handler,
+    api_account_register_handler, api_account_resource_get_handler,
+    api_account_session_challenge_handler, api_account_session_handler,
+    api_account_session_handoff_consume_handler, api_account_session_handoff_handler,
+    api_account_session_login_handler, api_account_status_handler,
+    api_account_totp_enrollment_handler, api_account_totp_enrollment_verify_handler,
+    api_account_totp_options_handler, api_account_totp_revoke_handler,
+    api_account_totp_verify_handler, api_account_vaults_post_handler,
     api_account_webauthn_options_handler, api_account_webauthn_registration_options_handler,
     api_account_webauthn_registration_verify_handler, api_account_webauthn_verify_handler,
     api_activity_handler, api_anchors_handler, api_approvals_handler, api_audit_handler,
@@ -88,15 +89,15 @@ pub(crate) fn private_ui_router() -> axum::Router {
         )
         .route(
             "/api/account/:account_id/invitations",
-            get(api_account_management_get_handler).post(api_account_management_post_handler),
+            get(api_account_invitations_get_handler).post(api_account_invitations_post_handler),
         )
         .route(
             "/api/account/:account_id/vaults",
-            axum::routing::post(api_account_management_post_handler),
+            axum::routing::post(api_account_vaults_post_handler),
         )
         .route(
             "/api/account/:account_id/memberships",
-            get(api_account_management_get_handler),
+            get(api_account_memberships_get_handler),
         )
         .route(
             "/api/account/:account_id/memberships/:member_account_id/revoke",
@@ -269,15 +270,15 @@ pub(crate) fn public_ui_router() -> axum::Router {
         )
         .route(
             "/api/account/:account_id/invitations",
-            get(api_account_management_get_handler).post(api_account_management_post_handler),
+            get(api_account_invitations_get_handler).post(api_account_invitations_post_handler),
         )
         .route(
             "/api/account/:account_id/vaults",
-            axum::routing::post(api_account_management_post_handler),
+            axum::routing::post(api_account_vaults_post_handler),
         )
         .route(
             "/api/account/:account_id/memberships",
-            get(api_account_management_get_handler),
+            get(api_account_memberships_get_handler),
         )
         .route(
             "/api/account/:account_id/memberships/:member_account_id/revoke",
@@ -558,6 +559,66 @@ mod tests {
         assert!(body["operators"]["total"].is_number());
         assert!(body["operators"]["reachable"].is_number());
         assert!(body["anchors"]["count"].is_number());
+        server.abort();
+        let _ = server.await;
+    }
+
+    /// Regression: the per-resource account handlers extract a single
+    /// `:account_id` segment. A generic `Path<(String, String)>` handler on
+    /// these single-param routes 500s instead of reaching the proxy.
+    #[tokio::test]
+    async fn account_resource_routes_reach_the_proxy_handler() {
+        struct EndpointGuard {
+            prior: Option<std::ffi::OsString>,
+        }
+
+        impl EndpointGuard {
+            fn clear() -> Self {
+                let prior = std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT");
+                std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT");
+                Self { prior }
+            }
+        }
+
+        impl Drop for EndpointGuard {
+            fn drop(&mut self) {
+                match self.prior.take() {
+                    Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", value),
+                    None => std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT"),
+                }
+            }
+        }
+
+        let _no_endpoint = EndpointGuard::clear();
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        // Valid-format ID so ID validation never masks an extraction failure.
+        let account_id = format!("cvacct_{}", "ab".repeat(16));
+
+        for uri in [
+            format!("/api/account/{account_id}/invitations"),
+            format!("/api/account/{account_id}/memberships"),
+        ] {
+            let response = client.get(format!("{base_url}{uri}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "ACCOUNT_SERVICE_NOT_CONFIGURED");
+        }
+        for uri in [
+            format!("/api/account/{account_id}/invitations"),
+            format!("/api/account/{account_id}/vaults"),
+        ] {
+            let response = client
+                .post(format!("{base_url}{uri}"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "ACCOUNT_SERVICE_NOT_CONFIGURED");
+        }
+
         server.abort();
         let _ = server.await;
     }
