@@ -9,11 +9,13 @@ pub mod state;
 pub mod swarm;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::StatusCode;
 use axum::middleware::{self, Next};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::Router;
+use axum::{Json, Router};
 use std::sync::Arc;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 
 pub use state::OperatorState;
@@ -119,9 +121,23 @@ async fn trace_middleware(
     response
 }
 
+/// Last-resort panic catcher (outermost layer): a panicking handler or
+/// middleware becomes a 500 JSON envelope in the standard `{"code","error"}`
+/// shape instead of a dropped connection. A panic also poisons any mutex
+/// the panicking task held; those recover via `lock_or_recover`.
+fn panic_response(_: Box<dyn std::any::Any + Send>) -> Response {
+    let body = serde_json::json!({ "code": 500, "error": "INTERNAL_PANIC_CAUGHT" });
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+}
+
+#[cfg(test)]
+async fn test_panic_handler() -> &'static str {
+    panic!("intentional test panic for CatchPanicLayer verification");
+}
+
 /// Constructs the Axum application router for the operator service.
 pub fn create_router(state: Arc<OperatorState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/v1/info", get(handlers::get_info))
         .route("/healthz", get(handlers::get_health))
         .route("/metrics", get(handlers::get_metrics))
@@ -179,7 +195,10 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route(
             "/v1/auth/challenges/:id/approve",
             post(handlers::post_submit_approval),
-        )
+        );
+    #[cfg(test)]
+    let router = router.route("/__test_panic", get(test_panic_handler));
+    router
         // Operator APIs are consumed by the dashboard backend and authenticated clients.
         // Do not grant arbitrary browser origins access to operator responses.
         // Envelope first (inner): trace stays outermost so spans and the
@@ -207,5 +226,38 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
                 ]),
         )
         .layer(DefaultBodyLimit::max(state::max_object_size()))
+        // Outermost: added last so a panic anywhere below — handlers,
+        // envelope, trace, CORS, body limit — becomes a 500 JSON envelope.
+        .layer(CatchPanicLayer::custom(panic_response))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower05::ServiceExt;
+
+    #[tokio::test]
+    async fn panic_in_handler_returns_500_json_envelope() {
+        let root = std::env::temp_dir().join(format!("cv-panic-{}", rand::random::<u128>()));
+        let state = Arc::new(OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        ));
+        let response = create_router(state)
+            .oneshot(Request::get("/__test_panic").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["code"], 500);
+        assert_eq!(value["error"], "INTERNAL_PANIC_CAUGHT");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

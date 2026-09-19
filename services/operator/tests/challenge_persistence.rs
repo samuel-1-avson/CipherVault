@@ -38,6 +38,7 @@ fn issued_challenge_survives_restart() {
     );
     let token = reopened
         .verify_and_create_session(&challenge_id, &device_pk_hex, &hex::encode(signature))
+        .expect("persist ok")
         .expect("challenge must survive restart");
     assert!(!token.is_empty());
     let _ = std::fs::remove_dir_all(root);
@@ -67,6 +68,7 @@ fn consumed_challenge_does_not_come_back_after_restart() {
     );
     state
         .verify_and_create_session(&challenge_id, &device_pk_hex, &hex::encode(signature))
+        .expect("persist ok")
         .expect("first verification succeeds");
     drop(state);
 
@@ -78,6 +80,7 @@ fn consumed_challenge_does_not_come_back_after_restart() {
     assert!(
         reopened
             .verify_and_create_session(&challenge_id, &device_pk_hex, &hex::encode(signature))
+            .expect("persist ok")
             .is_none(),
         "single-use challenge must not verify twice across a restart"
     );

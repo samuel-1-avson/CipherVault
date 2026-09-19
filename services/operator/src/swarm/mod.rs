@@ -764,13 +764,13 @@ fn accept_control_message(
         ControlInput::Heartbeat(hb) => {
             // The sender's announced key is resolved FIRST: unknown
             // senders are ignored without touching crypto or the
-            // tracker. (A poisoned routing-table lock also lands here —
-            // degrading liveness beats wrongfully penalizing.)
-            let announced = state.peer_routing_table.lock().ok().and_then(|table| {
-                table
-                    .get(&hb.operator_id)
-                    .map(|desc| desc.signing_pk_hex.clone())
-            });
+            // tracker. (The routing-table lock recovers from poison, so
+            // only genuinely unknown senders land in the drop below.)
+            let table =
+                crate::state::lock_or_recover(&state.peer_routing_table, "peer_routing_table");
+            let announced = table
+                .get(&hb.operator_id)
+                .map(|desc| desc.signing_pk_hex.clone());
             let Some(expected_pk) = announced else {
                 state.metrics.observe_heartbeat_dropped("unknown_sender");
                 return MessageAcceptance::Ignore;

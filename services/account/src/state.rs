@@ -274,9 +274,18 @@ impl AccountState {
     pub(crate) fn connection(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, Connection>, AccountServiceError> {
-        self.db
-            .lock()
-            .map_err(|_| AccountServiceError::Invalid("account database lock poisoned".into()))
+        // Recover, don't fail: poison is permanent until recovered, so an
+        // error here would wedge every later request. SQLite itself finds
+        // no partial transaction (rusqlite rolls back on unwind), and the
+        // stderr line keeps the recovery honest.
+        match self.db.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                eprintln!("account database lock poisoned; recovering with prior state");
+                self.db.clear_poison();
+                Ok(poisoned.into_inner())
+            }
+        }
     }
 }
 

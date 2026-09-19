@@ -7,7 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -41,6 +41,24 @@ pub const MAX_PEER_ANNOUNCE_SKEW_SECS: u64 = 3600;
 /// Distinct CIDs/locators hash to different stripes so concurrent uploads
 /// for different objects no longer serialize on a single global lock.
 pub const IO_STRIPE_COUNT: usize = 64;
+
+/// Locks an operator-state mutex, recovering from poisoning with a loud
+/// stderr log instead of panicking. Poison is permanent until cleared —
+/// every later `lock()` would fail — so recovery is the only stay-alive
+/// option; the log keeps it honest. The poison flag is cleared after the
+/// single log line so later locks run silently. Recovered state is
+/// whatever the panicking holder left behind; every guarded map tolerates
+/// that (entries are validated on read and TTL-evicted on write).
+pub(crate) fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("operator lock {name} poisoned; recovering with pre-panic state");
+            mutex.clear_poison();
+            poisoned.into_inner()
+        }
+    }
+}
 
 /// Parses a byte size: plain bytes (`8388608`) or suffixed kilobytes/megabytes
 /// (`64KB`, `8MB`, case-insensitive, trailing `B` optional). Else `None`.
@@ -307,7 +325,7 @@ impl OperatorState {
         let Ok(records) = serde_json::from_slice::<Vec<EnrolledIdentity>>(&bytes) else {
             return;
         };
-        let mut identities = self.enrolled_identities.lock().unwrap();
+        let mut identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities");
         identities.extend(records.into_iter().filter(|record| {
             hex::decode(&record.vault_id_hex).map(|b| b.len()) == Ok(32)
                 && hex::decode(&record.public_key_hex).map(|b| b.len()) == Ok(32)
@@ -320,7 +338,7 @@ impl OperatorState {
     }
 
     fn persist_enrolled_identities(&self) -> Result<(), String> {
-        let identities = self.enrolled_identities.lock().unwrap().clone();
+        let identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities").clone();
         let encoded = serde_json::to_vec_pretty(&identities).map_err(|e| e.to_string())?;
         self.persist_atomic_secure(&self.identity_store_path(), &encoded)
     }
@@ -361,9 +379,7 @@ impl OperatorState {
         else {
             return false;
         };
-        self.enrolled_identities
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.enrolled_identities, "enrolled_identities")
             .iter()
             .any(|identity| {
                 identity.revoked_at_utc.is_none()
@@ -406,8 +422,8 @@ impl OperatorState {
             return Err("public_key_hex must be 32-byte hex".into());
         }
         let (account_id, device_id_hex) = normalize_identity_binding(account_id, device_id_hex)?;
-        let _identity_guard = self.identity_lock.lock().map_err(|e| e.to_string())?;
-        let mut identities = self.enrolled_identities.lock().unwrap();
+        let _identity_guard = lock_or_recover(&self.identity_lock, "identity_lock");
+        let mut identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities");
         if let Some(existing) = identities.iter_mut().find(|identity| {
             identity.vault_id_hex == vault_id_hex && identity.public_key_hex == public_key_hex
         }) {
@@ -445,60 +461,94 @@ impl OperatorState {
         Ok(())
     }
 
-    pub fn revoke_identity(&self, vault_id_hex: &str, public_key_hex: &str) -> bool {
+    pub fn revoke_identity(
+        &self,
+        vault_id_hex: &str,
+        public_key_hex: &str,
+    ) -> Result<bool, String> {
         let vault_id_hex = vault_id_hex.trim().to_ascii_lowercase();
         let public_key_hex = public_key_hex.trim().to_ascii_lowercase();
         let now = Utc::now().timestamp().max(0) as u64;
-        let _identity_guard = self.identity_lock.lock().unwrap();
-        let mut identities = self.enrolled_identities.lock().unwrap();
-        let mut changed = false;
-        for identity in identities.iter_mut().filter(|identity| {
+        let _identity_guard = lock_or_recover(&self.identity_lock, "identity_lock");
+        let mut identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities");
+        // Indices (not timestamps) identify what this call revoked: the
+        // identity lock serializes enrollment against revocation, so no
+        // push can shift the Vec between mark and rollback below.
+        let mut revoked_indices = Vec::new();
+        for (index, identity) in identities.iter_mut().enumerate().filter(|(_, identity)| {
             identity.vault_id_hex == vault_id_hex && identity.public_key_hex == public_key_hex
         }) {
             if identity.revoked_at_utc.is_none() {
                 identity.revoked_at_utc = Some(now);
-                changed = true;
+                revoked_indices.push(index);
             }
         }
         drop(identities);
-        if changed {
-            let _ = self.persist_enrolled_identities();
-            let revoked_tokens: Vec<String> = self
-                .session_keys
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(_, key)| hex::encode(key) == public_key_hex)
-                .map(|(token, _)| token.clone())
-                .collect();
-            if !revoked_tokens.is_empty() {
-                let mut sessions = self.sessions.lock().unwrap();
-                let mut keys = self.session_keys.lock().unwrap();
-                let mut vaults = self.session_vaults.lock().unwrap();
-                for token in &revoked_tokens {
-                    sessions.remove(token);
-                    keys.remove(token);
-                    vaults.remove(token);
-                }
-                drop(vaults);
-                drop(keys);
-                drop(sessions);
-                self.persist_sessions();
-            }
-            self.audit_event(
-                "identity_revoked",
-                serde_json::json!({
-                    "vault_id_hex": vault_id_hex,
-                    "public_key_hex": public_key_hex,
-                    "sessions_revoked": revoked_tokens.len(),
-                }),
-            );
+        if revoked_indices.is_empty() {
+            return Ok(false);
         }
-        changed
+        if let Err(error) = self.persist_enrolled_identities() {
+            let mut identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities");
+            for index in revoked_indices {
+                if let Some(identity) = identities.get_mut(index) {
+                    identity.revoked_at_utc = None;
+                }
+            }
+            return Err(format!("Unable to persist identity revocation: {error}"));
+        }
+        let revoked_tokens: Vec<String> = lock_or_recover(&self.session_keys, "session_keys")
+            .iter()
+            .filter(|(_, key)| hex::encode(key) == public_key_hex)
+            .map(|(token, _)| token.clone())
+            .collect();
+        if !revoked_tokens.is_empty() {
+            let mut sessions = lock_or_recover(&self.sessions, "sessions");
+            let mut keys = lock_or_recover(&self.session_keys, "session_keys");
+            let mut vaults = lock_or_recover(&self.session_vaults, "session_vaults");
+            let mut removed = Vec::with_capacity(revoked_tokens.len());
+            for token in &revoked_tokens {
+                removed.push((
+                    token.clone(),
+                    sessions.remove(token),
+                    keys.remove(token),
+                    vaults.remove(token),
+                ));
+            }
+            drop(vaults);
+            drop(keys);
+            drop(sessions);
+            if let Err(error) = self.persist_sessions() {
+                // Disk still holds the sessions, so memory must too.
+                let mut sessions = lock_or_recover(&self.sessions, "sessions");
+                let mut keys = lock_or_recover(&self.session_keys, "session_keys");
+                let mut vaults = lock_or_recover(&self.session_vaults, "session_vaults");
+                for (token, expires_at, key, vault) in removed {
+                    if let Some(expires_at) = expires_at {
+                        sessions.insert(token.clone(), expires_at);
+                    }
+                    if let Some(key) = key {
+                        keys.insert(token.clone(), key);
+                    }
+                    if let Some(vault) = vault {
+                        vaults.insert(token, vault);
+                    }
+                }
+                return Err(format!("Unable to persist session revocation: {error}"));
+            }
+        }
+        self.audit_event(
+            "identity_revoked",
+            serde_json::json!({
+                "vault_id_hex": vault_id_hex,
+                "public_key_hex": public_key_hex,
+                "sessions_revoked": revoked_tokens.len(),
+            }),
+        );
+        Ok(true)
     }
 
     pub fn list_enrolled_identities(&self) -> Vec<EnrolledIdentity> {
-        self.enrolled_identities.lock().unwrap().clone()
+        lock_or_recover(&self.enrolled_identities, "enrolled_identities").clone()
     }
 
     fn session_store_path(&self) -> PathBuf {
@@ -517,9 +567,9 @@ impl OperatorState {
             return;
         };
         let now = Utc::now().timestamp() as u64;
-        let mut sessions = self.sessions.lock().unwrap();
-        let mut keys = self.session_keys.lock().unwrap();
-        let mut vaults = self.session_vaults.lock().unwrap();
+        let mut sessions = lock_or_recover(&self.sessions, "sessions");
+        let mut keys = lock_or_recover(&self.session_keys, "session_keys");
+        let mut vaults = lock_or_recover(&self.session_vaults, "session_vaults");
         for record in records {
             if record.expires_at_utc <= now || record.token.is_empty() {
                 continue;
@@ -547,7 +597,7 @@ impl OperatorState {
             return;
         };
         let now = Utc::now().timestamp() as u64;
-        let mut challenges = self.challenges.lock().unwrap();
+        let mut challenges = lock_or_recover(&self.challenges, "challenges");
         for record in records {
             if record.expires_at_utc <= now || record.challenge_id.is_empty() {
                 continue;
@@ -585,7 +635,7 @@ impl OperatorState {
         else {
             return;
         };
-        let mut stored = self.relayed_checkpoints.lock().unwrap();
+        let mut stored = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
         for (commitment, receipt) in records {
             let tx_hash = receipt.tx_hash_hex.trim_start_matches("0x");
             if commitment.len() == 64
@@ -627,7 +677,7 @@ impl OperatorState {
             return;
         };
         let now = Utc::now().timestamp() as u64;
-        let mut peers = self.peer_routing_table.lock().unwrap();
+        let mut peers = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
         for (operator_id, peer) in records {
             if peer.operator_id == operator_id
                 && peer.verify().is_ok()
@@ -666,7 +716,7 @@ impl OperatorState {
             return;
         };
         let now = Utc::now().timestamp() as u64;
-        let mut challenges = self.approval_challenges.lock().unwrap();
+        let mut challenges = lock_or_recover(&self.approval_challenges, "approval_challenges");
         for (challenge_id, (challenge, receipts)) in records {
             if challenge.challenge_id != challenge_id || challenge.expires_at_utc <= now {
                 continue;
@@ -695,10 +745,10 @@ impl OperatorState {
         self.persist_atomic(&self.approval_store_path(), &encoded)
     }
 
-    fn persist_sessions(&self) {
-        let sessions = self.sessions.lock().unwrap();
-        let keys = self.session_keys.lock().unwrap();
-        let vaults = self.session_vaults.lock().unwrap();
+    fn persist_sessions(&self) -> Result<(), String> {
+        let sessions = lock_or_recover(&self.sessions, "sessions");
+        let keys = lock_or_recover(&self.session_keys, "session_keys");
+        let vaults = lock_or_recover(&self.session_vaults, "session_vaults");
         let records: Vec<PersistedSession> = sessions
             .iter()
             .filter_map(|(token, expires_at_utc)| {
@@ -710,14 +760,12 @@ impl OperatorState {
                 })
             })
             .collect();
-        let Ok(encoded) = serde_json::to_vec(&records) else {
-            return;
-        };
-        let _ = self.persist_atomic_secure(&self.session_store_path(), &encoded);
+        let encoded = serde_json::to_vec(&records).map_err(|error| error.to_string())?;
+        self.persist_atomic_secure(&self.session_store_path(), &encoded)
     }
 
-    fn persist_challenges(&self) {
-        let challenges = self.challenges.lock().unwrap();
+    fn persist_challenges(&self) -> Result<(), String> {
+        let challenges = lock_or_recover(&self.challenges, "challenges");
         let records: Vec<PersistedChallenge> = challenges
             .iter()
             .map(|(challenge_id, record)| PersistedChallenge {
@@ -730,19 +778,14 @@ impl OperatorState {
                 device_id_hex: record.device_id_hex.clone(),
             })
             .collect();
-        let Ok(encoded) = serde_json::to_vec(&records) else {
-            return;
-        };
-        let _ = self.persist_atomic_secure(&self.challenge_store_path(), &encoded);
+        let encoded = serde_json::to_vec(&records).map_err(|error| error.to_string())?;
+        self.persist_atomic_secure(&self.challenge_store_path(), &encoded)
     }
 
     fn audit_event(&self, event: &str, fields: serde_json::Value) {
         // Leaf serialization for concurrent events.log appends. This lock is
         // taken here only and never held while acquiring another lock.
-        let _event_guard = self
-            .event_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _event_guard = lock_or_recover(&self.event_lock, "event_lock");
         let path = self.data_dir.join("events.log");
         let payload = serde_json::json!({
             "event": event,
@@ -803,7 +846,7 @@ impl OperatorState {
         let now = Utc::now().timestamp() as u64;
         let expires_at = now + 300; // 5 minutes
 
-        let mut lock = self.challenges.lock().unwrap();
+        let mut lock = lock_or_recover(&self.challenges, "challenges");
         // TTL eviction: remove expired challenges
         lock.retain(|_, record| record.expires_at_utc > now);
         // Quota bound: if at capacity, evict oldest
@@ -828,7 +871,10 @@ impl OperatorState {
             },
         );
         drop(lock);
-        self.persist_challenges();
+        if let Err(error) = self.persist_challenges() {
+            lock_or_recover(&self.challenges, "challenges").remove(&challenge_id);
+            return Err(format!("Unable to persist challenges: {error}"));
+        }
         self.audit_event(
             "challenge_issued",
             serde_json::json!({
@@ -847,22 +893,27 @@ impl OperatorState {
         challenge_id: &str,
         public_key_hex: &str,
         signature_hex: &str,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, String> {
         let now = Utc::now().timestamp() as u64;
         let challenge = {
-            let mut lock = self.challenges.lock().unwrap();
-            lock.remove(challenge_id)?
+            let mut lock = lock_or_recover(&self.challenges, "challenges");
+            lock.remove(challenge_id)
         };
-        self.persist_challenges();
+        let Some(challenge) = challenge else {
+            return Ok(None);
+        };
+        if let Err(error) = self.persist_challenges() {
+            return Err(format!("Unable to persist challenge removal: {error}"));
+        }
 
         if now > challenge.expires_at_utc {
-            return None;
+            return Ok(None);
         }
         if !challenge
             .public_key_hex
             .eq_ignore_ascii_case(public_key_hex)
         {
-            return None;
+            return Ok(None);
         }
         if Self::enrollment_required()
             && !self.is_identity_enrolled_with_binding(
@@ -872,24 +923,30 @@ impl OperatorState {
                 challenge.device_id_hex.as_deref(),
             )
         {
-            return None;
+            return Ok(None);
         }
 
-        let pk_bytes = hex::decode(public_key_hex).ok()?;
+        let Some(pk_bytes) = hex::decode(public_key_hex).ok() else {
+            return Ok(None);
+        };
         if pk_bytes.len() != 32 {
-            return None;
+            return Ok(None);
         }
         let mut pk_arr = [0u8; 32];
         pk_arr.copy_from_slice(&pk_bytes);
 
-        let sig_bytes = hex::decode(signature_hex).ok()?;
+        let Some(sig_bytes) = hex::decode(signature_hex).ok() else {
+            return Ok(None);
+        };
         if sig_bytes.len() != 64 {
-            return None;
+            return Ok(None);
         }
         let mut sig_arr = [0u8; 64];
         sig_arr.copy_from_slice(&sig_bytes);
 
-        let nonce_bytes = hex::decode(challenge.nonce_hex).ok()?;
+        let Some(nonce_bytes) = hex::decode(challenge.nonce_hex).ok() else {
+            return Ok(None);
+        };
 
         // Verify signature with domain separation
         if ciphervault_crypto::signatures::verify_with_domain(
@@ -900,7 +957,7 @@ impl OperatorState {
         )
         .is_err()
         {
-            return None;
+            return Ok(None);
         }
 
         // Generate session token
@@ -909,7 +966,7 @@ impl OperatorState {
         let token = hex::encode(token_bytes);
         let token_exp = now + 3600; // 1 hour
 
-        let mut lock = self.sessions.lock().unwrap();
+        let mut lock = lock_or_recover(&self.sessions, "sessions");
         // TTL eviction: remove expired sessions
         lock.retain(|_, exp| *exp > now);
         if lock.len() >= MAX_ACTIVE_SESSIONS {
@@ -919,22 +976,29 @@ impl OperatorState {
                 .map(|(k, _)| k.clone())
             {
                 lock.remove(&oldest_token);
-                self.session_keys.lock().unwrap().remove(&oldest_token);
-                self.session_vaults.lock().unwrap().remove(&oldest_token);
+                lock_or_recover(&self.session_keys, "session_keys").remove(&oldest_token);
+                lock_or_recover(&self.session_vaults, "session_vaults").remove(&oldest_token);
             }
         }
         lock.insert(token.clone(), token_exp);
         drop(lock);
 
-        let mut key_lock = self.session_keys.lock().unwrap();
+        let mut key_lock = lock_or_recover(&self.session_keys, "session_keys");
         key_lock.insert(token.clone(), pk_arr);
 
-        let mut vault_lock = self.session_vaults.lock().unwrap();
+        let mut vault_lock = lock_or_recover(&self.session_vaults, "session_vaults");
         vault_lock.insert(token.clone(), challenge.vault_id_hex);
 
         drop(vault_lock);
         drop(key_lock);
-        self.persist_sessions();
+        if let Err(error) = self.persist_sessions() {
+            // Roll back the in-memory session: without durable state the
+            // login must fail cleanly rather than mint a restart-fragile one.
+            lock_or_recover(&self.sessions, "sessions").remove(&token);
+            lock_or_recover(&self.session_keys, "session_keys").remove(&token);
+            lock_or_recover(&self.session_vaults, "session_vaults").remove(&token);
+            return Err(format!("Unable to persist session: {error}"));
+        }
         self.audit_event(
             "session_created",
             serde_json::json!({
@@ -944,15 +1008,31 @@ impl OperatorState {
             }),
         );
 
-        Some(token)
+        Ok(Some(token))
     }
 
-    pub fn revoke_session(&self, token: &str) -> bool {
-        let removed = self.sessions.lock().unwrap().remove(token).is_some();
-        self.session_keys.lock().unwrap().remove(token);
-        self.session_vaults.lock().unwrap().remove(token);
+    pub fn revoke_session(&self, token: &str) -> Result<bool, String> {
+        let removed_expires_at = lock_or_recover(&self.sessions, "sessions").remove(token);
+        let removed_key = lock_or_recover(&self.session_keys, "session_keys").remove(token);
+        let removed_vault = lock_or_recover(&self.session_vaults, "session_vaults").remove(token);
+        let removed = removed_expires_at.is_some();
         if removed {
-            self.persist_sessions();
+            if let Err(error) = self.persist_sessions() {
+                // Disk still holds the session, so memory must too.
+                if let Some(expires_at) = removed_expires_at {
+                    lock_or_recover(&self.sessions, "sessions")
+                        .insert(token.to_string(), expires_at);
+                }
+                if let Some(key) = removed_key {
+                    lock_or_recover(&self.session_keys, "session_keys")
+                        .insert(token.to_string(), key);
+                }
+                if let Some(vault) = removed_vault {
+                    lock_or_recover(&self.session_vaults, "session_vaults")
+                        .insert(token.to_string(), vault);
+                }
+                return Err(format!("Unable to persist session revocation: {error}"));
+            }
             self.audit_event(
                 "session_revoked",
                 serde_json::json!({
@@ -960,16 +1040,18 @@ impl OperatorState {
                 }),
             );
         }
-        removed
+        Ok(removed)
     }
 
     pub fn get_session_public_key(&self, token: &str) -> Option<[u8; 32]> {
-        let lock = self.session_keys.lock().unwrap();
+        let lock = lock_or_recover(&self.session_keys, "session_keys");
         lock.get(token).copied()
     }
 
     pub fn get_session_vault_id(&self, token: &str) -> Option<String> {
-        self.session_vaults.lock().unwrap().get(token).cloned()
+        lock_or_recover(&self.session_vaults, "session_vaults")
+            .get(token)
+            .cloned()
     }
 
     pub fn validate_session_for_vault(&self, token: &str, vault_id_hex: &str) -> bool {
@@ -1015,7 +1097,7 @@ impl OperatorState {
         if token.is_empty() || token == "recovery_anonymous" {
             return false;
         }
-        let lock = self.sessions.lock().unwrap();
+        let lock = lock_or_recover(&self.sessions, "sessions");
         if let Some(&expires_at) = lock.get(token) {
             Utc::now().timestamp() as u64 <= expires_at
         } else {
@@ -1039,9 +1121,7 @@ impl OperatorState {
 
     /// Caps the largest single voucher grant this operator honors.
     pub fn set_voucher_max_quota(&self, max_quota_bytes: u64) {
-        if let Ok(mut ledger) = self.voucher_ledger.lock() {
-            ledger.set_max_quota(max_quota_bytes);
-        }
+        lock_or_recover(&self.voucher_ledger, "voucher_ledger").set_max_quota(max_quota_bytes);
     }
 
     /// Self-issues a voucher (D3 barter model): this operator's key signs a
@@ -1071,13 +1151,7 @@ impl OperatorState {
     ) -> Result<Option<(String, u64)>, StorageError> {
         match voucher {
             Some(voucher) => {
-                let mut ledger =
-                    self.voucher_ledger
-                        .lock()
-                        .map_err(|_| StorageError::ServerError {
-                            status: 500,
-                            message: "voucher ledger unavailable".into(),
-                        })?;
+                let mut ledger = lock_or_recover(&self.voucher_ledger, "voucher_ledger");
                 let now = chrono::Utc::now().timestamp() as u64;
                 ledger.try_consume(voucher, &self.issuer_pk_hex(), now, bytes)?;
                 Ok(Some((voucher.nonce_hex.clone(), bytes)))
@@ -1092,9 +1166,7 @@ impl OperatorState {
 
     fn release_write(&self, charge: Option<(String, u64)>) {
         if let Some((nonce, bytes)) = charge {
-            if let Ok(mut ledger) = self.voucher_ledger.lock() {
-                ledger.release(&nonce, bytes);
-            }
+            lock_or_recover(&self.voucher_ledger, "voucher_ledger").release(&nonce, bytes);
         }
     }
 
@@ -1120,18 +1192,13 @@ impl OperatorState {
     /// Overrides the receiver-side repair budget (bytes/sec). Tests and
     /// operators tune the repair lane without touching client quotas.
     pub fn set_repair_budget(&self, bytes_per_sec: u64) {
-        if let Ok(mut budget) = self.repair_budget.lock() {
-            budget.set_rate(bytes_per_sec);
-        }
+        lock_or_recover(&self.repair_budget, "repair_budget").set_rate(bytes_per_sec);
     }
 
-    /// Spends `bytes` from the repair budget. False (including on lock
-    /// poison) means the push must 429 without storing.
+    /// Spends `bytes` from the repair budget. False means the push must
+    /// 429 without storing.
     pub fn try_spend_repair_budget(&self, bytes: u64) -> bool {
-        self.repair_budget
-            .lock()
-            .map(|mut budget| budget.try_take(bytes))
-            .unwrap_or(false)
+        lock_or_recover(&self.repair_budget, "repair_budget").try_take(bytes)
     }
 
     /// Persists one operator-signed repair push. Runs the SAME validation
@@ -1258,7 +1325,7 @@ impl OperatorState {
             return Err("Digest mismatch".into());
         }
 
-        let _stripe_guard = self.io_stripe(cid_hex).lock().map_err(|e| e.to_string())?;
+        let _stripe_guard = lock_or_recover(self.io_stripe(cid_hex), "io_stripe");
         let obj_path = self.data_dir.join("objects").join(cid_hex);
         if fs::read(&obj_path).ok().as_deref() != Some(bytes) {
             self.persist_atomic(&obj_path, bytes)?;
@@ -1439,10 +1506,7 @@ impl OperatorState {
         {
             return Err("Invalid closure digest or retention term".into());
         }
-        let _stripe_guard = self
-            .io_stripe(closure_digest_hex)
-            .lock()
-            .map_err(|e| e.to_string())?;
+        let _stripe_guard = lock_or_recover(self.io_stripe(closure_digest_hex), "io_stripe");
         let now = Utc::now().timestamp() as u64;
         self.persist_lease(LeaseReceipt {
             lease_id: hex::encode(rand::random::<[u8; 16]>()),
@@ -1495,7 +1559,7 @@ impl OperatorState {
         if lease_id.len() != 32 || hex::decode(lease_id).is_err() || additional_days == 0 {
             return Err("Invalid lease ID or retention term".into());
         }
-        let _stripe_guard = self.io_stripe(lease_id).lock().map_err(|e| e.to_string())?;
+        let _stripe_guard = lock_or_recover(self.io_stripe(lease_id), "io_stripe");
         let path = self
             .data_dir
             .join("leases")
@@ -1747,7 +1811,7 @@ impl OperatorState {
             }
         }
 
-        let _stripe_guard = self.io_stripe(locator_hex).lock().unwrap();
+        let _stripe_guard = lock_or_recover(self.io_stripe(locator_hex), "io_stripe");
         let log_path = self
             .data_dir
             .join("recovery")
@@ -1788,7 +1852,7 @@ impl OperatorState {
         if locator_hex.len() != 64 || hex::decode(locator_hex).is_err() {
             return Vec::new();
         }
-        let _stripe_guard = self.io_stripe(locator_hex).lock().unwrap();
+        let _stripe_guard = lock_or_recover(self.io_stripe(locator_hex), "io_stripe");
         let log_path = self
             .data_dir
             .join("recovery")
@@ -1834,7 +1898,7 @@ impl OperatorState {
         }
 
         let commitment_hex = hex::encode(&evidence.commitment);
-        let mut lock = self.relayed_checkpoints.lock().unwrap();
+        let mut lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
         if let Some(existing) = lock.get(&commitment_hex) {
             return Ok(existing.clone());
         }
@@ -1886,7 +1950,7 @@ impl OperatorState {
         let block_number = report
             .receipt_block_number
             .ok_or_else(|| "Verified checkpoint receipt has no block number".to_string())?;
-        let mut lock = self.relayed_checkpoints.lock().unwrap();
+        let mut lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
         let existing = lock
             .get_mut(&commitment_hex)
             .ok_or_else(|| "Checkpoint is not queued for relay".to_string())?;
@@ -1911,7 +1975,7 @@ impl OperatorState {
         block_number: u64,
         status: &str,
     ) -> Option<ciphervault_storage::RelayerReceipt> {
-        let mut lock = self.relayed_checkpoints.lock().unwrap();
+        let mut lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
         if let Some(existing) = lock.get_mut(commitment_hex) {
             let previous = existing.clone();
             existing.tx_hash_hex = tx_hash_hex.to_string();
@@ -1934,7 +1998,7 @@ impl OperatorState {
         &self,
         commitment_hex: &str,
     ) -> Option<ciphervault_storage::RelayerReceipt> {
-        let lock = self.relayed_checkpoints.lock().unwrap();
+        let lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
         lock.get(commitment_hex).cloned()
     }
 
@@ -1972,7 +2036,7 @@ impl OperatorState {
                 return Err("Peer signing key is not in the configured trust registry".into());
             }
         }
-        let mut lock = self.peer_routing_table.lock().unwrap();
+        let mut lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
         let now = Utc::now().timestamp() as u64;
         lock.retain(|_, p| now.saturating_sub(p.timestamp_utc) < 86400);
         if !lock.contains_key(&peer.operator_id) && lock.len() >= MAX_ACTIVE_PEERS {
@@ -1991,7 +2055,7 @@ impl OperatorState {
     /// Retrieves all currently active and unexpired peer operators in the cluster.
     pub fn get_active_peers(&self) -> Vec<ciphervault_storage::PeerDescriptor> {
         let now = Utc::now().timestamp() as u64;
-        let mut lock = self.peer_routing_table.lock().unwrap();
+        let mut lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
         lock.retain(|_, peer| now.saturating_sub(peer.timestamp_utc) < 86400);
         lock.values().cloned().collect()
     }
@@ -2004,7 +2068,7 @@ impl OperatorState {
         if challenge.is_expired() {
             return Err("Challenge is already expired".into());
         }
-        let mut lock = self.approval_challenges.lock().unwrap();
+        let mut lock = lock_or_recover(&self.approval_challenges, "approval_challenges");
         let now = Utc::now().timestamp() as u64;
         lock.retain(|_, (c, _)| c.expires_at_utc > now);
         let challenge_id = challenge.challenge_id.clone();
@@ -2019,7 +2083,7 @@ impl OperatorState {
 
     /// Lists all pending and unexpired authorization challenges.
     pub fn get_pending_challenges(&self) -> Vec<ciphervault_recovery::ApprovalChallenge> {
-        let lock = self.approval_challenges.lock().unwrap();
+        let lock = lock_or_recover(&self.approval_challenges, "approval_challenges");
         let now = Utc::now().timestamp() as u64;
         lock.values()
             .filter(|(c, receipts)| c.expires_at_utc > now && receipts.is_empty())
@@ -2035,7 +2099,7 @@ impl OperatorState {
         ciphervault_recovery::ApprovalChallenge,
         Vec<ciphervault_recovery::SignedApprovalReceipt>,
     )> {
-        let lock = self.approval_challenges.lock().unwrap();
+        let lock = lock_or_recover(&self.approval_challenges, "approval_challenges");
         lock.get(challenge_id).cloned()
     }
 
@@ -2045,7 +2109,7 @@ impl OperatorState {
         receipt: ciphervault_recovery::SignedApprovalReceipt,
     ) -> Result<usize, String> {
         let challenge_id = receipt.challenge_id.clone();
-        let mut lock = self.approval_challenges.lock().unwrap();
+        let mut lock = lock_or_recover(&self.approval_challenges, "approval_challenges");
         let (already_recorded, count) =
             if let Some((challenge, receipts)) = lock.get_mut(&challenge_id) {
                 receipt
@@ -2145,6 +2209,7 @@ mod tests {
                 &hex::encode(other_key.verifying_key().as_bytes()),
                 &hex::encode(signature)
             )
+            .expect("persist ok")
             .is_none());
 
         let (challenge_id, nonce_hex, _) = state
@@ -2158,6 +2223,7 @@ mod tests {
         );
         let token = state
             .verify_and_create_session(&challenge_id, &device_pk, &hex::encode(signature))
+            .expect("persist ok")
             .expect("bound session");
         assert!(state.validate_session_for_vault(&token, &vault_id));
         assert!(!state.validate_session_for_vault(&token, &other_vault));
@@ -2169,7 +2235,7 @@ mod tests {
             ciphervault_crypto::generate_signing_key(),
         );
         assert!(restarted.validate_session_for_vault(&token, &vault_id));
-        assert!(restarted.revoke_session(&token));
+        assert!(restarted.revoke_session(&token).expect("persist ok"));
         assert!(!restarted.validate_write_session(&token));
         drop(restarted);
         fs::remove_dir_all(root).unwrap();
@@ -2603,5 +2669,134 @@ mod tests {
         assert!(exposition.contains("# TYPE ciphervault_operator_put_latency_ms histogram"));
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn poisoned_locks_recover_with_prior_state() {
+        let root = std::env::temp_dir().join(format!("cv-poison-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        lock_or_recover(&state.sessions, "sessions").insert("tok".into(), u64::MAX);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.sessions.lock().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(state.sessions.is_poisoned());
+        // Recovery, not panic: prior state is intact and the lock works again.
+        assert!(state.validate_write_session("tok"));
+        assert!(!state.sessions.is_poisoned());
+        assert!(state.revoke_session("tok").expect("revoke recovers"));
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Blocks an atomic-persist target the way a full disk would: the temp
+    /// file writes fine but the rename onto a non-empty directory fails on
+    /// every platform.
+    fn block_persist_target(path: &std::path::Path) {
+        let _ = fs::remove_file(path);
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("block"), b"no renames here").unwrap();
+    }
+
+    #[test]
+    fn session_persist_failure_rolls_back_and_errors() {
+        let root = std::env::temp_dir().join(format!("cv-sessfail-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        lock_or_recover(&state.sessions, "sessions").insert("tok".into(), u64::MAX);
+        lock_or_recover(&state.session_keys, "session_keys").insert("tok".into(), [9u8; 32]);
+        lock_or_recover(&state.session_vaults, "session_vaults")
+            .insert("tok".into(), "ab".repeat(32));
+        block_persist_target(&root.join("sessions.json"));
+        assert!(state.persist_sessions().is_err());
+        // Revocation fails loudly and restores the in-memory session so
+        // memory still matches the (unwritten) disk state.
+        let error = state.revoke_session("tok").expect_err("persist must fail");
+        assert!(
+            error.contains("Unable to persist session revocation"),
+            "{error}"
+        );
+        assert!(state.validate_write_session("tok"));
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn challenge_persist_failure_rolls_back_and_errors() {
+        std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
+        let root = std::env::temp_dir().join(format!("cv-chalfail-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        block_persist_target(&root.join("challenges.json"));
+        let error = state
+            .issue_challenge(&"11".repeat(32), &"22".repeat(32))
+            .expect_err("persist must fail");
+        assert!(error.contains("Unable to persist challenges"), "{error}");
+        assert!(lock_or_recover(&state.challenges, "challenges").is_empty());
+        // The removal persist runs before validation, so a seeded challenge
+        // also surfaces the store error rather than an auth verdict.
+        lock_or_recover(&state.challenges, "challenges").insert(
+            "cid".into(),
+            ChallengeRecord {
+                nonce_hex: "00".repeat(32),
+                expires_at_utc: u64::MAX,
+                vault_id_hex: "11".repeat(32),
+                public_key_hex: "22".repeat(32),
+                account_id: None,
+                device_id_hex: None,
+            },
+        );
+        let error = state
+            .verify_and_create_session("cid", &"22".repeat(32), &"00".repeat(64))
+            .expect_err("persist must fail");
+        assert!(
+            error.contains("Unable to persist challenge removal"),
+            "{error}"
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+        std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
+    }
+
+    #[test]
+    fn session_issue_persist_failure_rolls_back_login() {
+        std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
+        let root = std::env::temp_dir().join(format!("cv-loginfail-{}", rand::random::<u128>()));
+        let state = OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        let device_key = ciphervault_crypto::generate_signing_key();
+        let device_pk = hex::encode(device_key.verifying_key().as_bytes());
+        let vault_id = "11".repeat(32);
+        let (challenge_id, nonce_hex, _) =
+            state.issue_challenge(&vault_id, &device_pk).expect("issue");
+        let nonce = hex::decode(nonce_hex).unwrap();
+        let signature = ciphervault_crypto::signatures::sign_with_domain(
+            &device_key,
+            b"operator_challenge",
+            &nonce,
+        );
+        block_persist_target(&root.join("sessions.json"));
+        let error = state
+            .verify_and_create_session(&challenge_id, &device_pk, &hex::encode(signature))
+            .expect_err("persist must fail");
+        assert!(error.contains("Unable to persist session"), "{error}");
+        // No half-minted session lingers in memory.
+        assert!(lock_or_recover(&state.sessions, "sessions").is_empty());
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+        std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
     }
 }

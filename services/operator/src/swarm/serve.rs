@@ -95,16 +95,17 @@ pub fn serve_operator_rpc(
                 &req.public_key_hex,
                 &req.signature_hex,
             ) {
-                Some(token) => {
+                Ok(Some(token)) => {
                     OperatorRpcResponse::Session(ciphervault_storage::types::SessionResponse {
                         token,
                         expires_at_utc: chrono::Utc::now().timestamp() as u64 + 3600,
                     })
                 }
-                None => fail(
+                Ok(None) => fail(
                     axum::http::StatusCode::UNAUTHORIZED,
                     "Invalid challenge response or expired".to_string(),
                 ),
+                Err(error) => fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR, error),
             }
         }
         // mirrors post_revoke_session
@@ -113,13 +114,13 @@ pub fn serve_operator_rpc(
                 Ok(token) => token,
                 Err(e) => return fail_auth(e),
             };
-            if state.revoke_session(token) {
-                OperatorRpcResponse::Revoked
-            } else {
-                fail(
+            match state.revoke_session(token) {
+                Ok(true) => OperatorRpcResponse::Revoked,
+                Ok(false) => fail(
                     axum::http::StatusCode::UNAUTHORIZED,
                     "Session is no longer active".to_string(),
-                )
+                ),
+                Err(error) => fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR, error),
             }
         }
         // mirrors get_info via the shared builder (byte-identical identity)
@@ -298,11 +299,11 @@ pub fn serve_operator_rpc(
                     "Repair push misaddressed".to_string(),
                 );
             }
-            let known = state.peer_routing_table.lock().ok().and_then(|table| {
-                table
-                    .get(sender_operator_id)
-                    .map(|desc| desc.signing_pk_hex.clone())
-            });
+            let table =
+                crate::state::lock_or_recover(&state.peer_routing_table, "peer_routing_table");
+            let known = table
+                .get(sender_operator_id)
+                .map(|desc| desc.signing_pk_hex.clone());
             let Some(expected_pk) = known else {
                 state.metrics.observe_repair_failed();
                 return fail(

@@ -12,6 +12,7 @@ use axum::http::StatusCode;
 use axum::Json;
 #[cfg(test)]
 use rusqlite::params;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 mod accounts;
@@ -59,6 +60,23 @@ use util::*;
 use vaults::*;
 use webauthn::*;
 
+/// Last-resort panic catcher (outermost layer): a panicking handler or
+/// middleware becomes a 500 `{status, code, error}` envelope instead of a
+/// dropped connection. The DB mutex recovers from poison via
+/// `AccountState::connection`.
+fn panic_response(_: Box<dyn std::any::Any + Send>) -> axum::response::Response {
+    error_response(
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "INTERNAL_PANIC_CAUGHT",
+        "Account service internal error",
+    )
+}
+
+#[cfg(test)]
+async fn test_panic_handler() -> &'static str {
+    panic!("intentional test panic for CatchPanicLayer verification");
+}
+
 pub fn create_router(state: AccountState) -> axum::Router {
     use axum::routing::{get, post};
     let cors = std::env::var("CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS")
@@ -81,7 +99,7 @@ pub fn create_router(state: AccountState) -> axum::Router {
                 .allow_credentials(true)
         })
         .unwrap_or_default();
-    axum::Router::new()
+    let router = axum::Router::new()
         .route(
             "/healthz",
             get(|| async { Json(serde_json::json!({"status": "ready"})) }),
@@ -165,10 +183,16 @@ pub fn create_router(state: AccountState) -> axum::Router {
             "/v1/accounts/:account_id/recovery/codes",
             post(post_recovery_codes),
         )
-        .route("/v1/recovery/redeem", post(post_recovery_redeem))
+        .route("/v1/recovery/redeem", post(post_recovery_redeem));
+    #[cfg(test)]
+    let router = router.route("/__test_panic", get(test_panic_handler));
+    router
         .layer(cors)
         .layer(axum::middleware::from_fn(csrf_origin_guard))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
+        // Outermost: added last so a panic anywhere below becomes a 500
+        // envelope instead of a dropped connection.
+        .layer(CatchPanicLayer::custom(panic_response))
         .with_state(state)
 }
 
@@ -442,6 +466,21 @@ mod tests {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), expected, "{method} {uri}");
         }
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn panic_in_handler_returns_500_json_envelope() {
+        let (root, _state, app) = test_app("panic");
+        let request = Request::get("/__test_panic").body(Body::empty()).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["code"], "INTERNAL_PANIC_CAUGHT");
         cleanup(root);
     }
 }

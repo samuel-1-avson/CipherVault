@@ -67,7 +67,9 @@ fn concurrent_puts_across_keys_stay_consistent() {
                     "{:064x}",
                     u64::from(thread) * 1_000_000 + u64::from(item) + 0x9e37
                 );
-                assert!(state.revoke_identity(&vault_hex, &key_hex));
+                assert!(state
+                    .revoke_identity(&vault_hex, &key_hex)
+                    .expect("persist ok"));
             }
         }));
     }

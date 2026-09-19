@@ -293,18 +293,20 @@ pub async fn post_session(
     State(state): State<Arc<OperatorState>>,
     Json(req): Json<SessionRequest>,
 ) -> Result<Json<SessionResponse>, (StatusCode, String)> {
-    if let Some(token) =
-        state.verify_and_create_session(&req.challenge_id, &req.public_key_hex, &req.signature_hex)
-    {
-        Ok(Json(SessionResponse {
+    match state.verify_and_create_session(
+        &req.challenge_id,
+        &req.public_key_hex,
+        &req.signature_hex,
+    ) {
+        Ok(Some(token)) => Ok(Json(SessionResponse {
             token,
             expires_at_utc: chrono::Utc::now().timestamp() as u64 + 3600,
-        }))
-    } else {
-        Err((
+        })),
+        Ok(None) => Err((
             StatusCode::UNAUTHORIZED,
             "Invalid challenge response or expired".into(),
-        ))
+        )),
+        Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error)),
     }
 }
 
@@ -332,10 +334,10 @@ pub async fn post_revoke_identity(
     Json(req): Json<IdentityRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     require_service_token(&headers)?;
-    if state.revoke_identity(&req.vault_id_hex, &req.public_key_hex) {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err((StatusCode::NOT_FOUND, "Identity is not enrolled".into()))
+    match state.revoke_identity(&req.vault_id_hex, &req.public_key_hex) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((StatusCode::NOT_FOUND, "Identity is not enrolled".into())),
+        Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error)),
     }
 }
 
@@ -374,13 +376,13 @@ pub async fn post_revoke_session(
     headers: HeaderMap,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let token = require_session(&state, &headers, true)?;
-    if state.revoke_session(token) {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err((
+    match state.revoke_session(token) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((
             StatusCode::UNAUTHORIZED,
             "Session is no longer active".into(),
-        ))
+        )),
+        Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error)),
     }
 }
 
