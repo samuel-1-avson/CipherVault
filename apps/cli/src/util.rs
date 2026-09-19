@@ -543,6 +543,22 @@ pub(crate) fn save_token_reader_preference(reader: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const DEFAULT_REKEY_WARN_DAYS: u64 = 90;
+
+/// Returns (age in days, stale) for an epoch key. Unknown-age (0) keys report
+/// `(None, true)` so pre-migration keys always prompt one baseline rotation.
+pub(crate) fn epoch_key_status(
+    created_at_utc: u64,
+    warn_days: u64,
+    now_utc: u64,
+) -> (Option<u64>, bool) {
+    if created_at_utc == 0 {
+        return (None, true);
+    }
+    let age_days = now_utc.saturating_sub(created_at_utc) / 86_400;
+    (Some(age_days), age_days >= warn_days)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +573,25 @@ mod tests {
         assert_eq!(resolve_required_replicas(Some(1)).unwrap(), 1);
         assert_eq!(resolve_required_replicas(Some(5)).unwrap(), 5);
         assert!(resolve_required_replicas(Some(0)).is_err());
+    }
+
+    #[test]
+    fn epoch_key_status_flags_stale_and_unknown() {
+        let now = 2_000_000_000u64;
+        assert_eq!(
+            epoch_key_status(now - 10 * 86_400, 90, now),
+            (Some(10), false)
+        );
+        assert_eq!(
+            epoch_key_status(now - 90 * 86_400, 90, now),
+            (Some(90), true)
+        );
+        assert_eq!(
+            epoch_key_status(now - 200 * 86_400, 90, now),
+            (Some(200), true)
+        );
+        assert_eq!(epoch_key_status(0, 90, now), (None, true));
+        // Future timestamps saturate to age 0, never stale.
+        assert_eq!(epoch_key_status(now + 86_400, 90, now), (Some(0), false));
     }
 }
