@@ -52,7 +52,7 @@ const OPERATORS_FILE: &str = "operators.json";
 #[command(about = "Decentralized, encrypted version control for confidential files", long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -854,8 +854,37 @@ async fn main() {
     }
 }
 
+/// Poll interval used when the TUI is launched implicitly (bare invocation).
+const DEFAULT_TUI_POLL_MS: u64 = 3000;
+
+/// Entry point when no subcommand is given: open the interactive TUI on a
+/// terminal (covers double-clicked release binaries), otherwise print help.
+async fn default_no_subcommand() -> Result<()> {
+    if std::io::stdin().is_terminal() {
+        tui::run_tui(DEFAULT_TUI_POLL_MS).await
+    } else {
+        // Same giant-tree hazard as cmd_completions: rendering full help
+        // overflows small stacks, so render on a roomy thread.
+        std::thread::Builder::new()
+            .name("help".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                Cli::command().print_help().expect("print help");
+                println!();
+            })
+            .expect("spawn help thread")
+            .join()
+            .expect("help thread");
+        Ok(())
+    }
+}
+
 async fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    let command = match cli.command {
+        Some(command) => command,
+        None => return default_no_subcommand().await,
+    };
+    match command {
         Commands::Update { check } => cmd_update(check).await,
         Commands::Auth { sub } => match sub {
             AuthSubcommand::Init { name } => cmd_auth_init(name),
@@ -11449,36 +11478,59 @@ mod ui_router_tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Lease {
+            Some(Commands::Lease {
                 sub: LeaseSubcommand::Create {
                     bytes: 4096,
                     term_days: 30,
                     ..
                 }
-            }
+            })
         ));
         let cli =
             Cli::try_parse_from(["ciphervault", "lease", "renew", "lease-1", "7", "4096"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Lease {
+            Some(Commands::Lease {
                 sub: LeaseSubcommand::Renew { days: 7, .. }
-            }
+            })
         ));
         let cli =
             Cli::try_parse_from(["ciphervault", "voucher", "issue", &"cd".repeat(32), "8192"])
                 .unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Voucher {
+            Some(Commands::Voucher {
                 sub: VoucherSubcommand::Issue {
                     quota: 8192,
                     ttl: 3600,
                     ..
                 }
-            }
+            })
         ));
         let cli = Cli::try_parse_from(["ciphervault", "peers", "--mesh"]).unwrap();
-        assert!(matches!(cli.command, Commands::Peers { mesh: true, .. }));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Peers { mesh: true, .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn bare_invocation_parses_to_no_subcommand() {
+        // Regression: a bare `ciphervault` (e.g. double-clicked release
+        // binary) used to be a clap error and the window vanished. It must
+        // parse so the entry point can open the TUI or print help.
+        let cli = Cli::try_parse_from(["ciphervault"]).expect("bare invocation must parse");
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn explicit_subcommand_still_parses() {
+        let cli = Cli::try_parse_from(["ciphervault", "tui"]).expect("tui must parse");
+        assert!(matches!(cli.command, Some(Commands::Tui { .. })));
     }
 }

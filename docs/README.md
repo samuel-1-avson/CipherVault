@@ -49,6 +49,7 @@ These supersede the parent spec where they disagree (decisions are dated inline)
 | [`API_REFERENCE.md`](./API_REFERENCE.md) | Operator HTTP + P2P RPC reference: routes, auth, limits, error envelope. |
 | [`OPERATOR_PLAYBOOKS.md`](./OPERATOR_PLAYBOOKS.md) | Restart, mesh, vouchers, quarantine, chaos gates, backup/restore. |
 | [`D7_ERASURE_SPIKE.md`](./D7_ERASURE_SPIKE.md) | Erasure-coding spike report (DECLINE; 3x replication kept). |
+| [`WORKFLOW_GUIDE.md`](./WORKFLOW_GUIDE.md) | System workflow: operator network, day-to-day user flow, run-a-node guide. |
 | [`adr/`](./adr/) | Architecture decision records (KDF, vouchers, repair lane, redb, erasure, recovery reads). |
 
 ---

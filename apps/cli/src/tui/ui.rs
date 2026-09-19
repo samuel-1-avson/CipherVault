@@ -67,7 +67,10 @@ fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("v0.1", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            concat!("v", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]))
     .block(
         Block::default()
@@ -903,6 +906,13 @@ fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" Track  ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "[?]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" Help  ", Style::default().fg(Color::Gray)),
         Span::styled(
             "[q]",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
