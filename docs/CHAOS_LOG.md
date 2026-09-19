@@ -5,7 +5,38 @@ Running record of 10-node storm-gate evidence (`scripts/drill/chaos-10node.sh`
 partition-heal, Gate C repair-bandwidth bounds). Newest entry first. A
 "verdict" entry without gate output is an honest gap marker, never a pass.
 
+## 2026-09-19 — CHAOS PASS (all three gates green)
+
+- Run ID: 2026-09-19 16:05 UTC, git SHA `6841f3f` (main, post-C6),
+  Windows host, Docker 29.7.2.
+- Image: `ciphervault-operator:chaos`
+  `sha256:4c71b03ba94ef077c9fe07d77be4833f9802894b3fdc46b50287efaeb0117bd2`
+  (release build of the same tree).
+- Command: `bash scripts/drill/chaos-10node.sh` (Git Bash), exit 0.
+  Test time 129.73 s; 10 nodes up, routing tables meshed (90 announces).
+
+Gate output (verbatim):
+
+```text
+chaos: Gate A killed n1 n2 n5 mid-write
+chaos: Gate A PASS (3 replicas x 4 objects on 7 survivors)
+chaos: Gate B froze n3 n4 for 45s (past the 15s heartbeat timeout)
+chaos: Gate B PASS (partition healed, liveness + replicas converged)
+chaos: Gate C PASS (548864 repair bytes <= 2097152, 0 exhausted)
+CHAOS PASS: kill-3/10, partition-heal, and bandwidth gates all green
+```
+
+What this proves: the mesh survives 30% sudden node loss mid-write with
+no object dropping below 3 replicas, reconverges liveness and replicas
+after a 45 s partition (3x the heartbeat timeout), and repair stays
+bounded (537 KiB against a 2 MiB cap, zero budget rejections at the
+default 8 MiB/s).
+
 ## 2026-09-19 — verdict: drill NOT run (no usable Docker daemon)
+
+> Superseded the same day: the daemon recovered and the full drill
+> passed — see the 16:05 UTC entry above. Kept for the fallback-suite
+> record.
 
 - Git SHA: `dd9008d` (main, post-C3).
 - Attempted: `bash scripts/drill/chaos-10node.sh` prerequisites.
