@@ -404,6 +404,31 @@ impl OperatorTransport for Libp2pTransport {
         })
     }
 
+    fn join_with_invite<'a>(
+        &'a self,
+        _descriptor: &'a PeerDescriptor,
+        _invite: &'a ciphervault_storage::invites::JoinInvite,
+    ) -> BoxFuture<'a, Result<ciphervault_storage::invites::JoinResponse, StorageError>> {
+        Box::pin(async move {
+            Err(StorageError::ServerError {
+                status: 501,
+                message: "verified join is fleet administration (HTTP only)".into(),
+            })
+        })
+    }
+
+    fn refresh_join<'a>(
+        &'a self,
+        _descriptor: &'a PeerDescriptor,
+    ) -> BoxFuture<'a, Result<(), StorageError>> {
+        Box::pin(async move {
+            Err(StorageError::ServerError {
+                status: 501,
+                message: "verified join is fleet administration (HTTP only)".into(),
+            })
+        })
+    }
+
     fn get_pending_approvals<'a>(
         &'a self,
     ) -> BoxFuture<'a, Result<Vec<PendingApprovalChallenge>, StorageError>> {

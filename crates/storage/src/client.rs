@@ -308,6 +308,25 @@ impl OperatorClient {
         self.transport.get_peers().await
     }
 
+    /// Presents a verified-join ticket to a fleet node. Public route: the
+    /// fleet-signed invite is the authorization, no service token attached.
+    pub async fn join_with_invite(
+        &self,
+        descriptor: &crate::types::PeerDescriptor,
+        invite: &crate::invites::JoinInvite,
+    ) -> Result<crate::invites::JoinResponse, StorageError> {
+        self.transport.join_with_invite(descriptor, invite).await
+    }
+
+    /// Re-presents a fresh self-signed descriptor to prove liveness of an
+    /// already-joined node key. Public route, no service token attached.
+    pub async fn refresh_join(
+        &self,
+        descriptor: &crate::types::PeerDescriptor,
+    ) -> Result<(), StorageError> {
+        self.transport.refresh_join(descriptor).await
+    }
+
     /// Fetches pending out-of-band approval challenges (R14 dashboard queue).
     /// Control-plane route: authenticates with the operator service token.
     pub async fn get_pending_approvals(

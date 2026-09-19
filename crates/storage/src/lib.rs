@@ -6,6 +6,7 @@
 pub mod chain;
 pub mod client;
 pub mod error;
+pub mod invites;
 pub mod pool;
 pub mod transport;
 pub mod types;

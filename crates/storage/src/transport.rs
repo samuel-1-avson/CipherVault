@@ -28,6 +28,7 @@ use ciphervault_format::compute_digest;
 
 use crate::compute_pos_proof;
 use crate::error::StorageError;
+use crate::invites::{JoinInvite, JoinRequest, JoinResponse};
 use crate::types::{
     ApiErrorBody, AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt,
     LeaseRenewRequest, LeaseRequest, OperatorInfo, PeerDescriptor, PendingApprovalChallenge,
@@ -103,6 +104,21 @@ pub trait OperatorTransport: Send + Sync {
         descriptor: &'a PeerDescriptor,
     ) -> BoxFuture<'a, Result<(), StorageError>>;
     fn get_peers<'a>(&'a self) -> BoxFuture<'a, Result<Vec<PeerDescriptor>, StorageError>>;
+    /// Presents a verified-join ticket (fleet-signed invite + fresh
+    /// self-signed descriptor) to a fleet node. Public route: the ticket
+    /// is the authorization, so no service token is attached. HTTP only;
+    /// non-HTTP transports report 501.
+    fn join_with_invite<'a>(
+        &'a self,
+        descriptor: &'a PeerDescriptor,
+        invite: &'a JoinInvite,
+    ) -> BoxFuture<'a, Result<JoinResponse, StorageError>>;
+    /// Re-presents a fresh self-signed descriptor to prove liveness of an
+    /// already-joined node key. Public route, HTTP only like the join.
+    fn refresh_join<'a>(
+        &'a self,
+        descriptor: &'a PeerDescriptor,
+    ) -> BoxFuture<'a, Result<(), StorageError>>;
     fn get_pending_approvals<'a>(
         &'a self,
     ) -> BoxFuture<'a, Result<Vec<PendingApprovalChallenge>, StorageError>>;
@@ -529,6 +545,48 @@ impl OperatorTransport for HttpTransport {
             let resp =
                 Self::check_ok(self.get_with_retry(&url, GetAuth::ServiceToken).await?).await?;
             Ok(resp.json::<Vec<PeerDescriptor>>().await?)
+        })
+    }
+
+    fn join_with_invite<'a>(
+        &'a self,
+        descriptor: &'a PeerDescriptor,
+        invite: &'a JoinInvite,
+    ) -> BoxFuture<'a, Result<JoinResponse, StorageError>> {
+        Box::pin(async move {
+            let url = format!("{}/v1/peers/join", self.endpoint);
+            let resp = Self::check_ok(
+                self.http
+                    .post(&url)
+                    .json(&JoinRequest {
+                        descriptor: descriptor.clone(),
+                        invite: invite.clone(),
+                    })
+                    .send()
+                    .await?,
+            )
+            .await?;
+            Ok(resp.json::<JoinResponse>().await?)
+        })
+    }
+
+    fn refresh_join<'a>(
+        &'a self,
+        descriptor: &'a PeerDescriptor,
+    ) -> BoxFuture<'a, Result<(), StorageError>> {
+        Box::pin(async move {
+            let url = format!("{}/v1/peers/join/refresh", self.endpoint);
+            Self::check_ok(
+                self.http
+                    .post(&url)
+                    .json(&crate::invites::JoinRefreshRequest {
+                        descriptor: descriptor.clone(),
+                    })
+                    .send()
+                    .await?,
+            )
+            .await?;
+            Ok(())
         })
     }
 
@@ -1154,6 +1212,31 @@ impl OperatorTransport for MemoryTransport {
             let state = self.lock();
             Self::check_online(&state)?;
             Ok(state.peers.clone())
+        })
+    }
+
+    fn join_with_invite<'a>(
+        &'a self,
+        _descriptor: &'a PeerDescriptor,
+        _invite: &'a JoinInvite,
+    ) -> BoxFuture<'a, Result<JoinResponse, StorageError>> {
+        Box::pin(async move {
+            Err(StorageError::ServerError {
+                status: 501,
+                message: "verified join is fleet administration (HTTP only)".into(),
+            })
+        })
+    }
+
+    fn refresh_join<'a>(
+        &'a self,
+        _descriptor: &'a PeerDescriptor,
+    ) -> BoxFuture<'a, Result<(), StorageError>> {
+        Box::pin(async move {
+            Err(StorageError::ServerError {
+                status: 501,
+                message: "verified join is fleet administration (HTTP only)".into(),
+            })
         })
     }
 

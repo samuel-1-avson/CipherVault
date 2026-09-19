@@ -11,6 +11,7 @@ use ciphervault_storage::types::{
     OperatorInfo, RecoveryRecordsResponse, SessionRequest, SessionResponse,
 };
 
+use ciphervault_storage::invites::{JoinRefreshRequest, JoinRequest, JoinResponse};
 use ciphervault_storage::vouchers::WriteVoucher;
 use ciphervault_storage::StorageError;
 
@@ -632,6 +633,104 @@ pub async fn get_self_peer(
     ))
 }
 
+/// Admits a new node into probation on a fleet-signed invite. Public by
+/// design (like `/v1/peers/self`): the ticket is the authorization, so
+/// no service token is required. Mapping: unconfigured join, forged /
+/// expired / mismatched invites → 403; spent ticket → 409 (the joiner
+/// needs a fresh ticket, not a retry); descriptor problems → 400.
+pub async fn post_peer_join(
+    State(state): State<Arc<OperatorState>>,
+    Json(req): Json<JoinRequest>,
+) -> Result<Json<JoinResponse>, (StatusCode, String)> {
+    let count = state
+        .join_with_invite(req.descriptor.clone(), &req.invite)
+        .map_err(join_error_response)?;
+    let status = if state.is_probationary(&req.descriptor.operator_id) {
+        "probation"
+    } else {
+        "full"
+    };
+    Ok(Json(JoinResponse {
+        status: status.to_string(),
+        operator_id: req.descriptor.operator_id,
+        peer_count: count,
+    }))
+}
+
+fn join_error_response(error: String) -> (StatusCode, String) {
+    if error.starts_with("Unable to persist") {
+        (StatusCode::INTERNAL_SERVER_ERROR, error)
+    } else if error == "Join invite was already spent" {
+        (StatusCode::CONFLICT, error)
+    } else if error == "Verified join is not configured on this node"
+        || error == "Invite node key does not match the announced descriptor"
+        || error.starts_with("Server returned error 403")
+    {
+        (StatusCode::FORBIDDEN, error)
+    } else {
+        (StatusCode::BAD_REQUEST, error)
+    }
+}
+
+/// Re-presents a fresh self-signed descriptor for an already-known node
+/// key. Public by design: the signature plus the stored key match prove
+/// the presenter holds the node key. Unknown joiners → 404 (join first);
+/// descriptor problems → 400.
+pub async fn post_peer_join_refresh(
+    State(state): State<Arc<OperatorState>>,
+    Json(req): Json<JoinRefreshRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let status = state.refresh_peer_join(req.descriptor).map_err(|error| {
+        if error.starts_with("Unable to persist") {
+            (StatusCode::INTERNAL_SERVER_ERROR, error)
+        } else if error.starts_with("Unknown joiner") {
+            (StatusCode::NOT_FOUND, error)
+        } else {
+            (StatusCode::BAD_REQUEST, error)
+        }
+    })?;
+    Ok(Json(serde_json::json!({
+        "status": match status {
+            crate::state::MembershipStatus::Full => "full",
+            crate::state::MembershipStatus::Probation => "probation",
+        },
+    })))
+}
+
+/// Lists every active routing entry plus its membership standing.
+/// Control-plane route: membership internals are fleet administration.
+pub async fn get_peer_membership(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::state::MembershipView>>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
+    Ok(Json(state.membership_snapshot()))
+}
+
+/// Admin graduation override: confers full membership immediately.
+/// Control-plane route like `/v1/peers/announce`. Unknown ids → 404.
+pub async fn post_peer_graduate(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Path(operator_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
+    let graduated = state.graduate_peer(&operator_id).map_err(|error| {
+        if error.starts_with("Unable to persist") {
+            (StatusCode::INTERNAL_SERVER_ERROR, error)
+        } else {
+            (StatusCode::BAD_REQUEST, error)
+        }
+    })?;
+    if !graduated {
+        return Err((StatusCode::NOT_FOUND, "Unknown operator id".to_string()));
+    }
+    Ok(Json(serde_json::json!({
+        "status": "full",
+        "operator_id": operator_id,
+    })))
+}
+
 // -----------------------------------------------------------------------------
 // Out-of-Band Cryptographic Approval Handlers
 // -----------------------------------------------------------------------------
@@ -735,5 +834,33 @@ mod tests {
         std::env::remove_var("CIPHERVAULT_ADVERTISE_ENDPOINT");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn join_errors_map_to_status() {
+        assert_eq!(
+            join_error_response("Verified join is not configured on this node".into()).0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            join_error_response("Server returned error 403: invite expired".into()).0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            join_error_response("Invite node key does not match the announced descriptor".into()).0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            join_error_response("Join invite was already spent".into()).0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            join_error_response("Invalid peer signature: bad hex".into()).0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            join_error_response("Unable to persist peer membership: disk full".into()).0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

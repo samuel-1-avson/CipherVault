@@ -179,6 +179,16 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/peers/announce", post(handlers::post_peer_announce))
         .route("/v1/peers", get(handlers::get_peers))
         .route("/v1/peers/self", get(handlers::get_self_peer))
+        // Verified community join routes: join + refresh are public (the
+        // ticket / node-key signature is the authorization); membership
+        // and graduation are control-plane administration.
+        .route("/v1/peers/join", post(handlers::post_peer_join))
+        .route(
+            "/v1/peers/join/refresh",
+            post(handlers::post_peer_join_refresh),
+        )
+        .route("/v1/peers/membership", get(handlers::get_peer_membership))
+        .route("/v1/peers/:id/graduate", post(handlers::post_peer_graduate))
         // Out-of-Band Cryptographic Approval routes
         .route(
             "/v1/auth/challenges",

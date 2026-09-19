@@ -102,6 +102,8 @@ pub struct OperatorMetrics {
     heartbeats_dropped_stale_seq_total: AtomicU64,
     control_unknown_kind_ignored_total: AtomicU64,
     peers_live: AtomicU64,
+    peer_joins_total: AtomicU64,
+    peer_graduations_total: AtomicU64,
     repair_checks_total: AtomicU64,
     repair_jobs_started_total: AtomicU64,
     repair_jobs_completed_total: AtomicU64,
@@ -149,6 +151,8 @@ impl OperatorMetrics {
             heartbeats_dropped_stale_seq_total: AtomicU64::new(0),
             control_unknown_kind_ignored_total: AtomicU64::new(0),
             peers_live: AtomicU64::new(0),
+            peer_joins_total: AtomicU64::new(0),
+            peer_graduations_total: AtomicU64::new(0),
             repair_checks_total: AtomicU64::new(0),
             repair_jobs_started_total: AtomicU64::new(0),
             repair_jobs_completed_total: AtomicU64::new(0),
@@ -289,6 +293,16 @@ impl OperatorMetrics {
     /// owns the liveness view; the gauge renders the last set value.
     pub fn set_peers_live(&self, live: u64) {
         self.peers_live.store(live, Ordering::Relaxed);
+    }
+
+    /// Records one verified ticket join admitted into probation.
+    pub fn observe_peer_joined(&self) {
+        self.peer_joins_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one probation-to-full graduation (earned or admin-granted).
+    pub fn observe_peer_graduated(&self) {
+        self.peer_graduations_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records one repair assessment (provider query answered, plan
@@ -530,6 +544,18 @@ impl OperatorMetrics {
             "ciphervault_swarm_peers_live",
             "Peers with a heartbeat inside the liveness timeout.",
             self.peers_live.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_peer_joins_total",
+            "Verified ticket joins admitted into probation.",
+            self.peer_joins_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_peer_graduations_total",
+            "Probation-to-full graduations (earned or admin-granted).",
+            self.peer_graduations_total.load(Ordering::Relaxed),
         );
         render_counter(
             &mut out,

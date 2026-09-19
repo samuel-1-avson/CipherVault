@@ -552,6 +552,12 @@ enum Commands {
         sub: VoucherSubcommand,
     },
 
+    /// Fleet-signed join invites for new operator nodes
+    Invite {
+        #[command(subcommand)]
+        sub: InviteSubcommand,
+    },
+
     /// Out-of-band cryptographic approval and multi-party authorization
     Approve {
         #[command(subcommand)]
@@ -756,6 +762,56 @@ enum VoucherSubcommand {
             help = "Issuing operator endpoint (default: first configured)"
         )]
         operator: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum InviteSubcommand {
+    /// Print the fleet public key for a seed file (pin as CIPHERVAULT_FLEET_KEY)
+    Pubkey {
+        #[arg(long, help = "Path to the 32-byte fleet signing seed file")]
+        fleet_key_file: PathBuf,
+    },
+
+    /// Issue a fleet-signed join invite for a node key (fully offline)
+    Issue {
+        #[arg(help = "64-char hex node public key the invite is issued to")]
+        node_pk: String,
+
+        #[arg(long, default_value = "86400", help = "Invite TTL in seconds")]
+        ttl: u64,
+
+        #[arg(long, help = "Path to the 32-byte fleet signing seed file")]
+        fleet_key_file: PathBuf,
+    },
+
+    /// Present a join ticket to fleet nodes (admits this node into probation)
+    Join {
+        #[arg(help = "Path to the JSON invite ticket file")]
+        ticket: PathBuf,
+
+        #[arg(long, help = "Own node endpoint (fetches our fresh descriptor)")]
+        node: String,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Fleet endpoints to join via (default: configured operators)"
+        )]
+        via: Option<Vec<String>>,
+    },
+
+    /// Re-present our descriptor to fleet nodes (liveness for graduation)
+    Refresh {
+        #[arg(long, help = "Own node endpoint (fetches our fresh descriptor)")]
+        node: String,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Fleet endpoints to refresh via (default: configured operators)"
+        )]
+        via: Option<Vec<String>>,
     },
 }
 
@@ -1119,6 +1175,18 @@ async fn run(cli: Cli) -> Result<()> {
                 ttl,
                 operator,
             } => cmd_voucher_issue(holder_pk, quota, ttl, operator).await,
+        },
+        Commands::Invite { sub } => match sub {
+            InviteSubcommand::Pubkey { fleet_key_file } => cmd_invite_pubkey(fleet_key_file),
+            InviteSubcommand::Issue {
+                node_pk,
+                ttl,
+                fleet_key_file,
+            } => cmd_invite_issue(node_pk, ttl, fleet_key_file),
+            InviteSubcommand::Join { ticket, node, via } => {
+                cmd_invite_join(ticket, node, via).await
+            }
+            InviteSubcommand::Refresh { node, via } => cmd_invite_refresh(node, via).await,
         },
         Commands::Approve { sub } => match sub {
             ApproveSubcommand::List => cmd_approve_list().await,
@@ -1508,6 +1576,67 @@ mod ui_router_tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Peers { mesh: true, .. })
+        ));
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "invite",
+            "pubkey",
+            "--fleet-key-file",
+            "fleet.seed",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Invite {
+                sub: InviteSubcommand::Pubkey { .. }
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "invite",
+            "issue",
+            &"ef".repeat(32),
+            "--fleet-key-file",
+            "fleet.seed",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Invite {
+                sub: InviteSubcommand::Issue { ttl: 86400, .. }
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "invite",
+            "join",
+            "ticket.json",
+            "--node",
+            "http://127.0.0.1:8301",
+            "--via",
+            "http://127.0.0.1:8201",
+            "http://127.0.0.1:8202",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Invite {
+                sub: InviteSubcommand::Join { .. }
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "invite",
+            "refresh",
+            "--node",
+            "http://127.0.0.1:8301",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Invite {
+                sub: InviteSubcommand::Refresh { .. }
+            })
         ));
     }
 }

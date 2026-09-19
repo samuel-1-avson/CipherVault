@@ -787,6 +787,9 @@ fn accept_control_message(
                         .liveness
                         .note_heartbeat(peer, &hb.operator_id, hb.seq);
                     state.metrics.observe_heartbeat_received();
+                    // A verified heartbeat is proof of life for probation:
+                    // joiners graduate on time served plus recent liveness.
+                    state.note_peer_heartbeat(&hb.operator_id);
                     MessageAcceptance::Accept
                 }
                 Err(reason) => {
@@ -873,6 +876,28 @@ fn start_repair_check(
     );
 }
 
+/// Drops probationary joiners from repair-recipient candidates: new
+/// replicas are entrusted only to proven members. (Probationers still
+/// count as holders and may push — `plan_repair` uses the live set only
+/// for candidates.) Self is always kept. Probation views can differ
+/// across holders mid-propagation, so two holders may rarely elect
+/// different recipients for one round — pushes are idempotent
+/// (digest-verified) and budgeted, so the worst case is one duplicate
+/// backfill.
+fn retain_eligible_recipients(
+    live: &mut Vec<PeerId>,
+    liveness: &liveness::LivenessTracker,
+    state: &OperatorState,
+    self_peer: PeerId,
+) {
+    live.retain(|peer| {
+        *peer == self_peer
+            || !liveness
+                .operator_for(peer)
+                .is_some_and(|operator_id| state.is_probationary(&operator_id))
+    });
+}
+
 /// Completes one repair assessment: intersects providers with the live
 /// set, computes the deterministic plan, and pushes when this node is
 /// the elected pusher. Every exit path (healthy, not-pusher, pushed)
@@ -891,6 +916,7 @@ fn finish_repair_check(
     if !live.contains(&self_peer) {
         live.push(self_peer);
     }
+    retain_eligible_recipients(&mut live, &loop_state.liveness, state, self_peer);
     let mut holders: Vec<PeerId> = providers.into_iter().filter(|p| live.contains(p)).collect();
     // Self holds the object (checks only start for held CIDs) but may be
     // missing from provider records (never announced) — always count it.
@@ -1664,5 +1690,58 @@ mod dos_tests {
             Instant::now()
         ));
         assert_eq!(hits.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+
+    #[test]
+    fn repair_candidates_exclude_probationary_joiners() {
+        // Pre-seed a probation record (no fleet env needed): the filter
+        // reads standing, not tickets.
+        let root = std::env::temp_dir().join(format!("cv-joinfilter-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        drop(OperatorState::new(
+            "test-op".into(),
+            root.clone(),
+            key.clone(),
+        ));
+        let now = chrono::Utc::now().timestamp() as u64;
+        let mut records = HashMap::new();
+        records.insert(
+            "joiner-1".to_string(),
+            crate::state::PeerMembership {
+                status: crate::state::MembershipStatus::Probation,
+                joined_utc: now,
+                last_seen_utc: now,
+                graduated_utc: None,
+            },
+        );
+        std::fs::write(
+            root.join("peer-membership.json"),
+            serde_json::to_vec_pretty(&records).unwrap(),
+        )
+        .unwrap();
+        let state = OperatorState::new("test-op".into(), root.clone(), key);
+        assert!(state.is_probationary("joiner-1"));
+        assert!(!state.is_probationary("full-1"));
+
+        let mut liveness = liveness::LivenessTracker::new();
+        let joiner_peer = PeerId::random();
+        let full_peer = PeerId::random();
+        liveness.note_heartbeat(joiner_peer, "joiner-1", 1);
+        liveness.note_heartbeat(full_peer, "full-1", 1);
+        let self_peer = PeerId::random();
+
+        let mut live = vec![joiner_peer, full_peer, self_peer];
+        retain_eligible_recipients(&mut live, &liveness, &state, self_peer);
+        assert!(!live.contains(&joiner_peer));
+        assert!(live.contains(&full_peer));
+        assert!(live.contains(&self_peer));
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

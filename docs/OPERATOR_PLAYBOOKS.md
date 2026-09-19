@@ -172,3 +172,57 @@ the restore proceeds once accepted.
 - Compromised node: quarantine (§4), rotate its operator key (§7),
   re-mesh (§2); treat its old-key leases and vouchers as untrusted
   until re-issued under the new key.
+
+## 10. Admit a community operator (verified join)
+
+Anyone with spare disk and bandwidth can run a node; the fleet admits
+them by ticket, not by token handoff (ADR-008). Prerequisites on every
+fleet node: `CIPHERVAULT_FLEET_KEY` pinned to the fleet public key (hex).
+Without the pin, `/v1/peers/join` fails closed (403) and static fleets
+are unaffected.
+
+Joiner (on the new machine):
+
+```sh
+ciphervault-operator --operator-id <id> --data-dir ./operator-data \
+  --port 8301 --enable-p2p --p2p-bootstrap <fleet-bootstrap-addr> &
+ciphervault-operator --print-identity --operator-id <id> \
+  --data-dir ./operator-data
+# <id>=<64-hex node pk>  -> send the pk to a fleet admin
+```
+
+Admin (fully offline; the seed never leaves this machine):
+
+```sh
+ciphervault invite issue <node-pk> --ttl 86400 \
+  --fleet-key-file /secure/fleet.seed > ticket.json
+# hand ticket.json to the joiner out of band
+```
+
+Joiner (present the ticket to each fleet node):
+
+```sh
+ciphervault invite join ticket.json --node http://127.0.0.1:8301 \
+  --via https://fleet-node-1:8201 https://fleet-node-2:8201
+# status "probation": admitted, repair replicas withheld for now
+```
+
+Probation and graduation:
+
+- Probationers count as holders and may push repair, but are never
+  chosen as repair recipients. Standing is per node: check it with
+  `GET /v1/peers/membership` (service token).
+- Graduation needs time served (`CIPHERVAULT_PROBATION_SECS`, default
+  24 h) plus recent liveness: P2P heartbeats count automatically in
+  dual mode; HTTP-only joiners re-run `ciphervault invite refresh
+  --node ... --via ...` periodically (cron-worthy) until graduated.
+- After graduation, promote the node to a full mesh citizen: add its
+  key to `CIPHERVAULT_TRUSTED_PEER_KEYS` where the allowlist is used
+  and include its endpoint in `ciphervault peers --mesh`.
+- Shortcuts: a service-token announce of the joiner's descriptor, or
+  `POST /v1/peers/<id>/graduate`, confers full standing immediately.
+
+Failure hints: 403 = bad/expired ticket or key mismatch (re-issue);
+409 = ticket already spent (each ticket admits once — issue a fresh
+one); 404 on refresh = routing entry expired before the first refresh
+(re-join with a new ticket, then refresh on a schedule).
