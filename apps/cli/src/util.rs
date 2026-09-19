@@ -13,6 +13,7 @@ use ciphervault_storage::MultiOperatorPool;
 pub(crate) const VAULT_DIR: &str = ".ciphervault";
 pub(crate) const DB_FILE: &str = "vault.db";
 pub(crate) const OPERATORS_FILE: &str = "operators.json";
+pub(crate) const RECOVERY_FILE: &str = "recovery_kit_backup.txt";
 
 static ACTIVE_VAULT_PATH: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
