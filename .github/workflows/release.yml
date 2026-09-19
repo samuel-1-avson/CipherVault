@@ -138,13 +138,30 @@ jobs:
         run: |
           mkdir -p dist-release
           find release-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec mv {} dist-release/ \;
-          # Extract standalone executables for direct downloads
+          # Extract standalone executables for direct downloads and the
+          # in-app updater (one single-file binary per target, no extraction).
           if compgen -G "dist-release/ciphervault-*-x86_64-pc-windows-msvc.zip" > /dev/null; then
             unzip -j dist-release/ciphervault-*-x86_64-pc-windows-msvc.zip "*/bin/ciphervault.exe" -d dist-release/ 2>/dev/null || true
           fi
           if compgen -G "dist-release/ciphervault-*-x86_64-unknown-linux-gnu.tar.gz" > /dev/null; then
             tar -xzf dist-release/ciphervault-*-x86_64-unknown-linux-gnu.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-linux-amd64 2>/dev/null || true
             chmod +x dist-release/ciphervault-linux-amd64 2>/dev/null || true
+          fi
+          if compgen -G "dist-release/ciphervault-*-aarch64-unknown-linux-gnu.tar.gz" > /dev/null; then
+            tar -xzf dist-release/ciphervault-*-aarch64-unknown-linux-gnu.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-linux-arm64 2>/dev/null || true
+            chmod +x dist-release/ciphervault-linux-arm64 2>/dev/null || true
+          fi
+          if compgen -G "dist-release/ciphervault-*-x86_64-unknown-linux-musl.tar.gz" > /dev/null; then
+            tar -xzf dist-release/ciphervault-*-x86_64-unknown-linux-musl.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-linux-amd64-musl 2>/dev/null || true
+            chmod +x dist-release/ciphervault-linux-amd64-musl 2>/dev/null || true
+          fi
+          if compgen -G "dist-release/ciphervault-*-x86_64-apple-darwin.tar.gz" > /dev/null; then
+            tar -xzf dist-release/ciphervault-*-x86_64-apple-darwin.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-macos-amd64 2>/dev/null || true
+            chmod +x dist-release/ciphervault-macos-amd64 2>/dev/null || true
+          fi
+          if compgen -G "dist-release/ciphervault-*-aarch64-apple-darwin.tar.gz" > /dev/null; then
+            tar -xzf dist-release/ciphervault-*-aarch64-apple-darwin.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-macos-arm64 2>/dev/null || true
+            chmod +x dist-release/ciphervault-macos-arm64 2>/dev/null || true
           fi
           cd dist-release
           sha256sum * > SHA256SUMS.txt
