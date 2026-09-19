@@ -202,6 +202,24 @@ pub(crate) async fn api_public_fallback_handler(uri: axum::http::Uri) -> axum::r
     StatusCode::NOT_FOUND.into_response()
 }
 
+pub(crate) async fn api_private_fallback_handler(uri: axum::http::Uri) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    if uri.path().starts_with("/api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "code": "PRIVATE_API_NOT_FOUND",
+                "error": "Unknown private dashboard API path.",
+            })),
+        )
+            .into_response();
+    }
+
+    StatusCode::NOT_FOUND.into_response()
+}
+
 pub(crate) fn local_host_name(value: &str) -> Option<String> {
     if value.eq_ignore_ascii_case("localhost") {
         return Some("localhost".to_string());

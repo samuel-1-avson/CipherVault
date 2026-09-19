@@ -21,9 +21,9 @@ use crate::{
     api_explorer_object_handler, api_explorer_overview_handler, api_fastcdc_inspect_handler,
     api_fastcdc_vault_files_handler, api_files_track_handler, api_files_untrack_handler,
     api_fleet_audit_handler, api_fleet_handler, api_guardians_handler, api_operators_handler,
-    api_private_context_handler, api_private_session_revoke_handler, api_public_anchors_handler,
-    api_public_context_handler, api_public_fallback_handler, api_public_fleet_handler,
-    api_public_operators_handler, api_public_operators_history_handler,
+    api_private_context_handler, api_private_fallback_handler, api_private_session_revoke_handler,
+    api_public_anchors_handler, api_public_context_handler, api_public_fallback_handler,
+    api_public_fleet_handler, api_public_operators_handler, api_public_operators_history_handler,
     api_public_operators_jobs_handler, api_public_relayer_checkpoints_handler,
     api_public_stream_handler, api_public_vault_handler, api_relayer_anchor_handler,
     api_relayer_checkpoints_handler, api_snapshot_manifest_handler, api_snapshots_handler,
@@ -230,6 +230,7 @@ pub(crate) fn private_ui_router() -> axum::Router {
             "/api/workspaces/scan",
             axum::routing::post(api_workspaces_scan_handler),
         )
+        .fallback(api_private_fallback_handler)
         .layer(axum::middleware::from_fn(private_ui_request_guard))
 }
 
@@ -727,6 +728,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(same_origin_mutation.status(), StatusCode::NOT_FOUND);
+        // Unknown private API paths keep the JSON error envelope.
+        let fallback_body: serde_json::Value = same_origin_mutation.json().await.unwrap();
+        assert_eq!(fallback_body["code"], "PRIVATE_API_NOT_FOUND");
 
         let revoke = client
             .post(format!("{base_url}/api/session/revoke"))
