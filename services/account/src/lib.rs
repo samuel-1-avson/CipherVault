@@ -177,7 +177,6 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
     use tower05::ServiceExt;
 
     #[tokio::test]
