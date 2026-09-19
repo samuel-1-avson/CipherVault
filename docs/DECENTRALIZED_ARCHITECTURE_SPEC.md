@@ -3,7 +3,13 @@
 
 **Classification:** System Architecture Specification & Engineering Roadmap  
 **Target Version:** v2.0.0 (Progressive Non-Breaking Upgrade from v1.0.6)  
-**Status:** Under Review / Open for Technical Questioning  
+**Status:** Under Review / Open for Technical Questioning
+**Implementation note (2026-09-19):** verified community join landed as a
+pre-Phase-1 incremental milestone (fleet-signed invite tickets + probation +
+graduation, ADR-008; `ciphervault invite` CLI, `/v1/peers/join*` routes).
+Admission for this milestone uses fleet-signed invites instead of the §4.2
+staking flow — trustless staking (Phase 3), the §8 economic-model decision,
+and Phases 1–2/4–5 remain as specified below.  
 **Author:** Antigravity Architecture Group & Samuel Avson  
 
 ---

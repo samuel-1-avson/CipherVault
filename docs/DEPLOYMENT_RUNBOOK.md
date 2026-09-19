@@ -336,6 +336,17 @@ suffixes); invalid or below-floor values warn on stderr and fall back to default
 - `CIPHERVAULT_MAX_RECOVERY_RECORD_SIZE` (default 64 KiB, floor 4 KiB).
 - `CIPHERVAULT_MAX_RECOVERY_RESPONSE_BYTES` (default 16 MiB, floor 1 MiB).
 
+Verified-join knobs (ADR-008; durations in seconds, invalid or below-floor
+values warn and fall back to defaults):
+
+- `CIPHERVAULT_FLEET_KEY` (no default): fleet public key (hex) that
+  `/v1/peers/join` verifies tickets against. Unset = join fails closed;
+  set the same pin on every fleet node that admits community operators.
+- `CIPHERVAULT_PROBATION_SECS` (default 86400 = 24 h, floor 60): minimum
+  fleet-visible life before a ticket joiner can graduate.
+- `CIPHERVAULT_JOIN_LIVENESS_GRACE_SECS` (default 7200 = 2 h, floor 60):
+  how recent a joiner's last proof of life must be at graduation time.
+
 Chunking profile via `CIPHERVAULT_CHUNK_PROFILE`: `small` (2/8/32 KiB) for tiny
 secret files, `default` (4/16/64 KiB), `large` (16/64/256 KiB) for big blobs.
 Pairing rule: the `large` profile needs the default 4 MiB object cap (or at least
@@ -385,6 +396,10 @@ Every operator serves `GET /metrics` (same unauthenticated posture as
 - `ciphervault_operator_requests_total` (+ `_4xx`/`_5xx`) and
   `request_latency_ms`: request plane.
 - Lease, recovery, and `auth_failures_total` counters, plus `uptime_seconds`.
+- `ciphervault_swarm_peer_joins_total` /
+  `ciphervault_swarm_peer_graduations_total`: verified community joins
+  admitted into probation and probation-to-full graduations (ADR-008).
+  Standing per peer: `GET /v1/peers/membership` (service token).
 
 Scrape example (all three operators):
 

@@ -622,6 +622,11 @@ sequenceDiagram
     Client->>OpNew: Perform read/write/recovery operations directly
 ```
 
+> Community join (ADR-008): the announce above is the control-plane
+> path (service token, full membership). Untrusted operators join via
+> `POST /v1/peers/join` with a fleet-signed invite ticket instead and
+> land in probation; see the operator playbook §10.
+
 ---
 
 ### Workflow 12: Out-of-Band Push Approvals for Emergency Disaster Recovery

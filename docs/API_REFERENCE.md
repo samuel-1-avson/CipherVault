@@ -2,8 +2,8 @@
 
 Source of truth: `services/operator/src/lib.rs` (router),
 `services/operator/src/handlers.rs` (HTTP), `services/operator/src/swarm/behaviour.rs`
-(P2P RPC), `crates/storage/src/{client,transport,types}.rs` (client).
-Generated 2026-09-18 from the 1.0.7-beta.2 tree; when in doubt the code wins.
+(P2P RPC), `crates/storage/src/{client,transport,types,invites}.rs` (client).
+Generated 2026-09-19 from the 1.0.7-beta.6 tree; when in doubt the code wins.
 
 ## Conventions
 
@@ -106,6 +106,28 @@ Generated 2026-09-18 from the 1.0.7-beta.2 tree; when in doubt the code wins.
 - `POST /v1/peers/announce` (control auth, `PeerDescriptor` body) →
   `{ status, peer_count }`. Freshness: ≤24 h old, ≤1 h future skew.
   CLI: `peers --mesh` announces every self descriptor to every node.
+  Confers full membership (explicit trust grant).
+
+### Verified join (ADR-008)
+
+- `POST /v1/peers/join` `{ descriptor, invite }` → `JoinResponse`
+  `{ status, operator_id, peer_count }`. **Public**: the fleet-signed
+  `JoinInvite` (verified against pinned `CIPHERVAULT_FLEET_KEY`) is the
+  authorization. Admits into probation; single-use ticket (reuse → 409,
+  forgery/expiry/mismatch or unconfigured pin → 403).
+  CLI: `invite join`.
+- `POST /v1/peers/join/refresh` `{ descriptor }` → `{ status }`.
+  **Public**: proves liveness of an already-known node key (signature +
+  stored-key match, own entry only). Unknown joiners → 404.
+  CLI: `invite refresh`.
+- `GET /v1/peers/membership` (control auth) → `MembershipView[]`
+  (standing per peer: `probation` | `full`, joined/last-seen/graduated
+  timestamps). Lazily graduates served probation with fresh liveness.
+- `POST /v1/peers/:id/graduate` (control auth) → `{ status: "full" }`.
+  Admin override; unknown ids → 404.
+- Ticket issuance is offline CLI only: `invite pubkey` (fleet pin) and
+  `invite issue` (sign with the 32-byte fleet seed). No P2P mirror:
+  memory and libp2p transports report 501 (HTTP only).
 
 ### Approvals (out-of-band, R14)
 

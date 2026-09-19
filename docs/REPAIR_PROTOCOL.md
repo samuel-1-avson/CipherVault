@@ -68,7 +68,12 @@ wins):
 
 - pusher = lowest-score member of H (exactly one node pushes — no
   duplicate backfills from convergent views);
-- recipients = lowest `T - |H|` scores among live non-holders.
+- recipients = lowest `T - |H|` scores among live non-holders,
+  excluding probationary joiners (ADR-008): new replicas are
+  entrusted only to proven members. Probationers still count as
+  holders and may push. Probation views can differ across holders
+  mid-propagation, so the worst case is one duplicate backfill
+  (idempotent, budgeted) — never loss or a storm.
 
 Membership churn reassigns minimally (rendezvous property). A failed
 push excludes that recipient and recomputes next round; a per-CID
@@ -115,6 +120,10 @@ Rendered Prometheus series (all new; static exposition unchanged):
   `bad_signature`, `stale_seq`)
 - `ciphervault_swarm_control_unknown_kind_ignored_total`
 - `ciphervault_swarm_peers_live` (gauge, set by the swarm loop)
+- Verified join (ADR-008): `ciphervault_swarm_peer_joins_total`
+  (ticket joins admitted into probation),
+  `ciphervault_swarm_peer_graduations_total` (probation-to-full,
+  earned or admin-granted)
 - Slice 2 (landed): `ciphervault_swarm_repair_checks_total`,
   `ciphervault_swarm_repair_jobs_started_total`,
   `ciphervault_swarm_repair_jobs_completed_total`,

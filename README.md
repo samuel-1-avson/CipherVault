@@ -510,6 +510,7 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault peers` | `[--discover] [--mesh]` | Queries operators to inspect active nodes, dynamically discover peers via P2P gossip, or mesh routing tables via announce. |
 | `ciphervault lease create/renew` | `<CLOSURE|LEASE_ID> [--operator <URL>]` | Commits or renews a storage lease on one operator (device session auth). |
 | `ciphervault voucher issue` | `<HOLDER_PK> <QUOTA> [--operator <URL>]` | Issues a write voucher from an operator (service token admin). |
+| `ciphervault invite pubkey/issue/join/refresh` | `<NODE_PK> --fleet-key-file <PATH> [--ttl <S>] [--node <URL>] [--via <URL...>]` | Fleet-signed join tickets: print the fleet pin, issue a ticket offline, present it to join a fleet (probation), or refresh liveness toward graduation. |
 | `ciphervault approve list/sign/status`| `<CHALLENGE_ID>` | Out-of-band cryptographic push authorization for high-risk operations. |
 | `ciphervault token status/probe/slots`| `[--reader <NAME>]` | Inspects attached PC/SC smartcard readers, PIV slots, and touch policies. |
 | `ciphervault hook install/check` | *None* | Installs or checks Git pre-commit hook to prevent secret leaks. |

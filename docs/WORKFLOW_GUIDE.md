@@ -193,6 +193,31 @@ ciphervault-operator --port 8101 --data-dir ./operator-data \
   multiaddrs: `--p2p-bootstrap-list fleet.json --p2p-bootstrap-signer
   <hex-fleet-key>` (generate with `sign-bootstrap-list`).
 
+### Option D — join an existing fleet (verified join)
+
+Running a node is not joining: fleet routing tables admit new members
+by ticket, not by announce (ADR-008).
+
+```bash
+# 1. On your node: show your public key, send it to a fleet admin
+ciphervault-operator --print-identity --operator-id my-node \
+  --data-dir ./operator-data
+# 2. Admin signs a ticket offline and hands you ticket.json
+# 3. Present it to each fleet node (no service token needed):
+ciphervault invite join ticket.json --node http://127.0.0.1:8101 \
+  --via https://fleet-node-1:8201 https://fleet-node-2:8201
+```
+
+- You land in **probation**: you hold data and may push repair, but
+  the fleet entrusts new replicas only to graduated members.
+- Graduation needs 24 h of fleet-visible life plus recent liveness:
+  P2P heartbeats count automatically; otherwise re-run
+  `ciphervault invite refresh --node ... --via ...` periodically.
+- Fleet side: every node pins `CIPHERVAULT_FLEET_KEY`, and the admin
+  graduates you (`POST /v1/peers/<id>/graduate`) or your time+liveness
+  graduates you automatically. Full ceremony and failure hints:
+  operator playbook §10.
+
 ### Hardening a public node
 
 - Set `CIPHERVAULT_OPERATOR_STRICT_AUTH=true` and a 32-byte hex
