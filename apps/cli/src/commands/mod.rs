@@ -16,6 +16,7 @@ pub(crate) mod retention;
 pub(crate) mod run;
 pub(crate) mod token;
 pub(crate) mod track;
+pub(crate) mod update;
 
 pub(crate) use anchor::*;
 pub(crate) use approvals::*;
@@ -33,3 +34,4 @@ pub(crate) use retention::*;
 pub(crate) use run::*;
 pub(crate) use token::*;
 pub(crate) use track::*;
+pub(crate) use update::*;

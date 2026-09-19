@@ -2,12 +2,9 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::{CommandFactory, Parser, Subcommand};
 use colored::*;
-use reqwest::Client as HttpClient;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_storage::OperatorClient;
@@ -1227,240 +1224,6 @@ pub fn discover_workspace_vaults() -> Vec<WorkspaceVaultInfo> {
     discovered
 }
 
-/// Release version for update comparison: numeric core plus an optional
-/// prerelease suffix (`v1.0.7-beta.1` -> core (1,0,7), pre "beta.1").
-/// Splitting the suffix out matters: parsing "7-beta" as a number yields 0,
-/// which previously made every prerelease tag compare older than any release.
-struct ReleaseVersion {
-    core: (u64, u64, u64),
-    pre: Option<String>,
-}
-
-impl ReleaseVersion {
-    fn parse(tag: &str) -> Self {
-        let tag = tag.trim().trim_start_matches('v');
-        let (core_part, pre_part) = match tag.split_once('-') {
-            Some((core, pre)) => (core, Some(pre.to_string())),
-            None => (tag, None),
-        };
-        let mut nums = core_part
-            .split('.')
-            .map(|part| part.trim().parse::<u64>().unwrap_or(0));
-        Self {
-            core: (
-                nums.next().unwrap_or(0),
-                nums.next().unwrap_or(0),
-                nums.next().unwrap_or(0),
-            ),
-            pre: pre_part.filter(|part| !part.is_empty()),
-        }
-    }
-
-    /// True when `self` is a newer release than `other`, following semver
-    /// precedence: a higher core wins; for equal cores a final release beats
-    /// any prerelease, and prereleases compare identifier by identifier.
-    fn is_newer_than(&self, other: &Self) -> bool {
-        if self.core != other.core {
-            return self.core > other.core;
-        }
-        match (&self.pre, &other.pre) {
-            (None, None) => false,
-            (None, Some(_)) => true,
-            (Some(_), None) => false,
-            (Some(a), Some(b)) => compare_pre_release(a, b) == std::cmp::Ordering::Greater,
-        }
-    }
-}
-
-/// Compares dot-separated prerelease identifiers with numeric-aware ordering
-/// (`beta.2` < `beta.10`); numeric identifiers sort below alphanumeric ones.
-fn compare_pre_release(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let mut a_parts = a.split('.');
-    let mut b_parts = b.split('.');
-    loop {
-        match (a_parts.next(), b_parts.next()) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) => {
-                let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
-                    (Ok(xn), Ok(yn)) => xn.cmp(&yn),
-                    (Ok(_), Err(_)) => Ordering::Less,
-                    (Err(_), Ok(_)) => Ordering::Greater,
-                    (Err(_), Err(_)) => x.cmp(y),
-                };
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-        }
-    }
-}
-
-async fn cmd_update(check_only: bool) -> Result<()> {
-    let (target, archive_suffix) = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => ("x86_64-pc-windows-msvc", "zip"),
-        ("linux", "x86_64") => ("x86_64-unknown-linux-gnu", "tar.gz"),
-        ("linux", "aarch64") => ("aarch64-unknown-linux-gnu", "tar.gz"),
-        ("macos", "x86_64") => ("x86_64-apple-darwin", "tar.gz"),
-        ("macos", "aarch64") => ("aarch64-apple-darwin", "tar.gz"),
-        (os, arch) => bail!("No published CipherVault release for {os}/{arch}"),
-    };
-    let client = HttpClient::builder()
-        .timeout(Duration::from_secs(20))
-        .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
-        .build()?;
-    let release: serde_json::Value = client
-        .get("https://api.github.com/repos/samuel-1-avson/CipherVault/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .context("checking the CipherVault release feed")?
-        .error_for_status()
-        .context("GitHub did not return the latest CipherVault release")?
-        .json()
-        .await
-        .context("decoding the CipherVault release feed")?;
-    let tag = release
-        .get("tag_name")
-        .and_then(serde_json::Value::as_str)
-        .context("latest release did not include a tag")?;
-    let current = env!("CARGO_PKG_VERSION");
-    println!("Current CipherVault: {current}; latest release: {tag}");
-    let current_version = ReleaseVersion::parse(current);
-    let latest_version = ReleaseVersion::parse(tag);
-    if check_only {
-        if !latest_version.is_newer_than(&current_version) {
-            println!("Already at or ahead of the latest published release.");
-        } else {
-            println!("Run `ciphervault update` to install the verified release.");
-        }
-        return Ok(());
-    }
-    if !latest_version.is_newer_than(&current_version) {
-        println!("Already at or ahead of the latest published release.");
-        return Ok(());
-    }
-    let archive_name = format!("ciphervault-{tag}-{target}.{archive_suffix}");
-    let sums_name = "SHA256SUMS.txt";
-    let base_url = format!("https://github.com/samuel-1-avson/CipherVault/releases/download/{tag}");
-    let archive = client
-        .get(format!("{base_url}/{archive_name}"))
-        .send()
-        .await
-        .context("downloading the latest CipherVault archive")?
-        .error_for_status()
-        .context("latest CipherVault archive is unavailable")?
-        .bytes()
-        .await
-        .context("reading the latest CipherVault archive")?;
-    let sums = client
-        .get(format!("{base_url}/{sums_name}"))
-        .send()
-        .await
-        .context("downloading the CipherVault release checksum")?
-        .error_for_status()
-        .context("latest CipherVault checksum is unavailable")?
-        .text()
-        .await
-        .context("reading the CipherVault release checksum")?;
-    let expected = sums
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            let digest = fields.next()?;
-            let name = fields.next()?.trim_start_matches("*");
-            (name == archive_name).then_some(digest.to_ascii_lowercase())
-        })
-        .context("release checksum does not contain the selected archive")?;
-    let actual = hex::encode(Sha256::digest(&archive));
-    if expected != actual {
-        bail!("release checksum mismatch for {archive_name}");
-    }
-
-    let temp_root = std::env::temp_dir().join(format!(
-        "ciphervault-update-{}-{}",
-        std::process::id(),
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-    ));
-    fs::create_dir_all(&temp_root)?;
-    let archive_path = temp_root.join(&archive_name);
-    fs::write(&archive_path, &archive)?;
-    let extract_dir = temp_root.join("extract");
-    fs::create_dir_all(&extract_dir)?;
-    #[cfg(windows)]
-    {
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-                &archive_path.to_string_lossy(),
-                &extract_dir.to_string_lossy(),
-            ])
-            .status()
-            .context("extracting the Windows release archive")?;
-        if !status.success() {
-            bail!("Windows release archive extraction failed");
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let status = std::process::Command::new("tar")
-            .args([
-                "-xzf",
-                &archive_path.to_string_lossy(),
-                "-C",
-                &extract_dir.to_string_lossy(),
-            ])
-            .status()
-            .context("extracting the release archive")?;
-        if !status.success() {
-            bail!("release archive extraction failed");
-        }
-    }
-    let binary_name = if cfg!(windows) {
-        "ciphervault.exe"
-    } else {
-        "ciphervault"
-    };
-    let extracted_binary = walkdir::WalkDir::new(&extract_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .find(|entry| entry.file_type().is_file() && entry.file_name() == binary_name)
-        .map(|entry| entry.into_path())
-        .context("release archive did not contain the CipherVault CLI")?;
-    let current_exe = std::env::current_exe().context("locating the running CipherVault CLI")?;
-    #[cfg(windows)]
-    {
-        let replacement = current_exe.with_extension("exe.new");
-        fs::copy(&extracted_binary, &replacement)?;
-        let script = current_exe.with_extension("update.cmd");
-        let script_body = format!(
-            "@echo off\r\n:wait\r\nmove /Y \"{}\" \"{}\" >nul 2>&1\r\nif errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\ndel \"%~f0\"\r\n",
-            replacement.display(),
-            current_exe.display()
-        );
-        fs::write(&script, script_body)?;
-        std::process::Command::new("cmd.exe")
-            .args(["/C", "start", "", "/B", &script.to_string_lossy()])
-            .spawn()
-            .context("starting the Windows update helper")?;
-        println!("Verified {tag}; the new CLI will be installed after this process exits.");
-    }
-    #[cfg(not(windows))]
-    {
-        let replacement = current_exe.with_extension("new");
-        fs::copy(&extracted_binary, &replacement)?;
-        fs::rename(replacement, current_exe)?;
-        println!("Verified and installed CipherVault {tag}.");
-    }
-    let _ = fs::remove_dir_all(temp_root);
-    Ok(())
-}
-
 async fn cmd_watch(debounce_secs: u64, sync: bool, dry_run: bool) -> Result<()> {
     let root_dir = std::env::current_dir()?;
     let vault_db = root_dir.join(VAULT_DIR).join(DB_FILE);
@@ -1664,49 +1427,6 @@ const UI_STYLES_CSS: &str = include_str!("../../ui/styles.css");
 const UI_APP_JS: &str = include_str!("../../ui/app.js");
 
 #[cfg(test)]
-mod update_version_tests {
-    use super::*;
-
-    fn offers_update(current: &str, latest_tag: &str) -> bool {
-        ReleaseVersion::parse(latest_tag).is_newer_than(&ReleaseVersion::parse(current))
-    }
-
-    #[test]
-    fn prerelease_tag_with_higher_core_is_offered() {
-        // Regression: "7-beta" used to parse as 0, so v1.0.7-beta.1 compared
-        // older than 1.0.6 and no user was ever offered the beta.
-        assert!(offers_update("1.0.6", "v1.0.7-beta.1"));
-        assert_eq!(ReleaseVersion::parse("v1.0.7-beta.1").core, (1, 0, 7));
-    }
-
-    #[test]
-    fn same_prerelease_is_not_offered() {
-        assert!(!offers_update("1.0.7-beta.1", "v1.0.7-beta.1"));
-    }
-
-    #[test]
-    fn prerelease_moves_forward_within_pre_suffix() {
-        assert!(offers_update("1.0.7-beta.1", "v1.0.7-beta.2"));
-        // Numeric identifiers compare numerically, not lexicographically.
-        assert!(offers_update("1.0.7-beta.2", "v1.0.7-beta.10"));
-        assert!(!offers_update("1.0.7-beta.10", "v1.0.7-beta.2"));
-    }
-
-    #[test]
-    fn final_release_beats_its_prerelease_but_never_downgrades() {
-        assert!(offers_update("1.0.7-beta.1", "v1.0.7"));
-        assert!(!offers_update("1.0.7", "v1.0.7-beta.1"));
-    }
-
-    #[test]
-    fn plain_release_comparison_still_works() {
-        assert!(offers_update("1.0.6", "v1.0.7"));
-        assert!(!offers_update("1.0.6", "v1.0.6"));
-        assert!(!offers_update("1.0.7", "v1.0.6"));
-    }
-}
-
-#[cfg(test)]
 mod ui_router_tests {
     use super::*;
 
@@ -1722,7 +1442,7 @@ mod ui_router_tests {
     fn private_session_rotation_covers_expiry_and_vault_binding() {
         let mut expired = new_private_ui_session(Some("vault-a".to_string()));
         expired.issued_at = std::time::Instant::now()
-            .checked_sub(PRIVATE_UI_SESSION_TTL + Duration::from_secs(1))
+            .checked_sub(PRIVATE_UI_SESSION_TTL + std::time::Duration::from_secs(1))
             .expect("test instant should be representable");
         assert!(private_ui_session_should_rotate(
             &expired,
