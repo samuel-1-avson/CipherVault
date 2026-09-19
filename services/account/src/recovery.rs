@@ -198,3 +198,322 @@ pub(crate) async fn propagate_device_revocation(
     }
     (targets, successes, failures)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{cleanup, json, test_app};
+    use crate::util::challenge_signing_bytes;
+    use axum::body::Body;
+    use axum::http::Request;
+    use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
+    use tower05::ServiceExt;
+
+    #[tokio::test]
+    async fn recovery_session_enrolls_replacement_device() {
+        let (root, _state, app) = test_app("recovery-enroll");
+        let account_key = generate_signing_key();
+        let account_pk = hex::encode(account_key.verifying_key().as_bytes());
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "display_name": "Recovery",
+                            "account_public_key_hex": account_pk,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let account = json(created).await;
+        let account_id = account["account_id"].as_str().unwrap().to_string();
+
+        // Enroll device A through the standard account-signed path.
+        let device_a_id = "aa".repeat(32);
+        let device_a_key = generate_signing_key();
+        let device_a_pk = hex::encode(device_a_key.verifying_key().as_bytes());
+        let challenge_a = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices/challenge").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_a_id,
+                            "public_key_hex": device_a_pk,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let challenge_a_json = json(challenge_a).await;
+        let proof_a = hex::encode(sign_with_domain(
+            &account_key,
+            b"account_device_enrollment",
+            &challenge_signing_bytes(
+                &account_id,
+                Some(&device_a_id),
+                Some(&device_a_pk),
+                challenge_a_json["challenge_id"].as_str().unwrap(),
+                challenge_a_json["nonce_hex"].as_str().unwrap(),
+            ),
+        ));
+        let enrolled_a = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_a_id,
+                            "public_key_hex": device_a_pk,
+                            "challenge_id": challenge_a_json["challenge_id"],
+                            "proof_signature_hex": proof_a,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enrolled_a.status(), StatusCode::CREATED);
+
+        // Log in device A and issue recovery codes.
+        let login_challenge = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/challenge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "account_id": account_id,
+                            "device_id_hex": device_a_id,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let login_json = json(login_challenge).await;
+        let login_proof = hex::encode(sign_with_domain(
+            &account_key,
+            b"account_login",
+            &challenge_signing_bytes(
+                &account_id,
+                Some(&device_a_id),
+                None,
+                login_json["challenge_id"].as_str().unwrap(),
+                login_json["nonce_hex"].as_str().unwrap(),
+            ),
+        ));
+        let session = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "challenge_id": login_json["challenge_id"],
+                            "signature_hex": login_proof,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::OK);
+        let token = json(session)
+            .await
+            .get("token")
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string();
+        let codes = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/recovery/codes").as_str())
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"count":4}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(codes.status(), StatusCode::OK);
+        let recovery_code = json(codes)
+            .await
+            .get("codes")
+            .and_then(|codes| codes.get(0))
+            .and_then(|code| code.as_str())
+            .unwrap()
+            .to_string();
+
+        // Redeem: short explicit TTL and a recovery-marked session.
+        let redeemed = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/recovery/redeem")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "account_id": account_id,
+                            "code": recovery_code,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redeemed.status(), StatusCode::OK);
+        let redeemed_json = json(redeemed).await;
+        let recovery_token = redeemed_json["token"].as_str().unwrap().to_string();
+        assert_eq!(redeemed_json["session"]["auth_method"], "recovery");
+        let issued = redeemed_json["session"]["issued_at_utc"].as_u64().unwrap();
+        let expires = redeemed_json["session"]["expires_at_utc"].as_u64().unwrap();
+        assert_eq!(expires - issued, RECOVERY_SESSION_TTL_SECONDS);
+
+        // A device-signed proof alone (no recovery session) must fail.
+        let device_c_id = "cc".repeat(32);
+        let device_c_key = generate_signing_key();
+        let device_c_pk = hex::encode(device_c_key.verifying_key().as_bytes());
+        let challenge_c = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices/challenge").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_c_id,
+                            "public_key_hex": device_c_pk,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let challenge_c_json = json(challenge_c).await;
+        let proof_c = hex::encode(sign_with_domain(
+            &device_c_key,
+            b"account_device_enrollment",
+            &challenge_signing_bytes(
+                &account_id,
+                Some(&device_c_id),
+                Some(&device_c_pk),
+                challenge_c_json["challenge_id"].as_str().unwrap(),
+                challenge_c_json["nonce_hex"].as_str().unwrap(),
+            ),
+        ));
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_c_id,
+                            "public_key_hex": device_c_pk,
+                            "challenge_id": challenge_c_json["challenge_id"],
+                            "proof_signature_hex": proof_c,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+        // With the recovery session, device B self-certifies and enrolls.
+        let device_b_id = "bb".repeat(32);
+        let device_b_key = generate_signing_key();
+        let device_b_pk = hex::encode(device_b_key.verifying_key().as_bytes());
+        let challenge_b = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices/challenge").as_str())
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_b_id,
+                            "public_key_hex": device_b_pk,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let challenge_b_json = json(challenge_b).await;
+        let proof_b = hex::encode(sign_with_domain(
+            &device_b_key,
+            b"account_device_enrollment",
+            &challenge_signing_bytes(
+                &account_id,
+                Some(&device_b_id),
+                Some(&device_b_pk),
+                challenge_b_json["challenge_id"].as_str().unwrap(),
+                challenge_b_json["nonce_hex"].as_str().unwrap(),
+            ),
+        ));
+        let enrolled_b = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/accounts/{account_id}/devices").as_str())
+                    .header("authorization", format!("Bearer {recovery_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "device_id_hex": device_b_id,
+                            "public_key_hex": device_b_pk,
+                            "challenge_id": challenge_b_json["challenge_id"],
+                            "proof_signature_hex": proof_b,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enrolled_b.status(), StatusCode::CREATED);
+
+        // The audit trail distinguishes the recovery enrollment path.
+        let audit = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/accounts/{account_id}/audit").as_str())
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), StatusCode::OK);
+        let events = json(audit)
+            .await
+            .get("events")
+            .and_then(|events| events.as_array())
+            .unwrap()
+            .clone();
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "recovery_code_redeemed"
+                && event["details"]["session_ttl_secs"] == RECOVERY_SESSION_TTL_SECONDS));
+        assert!(events
+            .iter()
+            .any(|event| event["event"] == "device_enrolled"
+                && event["details"]["enrollment"] == "recovery_session"));
+        cleanup(root);
+    }
+}
