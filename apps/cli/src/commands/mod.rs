@@ -3,6 +3,7 @@
 pub(crate) mod anchor;
 pub(crate) mod approvals;
 pub(crate) mod auth;
+pub(crate) mod feed;
 pub(crate) mod init;
 pub(crate) mod inspect;
 pub(crate) mod push;
@@ -16,6 +17,7 @@ pub(crate) mod track;
 pub(crate) use anchor::*;
 pub(crate) use approvals::*;
 pub(crate) use auth::*;
+pub(crate) use feed::*;
 pub(crate) use init::*;
 pub(crate) use inspect::*;
 pub(crate) use push::*;
