@@ -7,15 +7,13 @@
 //! successful logins can use an HttpOnly managed-session cookie. The
 //! account-key ceremony remains the explicit bootstrap/recovery path.
 
-use axum::Json;
 #[cfg(test)]
-use axum::{http::StatusCode, response::Response};
+use axum::http::StatusCode;
+use axum::Json;
 #[cfg(test)]
 use rusqlite::params;
 #[cfg(test)]
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::fs;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 mod accounts;
@@ -28,6 +26,8 @@ mod memberships;
 mod recovery;
 mod sessions;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod totp;
 mod util;
 mod vaults;
@@ -54,6 +54,8 @@ pub use state::{
     WebAuthnAuthenticationOptionsRequest, WebAuthnAuthenticationVerifyRequest,
     WebAuthnCredentialView, WebAuthnOptionsView, WebAuthnRegistrationVerifyRequest,
 };
+#[cfg(test)]
+use test_support::*;
 use totp::*;
 use util::*;
 use vaults::*;
@@ -175,24 +177,15 @@ pub fn create_router(state: AccountState) -> axum::Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{to_bytes, Body};
+    use axum::body::Body;
     use axum::http::Request;
     use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
     use ed25519_dalek::Signer;
     use tower05::ServiceExt;
 
-    async fn json(response: Response) -> serde_json::Value {
-        let body = to_bytes(response.into_body(), MAX_BODY_BYTES)
-            .await
-            .expect("body");
-        serde_json::from_slice(&body).expect("json")
-    }
-
     #[tokio::test]
     async fn account_device_proof_login_and_revocation_lifecycle() {
-        let root = std::env::temp_dir().join(format!("cv-account-service-{}", random_hex(8)));
-        let state = AccountState::open(&root).expect("state");
-        let app = create_router(state);
+        let (root, _state, app) = test_app("service");
         let capabilities = app
             .clone()
             .oneshot(
@@ -722,16 +715,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(webauthn_after.status(), StatusCode::UNAUTHORIZED);
-        let _ = fs::remove_dir_all(root);
+        cleanup(root);
     }
 
     #[tokio::test]
     async fn totp_enrollment_login_and_replay_protection() {
         let previous_key = std::env::var(TOTP_KEY_ENV).ok();
         std::env::set_var(TOTP_KEY_ENV, "11".repeat(32));
-        let root = std::env::temp_dir().join(format!("cv-account-totp-{}", random_hex(8)));
-        let state = AccountState::open(&root).expect("state");
-        let app = create_router(state.clone());
+        let (root, state, app) = test_app("totp");
         let account_key = generate_signing_key();
         let created = app
             .clone()
@@ -841,7 +832,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
-        let _ = fs::remove_dir_all(root);
+        cleanup(root);
         if let Some(value) = previous_key {
             std::env::set_var(TOTP_KEY_ENV, value);
         } else {
@@ -851,9 +842,7 @@ mod tests {
 
     #[tokio::test]
     async fn membership_roles_and_origins_are_enforced() {
-        let root = std::env::temp_dir().join(format!("cv-account-roles-{}", random_hex(8)));
-        let state = AccountState::open(&root).expect("state");
-        let app = create_router(state.clone());
+        let (root, state, app) = test_app("roles");
         let owner = format!("cvacct_{}", "11".repeat(16));
         let viewer = format!("cvacct_{}", "22".repeat(16));
         let admin = format!("cvacct_{}", "33".repeat(16));
@@ -983,15 +972,12 @@ mod tests {
             .unwrap();
         assert_eq!(evil_origin.status(), StatusCode::FORBIDDEN);
 
-        let _ = fs::remove_dir_all(root);
+        cleanup(root);
     }
 
     #[tokio::test]
     async fn recovery_session_enrolls_replacement_device() {
-        let root =
-            std::env::temp_dir().join(format!("cv-account-recovery-enroll-{}", random_hex(8)));
-        let state = AccountState::open(&root).expect("state");
-        let app = create_router(state);
+        let (root, _state, app) = test_app("recovery-enroll");
         let account_key = generate_signing_key();
         let account_pk = hex::encode(account_key.verifying_key().as_bytes());
         let created = app
@@ -1294,7 +1280,7 @@ mod tests {
             .iter()
             .any(|event| event["event"] == "device_enrolled"
                 && event["details"]["enrollment"] == "recovery_session"));
-        let _ = fs::remove_dir_all(root);
+        cleanup(root);
     }
 
     #[tokio::test]
@@ -1306,9 +1292,7 @@ mod tests {
         const NO_CONTENT: StatusCode = StatusCode::NO_CONTENT;
         const FORBIDDEN: StatusCode = StatusCode::FORBIDDEN;
         const UNAUTHORIZED: StatusCode = StatusCode::UNAUTHORIZED;
-        let root = std::env::temp_dir().join(format!("cv-account-matrix-{}", random_hex(8)));
-        let state = AccountState::open(&root).expect("state");
-        let app = create_router(state.clone());
+        let (root, state, app) = test_app("matrix");
         let owner = format!("cvacct_{}", "11".repeat(16));
         let admin = format!("cvacct_{}", "33".repeat(16));
         let editor = format!("cvacct_{}", "55".repeat(16));
@@ -1562,6 +1546,6 @@ mod tests {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), expected, "{method} {uri}");
         }
-        let _ = fs::remove_dir_all(root);
+        cleanup(root);
     }
 }
