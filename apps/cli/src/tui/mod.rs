@@ -76,6 +76,12 @@ async fn run_loop<B: ratatui::backend::Backend>(
             last_tick = Instant::now();
         }
 
+        // One-shot self-update check on the first tick. Silent unless an
+        // update is pending, which opens the update modal.
+        if !app.update_check_done {
+            app.check_for_app_update().await;
+        }
+
         // Periodic background polling for operator health
         if app.last_poll.elapsed() >= app.poll_interval {
             app.poll_operators_async().await;

@@ -213,6 +213,12 @@ pub struct TuiApp {
     pub explorer_feed_configured: bool,
     pub explorer_object: Option<ExplorerObjectResult>,
 
+    // Self-update (shared engine with `ciphervault update`)
+    pub update_check_done: bool,
+    pub update_pending: Option<crate::PendingUpdate>,
+    pub show_update_modal: bool,
+    pub update_in_progress: bool,
+
     // Modal dialogs
     pub show_track_modal: bool,
     pub track_input_buffer: String,
@@ -274,6 +280,11 @@ impl TuiApp {
             explorer_checkpoint_index: 0,
             explorer_feed_configured: false,
             explorer_object: None,
+
+            update_check_done: false,
+            update_pending: None,
+            show_update_modal: false,
+            update_in_progress: false,
 
             show_track_modal: false,
             track_input_buffer: String::new(),
@@ -687,6 +698,73 @@ impl TuiApp {
             },
         );
         self.explorer_object = Some(result);
+    }
+
+    /// One-shot update check for TUI startup. Silent on failure (offline is
+    /// normal); opens the update modal when a newer release exists.
+    pub async fn check_for_app_update(&mut self) {
+        self.update_check_done = true;
+        let Ok(check) = crate::check_for_updates().await else {
+            return;
+        };
+        if let Some(pending) = check.pending {
+            self.update_pending = Some(pending);
+            self.show_update_modal = true;
+        }
+    }
+
+    /// Manual update check (U key): always reports the outcome.
+    pub async fn manual_update_check(&mut self) {
+        self.set_status("Checking for CipherVault updates...", StatusLevel::Info);
+        match crate::check_for_updates().await {
+            Ok(check) => match check.pending {
+                Some(pending) => {
+                    let tag = pending.tag.clone();
+                    self.update_pending = Some(pending);
+                    self.show_update_modal = true;
+                    self.set_status(format!("Update available: {tag}."), StatusLevel::Warning);
+                }
+                None => self.set_status(
+                    format!("Already on the latest release (v{}).", check.current),
+                    StatusLevel::Success,
+                ),
+            },
+            Err(error) => {
+                self.set_status(format!("Update check failed: {error}"), StatusLevel::Error)
+            }
+        }
+    }
+
+    /// Installs the pending update, reporting stages on the status line. The
+    /// running process keeps the old binary: a restart is always required.
+    pub async fn apply_app_update(&mut self) {
+        let Some(pending) = self.update_pending.take() else {
+            self.set_status("No update is pending.", StatusLevel::Warning);
+            return;
+        };
+        self.update_in_progress = true;
+        let tag = pending.tag.clone();
+        let outcome = crate::apply_update(&pending, |stage| {
+            // Progress callback: the borrow checker sees only the status
+            // fields here, while `pending` is an owned local.
+            self.set_status(stage.to_string(), StatusLevel::Info);
+        })
+        .await;
+        match outcome {
+            Ok(_) => {
+                self.update_in_progress = false;
+                self.show_update_modal = false;
+                self.set_status(
+                    format!("✓ Updated to {tag}. Quit ([q]) and relaunch to use it."),
+                    StatusLevel::Success,
+                );
+            }
+            Err(error) => {
+                self.update_in_progress = false;
+                self.update_pending = Some(pending);
+                self.set_status(format!("Update failed: {error}"), StatusLevel::Error);
+            }
+        }
     }
 }
 

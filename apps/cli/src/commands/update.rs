@@ -114,10 +114,12 @@ fn find_checksum(sums: &str, name: &str) -> Option<String> {
     })
 }
 
-pub(crate) struct PendingUpdate {
+/// Effectively crate-confined (`commands` is `pub(crate)`); declared `pub`
+/// so the `pub` TUI app state can hold it.
+pub struct PendingUpdate {
     pub tag: String,
-    target: &'static str,
-    archive_suffix: &'static str,
+    pub(crate) target: &'static str,
+    pub(crate) archive_suffix: &'static str,
 }
 
 pub(crate) struct ReleaseCheck {
@@ -187,7 +189,7 @@ pub(crate) enum InstallOutcome {
 /// reporting human-readable stages through `on_stage`.
 pub(crate) async fn apply_update(
     pending: &PendingUpdate,
-    on_stage: impl Fn(&str),
+    mut on_stage: impl FnMut(&str),
 ) -> Result<InstallOutcome> {
     let client = HttpClient::builder()
         .timeout(Duration::from_secs(20))

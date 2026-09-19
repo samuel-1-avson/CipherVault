@@ -90,6 +90,23 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
+    // If the update modal is open, apply or dismiss it. Locked to read-only
+    // while an install is in flight.
+    if app.show_update_modal {
+        if !app.update_in_progress {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('l') | KeyCode::Char('L') => {
+                    app.show_update_modal = false;
+                }
+                KeyCode::Enter | KeyCode::Char('u') | KeyCode::Char('U') => {
+                    app.apply_app_update().await;
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
+
     // Global Keybindings
     match key.code {
         // Quit
@@ -228,6 +245,9 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
                 }
             }
         }
+
+        // Action: Check for updates
+        KeyCode::Char('u') => app.manual_update_check().await,
 
         // Action: Anchor to Arbitrum L2
         KeyCode::Char('a') => {

@@ -41,6 +41,8 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
         render_track_modal(frame, app);
     } else if app.show_explorer_search_modal {
         render_explorer_search_modal(frame, app);
+    } else if app.show_update_modal {
+        render_update_modal(frame, app);
     } else if app.show_help {
         render_help_modal(frame);
     }
@@ -1310,6 +1312,85 @@ fn render_explorer_search_modal(frame: &mut Frame, app: &TuiApp) {
     frame.render_widget(help, inner[2]);
 }
 
+fn render_update_modal(frame: &mut Frame, app: &TuiApp) {
+    let area = centered_rect(62, 28, frame.area());
+    frame.render_widget(Clear, area);
+
+    let (title, border_color) = if app.update_in_progress {
+        (" Installing Update… ", Color::Yellow)
+    } else {
+        (" Update Available ", Color::Green)
+    };
+    let modal_block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Length(2)])
+        .margin(1)
+        .split(area);
+
+    frame.render_widget(modal_block, area);
+
+    let latest = app
+        .update_pending
+        .as_ref()
+        .map(|pending| pending.tag.as_str())
+        .unwrap_or("…");
+    let info = if app.update_in_progress {
+        vec![
+            Line::from(Span::styled(
+                "Downloading, verifying, and installing…",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Watch the status line for progress. The running TUI keeps",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                "the old version until you quit and relaunch.",
+                Style::default().fg(Color::Gray),
+            )),
+        ]
+    } else {
+        vec![
+            Line::from(vec![
+                Span::raw("A new CipherVault release is ready: "),
+                Span::styled(
+                    format!("v{} → {latest}", env!("CARGO_PKG_VERSION")),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(Span::styled(
+                "The release archive is checksum-verified before install.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                "Updating replaces this binary; relaunch afterwards to use it.",
+                Style::default().fg(Color::Gray),
+            )),
+        ]
+    };
+    frame.render_widget(Paragraph::new(info), inner[0]);
+
+    let keys = if app.update_in_progress {
+        "Installing… please wait"
+    } else {
+        "[U]pdate Now    [L]ater"
+    };
+    let help = Paragraph::new(keys)
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::Gray));
+    frame.render_widget(help, inner[1]);
+}
+
 fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let footer_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -1487,6 +1568,10 @@ fn render_help_modal(frame: &mut Frame) {
             Span::raw("Open the explorer object lookup (64-hex CID, presence-only)"),
         ]),
         Line::from(vec![
+            Span::styled("u          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Check for CipherVault updates (popup when one is ready)"),
+        ]),
+        Line::from(vec![
             Span::styled("l          ", Style::default().fg(Color::Yellow)),
             Span::raw("Sign in to the local account with the OS-protected account key"),
         ]),
@@ -1659,5 +1744,30 @@ mod tests {
         let text = drawn_text(&mut app, 140, 44);
         assert!(text.contains("Inspect Object by Content ID"));
         assert!(text.contains("ab12"));
+    }
+
+    #[test]
+    fn update_modal_renders_pending_release() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.update_pending = Some(crate::PendingUpdate {
+            tag: "v9.9.9".into(),
+            target: "x86_64-pc-windows-msvc",
+            archive_suffix: "zip",
+        });
+        app.show_update_modal = true;
+        let text = drawn_text(&mut app, 120, 40);
+        assert!(text.contains("Update Available"));
+        assert!(text.contains("v9.9.9"));
+        assert!(text.contains("[U]pdate Now"));
+    }
+
+    #[test]
+    fn update_modal_locks_while_installing() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.show_update_modal = true;
+        app.update_in_progress = true;
+        let text = drawn_text(&mut app, 120, 40);
+        assert!(text.contains("Installing Update"));
+        assert!(text.contains("please wait"));
     }
 }
