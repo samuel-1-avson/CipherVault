@@ -83,11 +83,14 @@ function Assert-MetadataValue {
 
 function Verify-ImageSignature {
     param([string]$Image)
-    & cosign verify `
+    # Routed through Invoke-NativeText: cosign prints its success banner
+    # to stderr, which is terminating under $ErrorActionPreference = "Stop"
+    # even when piped to $null. The exit code drives control flow.
+    $result = Invoke-NativeText cosign verify `
         --certificate-identity-regexp $CosignCertificateIdentityRegex `
         --certificate-oidc-issuer https://token.actions.githubusercontent.com `
-        $Image | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+        $Image
+    if ($result.ExitCode -ne 0) {
         throw "Cosign verification failed for $Image"
     }
 }
@@ -102,8 +105,18 @@ function Invoke-PromotionGet {
     # the operator pins the check IP, Invoke-WebRequest otherwise. Both fail
     # on non-2xx (curl via --fail, Invoke-WebRequest by throwing).
     if ($HealthCheckIp) {
-        $body = @(& curl.exe --fail --silent --show-error --max-time 10 --resolve "$DomainName`:443`:$HealthCheckIp" $Url)
-        if ($LASTEXITCODE -ne 0) { throw "GET $Url failed with exit code $LASTEXITCODE" }
+        # Same stderr discipline as Invoke-NativeText: curl diagnostics
+        # must not terminate under $ErrorActionPreference = "Stop"; the
+        # exit code drives control flow and the throw below reports it.
+        $previousEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $body = @(& curl.exe --fail --silent --show-error --max-time 10 --resolve "$DomainName`:443`:$HealthCheckIp" $Url 2>$null)
+            $curlExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+        if ($curlExit -ne 0) { throw "GET $Url failed with exit code $curlExit" }
         return ($body -join "`n")
     }
     return (Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 10).Content
