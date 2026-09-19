@@ -11,13 +11,22 @@
 //! succeeds. Together with the AutoNAT dial-back test this exercises every
 //! protocol message of the NAT ladder.
 //!
-//! KNOWN FLAKE (2026-09-18): `rpc_flows_over_relayed_circuit` intermittently
-//! times out in `wait_for_relay_ready` (1 failure in 3 local runs; relay's
-//! own AutoNAT confirmation never arrives within 60 s while sibling tests
-//! pass). Passing runs confirm in ~10 s, so this is a missed probe under
-//! parallel load, not scheduling latency — re-run the suite. A related
-//! deterministic hazard was fixed the same day: the AutoNAT predicate
-//! called a panicking TCP-only port helper on QUIC confirmations.
+//! FLAKINESS DESIGN (2026-09-19): the relay's own AutoNAT confirmation
+//! needs a two-tick cascade — a leaf must probe first so the relay's server
+//! dials back (its only outbound connection, which is what teaches its
+//! client a server), and only then can the relay probe at its next tick.
+//! Worse, libp2p-autonat 0.16 latches a candidate `Failed` forever after one
+//! `AddressNotReachable`, so a single transient dial-back stall past the
+//! 10 s server timeout wedges that node until the deadline with zero
+//! further probes. Three mitigations, all load-bearing:
+//!
+//! 1. The tests in this file run serially (`NAT_SERIAL`): nine swarms
+//!    probing at once is what stalls a loopback dial-back past 10 s.
+//! 2. The relay dials a leaf back explicitly, so its client learns a
+//!    server immediately instead of via the dial-back cascade.
+//! 3. Relay/AutoNAT readiness retries the whole setup with fresh nodes
+//!    (fresh AutoNAT state) a bounded number of times instead of failing
+//!    the suite on one wedged candidate.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,6 +47,11 @@ use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
 
 static NODE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Serializes this file's tests: concurrent nine-swarm stampedes stall
+/// loopback AutoNAT dial-backs past the 10 s server timeout, and one
+/// `AddressNotReachable` latches the candidate `Failed` forever.
+static NAT_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct NatNode {
     handle: SwarmHandle,
@@ -143,20 +157,60 @@ fn tcp_port(addr: &Multiaddr) -> u16 {
         .expect("tcp port")
 }
 
-/// Waits until the relay server can accept reservations: it advertises
-/// HOP only after AutoNAT confirms its own external reachability.
-async fn wait_for_relay_ready(relay: &NatNode) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+/// Waits until the relay server can accept reservations: libp2p denies
+/// inbound HOP at the protocol level until AutoNAT confirms our own
+/// external reachability. Returns the observed state on timeout so the
+/// caller can retry with fresh nodes (a latched `Failed` candidate never
+/// re-probes) instead of asserting on the first stall.
+async fn wait_for_relay_ready(relay: &NatNode) -> Result<(), String> {
+    // Healthy confirmation lands in ~5 s (first probe tick once a server
+    // is known); 30 s is six ticks of headroom, past which the candidate
+    // is assumed latched and the setup is rebuilt rather than waited out.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if !relay.handle.external_addrs().await.unwrap().is_empty() {
-            return;
+        let external = relay.handle.external_addrs().await.unwrap();
+        if !external.is_empty() {
+            return Ok(());
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "relay never became externally reachable"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            let listeners = relay.handle.listeners().await.unwrap();
+            return Err(format!(
+                "external_addrs still empty; listeners={listeners:?}"
+            ));
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// Boots relay+A+B, meshes the dials, and waits for relay HOP readiness,
+/// retrying the whole setup with fresh nodes when readiness stalls: fresh
+/// keys/ports mean fresh AutoNAT candidates, which is the only recovery
+/// from the permanent `Failed` latch.
+async fn setup_relayed_trio(dcutr: bool) -> (NatNode, NatNode, NatNode, Multiaddr) {
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        let (relay, _) = boot_nat_node("relay", true, dcutr).await;
+        let (node_a, _) = boot_nat_node("a", false, dcutr).await;
+        let (node_b, _) = boot_nat_node("b", false, dcutr).await;
+        let relay_tcp = tcp_addr(&relay.handle.listeners().await.unwrap());
+        let a_tcp = tcp_addr(&node_a.handle.listeners().await.unwrap());
+        dial_and_wait(&node_a, &relay_tcp, relay.handle.peer_id).await;
+        dial_and_wait(&node_b, &relay_tcp, relay.handle.peer_id).await;
+        // Outbound from the relay: its AutoNAT client only probes via
+        // servers learned on outbound connections, so without this dial
+        // the relay waits a full extra probe tick for the dial-back
+        // cascade. This changes nothing about the A<->B path under test,
+        // which stays circuit-only with DCUtR off.
+        dial_and_wait(&relay, &a_tcp, node_a.handle.peer_id).await;
+        match wait_for_relay_ready(&relay).await {
+            Ok(()) => return (relay, node_a, node_b, relay_tcp),
+            Err(err) => {
+                last_err = format!("attempt {attempt}: {err}");
+                // Nodes drop here: swarm tasks aborted, temp dirs removed.
+            }
+        }
+    }
+    panic!("relay never became externally reachable ({last_err})");
 }
 
 async fn dial_and_wait(from: &NatNode, to_tcp: &Multiaddr, to_peer: PeerId) {
@@ -221,14 +275,8 @@ async fn rpc_get_info(node: &NatNode, peer: PeerId) -> OperatorRpcResponse {
 async fn rpc_flows_over_relayed_circuit() {
     // DCUtR off: the ONLY path between A and B is the relay, so a working
     // RPC proves the reservation + circuit data path deterministically.
-    let (relay, _) = boot_nat_node("relay", true, false).await;
-    let (node_a, _) = boot_nat_node("a", false, false).await;
-    let (node_b, _) = boot_nat_node("b", false, false).await;
-
-    let relay_tcp = tcp_addr(&relay.handle.listeners().await.unwrap());
-    dial_and_wait(&node_a, &relay_tcp, relay.handle.peer_id).await;
-    dial_and_wait(&node_b, &relay_tcp, relay.handle.peer_id).await;
-    wait_for_relay_ready(&relay).await;
+    let _serial = NAT_SERIAL.lock().await;
+    let (relay, node_a, node_b, relay_tcp) = setup_relayed_trio(false).await;
 
     let a_circuit = reserve_circuit(&node_a, &relay_tcp, relay.handle.peer_id).await;
     let b_circuit = reserve_circuit(&node_b, &relay_tcp, relay.handle.peer_id).await;
@@ -274,14 +322,8 @@ async fn rpc_flows_over_relayed_circuit() {
 
 #[tokio::test]
 async fn dcutr_upgrades_relayed_connection() {
-    let (relay, _) = boot_nat_node("relay", true, true).await;
-    let (node_a, _) = boot_nat_node("a", false, true).await;
-    let (node_b, _) = boot_nat_node("b", false, true).await;
-
-    let relay_tcp = tcp_addr(&relay.handle.listeners().await.unwrap());
-    dial_and_wait(&node_a, &relay_tcp, relay.handle.peer_id).await;
-    dial_and_wait(&node_b, &relay_tcp, relay.handle.peer_id).await;
-    wait_for_relay_ready(&relay).await;
+    let _serial = NAT_SERIAL.lock().await;
+    let (relay, node_a, node_b, relay_tcp) = setup_relayed_trio(true).await;
 
     reserve_circuit(&node_a, &relay_tcp, relay.handle.peer_id).await;
     let b_circuit = reserve_circuit(&node_b, &relay_tcp, relay.handle.peer_id).await;
@@ -333,35 +375,51 @@ async fn dcutr_upgrades_relayed_connection() {
     }
 }
 
-#[tokio::test]
-async fn autonat_confirms_loopback_reachability() {
-    let (relay, _) = boot_nat_node("relay", true, true).await;
-    let (node_a, _) = boot_nat_node("a", false, true).await;
-
-    let relay_tcp = tcp_addr(&relay.handle.listeners().await.unwrap());
-    dial_and_wait(&node_a, &relay_tcp, relay.handle.peer_id).await;
-
-    // The relay dials A back at its observed (listen-port, thanks to port
-    // reuse) address; success confirms A as externally reachable.
-    let a_port = tcp_port(&tcp_addr(&node_a.handle.listeners().await.unwrap()));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+/// Waits until AutoNAT confirms the node's TCP listen address. Returns
+/// the observed state on timeout so the caller can retry with fresh nodes
+/// (same permanent-`Failed` latch as [`wait_for_relay_ready`]).
+async fn wait_for_autonat_tcp(node: &NatNode, port: u16) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let external = node_a.handle.external_addrs().await.unwrap();
+        let external = node.handle.external_addrs().await.unwrap();
         // Match TCP only without panicking on QUIC confirmations: the node
         // listens on TCP + QUIC and AutoNAT may confirm either first.
         let tcp_confirmed = external.iter().any(|addr| {
             addr.to_string().contains("127.0.0.1")
                 && addr
                     .iter()
-                    .any(|proto| matches!(proto, Protocol::Tcp(port) if port == a_port))
+                    .any(|proto| matches!(proto, Protocol::Tcp(p) if p == port))
         });
         if tcp_confirmed {
-            return;
+            return Ok(());
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "autonat never confirmed reachability (external: {external:?})"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("external: {external:?}"));
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+#[tokio::test]
+async fn autonat_confirms_loopback_reachability() {
+    let _serial = NAT_SERIAL.lock().await;
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        let (relay, _) = boot_nat_node("relay", true, true).await;
+        let (node_a, _) = boot_nat_node("a", false, true).await;
+
+        let relay_tcp = tcp_addr(&relay.handle.listeners().await.unwrap());
+        dial_and_wait(&node_a, &relay_tcp, relay.handle.peer_id).await;
+
+        // The relay dials A back at its observed (listen-port, thanks to port
+        // reuse) address; success confirms A as externally reachable.
+        let a_port = tcp_port(&tcp_addr(&node_a.handle.listeners().await.unwrap()));
+        match wait_for_autonat_tcp(&node_a, a_port).await {
+            Ok(()) => return,
+            Err(err) => {
+                last_err = format!("attempt {attempt}: {err}");
+            }
+        }
+    }
+    panic!("autonat never confirmed reachability ({last_err})");
 }
