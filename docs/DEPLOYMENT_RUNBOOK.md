@@ -287,10 +287,12 @@ live `vault.cipherv.online` cutover. Perform in order; stop on the first red che
    `ghcr.io/...@sha256:...` digests plus `COSIGN_CERTIFICATE_IDENTITY_REGEX`.
 4. Promote: `scripts/gcp/promote-immutable-web.ps1 -DashboardImage ... -AccountImage ...
    -RollbackDashboardImage ... -RollbackAccountImage ... -OperatorEndpoints ...
-   -RuntimeServiceAccount ... -Apply` (omit `-Apply` for a plan-only run).
-5. Verify live: explorer loads, `/api/anchors` and `/api/operators` respond, and
-   `docker inspect` on the VM reports the promoted digests. Roll back with the recorded
-   rollback images if any check fails.
+   -RuntimeServiceAccount ... -ExpectedBuildVersion <cli-crate-version> -Apply`
+   (omit `-Apply` for a plan-only run).
+5. Verify live: the script already asserts the live `/api/context`
+   `build_version` plus `/api/operators` and `/api/explorer/overview`
+   (mismatch rolls back automatically). Independently confirm the explorer
+   loads and `docker inspect` on the VM reports the promoted digests.
 
 ### Phase 1 exit criteria
 - R1: dashboard env pins all 3 operator identities; cards show Verified; rotation drilled.

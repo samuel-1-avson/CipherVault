@@ -180,5 +180,8 @@ pub(crate) fn ui_context(mode: UiServerMode) -> serde_json::Value {
         "mode": mode.name(),
         "access_mode": mode.access_mode(),
         "capabilities": ui_capabilities(mode),
+        // Baked-in crate version so promotion automation can assert the
+        // deployed build without trusting route freshness alone.
+        "build_version": env!("CARGO_PKG_VERSION"),
     })
 }

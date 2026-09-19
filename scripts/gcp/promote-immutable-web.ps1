@@ -18,6 +18,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RuntimeServiceAccount,
 
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedBuildVersion,
+
     [string]$ProjectId = "",
     [string]$InstanceName = "cv-web-ui",
     [string]$Zone = "us-east1-b",
@@ -89,6 +92,62 @@ function Verify-ImageSignature {
     }
 }
 
+function Invoke-PromotionGet {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$DomainName,
+        [string]$HealthCheckIp = ""
+    )
+    # Mirrors the health-check transport: curl with an explicit resolve when
+    # the operator pins the check IP, Invoke-WebRequest otherwise. Both fail
+    # on non-2xx (curl via --fail, Invoke-WebRequest by throwing).
+    if ($HealthCheckIp) {
+        $body = @(& curl.exe --fail --silent --show-error --max-time 10 --resolve "$DomainName`:443`:$HealthCheckIp" $Url)
+        if ($LASTEXITCODE -ne 0) { throw "GET $Url failed with exit code $LASTEXITCODE" }
+        return ($body -join "`n")
+    }
+    return (Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 10).Content
+}
+
+function Confirm-LiveDeployment {
+    param(
+        [Parameter(Mandatory = $true)][string]$DomainName,
+        [Parameter(Mandatory = $true)][string]$ExpectedBuildVersion,
+        [string]$HealthCheckIp = "",
+        [string]$Scheme = "https"
+    )
+    # The /api/vault health check only proves a web server answers. These
+    # probes prove the NEW build serves the NEW routes, and the version
+    # assertion proves it is the expected build. Any failure throws into
+    # the caller's rollback path. Retries absorb post-startup transients so
+    # a flake cannot roll back a good deploy.
+    $probes = @(
+        "$Scheme`://$DomainName/api/context",
+        "$Scheme`://$DomainName/api/operators",
+        "$Scheme`://$DomainName/api/explorer/overview"
+    )
+    $contextBody = ""
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $contextBody = Invoke-PromotionGet -Url $probes[0] -DomainName $DomainName -HealthCheckIp $HealthCheckIp
+            Invoke-PromotionGet -Url $probes[1] -DomainName $DomainName -HealthCheckIp $HealthCheckIp | Out-Null
+            Invoke-PromotionGet -Url $probes[2] -DomainName $DomainName -HealthCheckIp $HealthCheckIp | Out-Null
+            break
+        } catch {
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Seconds 10
+        }
+    }
+    $deployedVersion = ($contextBody | ConvertFrom-Json).build_version
+    if ([string]::IsNullOrWhiteSpace($deployedVersion)) {
+        throw "Live /api/context has no build_version; the deployment predates promotion verification."
+    }
+    if ($deployedVersion -ne $ExpectedBuildVersion) {
+        throw "Live build_version is '$deployedVersion', expected '$ExpectedBuildVersion'."
+    }
+    Write-Host "Live deployment verified: build_version $deployedVersion, explorer routes responding." -ForegroundColor Green
+}
+
 foreach ($command in @("gcloud", "cosign")) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
         throw "$command must be installed and authenticated before promotion."
@@ -123,6 +182,9 @@ if ($AccountTotpSecret -notmatch '^[A-Za-z0-9_-]+$') {
 }
 if ($RuntimeServiceAccount -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\.iam\.gserviceaccount\.com$') {
     throw "RuntimeServiceAccount must be a Google service-account address."
+}
+if ([string]::IsNullOrWhiteSpace($ExpectedBuildVersion) -or $ExpectedBuildVersion -match '[\s,]') {
+    throw "ExpectedBuildVersion must be a non-empty version without whitespace or commas."
 }
 
 Write-Host "Verifying signed image attestations..." -ForegroundColor Cyan
@@ -228,6 +290,7 @@ try {
             Start-Sleep -Seconds 10
         }
     }
+    Confirm-LiveDeployment -DomainName $DomainName -HealthCheckIp $HealthCheckIp -ExpectedBuildVersion $ExpectedBuildVersion
     Write-Host "Promotion completed. Run scripts/gcp/verify-immutable-deployment.sh for independent post-deploy verification." -ForegroundColor Green
 } catch {
     if ($promotionStarted) {

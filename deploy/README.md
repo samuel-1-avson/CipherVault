@@ -111,8 +111,15 @@ rollback pair:
   -RollbackDashboardImage 'ghcr.io/samuel-1-avson/ciphervault-dashboard@sha256:<rollback>' `
   -RollbackAccountImage 'ghcr.io/samuel-1-avson/ciphervault-account@sha256:<rollback>' `
   -OperatorEndpoints 'http://10.x.x.x http://10.x.x.x http://10.x.x.x' `
-  -RuntimeServiceAccount '<runtime-service-account>'
+  -RuntimeServiceAccount '<runtime-service-account>' `
+  -ExpectedBuildVersion '<cli-crate-version>'
 ```
+
+`-ExpectedBuildVersion` must equal the `ciphervault-cli` crate version baked
+into the candidate dashboard image. After the VM restarts, the script probes
+the live `/api/context`, `/api/operators`, and `/api/explorer/overview`
+routes and asserts the live `build_version` matches; any probe or version
+mismatch throws into the automatic rollback path, same as a health failure.
 
 The command above is a signature and pull preflight. Add `-Apply` only after
 the candidate, rollback images, private endpoint list, and release commit have

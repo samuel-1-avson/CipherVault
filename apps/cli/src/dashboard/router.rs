@@ -427,6 +427,7 @@ mod tests {
         let context: serde_json::Value = context.json().await.unwrap();
         assert_eq!(context["mode"], "public_explorer");
         assert_eq!(context["access_mode"], "public");
+        assert_eq!(context["build_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(context["capabilities"]["vault_workspace"], false);
         assert_eq!(context["capabilities"]["plaintext_inspection"], false);
 
@@ -686,6 +687,7 @@ mod tests {
         assert!(set_cookie.contains("Max-Age=1800"));
         let private_context: serde_json::Value = read.json().await.unwrap();
         assert_eq!(private_context["mode"], "local_private");
+        assert_eq!(private_context["build_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(private_context["session"]["scheme"], "http_only_cookie");
         assert_eq!(private_context["session"]["ttl_seconds"], 1800);
         assert_eq!(
