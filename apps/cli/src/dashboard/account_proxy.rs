@@ -38,6 +38,37 @@ pub(crate) fn account_proxy_http_client() -> HttpClient {
         .clone()
 }
 
+/// Mirror of the account service's `normalize_account_id` guard
+/// (`services/account/src/guards.rs`): account IDs are `cvacct_<32 hex>`.
+/// Every proxied `/v1/accounts/...` path embeds a caller-controlled route
+/// segment as the account ID, so anything else is rejected before the
+/// upstream URL is built — a decoded segment (e.g. `%2F` → `/`) can never
+/// smuggle extra upstream path segments.
+pub(crate) fn normalize_proxied_account_id(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.len() != 39 || !value.starts_with("cvacct_") {
+        return None;
+    }
+    let suffix = &value[7..];
+    if suffix.len() != 32 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(value)
+}
+
+pub(crate) fn invalid_account_id_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        axum::Json(serde_json::json!({
+            "status": "error",
+            "code": "INVALID_ACCOUNT_ID",
+            "error": "account_id must use cvacct_<32 hex characters>",
+        })),
+    )
+        .into_response()
+}
+
 pub(crate) async fn proxy_account_request(
     method: reqwest::Method,
     path: &str,
@@ -151,6 +182,9 @@ pub(crate) async fn api_account_device_challenge_handler(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/devices/challenge"),
@@ -165,6 +199,9 @@ pub(crate) async fn api_account_device_enrollment_handler(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/devices"),
@@ -229,6 +266,9 @@ pub(crate) async fn api_account_resource_get_handler(
     axum::extract::Path(account_id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::GET,
         &format!("/v1/accounts/{account_id}"),
@@ -245,6 +285,9 @@ async fn proxy_account_resource(
     headers: &axum::http::HeaderMap,
     body: Option<Bytes>,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         method,
         &format!("/v1/accounts/{account_id}/{resource}"),
@@ -317,6 +360,9 @@ pub(crate) async fn api_account_recovery_codes_handler(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/recovery/codes"),
@@ -330,6 +376,12 @@ pub(crate) async fn api_account_membership_revoke_handler(
     axum::extract::Path((account_id, member_account_id)): axum::extract::Path<(String, String)>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
+    let Some(member_account_id) = normalize_proxied_account_id(&member_account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/memberships/{member_account_id}/revoke"),
@@ -382,6 +434,9 @@ pub(crate) async fn api_account_webauthn_registration_options_handler(
     axum::extract::Path(account_id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/webauthn/registration/options"),
@@ -396,6 +451,9 @@ pub(crate) async fn api_account_webauthn_registration_verify_handler(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/webauthn/registration/verify"),
@@ -435,6 +493,9 @@ pub(crate) async fn api_account_totp_enrollment_handler(
     axum::extract::Path(account_id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/totp/enrollment"),
@@ -449,6 +510,9 @@ pub(crate) async fn api_account_totp_enrollment_verify_handler(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/totp/enrollment/verify"),
@@ -462,6 +526,9 @@ pub(crate) async fn api_account_totp_revoke_handler(
     axum::extract::Path(account_id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let Some(account_id) = normalize_proxied_account_id(&account_id) else {
+        return invalid_account_id_response();
+    };
     proxy_account_request(
         reqwest::Method::POST,
         &format!("/v1/accounts/{account_id}/totp/revoke"),
@@ -474,6 +541,32 @@ pub(crate) async fn api_account_totp_revoke_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxied_account_id_mirrors_upstream_format() {
+        let valid = format!("cvacct_{}", "ab".repeat(16));
+        assert_eq!(normalize_proxied_account_id(&valid), Some(valid.clone()));
+        assert_eq!(
+            normalize_proxied_account_id(&valid.to_ascii_uppercase()),
+            Some(valid.clone())
+        );
+        assert_eq!(
+            normalize_proxied_account_id(&format!("  {valid}  ")),
+            Some(valid)
+        );
+        for bad in [
+            "",
+            "abc",
+            "cvacct_short",
+            &format!("cvacct_{}", "ab".repeat(17)),
+            &format!("other_{}", "ab".repeat(16)),
+            &format!("cvacct_{}", "zz".repeat(16)),
+            "cvacct_ab/xxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "../../sessions",
+        ] {
+            assert_eq!(normalize_proxied_account_id(bad), None, "accepted {bad:?}");
+        }
+    }
 
     #[test]
     fn account_proxy_client_is_shared_and_pool_backed() {

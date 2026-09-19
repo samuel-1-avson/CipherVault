@@ -623,6 +623,47 @@ mod tests {
         let _ = server.await;
     }
 
+    /// Malformed account IDs are rejected before any upstream URL is built,
+    /// so a routed segment can never smuggle extra upstream path segments.
+    /// Validation precedes proxying, hence no endpoint isolation is needed.
+    #[tokio::test]
+    async fn account_proxy_rejects_malformed_account_ids() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        let valid = format!("cvacct_{}", "ab".repeat(16));
+
+        for uri in [
+            "/api/account/not-an-id/invitations".to_string(),
+            "/api/account/ABC/memberships".to_string(),
+            format!("/api/account/cvacct_{}/invitations", "ab".repeat(15)),
+            format!("/api/account/{}/memberships", "zz".repeat(32)),
+            "/api/account/abc%2Fdef/invitations".to_string(),
+        ] {
+            let response = client.get(format!("{base_url}{uri}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "for {uri}");
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "INVALID_ACCOUNT_ID");
+        }
+
+        // Both IDs on the membership-revoke route are validated.
+        for uri in [
+            format!("/api/account/bad-id/memberships/{valid}/revoke"),
+            format!("/api/account/{valid}/memberships/bad-id/revoke"),
+        ] {
+            let response = client
+                .post(format!("{base_url}{uri}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "for {uri}");
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "INVALID_ACCOUNT_ID");
+        }
+
+        server.abort();
+        let _ = server.await;
+    }
+
     #[tokio::test]
     async fn private_router_requires_loopback_origin_for_mutations() {
         let _account_isolation = AccountPathGuard::isolate();
