@@ -13,6 +13,7 @@ pub(crate) mod recovery_kit;
 pub(crate) mod restore;
 pub(crate) mod retention;
 pub(crate) mod run;
+pub(crate) mod token;
 pub(crate) mod track;
 
 pub(crate) use anchor::*;
@@ -28,4 +29,5 @@ pub(crate) use recovery_kit::*;
 pub(crate) use restore::*;
 pub(crate) use retention::*;
 pub(crate) use run::*;
+pub(crate) use token::*;
 pub(crate) use track::*;
