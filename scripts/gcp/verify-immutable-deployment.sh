@@ -19,7 +19,7 @@ fail() {
 
 require_digest_image() {
     local image="$1"
-    [[ "$image" == ghcr.io/*@sha256:???????????????????????????????????????????????????????????????????????? ]] \
+    [[ "$image" == ghcr.io/*@sha256:???????????????????????????????????????????????????????????????? ]] \
         || fail "image must be a GHCR digest reference: $image"
 }
 
@@ -44,11 +44,14 @@ done
 echo "Verifying the cloud instance and its running image digests..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command \
     "set -eu; test -f /opt/ciphervault-ui/docker-compose.yml; \
-     docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running; \
-     test \"\$(docker inspect --format '{{.Config.Image}}' ciphervault-ui)\" = '$DASHBOARD_IMAGE'; \
-     test \"\$(docker inspect --format '{{.Config.Image}}' ciphervault-account)\" = '$ACCOUNT_IMAGE'; \
-     test \"\$(docker inspect --format '{{.Config.User}}' ciphervault-ui)\" = ciphervault; \
-     test \"\$(docker inspect --format '{{.Config.User}}' ciphervault-account)\" = ciphervault"
+     sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running; \
+     ui_id=\"\$(sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps -q ciphervault-ui)\"; \
+     acct_id=\"\$(sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps -q account)\"; \
+     test -n \"\$ui_id\"; test -n \"\$acct_id\"; \
+     test \"\$(sudo docker inspect --format '{{.Config.Image}}' \"\$ui_id\")\" = '$DASHBOARD_IMAGE'; \
+     test \"\$(sudo docker inspect --format '{{.Config.Image}}' \"\$acct_id\")\" = '$ACCOUNT_IMAGE'; \
+     test \"\$(sudo docker inspect --format '{{.Config.User}}' \"\$ui_id\")\" = ciphervault; \
+     test \"\$(sudo docker inspect --format '{{.Config.User}}' \"\$acct_id\")\" = ciphervault"
 
 echo "Verifying the public contracts..."
 curl --fail --silent --show-error "https://${DOMAIN}/api/vault" >/dev/null
