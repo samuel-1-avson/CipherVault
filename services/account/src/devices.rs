@@ -13,11 +13,12 @@ use crate::{
     db::account_exists,
     error::AccountServiceError,
     guards::{decode_32, normalize_account_id},
-    http::{authenticated_session_with_db, error_response, service_error},
+    http::{authenticated_session, authenticated_session_with_db, error_response, service_error},
     prune_expired, random_hex,
+    recovery::propagate_device_revocation,
     state::{
         now_utc, AccountState, ChallengeView, DeviceChallengeRequest, DeviceEnrollmentRequest,
-        DeviceView, CHALLENGE_TTL_SECONDS,
+        DeviceView, RevocationResponse, CHALLENGE_TTL_SECONDS,
     },
 };
 
@@ -289,4 +290,100 @@ pub async fn post_device_enrollment(
         Ok(device) => (StatusCode::CREATED, Json(device)).into_response(),
         Err(error) => service_error(error.into()),
     }
+}
+
+pub async fn post_device_revoke(
+    State(state): State<AccountState>,
+    headers: HeaderMap,
+    Path((account_id, device_id_hex)): Path<(String, String)>,
+) -> Response {
+    let account_id = match normalize_account_id(&account_id) {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    let device_id_hex = match decode_32(&device_id_hex, "device_id_hex") {
+        Ok(_) => device_id_hex.to_ascii_lowercase(),
+        Err(error) => return service_error(error),
+    };
+    let session = match authenticated_session(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if session.account_id != account_id {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "ACCOUNT_SCOPE_MISMATCH",
+            "Session is outside this account",
+        );
+    }
+    let (public_key_hex, vault_ids, changed) = {
+        let db = match state.connection() {
+            Ok(db) => db,
+            Err(error) => return service_error(error),
+        };
+        let public_key: Option<String> = match db
+            .query_row(
+                "SELECT public_key_hex FROM devices WHERE account_id = ?1 AND device_id_hex = ?2 AND revoked_at_utc IS NULL",
+                params![account_id, device_id_hex],
+                |row| row.get(0),
+            )
+            .optional()
+        {
+            Ok(value) => value,
+            Err(error) => return service_error(error.into()),
+        };
+        let Some(public_key) = public_key else {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "DEVICE_NOT_FOUND",
+                "Device is not enrolled or is already revoked",
+            );
+        };
+        let now = now_utc();
+        if let Err(error) = db.execute(
+            "UPDATE devices SET revoked_at_utc = ?3 WHERE account_id = ?1 AND device_id_hex = ?2",
+            params![account_id, device_id_hex, now],
+        ) {
+            return service_error(error.into());
+        }
+        if let Err(error) = db.execute(
+            "UPDATE sessions SET revoked_at_utc = ?3 WHERE account_id = ?1 AND device_id_hex = ?2 AND revoked_at_utc IS NULL",
+            params![account_id, device_id_hex, now],
+        ) {
+            return service_error(error.into());
+        }
+        if let Err(error) = audit_event(
+            &db,
+            &account_id,
+            "device_revoked",
+            serde_json::json!({"device_id_hex": device_id_hex}),
+        ) {
+            return service_error(error.into());
+        }
+        let mut vault_ids = Vec::new();
+        let mut statement =
+            match db.prepare("SELECT vault_id_hex FROM vault_links WHERE account_id = ?1") {
+                Ok(statement) => statement,
+                Err(error) => return service_error(error.into()),
+            };
+        let mut rows = match statement.query(params![account_id]) {
+            Ok(rows) => rows,
+            Err(error) => return service_error(error.into()),
+        };
+        while let Ok(Some(row)) = rows.next() {
+            if let Ok(vault_id) = row.get::<_, String>(0) {
+                vault_ids.push(vault_id);
+            }
+        }
+        (public_key, vault_ids, true)
+    };
+    let (operator_targets, operator_revocations, operator_failures) =
+        propagate_device_revocation(&state, &public_key_hex, &vault_ids).await;
+    Json(RevocationResponse {
+        revoked: changed,
+        operator_targets,
+        operator_revocations,
+        operator_failures,
+    })
+    .into_response()
 }
