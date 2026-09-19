@@ -8,13 +8,14 @@ For humans running `ciphervault-operator`. Companion to
 `systemctl restart ciphervault-operator` (or restart the container).
 What resets:
 
-- **Voucher spend ledger** (memory-only): every voucher may be
-  re-spent up to its quota after the restart. Bounded (≤1 quota per
-  boot), requires restart access, and vouchers are opt-in
-  (`--require-write-vouchers`, default off). No action needed; do not
-  treat post-restart quota reuse as an attack signal.
+- **Voucher spend ledger**: persisted (`voucher-ledger.json`, atomic +
+  fsync, ADR-007). Spend survives restarts — post-restart quota reuse
+  is NOT expected. If vouchers re-spend after a restart, look for a
+  corrupt-ledger backup (`voucher-ledger.corrupt-*` in the data dir)
+  and the `operator voucher ledger ... is corrupt` stderr line; the
+  node starts empty in that case and vouchers re-pin terms on next use.
 - **Repair budget** (memory-only token bucket): refills to full
-  (8 MiB burst). No action needed.
+  (8 MiB burst). No action needed — rate limiters reset by design.
 - **Sessions/challenges/identities/routing/approvals/checkpoints**:
   persisted (fsync + atomic rename, secret stores 0600); they survive.
 
@@ -73,8 +74,101 @@ three consecutive green runs.
 
 Back up the whole `--data-dir`: `objects/`, `leases/`, `recovery/`,
 `sessions.json`, `challenges.json`, `identities.json`,
-routing/approval/checkpoint stores, `operator.key`, `swarm.key`.
-Secret stores are 0600 on unix — preserve modes on restore
-(`cp -a` / `rsync -p`). Never copy a live dir without stopping the
-node first; per-file atomics do not make a directory snapshot
-crash-consistent.
+`voucher-ledger.json`, routing/approval/checkpoint stores,
+`operator.key`, `swarm.key`. Secret stores are 0600 on unix —
+preserve modes on restore (`cp -a` / `rsync -p`). Never copy a live
+dir without stopping the node first; per-file atomics do not make a
+directory snapshot crash-consistent. `voucher-ledger.corrupt-*` files
+are forensic copies of unparseable ledgers: archive them with the
+backup, do not restore them over the live file.
+
+## 7. Rotate keys
+
+Epoch (vault data) keys:
+
+```sh
+ciphervault rekey --check                # report ages (warn past --warn-days, default 90)
+ciphervault rekey                        # mint epoch N+1 for new snapshots
+```
+
+Old epoch keys are retained so existing snapshots stay readable.
+Pre-migration keys report unknown age: rotate once to baseline.
+(Runbook R13. Device-key rotation stays manual: new device
+certificate ceremony.)
+
+Operator signing keys: stop the node, then boot once with the flag:
+
+```sh
+ciphervault-operator --rotate-key --data-dir <dir> [other flags...]
+```
+
+The old `operator.key` moves to
+`operator.key.previous-<UTC timestamp>` and a fresh key is generated;
+the node serves the new identity immediately. Then re-mesh routing
+(§2), update any pinned fleet keys (`CIPHERVAULT_TRUSTED_PEER_KEYS`),
+and re-issue vouchers — grants under the old issuer key fail closed
+(403 issuer mismatch), and old-key leases no longer renew. Verify the
+live identity offline any time (binds nothing, exit 0):
+
+```sh
+ciphervault-operator --print-identity --operator-id <id> --data-dir <dir>
+# <id>=<64-hex pk>
+```
+
+TOTP/account keys follow the Secret Manager cutover in runbook R3;
+apply the same record-old / cut-over / verify / delete-old discipline
+to operator keys.
+
+## 8. Recover a vault on a clean machine
+
+Prepare before disaster:
+
+```sh
+ciphervault recovery export                  # view/print the offline kit
+ciphervault recovery split -t 2 -s 3 -o ./guardians
+ciphervault recovery test --kit <kit> --to <isolated-dir>
+```
+
+Restore on the bare machine (reads need no session — ADR-006 — so
+only the paper kit is required):
+
+```sh
+ciphervault recover --kit <kit> --to <dir>
+# or: ciphervault recover --shares g1.txt g2.txt --to <dir>
+```
+
+Team restores add `--require-approval`: the command prints an
+`EmergencyRecovery` challenge ID (600 s TTL) and broadcasts it to the
+federation; a guardian signs with
+`ciphervault approve sign <challenge-id> --name <lead>` (see
+`ciphervault approve list` / `ciphervault approve status <id>`), and
+the restore proceeds once accepted.
+
+## 9. Incident response
+
+- Panic contained: a 500 `{"code":500,"error":"INTERNAL_PANIC_CAUGHT"}`
+  (operator) or `"code":"INTERNAL_PANIC_CAUGHT"` (account) means one
+  request panicked and was contained — the process stays up. Capture
+  the stderr backtrace, file it with route + build version; no restart
+  needed for availability.
+- Lock poison recovered: `operator lock <name> poisoned; recovering
+  ...` (operator) or `account database lock poisoned; ...` (account)
+  on stderr follows a contained panic; service continues from
+  pre-panic state. Investigate the first panic, not the recovery line.
+- 429 flood on writes: voucher quotas exhausting (mesh policy) or the
+  repair budget tripping (backfill/storm). Check
+  `ciphervault_swarm_repair_bytes_total` against the 8 MiB/s budget
+  before touching quotas; do not raise limits mid-backfill.
+- Suspected voucher leak: vouchers are Bearer [REDACTED] expiry with no
+  revocation list — keep TTLs short (default 3600 s). A leaked voucher
+  authorizes up to its quota until expiry; let it expire, then
+  re-issue tighter. Restart does NOT clear spend (the ledger is
+  durable, §1).
+- Bad web deploy: promotion probes (`/api/context` version,
+  `/api/operators`, `/api/explorer/overview`) roll back automatically
+  on mismatch. For a manual deploy, re-run promotion with the recorded
+  rollback digests (runbook R4) and confirm the live `/api/context`
+  `build_version`.
+- Compromised node: quarantine (§4), rotate its operator key (§7),
+  re-mesh (§2); treat its old-key leases and vouchers as untrusted
+  until re-issued under the new key.
