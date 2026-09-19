@@ -39,6 +39,31 @@ function Invoke-Gcloud {
     }
 }
 
+# Windows PowerShell 5.1 turns redirected native stderr into a terminating
+# error under $ErrorActionPreference = "Stop", even when it is redirected to
+# $null. Capture native text output through this helper so the exit code
+# drives control flow instead of an ambient stderr line.
+function Invoke-NativeText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
+    )
+    $previousEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $Command @Arguments 2>$null
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEAP
+    }
+    $lines = @($output)
+    $text = ""
+    if ($lines.Count -gt 0 -and $null -ne $lines[0]) {
+        $text = ([string]$lines[0]).Trim()
+    }
+    return [pscustomobject]@{ ExitCode = $exitCode; Text = $text }
+}
+
 function Assert-DigestImage {
     param([string]$Name, [string]$Image)
     if ($Image -notmatch '^ghcr\.io/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$') {
@@ -71,7 +96,10 @@ foreach ($command in @("gcloud", "cosign")) {
 }
 
 if (-not $ProjectId) {
-    $ProjectId = (& gcloud config get-value project 2>$null).Trim()
+    $projectDetect = Invoke-NativeText gcloud config get-value project
+    if ($projectDetect.ExitCode -eq 0) {
+        $ProjectId = $projectDetect.Text
+    }
 }
 foreach ($item in @(
     @{ Name = "CIPHERVAULT_DASHBOARD_IMAGE"; Value = $DashboardImage },
@@ -154,10 +182,11 @@ try {
     Invoke-Gcloud compute instances start $InstanceName --project $ProjectId --zone $Zone --quiet
     $running = $false
     for ($attempt = 1; $attempt -le 30; $attempt++) {
-        $status = (& gcloud compute instances describe $InstanceName --project $ProjectId --zone $Zone --format="value(status)").Trim()
-        if ($LASTEXITCODE -ne 0) {
+        $statusResult = Invoke-NativeText gcloud compute instances describe $InstanceName --project $ProjectId --zone $Zone --format="value(status)"
+        if ($statusResult.ExitCode -ne 0) {
             throw "Could not read the VM status after starting it."
         }
+        $status = $statusResult.Text
         if ($status -eq "RUNNING") {
             $running = $true
             break
@@ -170,19 +199,9 @@ try {
     $remoteHealthCommand = "set -eu; systemctl is-active --quiet ciphervault-ui.service; sudo docker compose -f /opt/ciphervault-ui/docker-compose.yml ps --status running"
     $remoteReady = $false
     for ($attempt = 1; $attempt -le 36; $attempt++) {
-        # Windows PowerShell 5.1 turns redirected native stderr into a
-        # terminating error under $ErrorActionPreference = "Stop", which would
-        # abort this retry poll on the first unreachable attempt instead of
-        # waiting for boot. Relax it around the probe so the exit code below
-        # drives the retry; explicit throws elsewhere are unaffected.
-        $previousEAP = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = "Continue"
-            & gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command $remoteHealthCommand 2>$null | Out-Null
-            $sshExit = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousEAP
-        }
+        # Native stderr stays suppressed inside Invoke-NativeText (see above)
+        # so an unreachable SSH attempt retries instead of aborting the poll.
+        $sshExit = (Invoke-NativeText gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command $remoteHealthCommand).ExitCode
         if ($sshExit -eq 0) {
             $remoteReady = $true
             break
