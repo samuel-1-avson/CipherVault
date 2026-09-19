@@ -1,5 +1,6 @@
 //! CLI command implementations.
 
+pub(crate) mod anchor;
 pub(crate) mod approvals;
 pub(crate) mod auth;
 pub(crate) mod init;
@@ -12,6 +13,7 @@ pub(crate) mod retention;
 pub(crate) mod run;
 pub(crate) mod track;
 
+pub(crate) use anchor::*;
 pub(crate) use approvals::*;
 pub(crate) use auth::*;
 pub(crate) use init::*;
