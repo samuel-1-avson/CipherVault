@@ -11,9 +11,12 @@ use ciphervault_storage::types::{
     OperatorInfo, RecoveryRecordsResponse, SessionRequest, SessionResponse,
 };
 
+use ciphervault_storage::vouchers::WriteVoucher;
+use ciphervault_storage::StorageError;
+
 use crate::state::OperatorState;
 
-fn extract_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn extract_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("Authorization")?
         .to_str()
@@ -39,7 +42,7 @@ fn strict_operator_auth() -> bool {
         .unwrap_or(true)
 }
 
-fn require_control_auth(
+pub(crate) fn require_control_auth(
     state: &OperatorState,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, String)> {
@@ -136,7 +139,40 @@ fn default_identity_permissions() -> u32 {
     0xffff_ffff
 }
 
-fn require_session<'a>(
+/// Extracts the `X-CipherVault-Voucher` write voucher (JSON). Absent
+/// headers yield `None` (rejected downstream only when policy requires
+/// vouchers); present-but-unparseable headers are a 400.
+pub(crate) fn extract_voucher(
+    headers: &HeaderMap,
+) -> Result<Option<WriteVoucher>, (StatusCode, String)> {
+    let Some(raw) = headers.get("X-CipherVault-Voucher") else {
+        return Ok(None);
+    };
+    let text = raw.to_str().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Invalid voucher header encoding".into(),
+        )
+    })?;
+    serde_json::from_str::<WriteVoucher>(text)
+        .map(Some)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid voucher: {e}")))
+}
+
+/// Maps state-layer storage errors onto HTTP responses. The `_with_voucher`
+/// state methods only produce `ServerError`, preserving each route's legacy
+/// status for inner failures while adding 403/429 for voucher outcomes.
+pub(crate) fn storage_error_response(error: StorageError) -> (StatusCode, String) {
+    match error {
+        StorageError::ServerError { status, message } => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            message,
+        ),
+        other => (StatusCode::BAD_REQUEST, other.to_string()),
+    }
+}
+
+pub(crate) fn require_session<'a>(
     state: &OperatorState,
     headers: &'a HeaderMap,
     write: bool,
@@ -167,6 +203,13 @@ fn require_session<'a>(
 }
 
 pub async fn get_info(State(state): State<Arc<OperatorState>>) -> Json<OperatorInfo> {
+    Json(build_operator_info(&state))
+}
+
+/// Builds the signed operator identity descriptor. Shared by the HTTP
+/// `GET /v1/info` handler and the P2P `GetInfo` RPC so both transports
+/// advertise byte-identical identities.
+pub(crate) fn build_operator_info(state: &OperatorState) -> OperatorInfo {
     let pk_hex = hex::encode(state.signing_key.verifying_key().as_bytes());
     let mut info = OperatorInfo {
         operator_id: state.operator_id.clone(),
@@ -182,7 +225,7 @@ pub async fn get_info(State(state): State<Arc<OperatorState>>) -> Json<OperatorI
         &info.identity_signing_bytes(),
     );
     info.identity_signature_hex = hex::encode(signature);
-    Json(info)
+    info
 }
 
 pub async fn get_health(
@@ -304,6 +347,28 @@ pub async fn get_enrolled_identities(
     Ok(Json(state.list_enrolled_identities()))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VoucherIssueRequest {
+    pub holder_pk_hex: String,
+    pub quota_bytes: u64,
+    pub ttl_secs: u64,
+}
+
+/// Issues a self-signed write voucher (D4, barter model). Operator-admin
+/// only: service-token auth like identity enrollment. No P2P equivalent —
+/// issuance is local administration, not mesh traffic.
+pub async fn post_issue_voucher(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Json(req): Json<VoucherIssueRequest>,
+) -> Result<Json<WriteVoucher>, (StatusCode, String)> {
+    require_service_token(&headers)?;
+    let voucher = state
+        .issue_voucher(req.holder_pk_hex, req.quota_bytes, req.ttl_secs)
+        .map_err(storage_error_response)?;
+    Ok(Json(voucher))
+}
+
 pub async fn post_revoke_session(
     State(state): State<Arc<OperatorState>>,
     headers: HeaderMap,
@@ -326,10 +391,11 @@ pub async fn put_object(
     body: Bytes,
 ) -> Result<Response, (StatusCode, String)> {
     require_session(&state, &headers, true)?;
+    let voucher = extract_voucher(&headers)?;
 
     state
-        .put_object(&cid, &body)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        .put_object_with_voucher(&cid, &body, voucher.as_ref())
+        .map_err(storage_error_response)?;
     Ok(StatusCode::OK.into_response())
 }
 
@@ -386,10 +452,16 @@ pub async fn post_lease(
     Json(req): Json<LeaseRequest>,
 ) -> Result<Json<LeaseReceipt>, (StatusCode, String)> {
     require_session(&state, &headers, true)?;
+    let voucher = extract_voucher(&headers)?;
 
     let receipt = state
-        .create_lease(&req.closure_digest_hex, req.byte_count, req.term_days)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .create_lease_with_voucher(
+            &req.closure_digest_hex,
+            req.byte_count,
+            req.term_days,
+            voucher.as_ref(),
+        )
+        .map_err(storage_error_response)?;
     Ok(Json(receipt))
 }
 
@@ -400,10 +472,16 @@ pub async fn post_renew_lease(
     Json(req): Json<ciphervault_storage::types::LeaseRenewRequest>,
 ) -> Result<Json<LeaseReceipt>, (StatusCode, String)> {
     require_session(&state, &headers, true)?;
+    let voucher = extract_voucher(&headers)?;
 
     let receipt = state
-        .renew_lease(&lease_id, req.additional_days, req.byte_count)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        .renew_lease_with_voucher(
+            &lease_id,
+            req.additional_days,
+            req.byte_count,
+            voucher.as_ref(),
+        )
+        .map_err(storage_error_response)?;
     Ok(Json(receipt))
 }
 
@@ -418,15 +496,21 @@ pub async fn post_recovery_record(
     require_session(&state, &headers, true)?;
 
     let caller_pk = state.get_session_public_key(token);
+    let voucher = extract_voucher(&headers)?;
     let seq = state
-        .append_authorized_recovery_record(&locator, &body, caller_pk.as_ref())
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        .append_recovery_record_with_voucher(&locator, &body, caller_pk.as_ref(), voucher.as_ref())
+        .map_err(storage_error_response)?;
     Ok(Json(AppendRecordResponse {
         sequence: seq,
         status: "appended".into(),
     }))
 }
 
+/// Intentionally anonymous: the 32-byte locator is a KDF-derived capability
+/// (`derive_recovery_locator`, 256-bit, unenumerable without the recovery
+/// secret), and clean-machine recovery has no session by definition.
+/// Clients select/verify heads against the recovery signing key. Do NOT add
+/// session auth here without a recovery-bootstrap story.
 pub async fn get_recovery_records(
     State(state): State<Arc<OperatorState>>,
     Path(locator): Path<String>,
@@ -525,6 +609,27 @@ pub async fn get_peers(
     Ok(Json(peers))
 }
 
+/// Returns this node's own fresh signed peer descriptor. Public like
+/// `/v1/info`: a descriptor carries only public identity plus a
+/// same-second signature, and only the node itself can mint one (the
+/// signing key never leaves the process). Fleet tooling and the chaos
+/// drill fetch this from each node and POST it to every other node's
+/// `/v1/peers/announce` to mesh routing tables; without meshing,
+/// heartbeats from unknown senders are ignored and repair cannot push.
+pub async fn get_self_peer(
+    State(state): State<Arc<OperatorState>>,
+) -> Json<ciphervault_storage::PeerDescriptor> {
+    let endpoint = std::env::var("CIPHERVAULT_ADVERTISE_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:8201".to_string());
+    Json(ciphervault_storage::PeerDescriptor::new(
+        state.operator_id.clone(),
+        endpoint,
+        &state.signing_key,
+    ))
+}
+
 // -----------------------------------------------------------------------------
 // Out-of-Band Cryptographic Approval Handlers
 // -----------------------------------------------------------------------------
@@ -594,4 +699,39 @@ pub async fn get_metrics(State(state): State<Arc<OperatorState>>) -> impl IntoRe
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         state.metrics.render_prometheus(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `GET /v1/peers/self` mints a fresh descriptor for this node's own
+    /// identity: operator id matches, the signature verifies against the
+    /// node's key, and the advertised endpoint honors
+    /// `CIPHERVAULT_ADVERTISE_ENDPOINT` with a loopback default.
+    #[tokio::test]
+    async fn self_peer_descriptor_is_fresh_and_self_signed() {
+        let dir = std::env::temp_dir().join(format!("cv-selfpeer-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        let expected_pk = hex::encode(key.verifying_key().as_bytes());
+        let state = Arc::new(OperatorState::new("self-1".into(), dir.clone(), key));
+
+        let Json(desc) = get_self_peer(State(state)).await;
+        assert_eq!(desc.operator_id, "self-1");
+        assert_eq!(desc.signing_pk_hex, expected_pk);
+        assert_eq!(desc.endpoint, "http://127.0.0.1:8201");
+        desc.verify().expect("self descriptor verifies");
+        let now = chrono::Utc::now().timestamp() as u64;
+        assert!(now.saturating_sub(desc.timestamp_utc) <= 5);
+
+        std::env::set_var("CIPHERVAULT_ADVERTISE_ENDPOINT", "http://chaos-n3:8201");
+        let key2 = ciphervault_crypto::generate_signing_key();
+        let state2 = Arc::new(OperatorState::new("self-2".into(), dir.clone(), key2));
+        let Json(desc2) = get_self_peer(State(state2)).await;
+        assert_eq!(desc2.endpoint, "http://chaos-n3:8201");
+        desc2.verify().expect("advertised descriptor verifies");
+        std::env::remove_var("CIPHERVAULT_ADVERTISE_ENDPOINT");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

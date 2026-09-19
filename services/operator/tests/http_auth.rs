@@ -301,3 +301,44 @@ async fn strict_challenges_require_persisted_enrollment() {
     std::env::remove_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn error_bodies_use_json_envelope() {
+    let _env_guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+    std::env::remove_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN");
+    let root = std::env::temp_dir().join(format!("cv-http-envelope-{}", rand::random::<u128>()));
+    let state = Arc::new(OperatorState::new(
+        "http-envelope".into(),
+        root.clone(),
+        generate_signing_key(),
+    ));
+    let app = create_router(state);
+
+    let denied = app
+        .oneshot(
+            Request::get(format!("/v1/objects/{}", "ab".repeat(32)).as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let content_type = denied
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("application/json"),
+        "error content-type: {content_type}"
+    );
+    let body = to_bytes(denied.into_body(), 64 * 1024).await.unwrap();
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("error body is JSON");
+    assert_eq!(envelope["code"], 401);
+    assert!(
+        envelope["error"].as_str().is_some_and(|m| !m.is_empty()),
+        "envelope carries the human message: {envelope}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

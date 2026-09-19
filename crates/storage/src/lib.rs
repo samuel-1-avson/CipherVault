@@ -7,7 +7,9 @@ pub mod chain;
 pub mod client;
 pub mod error;
 pub mod pool;
+pub mod transport;
 pub mod types;
+pub mod vouchers;
 
 use sha2::{Digest, Sha256};
 
@@ -18,8 +20,10 @@ pub use chain::{
 pub use client::OperatorClient;
 pub use error::StorageError;
 pub use pool::MultiOperatorPool;
+pub use transport::{HttpTransport, MemoryTransport, OperatorTransport};
 pub use types::{
-    LeaseReceipt, OperatorInfo, PeerDescriptor, PosChallengeRequest, ProofOfStorageReceipt,
+    ApiErrorBody, LeaseReceipt, OperatorInfo, PeerDescriptor, PosChallengeRequest,
+    ProofOfStorageReceipt,
 };
 
 /// Computes the deterministic domain-separated Proof-of-Storage digest for an object.

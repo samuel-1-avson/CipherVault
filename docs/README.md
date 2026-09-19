@@ -1,6 +1,6 @@
 # CipherVault: Master Documentation Hub
 
-**Version:** `v1.0.0` (Production Release)  
+**Version:** `v1.0.7-beta.2` (Beta)  
 **Classification:** Enterprise System Documentation & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)
 
@@ -10,7 +10,7 @@
 
 Welcome to the **CipherVault** technical documentation suite. CipherVault is a zero-knowledge, developer-first secret backup and clean-machine disaster recovery platform engineered in pure Rust and Solidity.
 
-This documentation suite has been organized into **four focused, authoritative manuals** for core engineers, security auditors, and site reliability operators, supported by interactive vector diagrams and preserved historical RFC specifications.
+This documentation suite has been organized into **five focused manuals** for core engineers, security auditors, and site reliability operators, plus the DON working documents below, supported by interactive vector diagrams and preserved historical RFC specifications.
 
 ---
 
@@ -22,6 +22,34 @@ This documentation suite has been organized into **four focused, authoritative m
 | [**`DEPLOYMENT_RUNBOOK.md`**](./DEPLOYMENT_RUNBOOK.md) | **DevOps, SREs, Infrastructure Engineers** | **Master Production Deployment & Operations Runbook**: Multi-region GCP Compute Engine VPS setup (`e2-micro`, ~$0.97/day), automated one-click provisioning (`deploy-operators.ps1` / `.sh`), teardown scripts, private VPC / on-premise Docker Compose, Caddy reverse proxy hardening, HSTS security headers, rate limiting, and autonomous fleet maintenance. |
 | [**`CICD_INTEGRATION.md`**](./CICD_INTEGRATION.md) | **DevOps, Security Engineers, Developers** | **Zero-Disk CI/CD Pipeline Guide**: In-memory secret injection (`ciphervault run`) for GitHub Actions, GitLab CI, and CircleCI. Log masking defense, ephemeral runner hygiene, and zero-disk environment variable security without persistent plaintext `.env` files. |
 | [**`CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md`**](./CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md) | **Cryptographers, Whitebox Auditors** | **Formal Cryptographic Audit Specification**: Mathematical specification for security evaluation. Constant-time $\text{GF}(2^8)$ arithmetic, domain separation across HKDF and AEAD nonces, memory zeroization compiler fences (`Zeroize`), YubiKey PIV ISO 7816-4 smartcard driver, and threat boundary definitions. |
+| [**`DECENTRALIZED_ARCHITECTURE_SPEC.md`**](./DECENTRALIZED_ARCHITECTURE_SPEC.md) | **Architects, Core Developers, Protocol Engineers** | **Decentralized Operator Network (DON) v2.0 Architecture & Zero-Downtime Roadmap**: Kademlia DHT swarm routing, Arbitrum One smart contract staking registry, Merkle root rollups, autonomous peer self-healing, backward-compatible `StoragePool` traits, and the 5-phase zero-breakage rollout plan. |
+
+---
+
+## 🌐 DON Working Documents (Second Wave)
+
+Active engineering records for the decentralized operator network rollout.
+These supersede the parent spec where they disagree (decisions are dated inline).
+
+| Document | Scope & Topics Covered |
+|---|---|
+| [`DON_IMPLEMENTATION_PLAN.md`](./DON_IMPLEMENTATION_PLAN.md) | Gated 7-phase engineering plan (D1–D8 decisions, slices, gates). Current: Phase 4 authenticated repair. |
+| [`DON_SPEC_CORRECTIONS.md`](./DON_SPEC_CORRECTIONS.md) | Dated corrections to the parent architecture spec. |
+| [`DON_ECONOMICS_DECISION.md`](./DON_ECONOMICS_DECISION.md) | Barter-economics decision record (D3). |
+| [`REPAIR_PROTOCOL.md`](./REPAIR_PROTOCOL.md) | Phase 4 repair protocol: signed liveness heartbeats, rendezvous-hash assignment, paced backfill, telemetry, chaos plan. |
+| [`NAT_HOLEPUNCH_DRILL.md`](./NAT_HOLEPUNCH_DRILL.md) | Containerized NAT/DCUtR drill procedure and evidence. |
+| [`D6_OBJECT_STORE_SPIKE.md`](./D6_OBJECT_STORE_SPIKE.md) | Object-store spike report (redb vs file baseline; redb decided). |
+| [`SPLIT_PLAN.md`](./SPLIT_PLAN.md) | Crate/service split plan and sequencing. |
+| [`PLATFORM_SUPPORT.md`](./PLATFORM_SUPPORT.md) | Supported platforms and toolchain notes. |
+| [`ACCOUNT_IDENTITY_DESIGN.md`](./ACCOUNT_IDENTITY_DESIGN.md) | Account identity and device-enrollment design. |
+| [`OPERATORS_AUDIT_2026-09-14.md`](./OPERATORS_AUDIT_2026-09-14.md) | Operator-service audit snapshot (2026-09-14). |
+| [`PROJECT_AUDIT_2026-09-16.md`](./PROJECT_AUDIT_2026-09-16.md) | Project audit snapshot (2026-09-16). |
+| [`RELEASE_READINESS_2026-09-13.md`](./RELEASE_READINESS_2026-09-13.md) | Release-readiness review (2026-09-13). |
+| [`PRODUCTION_ROLLOUT_2026-09-15.md`](./PRODUCTION_ROLLOUT_2026-09-15.md) | Production rollout notes (2026-09-15). |
+| [`API_REFERENCE.md`](./API_REFERENCE.md) | Operator HTTP + P2P RPC reference: routes, auth, limits, error envelope. |
+| [`OPERATOR_PLAYBOOKS.md`](./OPERATOR_PLAYBOOKS.md) | Restart, mesh, vouchers, quarantine, chaos gates, backup/restore. |
+| [`D7_ERASURE_SPIKE.md`](./D7_ERASURE_SPIKE.md) | Erasure-coding spike report (DECLINE; 3x replication kept). |
+| [`adr/`](./adr/) | Architecture decision records (KDF, vouchers, repair lane, redb, erasure, recovery reads). |
 
 ---
 

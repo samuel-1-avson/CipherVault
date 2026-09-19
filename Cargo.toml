@@ -56,6 +56,10 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 sha3 = "0.10"
 notify = "6.1"
 futures-util = { version = "0.3", default-features = false, features = ["alloc", "std"] }
+# DON Phase 2 P2P stack (D2): rust-libp2p, pinned. Dual-stack QUIC+TCP, Noise,
+# Yamux, identify, Kademlia, Gossipsub, request-response/CBOR, mDNS (LAN),
+# relay client, DCUtR, AutoNAT, rendezvous, metrics. Isolated to services/operator::swarm.
+libp2p = { version = "0.57", default-features = false, features = ["tokio", "tcp", "quic", "dns", "noise", "yamux", "identify", "kad", "gossipsub", "request-response", "cbor", "mdns", "ping", "relay", "dcutr", "autonat", "rendezvous", "metrics", "macros", "ed25519"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 

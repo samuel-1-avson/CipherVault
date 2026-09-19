@@ -93,8 +93,8 @@ Set-Content -Path "prod_api.key" -Value "CV-CLUSTER-KEY-4815162342-OMEGA"
 & $CliBin track prod_api.key
 
 # 4. Push snapshot with FastCDC & Proof-of-Storage Readback
-Write-Host "`nReplicating snapshot to 3 Docker operators with Proof-of-Storage (--pos)..." -ForegroundColor Cyan
-& $CliBin push -m "Docker cluster validation snapshot" --pos
+Write-Host "`nReplicating snapshot to 3 Docker operators with Proof-of-Storage readback..." -ForegroundColor Cyan
+& $CliBin push -m "Docker cluster validation snapshot"
 if ($LASTEXITCODE -ne 0) { Write-Error "Push failed!" }
 Write-Host "[PASSED] Replicated and verified 3-way container persistence via PoS!" -ForegroundColor Green
 

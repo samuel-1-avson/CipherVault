@@ -1,5 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -100,13 +101,20 @@ fn assert_quorum_receipts(receipts: &[LeaseReceipt], closure_digest: &[u8; 32]) 
     );
 }
 
+static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 async fn setup_replication_fixture() -> ReplicationFixture {
+    // Wall-clock nanos collide across parallel test threads on coarse
+    // timers; the pid + counter suffix keeps every fixture dir unique.
+    let slot = FIXTURE_COUNTER.fetch_add(1, Ordering::SeqCst);
     let test_dir = std::env::temp_dir().join(format!(
-        "cv_repl_conc_test_{}",
+        "cv_repl_conc_test_{}_{}_{}",
+        std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        slot
     ));
     fs::create_dir_all(&test_dir).unwrap();
 

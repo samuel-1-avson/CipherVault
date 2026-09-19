@@ -25,6 +25,8 @@ chrono.workspace = true
 clap.workspace = true
 colored.workspace = true
 ed25519-dalek.workspace = true
+libp2p.workspace = true
+futures-util.workspace = true
 ciphervault-crypto = { path = "../../crates/crypto" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-storage = { path = "../../crates/storage" }
@@ -32,3 +34,4 @@ ciphervault-recovery = { path = "../../crates/recovery" }
 
 [dev-dependencies]
 tower05 = { package = "tower", version = "0.5", features = ["util"] }
+reqwest.workspace = true

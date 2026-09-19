@@ -9,7 +9,9 @@ pub const CTX_MANIFEST_KEY: &[u8; 8] = b"CV_MANIF";
 pub const CTX_FILE_KEY: &[u8; 8] = b"CV_FVERS";
 pub const CTX_CHUNK_NONCE: &[u8; 8] = b"CV_CNONC";
 
-/// Domain-separated subkey derivation compatible with libsodium crypto_kdf.
+/// Domain-separated subkey derivation with a libsodium-`crypto_kdf`-shaped API
+/// `(master_key, subkey_id, ctx)` — but a custom Blake2b-512 construction
+/// (`CipherVault-KDF-v1` prefix), NOT byte-compatible with libsodium.
 /// Derives a 32-byte subkey from a master key using an 8-byte context and subkey index.
 pub fn derive_subkey(
     master_key: &[u8; 32],

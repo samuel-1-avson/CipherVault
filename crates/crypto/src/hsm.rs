@@ -8,7 +8,6 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
-use zeroize::Zeroize;
 
 use crate::error::CryptoError;
 use crate::signatures::sign_with_domain;
@@ -89,14 +88,6 @@ pub trait HardwareSecurityModule: Send + Sync {
 pub struct SoftwareHsmSimulator {
     sig_key: SigningKey,
     ecdh_key: X25519StaticSecret,
-}
-
-impl Drop for SoftwareHsmSimulator {
-    fn drop(&mut self) {
-        // Zeroize signing key memory on drop
-        let mut bytes = self.sig_key.to_bytes();
-        bytes.zeroize();
-    }
 }
 
 impl SoftwareHsmSimulator {

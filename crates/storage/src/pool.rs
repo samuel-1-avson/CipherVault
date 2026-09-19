@@ -11,6 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub const DEFAULT_OBJECT_CONCURRENCY: usize = 4;
 /// Upper bound for per-operator object concurrency (`push --concurrency`).
 pub const MAX_OBJECT_CONCURRENCY: usize = 32;
+/// Default replicas required by `replicate_and_verify` when the caller
+/// passes no explicit count (`push --replicas`, `repair --replicas`).
+/// Matches the documented 3-operator topology (compose, docs, tests).
+pub const DEFAULT_REQUIRED_REPLICAS: usize = 3;
 
 pub struct MultiOperatorPool {
     clients: Vec<OperatorClient>,
@@ -26,6 +30,17 @@ impl MultiOperatorPool {
         endpoints.sort();
         endpoints.dedup();
         let clients = endpoints.into_iter().map(OperatorClient::new).collect();
+        Self {
+            clients,
+            object_concurrency: AtomicUsize::new(DEFAULT_OBJECT_CONCURRENCY),
+        }
+    }
+
+    /// Builds a pool from pre-constructed clients (loopback memory, future
+    /// P2P transports). Endpoints are sorted and deduplicated like [`Self::new`].
+    pub fn from_clients(mut clients: Vec<OperatorClient>) -> Self {
+        clients.sort_by(|a, b| a.endpoint().cmp(b.endpoint()));
+        clients.dedup_by(|a, b| a.endpoint() == b.endpoint());
         Self {
             clients,
             object_concurrency: AtomicUsize::new(DEFAULT_OBJECT_CONCURRENCY),
@@ -257,7 +272,7 @@ impl MultiOperatorPool {
             }
         }
 
-        // Publish bootstrap records before the head, and verify discovery readback.
+        // Publish recovery records before the head, and verify discovery readback.
         // A prior interrupted push may have left a partial log (for example a
         // genesis record whose device certificate never landed because quorum
         // early-exit cancelled this operator in flight). The operator then

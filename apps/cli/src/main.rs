@@ -162,12 +162,6 @@ enum Commands {
 
         #[arg(
             long,
-            help = "Execute bandwidth-optimized proof-of-storage challenge readback"
-        )]
-        pos: bool,
-
-        #[arg(
-            long,
             help = "Create and commit snapshot locally without replicating to remote operators"
         )]
         local: bool,
@@ -189,6 +183,9 @@ enum Commands {
             help = "Per-operator object concurrency for replication (1-32, default 4)"
         )]
         concurrency: Option<usize>,
+
+        #[arg(long, help = "Replicas required for quorum (default 3, must be >= 1)")]
+        replicas: Option<usize>,
     },
 
     /// Display snapshot history DAG
@@ -372,6 +369,9 @@ enum Commands {
     Repair {
         #[arg(short, long, num_args = 1.., help = "Custom operator endpoints to repair")]
         operators: Option<Vec<String>>,
+
+        #[arg(long, help = "Replicas required for quorum (default 3, must be >= 1)")]
+        replicas: Option<usize>,
     },
 
     /// Open the production cloud dashboard or launch an offline local inspector
@@ -556,6 +556,24 @@ enum Commands {
             help = "Query operators to dynamically discover new peer nodes"
         )]
         discover: bool,
+
+        #[arg(
+            long,
+            help = "Mesh routing tables: fetch each operator's self descriptor and announce it to all others"
+        )]
+        mesh: bool,
+    },
+
+    /// Create and renew storage leases on an operator
+    Lease {
+        #[command(subcommand)]
+        sub: LeaseSubcommand,
+    },
+
+    /// Issue write vouchers (operator-local administration, service token)
+    Voucher {
+        #[command(subcommand)]
+        sub: VoucherSubcommand,
     },
 
     /// Out-of-band cryptographic approval and multi-party authorization
@@ -703,6 +721,69 @@ enum TokenSubcommand {
 }
 
 #[derive(Subcommand)]
+enum LeaseSubcommand {
+    /// Commit a storage lease for a closure digest on one operator
+    Create {
+        #[arg(help = "64-char hex closure digest to lease")]
+        closure: String,
+
+        #[arg(help = "Bytes covered by the lease")]
+        bytes: u64,
+
+        #[arg(long, default_value = "90", help = "Lease term in days")]
+        term_days: u32,
+
+        #[arg(
+            short,
+            long,
+            help = "Target operator endpoint (default: first configured)"
+        )]
+        operator: Option<String>,
+    },
+
+    /// Renew an existing lease for additional days
+    Renew {
+        #[arg(help = "Lease ID to renew")]
+        lease_id: String,
+
+        #[arg(help = "Additional days to extend the lease")]
+        days: u32,
+
+        #[arg(help = "Bytes covered by the lease")]
+        bytes: u64,
+
+        #[arg(
+            short,
+            long,
+            help = "Target operator endpoint (default: first configured)"
+        )]
+        operator: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum VoucherSubcommand {
+    /// Issue a write voucher from an operator (needs CIPHERVAULT_OPERATOR_SERVICE_TOKEN)
+    Issue {
+        #[arg(help = "64-char hex holder public key the voucher is issued to")]
+        holder_pk: String,
+
+        #[arg(help = "Byte quota granted by the voucher")]
+        quota: u64,
+
+        #[arg(long, default_value = "3600", help = "Voucher TTL in seconds")]
+        ttl: u64,
+
+        #[arg(
+            short,
+            long,
+            help = "Issuing operator endpoint (default: first configured)"
+        )]
+        operator: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum HookSubcommand {
     /// Install Git pre-commit hook into .git/hooks/pre-commit
     Install,
@@ -822,13 +903,25 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Push {
             message,
             touch,
-            pos: _,
             local,
             anchor,
             reader,
             pin,
             concurrency,
-        } => cmd_push(message, touch, local, anchor, reader, pin, concurrency).await,
+            replicas,
+        } => {
+            cmd_push(
+                message,
+                touch,
+                local,
+                anchor,
+                reader,
+                pin,
+                concurrency,
+                replicas,
+            )
+            .await
+        }
         Commands::History => cmd_history(),
         Commands::Prune {
             keep_last,
@@ -960,7 +1053,10 @@ async fn run(cli: Cli) -> Result<()> {
             HookSubcommand::Check => cmd_hook_check(),
         },
         Commands::Audit { operators } => cmd_audit(operators).await,
-        Commands::Repair { operators } => cmd_repair(operators).await,
+        Commands::Repair {
+            operators,
+            replicas,
+        } => cmd_repair(operators, replicas).await,
         Commands::Ui {
             host,
             port,
@@ -996,7 +1092,29 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_completions(shell);
             Ok(())
         }
-        Commands::Peers { discover } => cmd_peers(discover).await,
+        Commands::Peers { discover, mesh } => cmd_peers(discover, mesh).await,
+        Commands::Lease { sub } => match sub {
+            LeaseSubcommand::Create {
+                closure,
+                bytes,
+                term_days,
+                operator,
+            } => cmd_lease_create(closure, bytes, term_days, operator).await,
+            LeaseSubcommand::Renew {
+                lease_id,
+                days,
+                bytes,
+                operator,
+            } => cmd_lease_renew(lease_id, days, bytes, operator).await,
+        },
+        Commands::Voucher { sub } => match sub {
+            VoucherSubcommand::Issue {
+                holder_pk,
+                quota,
+                ttl,
+                operator,
+            } => cmd_voucher_issue(holder_pk, quota, ttl, operator).await,
+        },
         Commands::Approve { sub } => match sub {
             ApproveSubcommand::List => cmd_approve_list().await,
             ApproveSubcommand::Sign { challenge_id, name } => {
@@ -1167,6 +1285,18 @@ fn current_device_identity() -> Result<(String, String, String)> {
         hex::encode(device_id),
         hex::encode(device_key.verifying_key().as_bytes()),
     ))
+}
+
+/// Resolves `--replicas` to the count `replicate_and_verify` must reach.
+/// Absent means the documented 3-operator default; 0 is rejected (it would
+/// trivially "succeed" with zero receipts). Larger-than-fleet values are
+/// passed through so replication fails honestly with `QuorumDeficit`.
+fn resolve_required_replicas(replicas: Option<usize>) -> Result<usize> {
+    match replicas {
+        None => Ok(ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS),
+        Some(0) => bail!("--replicas must be at least 1"),
+        Some(n) => Ok(n),
+    }
 }
 
 /// Creates an operator pool and, when this vault is linked to the optional
@@ -3103,6 +3233,10 @@ async fn cmd_doctor(json: bool) -> Result<()> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "One arg per push flag; matches the existing CLI plumbing style"
+)]
 pub async fn cmd_push(
     message: Option<String>,
     touch: bool,
@@ -3111,6 +3245,7 @@ pub async fn cmd_push(
     reader: Option<String>,
     pin: Option<String>,
     concurrency: Option<usize>,
+    replicas: Option<usize>,
 ) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
@@ -3279,6 +3414,7 @@ pub async fn cmd_push(
     let wire_objects = store.recovery_objects(&recovery_set)?;
     let head_cbor = to_canonical_cbor(&head)?;
     let closure_digest = recovery_set.closure.compute_base_closure_digest()?;
+    let required_replicas = resolve_required_replicas(replicas)?;
     let replication_started = std::time::Instant::now();
     let rep_result = pool
         .replicate_and_verify(
@@ -3291,13 +3427,13 @@ pub async fn cmd_push(
             &recovery_set.locator,
             &head_cbor,
             &recovery_set.records,
-            3, // Require a complete recovery set on three operators
+            required_replicas,
         )
         .await;
 
     match rep_result {
         Ok(receipts) => {
-            if receipts.len() >= 3 {
+            if receipts.len() >= required_replicas {
                 println!(
                     "  Durability:     {} ({}/{} independent replicas verified and read back)",
                     "RemoteDurable".green().bold(),
@@ -3999,8 +4135,19 @@ async fn cmd_run(
 }
 
 fn cmd_completions(shell: clap_complete::Shell) {
-    let mut cmd = Cli::command();
-    clap_complete::generate(shell, &mut cmd, "ciphervault", &mut std::io::stdout());
+    // clap_complete renders the whole command tree recursively; with 40+
+    // subcommands the debug-build frames exceed the 8 MiB main-thread
+    // stack (immediate stack overflow). Generate on a roomy thread.
+    std::thread::Builder::new()
+        .name("completions".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "ciphervault", &mut std::io::stdout());
+        })
+        .expect("spawn completions thread")
+        .join()
+        .expect("completions thread");
 }
 
 pub fn generate_diff_report(
@@ -4753,10 +4900,14 @@ async fn cmd_recover(
     Ok(())
 }
 
-async fn cmd_peers(discover: bool) -> Result<()> {
+async fn cmd_peers(discover: bool, mesh: bool) -> Result<()> {
     let mut operators = get_configured_operators();
     if operators.is_empty() {
         bail!("No operators configured. Run 'ciphervault init' first.");
+    }
+
+    if mesh {
+        return cmd_peers_mesh(&operators).await;
     }
 
     println!("{}", "CipherVault Operator Federation Routing Table".bold());
@@ -4855,6 +5006,143 @@ async fn cmd_peers(discover: bool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Meshes operator routing tables: fetches each operator's public self
+/// descriptor and announces it to every other operator. Without meshing,
+/// heartbeats from unknown senders are ignored and repair cannot push.
+async fn cmd_peers_mesh(operators: &[String]) -> Result<()> {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let mut descriptors = Vec::new();
+    for op in operators {
+        let url = format!("{}/v1/peers/self", op.trim_end_matches('/'));
+        let descriptor = http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("fetch self descriptor from {op}"))?
+            .json::<ciphervault_storage::PeerDescriptor>()
+            .await
+            .with_context(|| format!("decode self descriptor from {op}"))?;
+        descriptor
+            .verify()
+            .with_context(|| format!("self descriptor from {op} has a bad signature"))?;
+        descriptors.push(descriptor);
+    }
+    let mut announced = 0usize;
+    for target in operators {
+        let client = OperatorClient::new(target.clone());
+        for descriptor in &descriptors {
+            client
+                .announce_peer(descriptor)
+                .await
+                .with_context(|| format!("announce {} to {target}", descriptor.operator_id))?;
+            announced += 1;
+        }
+    }
+    println!(
+        "{}",
+        format!(
+            "  ✓ Meshed {} operators ({} announces)",
+            operators.len(),
+            announced
+        )
+        .green()
+    );
+    Ok(())
+}
+
+/// Resolves `--operator` to a target endpoint, defaulting to the first
+/// configured operator.
+fn resolve_target_operator(operator: Option<String>) -> Result<String> {
+    if let Some(endpoint) = operator {
+        return Ok(endpoint);
+    }
+    get_configured_operators()
+        .into_iter()
+        .next()
+        .context("No operators configured. Run 'ciphervault init' first.")
+}
+
+async fn cmd_lease_create(
+    closure: String,
+    bytes: u64,
+    term_days: u32,
+    operator: Option<String>,
+) -> Result<()> {
+    let endpoint = resolve_target_operator(operator)?;
+    let digest = hex::decode(closure.trim()).context("closure digest must be hex")?;
+    if digest.len() != 32 {
+        bail!("closure digest must be 64 hex chars (32 bytes)");
+    }
+    let mut closure_digest = [0u8; 32];
+    closure_digest.copy_from_slice(&digest);
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (_, device_sk, _, _) = store.get_device_state()?;
+    let client = OperatorClient::new(endpoint);
+    let token = client
+        .authenticate(&vault_id, &device_sk)
+        .await
+        .context("device session authentication failed")?;
+    let receipt = client
+        .commit_lease(&token, &closure_digest, bytes, term_days)
+        .await
+        .context("lease commit failed")?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(())
+}
+
+async fn cmd_lease_renew(
+    lease_id: String,
+    days: u32,
+    bytes: u64,
+    operator: Option<String>,
+) -> Result<()> {
+    let endpoint = resolve_target_operator(operator)?;
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (_, device_sk, _, _) = store.get_device_state()?;
+    let client = OperatorClient::new(endpoint);
+    let token = client
+        .authenticate(&vault_id, &device_sk)
+        .await
+        .context("device session authentication failed")?;
+    let receipt = client
+        .renew_lease(&token, &lease_id, days, bytes)
+        .await
+        .context("lease renew failed")?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(())
+}
+
+async fn cmd_voucher_issue(
+    holder_pk: String,
+    quota: u64,
+    ttl: u64,
+    operator: Option<String>,
+) -> Result<()> {
+    let endpoint = resolve_target_operator(operator)?;
+    if std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN")
+        .ok()
+        .is_none_or(|value| value.is_empty())
+    {
+        bail!("CIPHERVAULT_OPERATOR_SERVICE_TOKEN is not set; voucher issuance needs the operator service token");
+    }
+    let holder = holder_pk.trim();
+    if hex::decode(holder).map(|bytes| bytes.len()) != Ok(32) {
+        bail!("holder public key must be 64 hex chars (32 bytes)");
+    }
+    let client = OperatorClient::new(endpoint);
+    let voucher = client
+        .issue_voucher(holder, quota, ttl)
+        .await
+        .context("voucher issuance failed")?;
+    println!("{}", serde_json::to_string_pretty(&voucher)?);
     Ok(())
 }
 
@@ -6275,7 +6563,7 @@ async fn cmd_audit(custom_operators: Option<Vec<String>>) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_repair(custom_operators: Option<Vec<String>>) -> Result<()> {
+async fn cmd_repair(custom_operators: Option<Vec<String>>, replicas: Option<usize>) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (_, device_sk, _, _) = store.get_device_state()?;
@@ -6303,6 +6591,7 @@ async fn cmd_repair(custom_operators: Option<Vec<String>>) -> Result<()> {
         .audit_closure_with_cache(&closure, &sessions, Some(&local_map))
         .await?;
     let head_bytes = to_canonical_cbor(&active_head)?;
+    let required_replicas = resolve_required_replicas(replicas)?;
     // Local verified ciphertext can also repair a total remote loss.
     configured_operator_pool(operators)
         .replicate_and_verify(
@@ -6315,10 +6604,10 @@ async fn cmd_repair(custom_operators: Option<Vec<String>>) -> Result<()> {
             &recovery_set.locator,
             &head_bytes,
             &recovery_set.records,
-            3,
+            required_replicas,
         )
         .await?;
-    println!("Repair completed: complete recovery set read back on three operators ({} previously degraded objects).", audit.degraded_objects.len());
+    println!("Repair completed: complete recovery set read back on {required_replicas} operators ({} previously degraded objects).", audit.degraded_objects.len());
 
     Ok(())
 }
@@ -9278,6 +9567,7 @@ async fn api_create_snapshot_handler(
         None,
         None,
         None,
+        None,
     )
     .await
     {
@@ -11130,5 +11420,65 @@ mod ui_router_tests {
         assert_eq!(report["status"], "degraded");
         assert_eq!(report["failures"], 1);
         assert_eq!(report["checks"][0]["name"], "vault");
+    }
+
+    #[test]
+    fn replicas_flag_resolution() {
+        use ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
+        assert_eq!(
+            resolve_required_replicas(None).unwrap(),
+            DEFAULT_REQUIRED_REPLICAS
+        );
+        assert_eq!(resolve_required_replicas(Some(1)).unwrap(), 1);
+        assert_eq!(resolve_required_replicas(Some(5)).unwrap(), 5);
+        assert!(resolve_required_replicas(Some(0)).is_err());
+    }
+
+    #[test]
+    fn lease_voucher_peers_mesh_args_parse() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "lease",
+            "create",
+            &"ab".repeat(32),
+            "4096",
+            "--term-days",
+            "30",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Lease {
+                sub: LeaseSubcommand::Create {
+                    bytes: 4096,
+                    term_days: 30,
+                    ..
+                }
+            }
+        ));
+        let cli =
+            Cli::try_parse_from(["ciphervault", "lease", "renew", "lease-1", "7", "4096"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Lease {
+                sub: LeaseSubcommand::Renew { days: 7, .. }
+            }
+        ));
+        let cli =
+            Cli::try_parse_from(["ciphervault", "voucher", "issue", &"cd".repeat(32), "8192"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Voucher {
+                sub: VoucherSubcommand::Issue {
+                    quota: 8192,
+                    ttl: 3600,
+                    ..
+                }
+            }
+        ));
+        let cli = Cli::try_parse_from(["ciphervault", "peers", "--mesh"]).unwrap();
+        assert!(matches!(cli.command, Commands::Peers { mesh: true, .. }));
     }
 }

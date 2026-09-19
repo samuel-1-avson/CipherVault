@@ -266,7 +266,7 @@ impl VaultWatcher {
                     &recovery_set.locator,
                     &to_canonical_cbor(&head)?,
                     &recovery_set.records,
-                    3,
+                    ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS,
                 )
                 .await
             {
@@ -328,7 +328,7 @@ impl VaultWatcher {
                                             &recovery_set.locator,
                                             &head_cbor,
                                             &recovery_set.records,
-                                            3,
+                                            ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS,
                                         )
                                         .await
                                     {

@@ -106,7 +106,7 @@ try {
     Write-Success "Tracked .env ($OriginalEnvHash) and jwt_private.key ($OriginalKeyHash)"
 
     Write-Step "4. Pushing Snapshot with FastCDC & Proof-of-Storage Readback"
-    & $CliBin push --message "Chaos Drill Pre-Failure Snapshot" --pos
+    & $CliBin push --message "Chaos Drill Pre-Failure Snapshot"
     if ($LASTEXITCODE -ne 0) { throw "ciphervault push failed" }
     Write-Success "Snapshot pushed and readback verified across all 3 nodes via PoS."
 

@@ -6,18 +6,22 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::metrics::OperatorMetrics;
+use crate::swarm::repair::{TokenBucket, DEFAULT_REPAIR_BUDGET_PER_SEC};
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::{
     compute_digest, from_canonical_cbor, DeviceCertificate, EpochEnvelope, GenesisRecord,
     HeadRecord, SnapshotRecord, PROTOCOL_VERSION,
 };
 use ciphervault_storage::types::LeaseReceipt;
+use ciphervault_storage::vouchers::{VoucherLedger, WriteVoucher};
+use ciphervault_storage::StorageError;
 
 pub const MAX_OBJECT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB max per chunk/manifest object
 pub const MAX_RECOVERY_RECORD_SIZE: usize = 64 * 1024; // 64 KiB max per recovery record
@@ -27,6 +31,12 @@ pub const MAX_RECORDS_PER_LOCATOR: usize = 10_000;
 pub const MAX_RECOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RELAYED_CHECKPOINTS: usize = 5_000;
 pub const MAX_ACTIVE_PEERS: usize = 128;
+/// Peer announces older than this are rejected at registration (replay
+/// bound). Matches the routing-table prune window so accepted ⟺ retained.
+pub const MAX_PEER_ANNOUNCE_AGE_SECS: u64 = 86400;
+/// Peer announces farther in the future than this are rejected (clock
+/// bound); without it a future-dated descriptor would never be pruned.
+pub const MAX_PEER_ANNOUNCE_SKEW_SECS: u64 = 3600;
 /// Number of striped filesystem locks sharding operator disk I/O (R8).
 /// Distinct CIDs/locators hash to different stripes so concurrent uploads
 /// for different objects no longer serialize on a single global lock.
@@ -205,6 +215,25 @@ pub struct OperatorState {
     pub relayed_checkpoints: Mutex<HashMap<String, ciphervault_storage::RelayerReceipt>>,
     // Active P2P peers: operator_id -> PeerDescriptor
     pub peer_routing_table: Mutex<HashMap<String, ciphervault_storage::PeerDescriptor>>,
+    // Write-voucher spend ledger (D4): nonce -> charge. Held across
+    // verify→charge so concurrent writes on one voucher cannot overspend.
+    // Memory-only by design: a restart resets spend to zero, so a voucher
+    // can be re-spent up to its quota after an operator restart. Bounded
+    // (never more than one quota per boot) and requires operator restart
+    // access; vouchers are opt-in (`vouchers_required`, default false).
+    voucher_ledger: Mutex<VoucherLedger>,
+    // When true, writes without a voucher are rejected before persistence.
+    // Default false: static mode keeps working byte-for-byte; mesh/testnet
+    // operators opt in via `--require-write-vouchers`.
+    vouchers_required: AtomicBool,
+    // Receiver-side repair budget (Phase 4): repair bytes accepted per
+    // second across all senders. Repair is a separate lane from user
+    // quotas — bounded here instead of by voucher — so over-budget
+    // pushes 429 without storing. Never blocks client writes.
+    // Memory-only by design: a token bucket is a rate over wall-clock
+    // time (`Instant`), so there is no meaningful spend to persist — a
+    // restart refills to full, admitting at most one capacity burst.
+    repair_budget: Mutex<TokenBucket>,
     // Out-of-band authorization challenges: challenge_id -> (ApprovalChallenge, Vec<SignedApprovalReceipt>)
     pub approval_challenges: Mutex<
         HashMap<
@@ -242,6 +271,9 @@ impl OperatorState {
             relayed_checkpoints: Mutex::new(HashMap::new()),
             peer_routing_table: Mutex::new(HashMap::new()),
             approval_challenges: Mutex::new(HashMap::new()),
+            voucher_ledger: Mutex::new(VoucherLedger::new(u64::MAX)),
+            vouchers_required: AtomicBool::new(false),
+            repair_budget: Mutex::new(TokenBucket::new(DEFAULT_REPAIR_BUDGET_PER_SEC)),
         };
         state.load_enrolled_identities();
         state.load_sessions();
@@ -290,24 +322,7 @@ impl OperatorState {
     fn persist_enrolled_identities(&self) -> Result<(), String> {
         let identities = self.enrolled_identities.lock().unwrap().clone();
         let encoded = serde_json::to_vec_pretty(&identities).map_err(|e| e.to_string())?;
-        let path = self.identity_store_path();
-        let tmp = path.with_file_name(format!(
-            ".{}.tmp-{}",
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("identities.json"),
-            std::process::id()
-        ));
-        fs::write(&tmp, encoded).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-        if let Err(error) = fs::rename(&tmp, &path) {
-            let _ = fs::remove_file(&tmp);
-            return Err(error.to_string());
-        }
-        #[cfg(unix)]
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-        Ok(())
+        self.persist_atomic_secure(&self.identity_store_path(), &encoded)
     }
 
     fn enrollment_required() -> bool {
@@ -698,19 +713,7 @@ impl OperatorState {
         let Ok(encoded) = serde_json::to_vec(&records) else {
             return;
         };
-        let tmp = self.data_dir.join("sessions.json.tmp");
-        if fs::write(&tmp, encoded).is_ok() {
-            let _ = fs::remove_file(self.session_store_path());
-            if fs::rename(tmp, self.session_store_path()).is_ok() {
-                #[cfg(unix)]
-                {
-                    let _ = fs::set_permissions(
-                        self.session_store_path(),
-                        fs::Permissions::from_mode(0o600),
-                    );
-                }
-            }
-        }
+        let _ = self.persist_atomic_secure(&self.session_store_path(), &encoded);
     }
 
     fn persist_challenges(&self) {
@@ -730,19 +733,7 @@ impl OperatorState {
         let Ok(encoded) = serde_json::to_vec(&records) else {
             return;
         };
-        let tmp = self.data_dir.join("challenges.json.tmp");
-        if fs::write(&tmp, encoded).is_ok() {
-            let _ = fs::remove_file(self.challenge_store_path());
-            if fs::rename(tmp, self.challenge_store_path()).is_ok() {
-                #[cfg(unix)]
-                {
-                    let _ = fs::set_permissions(
-                        self.challenge_store_path(),
-                        fs::Permissions::from_mode(0o600),
-                    );
-                }
-            }
-        }
+        let _ = self.persist_atomic_secure(&self.challenge_store_path(), &encoded);
     }
 
     fn audit_event(&self, event: &str, fields: serde_json::Value) {
@@ -1036,15 +1027,217 @@ impl OperatorState {
         self.validate_write_session(token)
     }
 
+    /// Enables voucher enforcement: writes without a valid voucher are
+    /// rejected before persistence. Default off (static mode unchanged).
+    pub fn set_vouchers_required(&self, required: bool) {
+        self.vouchers_required.store(required, Ordering::SeqCst);
+    }
+
+    pub fn vouchers_required(&self) -> bool {
+        self.vouchers_required.load(Ordering::SeqCst)
+    }
+
+    /// Caps the largest single voucher grant this operator honors.
+    pub fn set_voucher_max_quota(&self, max_quota_bytes: u64) {
+        if let Ok(mut ledger) = self.voucher_ledger.lock() {
+            ledger.set_max_quota(max_quota_bytes);
+        }
+    }
+
+    /// Self-issues a voucher (D3 barter model): this operator's key signs a
+    /// grant the operator itself will honor. Served over HTTP with service-
+    /// token auth; never over P2P (no operator-admin surface there).
+    pub fn issue_voucher(
+        &self,
+        holder_pk_hex: String,
+        quota_bytes: u64,
+        ttl_secs: u64,
+    ) -> Result<WriteVoucher, StorageError> {
+        WriteVoucher::issue(&self.signing_key, holder_pk_hex, quota_bytes, ttl_secs)
+    }
+
+    fn issuer_pk_hex(&self) -> String {
+        hex::encode(self.signing_key.verifying_key().to_bytes())
+    }
+
+    /// Pre-persistence write gate shared by all transports: verifies the
+    /// presented voucher and charges `bytes`, or rejects voucherless writes
+    /// when policy requires vouchers. Returns the charge to release if
+    /// persistence fails or stores no new bytes.
+    fn authorize_write(
+        &self,
+        voucher: Option<&WriteVoucher>,
+        bytes: u64,
+    ) -> Result<Option<(String, u64)>, StorageError> {
+        match voucher {
+            Some(voucher) => {
+                let mut ledger =
+                    self.voucher_ledger
+                        .lock()
+                        .map_err(|_| StorageError::ServerError {
+                            status: 500,
+                            message: "voucher ledger unavailable".into(),
+                        })?;
+                let now = chrono::Utc::now().timestamp() as u64;
+                ledger.try_consume(voucher, &self.issuer_pk_hex(), now, bytes)?;
+                Ok(Some((voucher.nonce_hex.clone(), bytes)))
+            }
+            None if self.vouchers_required() => Err(StorageError::ServerError {
+                status: 403,
+                message: "write voucher required".into(),
+            }),
+            None => Ok(None),
+        }
+    }
+
+    fn release_write(&self, charge: Option<(String, u64)>) {
+        if let Some((nonce, bytes)) = charge {
+            if let Ok(mut ledger) = self.voucher_ledger.lock() {
+                ledger.release(&nonce, bytes);
+            }
+        }
+    }
+
+    /// Legacy policy gate for the original write methods: identical behavior
+    /// when policy is off, hard rejection when on. Keeps frozen callers
+    /// compiling and behaving while closing the voucherless bypass.
+    fn require_voucher_legacy(&self) -> Result<(), String> {
+        if self.vouchers_required() {
+            return Err("write voucher required".into());
+        }
+        Ok(())
+    }
+
     pub fn put_object(&self, cid_hex: &str, bytes: &[u8]) -> Result<(), String> {
+        self.require_voucher_legacy()?;
         let started = std::time::Instant::now();
-        let outcome = self.put_object_inner(cid_hex, bytes);
+        let outcome = self.put_object_inner(cid_hex, bytes).map(|_| ());
         self.metrics
             .observe_put(bytes.len() as u64, started.elapsed(), outcome.is_ok());
         outcome
     }
 
-    fn put_object_inner(&self, cid_hex: &str, bytes: &[u8]) -> Result<(), String> {
+    /// Overrides the receiver-side repair budget (bytes/sec). Tests and
+    /// operators tune the repair lane without touching client quotas.
+    pub fn set_repair_budget(&self, bytes_per_sec: u64) {
+        if let Ok(mut budget) = self.repair_budget.lock() {
+            budget.set_rate(bytes_per_sec);
+        }
+    }
+
+    /// Spends `bytes` from the repair budget. False (including on lock
+    /// poison) means the push must 429 without storing.
+    pub fn try_spend_repair_budget(&self, bytes: u64) -> bool {
+        self.repair_budget
+            .lock()
+            .map(|mut budget| budget.try_take(bytes))
+            .unwrap_or(false)
+    }
+
+    /// Persists one operator-signed repair push. Runs the SAME validation
+    /// as client puts (size cap, digest match, atomic persist) but skips
+    /// the voucher/quota lane — repair is bounded by the repair budget
+    /// instead (checked by the caller BEFORE invoking this). Returns
+    /// whether the bytes were net-new. Deliberately absent from
+    /// `objects_put_*` metrics: repair has its own telemetry series.
+    pub fn put_repair_object(&self, cid_hex: &str, bytes: &[u8]) -> Result<bool, String> {
+        self.put_object_inner(cid_hex, bytes)
+    }
+
+    /// Whether the store holds a complete object for `cid_hex` (atomic
+    /// renames mean presence implies completeness). Metadata-only: the
+    /// repair scanner filters candidates without reading bytes.
+    pub fn has_object(&self, cid_hex: &str) -> bool {
+        cid_hex.len() == 64 && self.data_dir.join("objects").join(cid_hex).is_file()
+    }
+
+    /// Lists locally stored object CIDs for the repair scanner: up to
+    /// `limit` entries past `offset`, in directory order. Unparseable
+    /// names (tmp files, future layouts) are skipped, never errors. A
+    /// short return (fewer than `limit`) signals the cursor should wrap.
+    pub fn list_object_cids(&self, offset: usize, limit: usize) -> Vec<[u8; 32]> {
+        let mut out = Vec::new();
+        if limit == 0 {
+            return out;
+        }
+        let entries = match fs::read_dir(self.data_dir.join("objects")) {
+            Ok(entries) => entries,
+            Err(_) => return out,
+        };
+        for entry in entries.filter_map(|entry| entry.ok()).skip(offset) {
+            if out.len() >= limit {
+                break;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() != 64 {
+                continue;
+            }
+            let Ok(raw) = hex::decode(&name) else {
+                continue;
+            };
+            if raw.len() != 32 {
+                continue;
+            }
+            let mut cid = [0u8; 32];
+            cid.copy_from_slice(&raw);
+            out.push(cid);
+        }
+        out
+    }
+
+    /// Voucher-carrying put: verifies the voucher, charges quota only for
+    /// bytes not already stored, then persists. The pre-check keeps
+    /// idempotent retries free even with the quota fully spent (mesh repair
+    /// depends on this); objects are content-addressed and never deleted,
+    /// so a present pre-check stays present. Any race the other way (absent
+    /// at pre-check, stored by a concurrent put) releases after the fact.
+    /// Inner errors keep the legacy 400 mapping.
+    pub fn put_object_with_voucher(
+        &self,
+        cid_hex: &str,
+        bytes: &[u8],
+        voucher: Option<&WriteVoucher>,
+    ) -> Result<(), StorageError> {
+        let already_present = self.object_matches(cid_hex, bytes);
+        let billable = if already_present {
+            0
+        } else {
+            bytes.len() as u64
+        };
+        let charge = self.authorize_write(voucher, billable)?;
+        let started = std::time::Instant::now();
+        let outcome = self.put_object_inner(cid_hex, bytes);
+        self.metrics
+            .observe_put(bytes.len() as u64, started.elapsed(), outcome.is_ok());
+        match outcome {
+            Ok(net_new) => {
+                if !net_new {
+                    self.release_write(charge);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                self.release_write(charge);
+                Err(StorageError::ServerError {
+                    status: 400,
+                    message: e,
+                })
+            }
+        }
+    }
+
+    /// Best-effort idempotency pre-check: true only if the object file
+    /// exists with byte-identical content. False on any doubt (missing,
+    /// unreadable, malformed CID) — the inner write then validates fully.
+    fn object_matches(&self, cid_hex: &str, bytes: &[u8]) -> bool {
+        if cid_hex.len() != 64 {
+            return false;
+        }
+        let obj_path = self.data_dir.join("objects").join(cid_hex);
+        fs::read(&obj_path).ok().as_deref() == Some(bytes)
+    }
+
+    fn put_object_inner(&self, cid_hex: &str, bytes: &[u8]) -> Result<bool, String> {
         let limit = max_object_size();
         if bytes.len() > limit {
             return Err(format!(
@@ -1069,8 +1262,10 @@ impl OperatorState {
         let obj_path = self.data_dir.join("objects").join(cid_hex);
         if fs::read(&obj_path).ok().as_deref() != Some(bytes) {
             self.persist_atomic(&obj_path, bytes)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
     pub fn get_object(&self, cid_hex: &str) -> Option<Vec<u8>> {
@@ -1144,12 +1339,34 @@ impl OperatorState {
     }
 
     fn persist_atomic(&self, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+        self.persist_atomic_inner(path, bytes, false)
+    }
+
+    /// Atomic + fsynced persist for secret-bearing stores (sessions,
+    /// challenges, enrolled identities). On unix the temp file is created
+    /// 0600, so bearer tokens are never visible at wider perms — not even
+    /// between creation and rename. Rename carries the mode to `path`.
+    fn persist_atomic_secure(&self, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+        self.persist_atomic_inner(path, bytes, true)
+    }
+
+    fn persist_atomic_inner(
+        &self,
+        path: &std::path::Path,
+        bytes: &[u8],
+        secure: bool,
+    ) -> Result<(), String> {
+        #[cfg(not(unix))]
+        let _ = secure;
         let temp = path.with_extension(format!("{}.tmp", rand::random::<u128>()));
         let result = (|| -> std::io::Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
+            let mut opts = OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            if secure {
+                opts.mode(0o600);
+            }
+            let mut file = opts.open(&temp)?;
             file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
@@ -1185,9 +1402,29 @@ impl OperatorState {
         bytes: u64,
         term_days: u32,
     ) -> Result<LeaseReceipt, String> {
+        self.require_voucher_legacy()?;
         let outcome = self.create_lease_inner(closure_digest_hex, bytes, term_days);
         self.metrics.observe_lease_create(outcome.is_ok());
         outcome
+    }
+
+    /// Voucher-carrying lease commit: the voucher authorizes, nothing is
+    /// charged (leases store no bytes). Inner errors keep the legacy 500
+    /// mapping.
+    pub fn create_lease_with_voucher(
+        &self,
+        closure_digest_hex: &str,
+        bytes: u64,
+        term_days: u32,
+        voucher: Option<&WriteVoucher>,
+    ) -> Result<LeaseReceipt, StorageError> {
+        self.authorize_write(voucher, 0)?;
+        let outcome = self.create_lease_inner(closure_digest_hex, bytes, term_days);
+        self.metrics.observe_lease_create(outcome.is_ok());
+        outcome.map_err(|e| StorageError::ServerError {
+            status: 500,
+            message: e,
+        })
     }
 
     fn create_lease_inner(
@@ -1225,9 +1462,28 @@ impl OperatorState {
         additional_days: u32,
         bytes: u64,
     ) -> Result<LeaseReceipt, String> {
+        self.require_voucher_legacy()?;
         let outcome = self.renew_lease_inner(lease_id, additional_days, bytes);
         self.metrics.observe_lease_renew(outcome.is_ok());
         outcome
+    }
+
+    /// Voucher-carrying lease renewal: authorizes without charging (no new
+    /// bytes). Inner errors keep the legacy 400 mapping.
+    pub fn renew_lease_with_voucher(
+        &self,
+        lease_id: &str,
+        additional_days: u32,
+        bytes: u64,
+        voucher: Option<&WriteVoucher>,
+    ) -> Result<LeaseReceipt, StorageError> {
+        self.authorize_write(voucher, 0)?;
+        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes);
+        self.metrics.observe_lease_renew(outcome.is_ok());
+        outcome.map_err(|e| StorageError::ServerError {
+            status: 400,
+            message: e,
+        })
     }
 
     fn renew_lease_inner(
@@ -1271,10 +1527,38 @@ impl OperatorState {
         record: &[u8],
         caller_pk: Option<&[u8; 32]>,
     ) -> Result<u64, String> {
+        self.require_voucher_legacy()?;
         let outcome = self.append_authorized_recovery_record_inner(locator_hex, record, caller_pk);
         self.metrics
             .observe_recovery_append(record.len() as u64, outcome.is_ok());
         outcome
+    }
+
+    /// Voucher-carrying recovery append: authorizes and charges quota before
+    /// touching disk, releases the charge when persistence fails. Appends
+    /// always store new bytes, so success never releases. Inner errors keep
+    /// the legacy 400 mapping.
+    pub fn append_recovery_record_with_voucher(
+        &self,
+        locator_hex: &str,
+        record: &[u8],
+        caller_pk: Option<&[u8; 32]>,
+        voucher: Option<&WriteVoucher>,
+    ) -> Result<u64, StorageError> {
+        let charge = self.authorize_write(voucher, record.len() as u64)?;
+        let outcome = self.append_authorized_recovery_record_inner(locator_hex, record, caller_pk);
+        self.metrics
+            .observe_recovery_append(record.len() as u64, outcome.is_ok());
+        match outcome {
+            Ok(sequence) => Ok(sequence),
+            Err(e) => {
+                self.release_write(charge);
+                Err(StorageError::ServerError {
+                    status: 400,
+                    message: e,
+                })
+            }
+        }
     }
 
     fn append_authorized_recovery_record_inner(
@@ -1661,6 +1945,16 @@ impl OperatorState {
     ) -> Result<usize, String> {
         peer.verify()
             .map_err(|e| format!("Invalid peer signature: {}", e))?;
+        // Freshness: the timestamp is signature-covered, so these bounds
+        // close replay of stale announces and immortal future-dated ones.
+        // Covers the HTTP route, the P2P mirror, and test callers alike.
+        let now = Utc::now().timestamp() as u64;
+        if peer.timestamp_utc > now.saturating_add(MAX_PEER_ANNOUNCE_SKEW_SECS) {
+            return Err("Peer announcement timestamp is too far in the future".into());
+        }
+        if now.saturating_sub(peer.timestamp_utc) >= MAX_PEER_ANNOUNCE_AGE_SECS {
+            return Err("Peer announcement is stale".into());
+        }
         let endpoint = peer.endpoint.trim();
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
             || endpoint.contains('@')
@@ -2134,6 +2428,22 @@ mod tests {
         let mut bad_peer = peer.clone();
         bad_peer.signature_hex = hex::encode([0x00u8; 64]);
         assert!(state.register_peer(bad_peer).is_err());
+
+        // Stale and future-dated announces are rejected even with a VALID
+        // signature (re-signed after backdating so only freshness fails).
+        let now = Utc::now().timestamp() as u64;
+        let mut stale = peer.clone();
+        stale.timestamp_utc = now - MAX_PEER_ANNOUNCE_AGE_SECS - 1;
+        stale.sign(&peer_key);
+        assert!(state.register_peer(stale).is_err());
+
+        let mut future = peer.clone();
+        future.timestamp_utc = now + MAX_PEER_ANNOUNCE_SKEW_SECS + 1;
+        future.sign(&peer_key);
+        assert!(state.register_peer(future).is_err());
+
+        // Control: the fresh descriptor still registers.
+        assert!(state.register_peer(peer.clone()).is_ok());
 
         // Routing state survives an operator restart.
         drop(state);

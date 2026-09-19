@@ -1,5 +1,5 @@
 use ed25519_dalek::SigningKey;
-use reqwest::{header, Client};
+use reqwest::Client;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,19 +7,18 @@ use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::compute_digest;
 
 use crate::error::StorageError;
+use crate::transport::{HttpTransport, OperatorTransport, SharedIdentity, SharedScope};
 use crate::types::{
-    AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt, LeaseRequest,
-    OperatorInfo, PosChallengeRequest, ProofOfStorageReceipt, RecoveryRecordsResponse,
-    SessionRequest, SessionResponse,
+    ChallengeRequest, LeaseReceipt, OperatorInfo, ProofOfStorageReceipt, SessionRequest,
 };
 
 #[derive(Clone)]
 pub struct OperatorClient {
     endpoint: String,
-    http: Client,
-    vault_scope: Arc<Mutex<Option<String>>>,
-    account_identity: Arc<Mutex<Option<(String, String)>>>,
-    trace_id: Arc<Mutex<Option<String>>>,
+    transport: Arc<dyn OperatorTransport>,
+    vault_scope: SharedScope,
+    account_identity: SharedIdentity,
+    trace_id: SharedScope,
 }
 
 impl OperatorClient {
@@ -35,9 +34,33 @@ impl OperatorClient {
     /// shares its connection pool, allowing recurring probes to reuse TCP
     /// connections instead of paying a cross-region handshake every sample.
     pub fn with_http_client(endpoint: String, http: Client) -> Self {
+        let endpoint = endpoint.trim_end_matches('/').to_string();
+        let vault_scope = Arc::new(Mutex::new(None));
+        let account_identity = Arc::new(Mutex::new(None));
+        let trace_id = Arc::new(Mutex::new(None));
+        let transport = HttpTransport::with_shared(
+            endpoint.clone(),
+            http,
+            Arc::clone(&vault_scope),
+            Arc::clone(&account_identity),
+            Arc::clone(&trace_id),
+        );
+        Self {
+            endpoint,
+            transport: Arc::new(transport),
+            vault_scope,
+            account_identity,
+            trace_id,
+        }
+    }
+
+    /// Creates a client over an explicit transport (loopback memory, future
+    /// P2P streams). Identity/trace setters keep working; transports that do
+    /// not need them simply ignore the shared state.
+    pub fn with_transport(endpoint: String, transport: Arc<dyn OperatorTransport>) -> Self {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            http,
+            transport,
             vault_scope: Arc::new(Mutex::new(None)),
             account_identity: Arc::new(Mutex::new(None)),
             trace_id: Arc::new(Mutex::new(None)),
@@ -90,6 +113,13 @@ impl OperatorClient {
         }
     }
 
+    /// Stages the write voucher attached to subsequent requests (`None`
+    /// clears it). Each operator honors only vouchers it issued itself,
+    /// so multi-operator callers stage a different voucher per client.
+    pub fn set_write_voucher(&self, voucher: Option<crate::vouchers::WriteVoucher>) {
+        self.transport.set_write_voucher(voucher);
+    }
+
     fn account_identity(&self) -> Option<(String, String)> {
         self.account_identity
             .lock()
@@ -97,47 +127,12 @@ impl OperatorClient {
             .and_then(|identity| identity.clone())
     }
 
-    fn with_identity_binding(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self.account_identity() {
-            Some((account_id, device_id_hex)) => request
-                .header("X-CipherVault-Account-Id", account_id)
-                .header("X-CipherVault-Device-Id", device_id_hex),
-            None => request,
-        }
-    }
-
-    fn with_vault_scope(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let request = match self.vault_scope.lock().ok().and_then(|scope| scope.clone()) {
-            Some(scope) => request.header("X-CipherVault-Id", scope),
-            None => request,
-        };
-        let request = match self.trace_id.lock().ok().and_then(|id| id.clone()) {
-            Some(trace_id) => request.header("X-CipherVault-Trace-Id", trace_id),
-            None => request,
-        };
-        self.with_identity_binding(request)
-    }
-
-    fn with_service_token(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
-            Ok(token) if !token.is_empty() => request.header("X-CipherVault-Service-Token", token),
-            _ => request,
-        }
-    }
-
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
     pub async fn get_info(&self) -> Result<OperatorInfo, StorageError> {
-        let url = format!("{}/v1/info", self.endpoint);
-        let resp = self.http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        let info = resp.json::<OperatorInfo>().await?;
+        let info = self.transport.fetch_info().await?;
         if !info.identity_signature_hex.is_empty() && !info.verify_identity_signature() {
             return Err(StorageError::ServerError {
                 status: 502,
@@ -186,24 +181,15 @@ impl OperatorClient {
         let identity = self.account_identity();
 
         // 1. Request challenge
-        let challenge_url = format!("{}/v1/challenges", self.endpoint);
-        let c_resp = self
-            .with_identity_binding(self.http.post(&challenge_url))
-            .json(&ChallengeRequest {
+        let challenge = self
+            .transport
+            .request_challenge(ChallengeRequest {
                 vault_id_hex: vault_hex.clone(),
                 public_key_hex: pk_hex.clone(),
                 account_id: identity.as_ref().map(|(account_id, _)| account_id.clone()),
                 device_id_hex: identity.as_ref().map(|(_, device_id)| device_id.clone()),
             })
-            .send()
             .await?;
-
-        if !c_resp.status().is_success() {
-            let status = c_resp.status().as_u16();
-            let message = c_resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        let challenge = c_resp.json::<ChallengeResponse>().await?;
 
         // 2. Sign challenge nonce
         let nonce_bytes =
@@ -215,23 +201,14 @@ impl OperatorClient {
         let sig_hex = hex::encode(sig);
 
         // 3. Redeem session
-        let session_url = format!("{}/v1/sessions", self.endpoint);
-        let s_resp = self
-            .with_identity_binding(self.http.post(&session_url))
-            .json(&SessionRequest {
+        let session = self
+            .transport
+            .redeem_session(SessionRequest {
                 challenge_id: challenge.challenge_id,
                 public_key_hex: pk_hex,
                 signature_hex: sig_hex,
             })
-            .send()
             .await?;
-
-        if !s_resp.status().is_success() {
-            let status = s_resp.status().as_u16();
-            let message = s_resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        let session = s_resp.json::<SessionResponse>().await?;
         if let Ok(mut scope) = self.vault_scope.lock() {
             *scope = Some(vault_hex);
         }
@@ -244,60 +221,19 @@ impl OperatorClient {
         cid: &[u8; 32],
         data: Vec<u8>,
     ) -> Result<(), StorageError> {
-        let cid_hex = hex::encode(cid);
-        let url = format!("{}/v1/objects/{}", self.endpoint, cid_hex);
-
-        let resp = self
-            .with_vault_scope(self.http.put(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .body(data)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        Ok(())
+        self.transport.put_object(token, cid, data).await
     }
 
     pub async fn revoke_session(&self, token: &str) -> Result<(), StorageError> {
-        let url = format!("{}/v1/sessions/revoke", self.endpoint);
-        let resp = self
-            .with_vault_scope(self.http.post(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        Ok(())
+        self.transport.revoke_session(token).await
     }
 
     pub async fn get_object(&self, token: &str, cid: &[u8; 32]) -> Result<Vec<u8>, StorageError> {
-        let cid_hex = hex::encode(cid);
-        let url = format!("{}/v1/objects/{}", self.endpoint, cid_hex);
-
-        let resp = self
-            .with_vault_scope(self.http.get(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-
-        let bytes = resp.bytes().await?.to_vec();
+        let bytes = self.transport.fetch_object_bytes(token, cid).await?;
         let actual_digest = compute_digest(&bytes);
 
         if actual_digest != *cid {
+            let cid_hex = hex::encode(cid);
             return Err(StorageError::DigestMismatch {
                 cid: cid_hex,
                 expected: hex::encode(cid),
@@ -316,26 +252,7 @@ impl OperatorClient {
         cid: &[u8; 32],
         nonce: &[u8; 32],
     ) -> Result<ProofOfStorageReceipt, StorageError> {
-        let cid_hex = hex::encode(cid);
-        let url = format!("{}/v1/objects/{}/challenge", self.endpoint, cid_hex);
-
-        let resp = self
-            .with_vault_scope(self.http.post(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .json(&PosChallengeRequest {
-                nonce_hex: hex::encode(nonce),
-            })
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-
-        let receipt = resp.json::<ProofOfStorageReceipt>().await?;
-        Ok(receipt)
+        self.transport.challenge_object_pos(token, cid, nonce).await
     }
 
     pub async fn commit_lease(
@@ -345,26 +262,9 @@ impl OperatorClient {
         byte_count: u64,
         term_days: u32,
     ) -> Result<LeaseReceipt, StorageError> {
-        let url = format!("{}/v1/leases", self.endpoint);
-        let resp = self
-            .with_vault_scope(self.http.post(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .json(&LeaseRequest {
-                closure_digest_hex: hex::encode(closure_digest),
-                byte_count,
-                term_days,
-            })
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-
-        let receipt = resp.json::<LeaseReceipt>().await?;
-        Ok(receipt)
+        self.transport
+            .commit_lease(token, closure_digest, byte_count, term_days)
+            .await
     }
 
     pub async fn renew_lease(
@@ -374,25 +274,9 @@ impl OperatorClient {
         additional_days: u32,
         byte_count: u64,
     ) -> Result<LeaseReceipt, StorageError> {
-        let url = format!("{}/v1/leases/{}/renew", self.endpoint, lease_id);
-        let resp = self
-            .with_vault_scope(self.http.post(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .json(&crate::types::LeaseRenewRequest {
-                additional_days,
-                byte_count,
-            })
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-
-        let receipt = resp.json::<LeaseReceipt>().await?;
-        Ok(receipt)
+        self.transport
+            .renew_lease(token, lease_id, additional_days, byte_count)
+            .await
     }
 
     pub async fn append_recovery_record(
@@ -401,81 +285,27 @@ impl OperatorClient {
         locator: &[u8; 32],
         record_bytes: Vec<u8>,
     ) -> Result<u64, StorageError> {
-        let locator_hex = hex::encode(locator);
-        let url = format!("{}/v1/recovery/{}/records", self.endpoint, locator_hex);
-
-        let resp = self
-            .with_vault_scope(self.http.post(&url))
-            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .body(record_bytes)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-
-        let result = resp.json::<AppendRecordResponse>().await?;
-        Ok(result.sequence)
+        self.transport
+            .append_recovery_record(token, locator, record_bytes)
+            .await
     }
 
     pub async fn get_recovery_records(
         &self,
         locator: &[u8; 32],
     ) -> Result<Vec<Vec<u8>>, StorageError> {
-        let locator_hex = hex::encode(locator);
-        let url = format!("{}/v1/recovery/{}/records", self.endpoint, locator_hex);
-
-        let resp = self.http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-
-        let body = resp.json::<RecoveryRecordsResponse>().await?;
-        let mut out = Vec::new();
-        for r_hex in body.records_hex {
-            let b = hex::decode(r_hex).map_err(|e| StorageError::ServerError {
-                status: 500,
-                message: e.to_string(),
-            })?;
-            out.push(b);
-        }
-        Ok(out)
+        self.transport.get_recovery_records(locator).await
     }
 
     pub async fn announce_peer(
         &self,
         descriptor: &crate::types::PeerDescriptor,
     ) -> Result<(), StorageError> {
-        let url = format!("{}/v1/peers/announce", self.endpoint);
-        let resp = self
-            .with_service_token(self.http.post(&url))
-            .json(descriptor)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        Ok(())
+        self.transport.announce_peer(descriptor).await
     }
 
     pub async fn get_peers(&self) -> Result<Vec<crate::types::PeerDescriptor>, StorageError> {
-        let url = format!("{}/v1/peers", self.endpoint);
-        let resp = self.with_service_token(self.http.get(&url)).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        let peers = resp.json::<Vec<crate::types::PeerDescriptor>>().await?;
-        Ok(peers)
+        self.transport.get_peers().await
     }
 
     /// Fetches pending out-of-band approval challenges (R14 dashboard queue).
@@ -483,17 +313,20 @@ impl OperatorClient {
     pub async fn get_pending_approvals(
         &self,
     ) -> Result<Vec<crate::types::PendingApprovalChallenge>, StorageError> {
-        let url = format!("{}/v1/auth/challenges/pending", self.endpoint);
-        let resp = self.with_service_token(self.http.get(&url)).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let message = resp.text().await.unwrap_or_default();
-            return Err(StorageError::ServerError { status, message });
-        }
-        let challenges = resp
-            .json::<Vec<crate::types::PendingApprovalChallenge>>()
-            .await?;
-        Ok(challenges)
+        self.transport.get_pending_approvals().await
+    }
+
+    /// Issues a self-signed write voucher from the operator (D4 barter).
+    /// Operator-local administration: service-token auth, HTTP only.
+    pub async fn issue_voucher(
+        &self,
+        holder_pk_hex: &str,
+        quota_bytes: u64,
+        ttl_secs: u64,
+    ) -> Result<crate::vouchers::WriteVoucher, StorageError> {
+        self.transport
+            .issue_voucher(holder_pk_hex, quota_bytes, ttl_secs)
+            .await
     }
 }
 

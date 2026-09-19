@@ -94,6 +94,15 @@ pub struct LeaseRenewRequest {
     pub byte_count: u64,
 }
 
+/// `POST /v1/vouchers` body. Mirrors the operator handler shape; issuance
+/// is operator-local administration (service-token auth, HTTP only).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VoucherIssueRequest {
+    pub holder_pk_hex: String,
+    pub quota_bytes: u64,
+    pub ttl_secs: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LeaseReceipt {
     pub lease_id: String,
@@ -343,6 +352,16 @@ impl PeerDescriptor {
             message: format!("Cryptographic peer announcement signature invalid: {}", e),
         })
     }
+}
+
+/// Standard JSON error envelope for operator HTTP failures.
+/// Produced by the `json_error_envelope` middleware from every
+/// text/plain error response; `HttpTransport::check_ok` parses it
+/// back into `StorageError::ServerError { status, message }`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ApiErrorBody {
+    pub code: u16,
+    pub error: String,
 }
 
 #[cfg(test)]

@@ -1,0 +1,12 @@
+[package]
+name = "d7-erasure"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone spike workspace: deliberately NOT a member of the CipherVault
+# workspace, so its deps never touch the main gates
+# (`cargo test --workspace` from the repo root ignores this directory).
+[workspace]
+
+[dependencies]
+reed-solomon-simd = "3"

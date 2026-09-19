@@ -12,6 +12,20 @@ use std::time::Duration;
 /// Histogram bucket upper bounds in milliseconds.
 const LATENCY_BOUNDS_MS: [u64; 6] = [1, 5, 25, 100, 500, 5000];
 
+/// Reserved Prometheus series names for the decentralized swarm (DON plan,
+/// Phase 0). Name reservation only: these series are NOT rendered until the
+/// swarm lands, so exposition output is byte-identical with or without them.
+pub const SWARM_METRIC_NAMES: &[&str] = &[
+    "ciphervault_swarm_peers_connected",
+    "ciphervault_swarm_dht_lookups_total",
+    "ciphervault_swarm_dht_lookup_failures_total",
+    "ciphervault_swarm_chunk_pushes_total",
+    "ciphervault_swarm_chunk_gets_total",
+    // NOTE: `ciphervault_swarm_repair_bytes_total` graduated from this
+    // list in Phase 4 slice 2 (it renders below now).
+    "ciphervault_swarm_dht_lookup_latency_ms",
+];
+
 /// Fixed-bucket latency histogram over atomic counters (cumulative buckets).
 pub struct LatencyHistogram {
     buckets: [AtomicU64; 6],
@@ -78,6 +92,25 @@ pub struct OperatorMetrics {
     recovery_reads_total: AtomicU64,
     recovery_records_read_total: AtomicU64,
     auth_failures_total: AtomicU64,
+    heartbeats_sent_total: AtomicU64,
+    heartbeats_received_total: AtomicU64,
+    heartbeats_dropped_bad_envelope_total: AtomicU64,
+    heartbeats_dropped_bad_version_total: AtomicU64,
+    heartbeats_dropped_clock_skew_total: AtomicU64,
+    heartbeats_dropped_unknown_sender_total: AtomicU64,
+    heartbeats_dropped_bad_signature_total: AtomicU64,
+    heartbeats_dropped_stale_seq_total: AtomicU64,
+    control_unknown_kind_ignored_total: AtomicU64,
+    peers_live: AtomicU64,
+    repair_checks_total: AtomicU64,
+    repair_jobs_started_total: AtomicU64,
+    repair_jobs_completed_total: AtomicU64,
+    repair_jobs_failed_total: AtomicU64,
+    repair_backoff_total: AtomicU64,
+    repair_cooldown_suppressed_total: AtomicU64,
+    repair_bucket_deferred_total: AtomicU64,
+    repair_budget_exhausted_total: AtomicU64,
+    repair_bytes_total: AtomicU64,
     request_latency_ms: LatencyHistogram,
     put_latency_ms: LatencyHistogram,
     get_latency_ms: LatencyHistogram,
@@ -106,6 +139,25 @@ impl OperatorMetrics {
             recovery_reads_total: AtomicU64::new(0),
             recovery_records_read_total: AtomicU64::new(0),
             auth_failures_total: AtomicU64::new(0),
+            heartbeats_sent_total: AtomicU64::new(0),
+            heartbeats_received_total: AtomicU64::new(0),
+            heartbeats_dropped_bad_envelope_total: AtomicU64::new(0),
+            heartbeats_dropped_bad_version_total: AtomicU64::new(0),
+            heartbeats_dropped_clock_skew_total: AtomicU64::new(0),
+            heartbeats_dropped_unknown_sender_total: AtomicU64::new(0),
+            heartbeats_dropped_bad_signature_total: AtomicU64::new(0),
+            heartbeats_dropped_stale_seq_total: AtomicU64::new(0),
+            control_unknown_kind_ignored_total: AtomicU64::new(0),
+            peers_live: AtomicU64::new(0),
+            repair_checks_total: AtomicU64::new(0),
+            repair_jobs_started_total: AtomicU64::new(0),
+            repair_jobs_completed_total: AtomicU64::new(0),
+            repair_jobs_failed_total: AtomicU64::new(0),
+            repair_backoff_total: AtomicU64::new(0),
+            repair_cooldown_suppressed_total: AtomicU64::new(0),
+            repair_bucket_deferred_total: AtomicU64::new(0),
+            repair_budget_exhausted_total: AtomicU64::new(0),
+            repair_bytes_total: AtomicU64::new(0),
             request_latency_ms: LatencyHistogram::new(),
             put_latency_ms: LatencyHistogram::new(),
             get_latency_ms: LatencyHistogram::new(),
@@ -196,6 +248,105 @@ impl OperatorMetrics {
 
     pub fn observe_auth_failure(&self) {
         self.auth_failures_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one heartbeat published on the control topic.
+    pub fn observe_heartbeat_sent(&self) {
+        self.heartbeats_sent_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one heartbeat that verified and advanced liveness.
+    pub fn observe_heartbeat_received(&self) {
+        self.heartbeats_received_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one dropped heartbeat by verification-stage reason.
+    /// `reason` must be one of: `bad_envelope`, `bad_version`,
+    /// `clock_skew`, `unknown_sender`, `bad_signature`, `stale_seq`.
+    /// Unknown reasons are ignored (never panic on a metric path).
+    pub fn observe_heartbeat_dropped(&self, reason: &str) {
+        let counter = match reason {
+            "bad_envelope" => &self.heartbeats_dropped_bad_envelope_total,
+            "bad_version" => &self.heartbeats_dropped_bad_version_total,
+            "clock_skew" => &self.heartbeats_dropped_clock_skew_total,
+            "unknown_sender" => &self.heartbeats_dropped_unknown_sender_total,
+            "bad_signature" => &self.heartbeats_dropped_bad_signature_total,
+            "stale_seq" => &self.heartbeats_dropped_stale_seq_total,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one well-formed control message of an unknown kind that
+    /// was ignored for forward compatibility.
+    pub fn observe_control_unknown_kind(&self) {
+        self.control_unknown_kind_ignored_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Sets the current live-peer gauge. Called by the swarm loop, which
+    /// owns the liveness view; the gauge renders the last set value.
+    pub fn set_peers_live(&self, live: u64) {
+        self.peers_live.store(live, Ordering::Relaxed);
+    }
+
+    /// Records one repair assessment (provider query answered, plan
+    /// computed — whatever the outcome).
+    pub fn observe_repair_check(&self) {
+        self.repair_checks_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one repair push sent (sender side).
+    pub fn observe_repair_started(&self) {
+        self.repair_jobs_started_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one repair push that finished OK. Fed by both roles:
+    /// senders count `RepairDone`, receivers count accepts.
+    pub fn observe_repair_completed(&self) {
+        self.repair_jobs_completed_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one repair push that failed (any role, any terminal
+    /// reason except receiver budget exhaustion, which has its own
+    /// series so 429s are distinguishable from rejections).
+    pub fn observe_repair_failed(&self) {
+        self.repair_jobs_failed_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one sender backoff scheduled after a 429 or transport
+    /// failure (paced retry, not a terminal failure).
+    pub fn observe_repair_backoff(&self) {
+        self.repair_backoff_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one repair assessment skipped by per-CID cooldown.
+    pub fn observe_repair_cooldown_suppressed(&self) {
+        self.repair_cooldown_suppressed_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one planned push deferred for lack of sender bucket
+    /// tokens (repair falling behind its bandwidth budget).
+    pub fn observe_repair_bucket_deferred(&self) {
+        self.repair_bucket_deferred_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one push 429ed by the receiver-side repair budget.
+    pub fn observe_repair_budget_exhausted(&self) {
+        self.repair_budget_exhausted_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records repair bytes on the wire (sender counts at send,
+    /// receiver at accept).
+    pub fn observe_repair_bytes(&self, bytes: u64) {
+        self.repair_bytes_total.fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub fn uptime_secs(&self) -> u64 {
@@ -313,6 +464,128 @@ impl OperatorMetrics {
             "Session validations that failed.",
             self.auth_failures_total.load(Ordering::Relaxed),
         );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_sent_total",
+            "Liveness heartbeats published on the control topic.",
+            self.heartbeats_sent_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_received_total",
+            "Heartbeats that verified and advanced liveness.",
+            self.heartbeats_received_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_dropped_bad_envelope_total",
+            "Control messages that did not parse as a control envelope.",
+            self.heartbeats_dropped_bad_envelope_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_dropped_bad_version_total",
+            "Heartbeats with an unknown wire version.",
+            self.heartbeats_dropped_bad_version_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_dropped_clock_skew_total",
+            "Heartbeats outside the accepted clock-skew window.",
+            self.heartbeats_dropped_clock_skew_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_dropped_unknown_sender_total",
+            "Heartbeats from operators with no verified announced key.",
+            self.heartbeats_dropped_unknown_sender_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_dropped_bad_signature_total",
+            "Heartbeats failing signature verification.",
+            self.heartbeats_dropped_bad_signature_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_heartbeats_dropped_stale_seq_total",
+            "Heartbeats with replayed or reordered sequence numbers.",
+            self.heartbeats_dropped_stale_seq_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_control_unknown_kind_ignored_total",
+            "Well-formed control messages of unknown kinds ignored for forward compatibility.",
+            self.control_unknown_kind_ignored_total
+                .load(Ordering::Relaxed),
+        );
+        render_gauge(
+            &mut out,
+            "ciphervault_swarm_peers_live",
+            "Peers with a heartbeat inside the liveness timeout.",
+            self.peers_live.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_checks_total",
+            "Repair assessments completed (plan computed).",
+            self.repair_checks_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_jobs_started_total",
+            "Repair pushes sent.",
+            self.repair_jobs_started_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_jobs_completed_total",
+            "Repair pushes finished OK (sender RepairDone + receiver accepts).",
+            self.repair_jobs_completed_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_jobs_failed_total",
+            "Repair pushes terminally failed (either role).",
+            self.repair_jobs_failed_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_backoff_total",
+            "Sender backoffs scheduled after 429 or transport failure.",
+            self.repair_backoff_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_cooldown_suppressed_total",
+            "Repair assessments skipped by per-CID cooldown.",
+            self.repair_cooldown_suppressed_total
+                .load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_bucket_deferred_total",
+            "Planned pushes deferred for lack of sender bucket tokens.",
+            self.repair_bucket_deferred_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_budget_exhausted_total",
+            "Pushes 429ed by the receiver-side repair budget.",
+            self.repair_budget_exhausted_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_repair_bytes_total",
+            "Repair bytes on the wire (sent + accepted).",
+            self.repair_bytes_total.load(Ordering::Relaxed),
+        );
         out.push_str("# HELP ciphervault_operator_uptime_seconds Seconds since process start.\n");
         out.push_str("# TYPE ciphervault_operator_uptime_seconds gauge\n");
         out.push_str(&format!(
@@ -352,6 +625,12 @@ impl Default for OperatorMetrics {
 fn render_counter(out: &mut String, name: &str, help: &str, value: u64) {
     out.push_str(&format!("# HELP {name} {help}\n"));
     out.push_str(&format!("# TYPE {name} counter\n"));
+    out.push_str(&format!("{name} {value}\n"));
+}
+
+fn render_gauge(out: &mut String, name: &str, help: &str, value: u64) {
+    out.push_str(&format!("# HELP {name} {help}\n"));
+    out.push_str(&format!("# TYPE {name} gauge\n"));
     out.push_str(&format!("{name} {value}\n"));
 }
 

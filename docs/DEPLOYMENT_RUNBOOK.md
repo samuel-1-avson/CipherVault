@@ -361,7 +361,7 @@ cargo test -p ciphervault-cli --release --test push_bench -- --ignored --nocaptu
 - `CIPHERVAULT_BENCH_ASSERT=1`: fail unless concurrent is >=2x faster than
   sequential. Default is warn-only so shared CI runners never flake the build.
 
-Phase 3 done-condition: p50 `push --pos` >=2x on a 3-node cluster. Record the
+Phase 3 done-condition: p50 `push` >=2x on a 3-node cluster. Record the
 maintainer-run numbers here: sequential ___s, concurrent ___s, speedup ___x,
 date/runner ___.
 

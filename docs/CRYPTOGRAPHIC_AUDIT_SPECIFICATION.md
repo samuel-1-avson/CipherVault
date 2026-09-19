@@ -6,8 +6,8 @@
 ## 1. Executive Summary & Security Objectives
 
 **CipherVault** is a decentralized, zero-knowledge secret backup and disaster recovery platform. The cryptographic protocol is designed to provide:
-1. **Confidentiality against Untrusted Operators (IND-CCA2)**: Storage operators observe only opaque, authenticated chunk wire objects indexed by content-derived IDs ($CID = \text{BLAKE2b}(C)$). Operators cannot determine file names, directory structures, variable counts, or plaintext contents.
-2. **Side-Channel Resistance & Constant-Time Arithmetic**: Threshold Shamir share evaluation and Galois Field $\text{GF}(2^8)$ arithmetic execute in strictly branchless, constant-time operations.
+1. **Confidentiality against Untrusted Operators (IND-CCA2)**: Storage operators observe only opaque, authenticated chunk wire objects indexed by content-derived IDs ($CID = \text{SHA-256}(\text{canonical-CBOR}(C))$). Operators cannot determine file names, directory structures, variable counts, or plaintext contents.
+2. **Side-Channel Resistance & Constant-Time Arithmetic**: Galois Field $\text{GF}(2^8)$ multiplication (`gf_mul`) executes in strictly branchless, constant-time operations; the branchless claim is scoped to `gf_mul` only, not to the surrounding share-evaluation loops.
 3. **Hardware-Anchored Device Identity**: Physical capacitive touch confirmation (`Slot 9C` on YubiKey PIV) enforces physical user presence before snapshot head records can be signed.
 4. **Memory Hygiene & Zero-Disk Exposure**: Decryption keys and plaintext files are scrubbed using compiler-fenced zeroization (`zeroize::ZeroizeOnDrop`) and injected strictly via in-memory process environment blocks.
 
@@ -17,9 +17,9 @@
 
 | Primitive | Standard / RFC | Parameterization / Key Size | Domain / Usage |
 | :--- | :--- | :--- | :--- |
-| **Symmetric AEAD** | RFC 8439 | ChaCha20-Poly1305 (256-bit key, 96-bit nonce, 128-bit MAC tag) | Chunk payload & manifest encryption |
-| **Key Derivation (KDF)** | RFC 5869 | HKDF-SHA256 (Extract-then-Expand) | Epoch keys, file version keys, manifest keys |
-| **Content Addressing** | RFC 7693 | BLAKE2b-256 (32-byte digest) | Chunk Content Identifiers (CIDs) |
+| **Symmetric AEAD** | draft-irtf-cfrg-xchacha | XChaCha20-Poly1305 (256-bit key, 192-bit/24-byte nonce, 128-bit MAC tag) | Chunk payload & manifest encryption |
+| **Key Derivation (KDF)** | CipherVault custom (NOT HKDF, NOT libsodium-compatible) | Blake2b-512 with `CipherVault-KDF-v1` prefix + 8-byte context + LE index, truncated to 32 bytes | Epoch keys, file version keys, manifest keys, chunk nonces |
+| **Content Addressing** | FIPS 180-4 | SHA-256 (32-byte digest) over canonical CBOR | Chunk Content Identifiers (CIDs) |
 | **Digital Signatures** | RFC 8032 | Ed25519 (EdDSA over Curve25519) | Snapshot records, head commitments, device certs |
 | **Key Agreement (ECDH)** | RFC 7748 | X25519 | Clean-machine sealed envelopes & recovery |
 | **Threshold Secret Sharing** | Shamir (1979) | Galois Field $\text{GF}(2^8)$ with polynomial $0x11B$ | $M$-of-$N$ guardian disaster recovery |
@@ -29,7 +29,7 @@
 
 ## 3. Key Derivation Hierarchy & Domain Separation Registry
 
-All key derivations use domain-separated HKDF-SHA256 or BLAKE2b hashes with explicit context strings:
+All key derivations use the domain-separated custom KDF (Blake2b-512 over the `CipherVault-KDF-v1` prefix, an 8-byte context, the subkey material, and the master key) or plain SHA-256/Blake2b hashes, with explicit context strings:
 
 ```
                           Master Recovery Secret R (32 bytes)
@@ -55,12 +55,12 @@ All key derivations use domain-separated HKDF-SHA256 or BLAKE2b hashes with expl
 
 | Context String | Primitives | Purpose |
 | :--- | :--- | :--- |
-| `b"CipherVault-RecoverySigningKey-v1"` | HKDF-SHA256 | Derives Ed25519 recovery signing key from $R$ |
-| `b"CipherVault-RecoveryEncryptionKey-v1"` | HKDF-SHA256 | Derives X25519 recovery public encryption key from $R$ |
-| `b"CipherVault-Locator-v1"` | BLAKE2b-256 | Computes public vault locator from $R_{PK}$ |
-| `b"CipherVault-ManifestKey-v1"` | HKDF-SHA256 | Derives manifest encryption key from epoch key |
-| `b"CipherVault-FileVersionKey-v1"` | HKDF-SHA256 | Derives deterministic file key bound to epoch |
-| `b"CipherVault-ChunkNonce-v1"` | HKDF-SHA256 | Derives deterministic 12-byte AEAD nonce per chunk |
+| `b"CV_RSIGN"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives Ed25519 recovery signing key from $R$ |
+| `b"CV_RENCR"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives X25519 recovery encryption key from $R$ |
+| `b"CV_RLOCA"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives public vault locator material |
+| `b"CV_MANIF"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives manifest encryption key from epoch key |
+| `b"CV_FVERS"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives deterministic file key bound to epoch + plaintext SHA-256 |
+| `b"CV_CNONC"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives deterministic 24-byte XChaCha20 nonce per chunk |
 | `b"CIPHERVAULT-POS-V1"` | BLAKE2b-256 | Domain separator for Proof-of-Storage challenges |
 | `b"CipherVault-ApprovalChallenge-v1"`| BLAKE2b-256 | Out-of-band authorization challenge hashing |
 

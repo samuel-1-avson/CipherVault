@@ -75,3 +75,30 @@ async fn metrics_endpoint_and_trace_echo() {
     assert!(exposition.contains("ciphervault_operator_objects_put_bytes_total 21"));
     assert!(exposition.contains("# TYPE ciphervault_operator_put_latency_ms histogram"));
 }
+
+/// Phase 0: reserved swarm series names exist but render nothing yet, so
+/// exposition output is unchanged until the swarm lands.
+#[tokio::test]
+async fn swarm_metric_names_reserved_but_not_rendered() {
+    assert!(!ciphervault_operator::metrics::SWARM_METRIC_NAMES.is_empty());
+    let root = std::env::temp_dir().join(format!("cv-metrics-swarm-{}", rand::random::<u128>()));
+    let state = Arc::new(OperatorState::new(
+        "metrics-swarm-test".into(),
+        root.clone(),
+        generate_signing_key(),
+    ));
+    let app = create_router(Arc::clone(&state));
+    let response = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    let exposition = String::from_utf8(body.to_vec()).unwrap();
+    for name in ciphervault_operator::metrics::SWARM_METRIC_NAMES {
+        assert!(
+            !exposition.contains(name),
+            "reserved swarm series must not render yet: {name}"
+        );
+    }
+}

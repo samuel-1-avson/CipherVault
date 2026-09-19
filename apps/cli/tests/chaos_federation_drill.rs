@@ -170,7 +170,6 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
             "push",
             "--message",
             "Phase 1: Production secrets initial snapshot",
-            "--pos",
         ])
         .current_dir(&client_laptop)
         .output()

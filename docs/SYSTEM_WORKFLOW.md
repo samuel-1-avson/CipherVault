@@ -12,7 +12,7 @@
 
 ### Fundamental Security Axioms
 1. **Zero Plaintext at Rest**: Local database secrets (device signing keys, active epoch encryption keys) are protected using OS-native credential storage (Windows DPAPI or machine-entropy AEAD).
-2. **Zero Plaintext Leakage to Operators**: Storage operators store opaque ciphertexts addressed by content digests (CIDs). Chunks, manifests, and head records are encrypted client-side using ChaCha20-Poly1305 with domain-separated derivation contexts.
+2. **Zero Plaintext Leakage to Operators**: Storage operators store opaque ciphertexts addressed by content digests (CIDs). Chunks, manifests, and head records are encrypted client-side using XChaCha20-Poly1305 with domain-separated derivation contexts.
 3. **RAM Zeroization & Zero-Disk Recovery Kit**: The master recovery secret $R$ is never persisted unencrypted to disk. During vault initialization, $R$ is printed exclusively to the terminal and immediately scrubbed from volatile memory using compiler-fence memory zeroization (`Zeroize` / `ZeroizeOnDrop`).
 4. **Autonomous Durability**: Replication requires proof-of-storage readback, while an autonomous maintenance fleet monitors replica durability and triggers self-repair across independent nodes.
 5. **Trustless L2 Settlement**: Vault head state commitments can be anchored on Arbitrum L2, providing immutable sequencing and tamper-evident audit trails.
@@ -25,7 +25,7 @@ Unlike traditional cloud SaaS tools where developers must register centralized a
 |---|---|---|
 | **Identity & Access** | Centralized username, password, OAuth, and API tokens. | **Self-sovereign cryptographic keypairs** derived locally from Master Secret $R$. No email, account, or registration. |
 | **Where Files Reside** | Centralized multi-tenant servers (e.g., Microsoft Azure / AWS). | **Untrusted Storage Operator Federation** holding opaque, client-side encrypted chunks. |
-| **Server Knowledge** | Host servers can inspect plaintexts, files, and metadata. | **Zero Knowledge**: Operators only observe BLAKE2b content hashes (CIDs). |
+| **Server Knowledge** | Host servers can inspect plaintexts, files, and metadata. | **Zero Knowledge**: Operators only observe SHA-256 content hashes (CIDs). |
 | **New Computer Recovery** | Log in with password + 2FA $\to$ clone repo. | Download binary $\to$ run `ciphervault recover --kit kit.txt` (or Shamir shares) to restore bit-for-bit onto virgin machine. |
 | **Blockchain / Wallet** | None. | **No cryptocurrency wallet required** (No MetaMask, seed phrases, or gas tokens for standard developer workflows). |
 | **Developer Synchronization** | Explicit `git push` / `git pull`. | **Dual Operating Modes**: Explicit manual CLI (`push`) or fully automated background file watcher (`watch --sync`). |
@@ -73,7 +73,7 @@ flowchart TB
     end
 
     subgraph Maintenance ["Durability & Fleet Daemon"]
-        FLT["Maintenance Scheduler\n(:8200 / SQLite WAL)"]
+        FLT["Maintenance Scheduler\n(SQLite WAL, no HTTP surface)"]
     end
 
     subgraph Settlement ["Arbitrum L2 Rollup"]
@@ -100,10 +100,10 @@ flowchart TB
 | **CipherVault CLI** (`apps/cli`) | Rust, Tokio, Clap, Axum | Command-line interface for init, tracking, snapshots, anchoring, guardian ceremonies, and web dashboard hosting. | Local Client Workstation |
 | **CipherVault Agent** (`apps/agent`) | Rust, Notify, Crossbeam | Background file-watcher service detecting secret file modifications and triggering debounced automated snapshots. | Local Daemon Service |
 | **Local Store** (`crates/local-store`) | SQLite WAL, DPAPI, Rusqlite | Transactional persistence of tracked file manifests, snapshot history DAG, device certificates, and durable upload queues. | `.ciphervault/vault.db` |
-| **Crypto Core** (`crates/crypto`) | ChaCha20-Poly1305, Ed25519, X25519, BLAKE2b, Shamir $\text{GF}(2^8)$ | Key hierarchy derivation, authenticated encryption, threshold secret sharing, and PIV APDU smartcard driver. | In-memory zeroized structures |
+| **Crypto Core** (`crates/crypto`) | XChaCha20-Poly1305, Ed25519, X25519, BLAKE2b, Shamir $\text{GF}(2^8)$ | Key hierarchy derivation, authenticated encryption, threshold secret sharing, and PIV APDU smartcard driver. | In-memory zeroized structures |
 | **Snapshot Engine** (`crates/snapshot`) | Pure-Rust FastCDC, Gear Hash | Content-defined chunking, deduplication detection, snapshot serialization (canonical CBOR), and atomic restore. | In-memory stream processing |
-| **Storage Operator** (`services/operator`) | Rust, Axum, RocksDB/Disk | Untrusted federated storage nodes holding encrypted chunks, serving PoS challenges, and storing recovery envelopes. | HTTP REST (`:8201-8203`) |
-| **Maintenance Daemon** (`services/maintenance`) | Rust, Reqwest, Rusqlite | Continuous heartbeat probing, replica quorum auditing, PoS integrity verification, and autonomous self-repair. | HTTP REST (`:8200`) |
+| **Storage Operator** (`services/operator`) | Rust, Axum, file-backed disk store (no embedded DB; redb chosen per D6, migration pending) | Untrusted federated storage nodes holding encrypted chunks, serving PoS challenges, and storing recovery envelopes. | HTTP REST (`:8201-8203` in compose; binary default `:8101`) |
+| **Maintenance Daemon** (`services/maintenance`) | Rust, Reqwest, Rusqlite | Continuous heartbeat probing, replica quorum auditing, PoS integrity verification, and autonomous self-repair. Daemon process; exposes no HTTP surface. | — |
 | **Arbitrum Registry** (`contracts/CipherVaultRegistry.sol`) | Solidity (0.8.28), Foundry | On-chain registration of state commitments (`setCommitment`), salt binding, and sequencer receipt validation. | Arbitrum One / Sepolia L2 |
 
 ---
@@ -130,7 +130,7 @@ graph TD
     end
 
     subgraph EpochKeys ["Epoch Key Hierarchy"]
-        EPOCH["Vault Epoch Key (EpochKey_v1)\nChaCha20-Poly1305 [32 Bytes]"]
+        EPOCH["Vault Epoch Key (EpochKey_v1)\nXChaCha20-Poly1305 [32 Bytes]"]
         ENV["Epoch Key Recovery Envelope\nX25519 Box Sealed with E_PK"]
         FVK["File Version Key\nHKDF(EpochKey, VaultID, ContentDigest)"]
         NONCE["Deterministic Chunk Nonce\nHKDF(FVK, ChunkIdx, Plaintext)"]
@@ -225,13 +225,13 @@ sequenceDiagram
     actor Dev as Developer / Watcher Agent
     participant CLI as CLI Snapshot Engine
     participant CDC as FastCDC Engine
-    participant AEAD as ChaCha20-Poly1305 Engine
+    participant AEAD as XChaCha20-Poly1305 Engine
     participant HSM as YubiKey PIV (Slot 9C)
     participant Pool as Multi-Operator Pool
     participant Ops as Storage Operators (1..N)
     participant Store as Local SQLite Store
 
-    Dev->>CLI: ciphervault push -m "Rotate DB credentials" [--pos] [--touch]
+    Dev->>CLI: ciphervault push -m "Rotate DB credentials" [--touch]
     CLI->>Store: Read tracked files (.env, credentials.json)
     
     loop For each tracked confidential file
@@ -239,7 +239,7 @@ sequenceDiagram
         CDC-->>CLI: Yield chunk byte slices
         loop For each chunk
             CLI->>AEAD: Derive deterministic FileVersionKey & ChunkNonce
-            AEAD->>AEAD: Encrypt chunk with ChaCha20-Poly1305 (AAD = CID)
+            AEAD->>AEAD: Encrypt chunk with XChaCha20-Poly1305 (AAD = CID)
             AEAD-->>CLI: Ciphertext chunk & Content Identifier (CID)
             
             alt Smart Deduplication / Proof-of-Storage Readback
@@ -341,7 +341,7 @@ The maintenance daemon runs as a continuous system service to ensure 3-of-3 repl
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Daemon as Maintenance Daemon (:8200)
+    participant Daemon as Maintenance Daemon (SQLite WAL, no HTTP)
     participant M_DB as Fleet SQLite DB (fleet.db)
     participant Ops as Storage Operators (1..3)
     participant UI as Web Dashboard SSE Stream
@@ -477,7 +477,7 @@ sequenceDiagram
     participant Watcher as Autonomous Agent (ciphervault watch)
     participant Debounce as 2s Sliding Debounce Buffer
     participant CDC as FastCDC Engine
-    participant AEAD as ChaCha20-Poly1305 Engine
+    participant AEAD as XChaCha20-Poly1305 Engine
     participant Ops as Storage Operator Federation
 
     Dev->>FS: Saves tracked secret (Ctrl+S in Editor)
@@ -796,7 +796,7 @@ still hardening.
 | **Cryptographic Security** | **10.0 / 10.0** | **Production Grade** | Branchless constant-time $\text{GF}(2^8)$ arithmetic, domain separation across all KDF/AEAD boundaries, memory zeroization fences on all secret buffers, physical YubiKey PIV Slot 9C hardware touch integration. |
 | **Durability & Quorum** | **10.0 / 10.0** | **Production Grade** | 3-node multi-region quorum (Iowa & South Carolina, ~1,000 miles apart). Real-time Proof-of-Storage challenge readback verified. Clean-machine recovery drill passed with 100% byte fidelity. |
 | **Developer Ergonomics** | **10.0 / 10.0** | **Production Grade** | Full-featured CLI, 6-tab terminal interface (`ratatui`), automatic `.gitignore` leak defense, zero-disk runtime secret injection (`ciphervault run`), and format-aware secret diffing (`ciphervault diff`). |
-| **Code Hygiene & Tests** | **10.0 / 10.0** | **Production Grade** | 100% test pass rate across all 10 workspace crates and 10 CLI integration suites. Zero Clippy warnings (`-D warnings`). Zero memory leaks. |
+| **Code Hygiene & Tests** | **10.0 / 10.0** | **Production Grade** | 100% test pass rate across 6 workspace crates, 20 CLI integration suites, and 63 total suites (`cargo test --workspace --locked`, 2026-09-18). Zero Clippy warnings (`-D warnings`). |
 | **Cloud Operations** | **9.5 / 10.0** | **Production Ready** | One-click GCP automated deployment scripts (`deploy-operators.ps1`, `deploy-operators.sh`). Live cluster running on cost-optimized `e2-micro` instances at ~$0.97/day. |
 | **Distribution & Packages** | **9.5 / 10.0** | **Production Ready** | Official release `v1.0.0` tagged and published, Homebrew, Scoop, and Winget installation manifests, SHA-256 release manifests, multi-platform build matrix. |
 

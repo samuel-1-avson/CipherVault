@@ -61,7 +61,7 @@
 
   <!-- Step 1 -->
   <line x1="77" y1="125" x2="213" y2="125" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
-  <text x="145" y="118" text-anchor="middle" fill="#f8fafc" font-size="10">ciphervault push -m "Config" --pos --touch</text>
+  <text x="145" y="118" text-anchor="middle" fill="#f8fafc" font-size="10">ciphervault push -m "Config" --touch</text>
 
   <!-- Step 2 -->
   <line x1="217" y1="150" x2="358" y2="150" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />

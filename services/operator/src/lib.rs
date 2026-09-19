@@ -6,6 +6,7 @@
 pub mod handlers;
 pub mod metrics;
 pub mod state;
+pub mod swarm;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::middleware::{self, Next};
@@ -50,7 +51,41 @@ fn classify_route(path: &str) -> &'static str {
     if path.starts_with("/v1/identities") {
         return "identities";
     }
+    if path.starts_with("/v1/vouchers") {
+        return "vouchers";
+    }
     "other"
+}
+
+/// Error-envelope middleware: rewrites text/plain error responses into the
+/// standard JSON `{"code","error"}` shape (`ApiErrorBody`) so every
+/// operator failure has one parseable contract. Success, redirect, and
+/// already-structured bodies pass through untouched.
+async fn json_error_envelope(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    let status = response.status();
+    if status.is_success() || status.is_redirection() {
+        return response;
+    }
+    let is_text = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|content_type| content_type.starts_with("text/plain"));
+    if !is_text {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 * 1024)
+        .await
+        .unwrap_or_default();
+    let message = String::from_utf8_lossy(&bytes).into_owned();
+    let envelope = serde_json::json!({ "code": status.as_u16(), "error": message });
+    parts.headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    Response::from_parts(parts, axum::body::Body::from(envelope.to_string()))
 }
 
 /// Trace middleware (R11): extracts the client trace ID, echoes it back so
@@ -101,6 +136,7 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             "/v1/identities/revoke",
             post(handlers::post_revoke_identity),
         )
+        .route("/v1/vouchers", post(handlers::post_issue_voucher))
         .route(
             "/v1/objects/:cid",
             put(handlers::put_object).get(handlers::get_object),
@@ -126,6 +162,7 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         // Dynamic P2P Peer Gossip routes
         .route("/v1/peers/announce", post(handlers::post_peer_announce))
         .route("/v1/peers", get(handlers::get_peers))
+        .route("/v1/peers/self", get(handlers::get_self_peer))
         // Out-of-Band Cryptographic Approval routes
         .route(
             "/v1/auth/challenges",
@@ -145,6 +182,9 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         )
         // Operator APIs are consumed by the dashboard backend and authenticated clients.
         // Do not grant arbitrary browser origins access to operator responses.
+        // Envelope first (inner): trace stays outermost so spans and the
+        // trace-ID echo cover the rewritten body too.
+        .route_layer(middleware::from_fn(json_error_envelope))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             trace_middleware,
