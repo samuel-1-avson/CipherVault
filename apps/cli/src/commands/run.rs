@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+#[cfg(target_os = "windows")]
 use std::path::Path;
 use zeroize::Zeroize;
 
