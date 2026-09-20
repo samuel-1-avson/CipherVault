@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # CipherVault - verified Linux & macOS installer/updater
 # Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.7 (pin, skips the
+# API call), CIPHERVAULT_INSTALL_DIR=/opt/cv-bin (override bindir).
 set -euo pipefail
 
 REPO="samuel-1-avson/CipherVault"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
+case "$OS" in
+  mingw*|msys*|cygwin*)
+    echo "Windows detected: run the PowerShell installer instead:" >&2
+    echo "  irm https://raw.githubusercontent.com/${REPO}/main/dist/scripts/install.ps1 | iex" >&2
+    exit 1
+    ;;
+esac
+MUSL=0
+if [ "$OS" = "linux" ]; then
+  if [ -f /etc/alpine-release ] || ldd --version 2>&1 | grep -qi musl; then MUSL=1; fi
+fi
 case "$OS:$ARCH" in
-  linux:x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
+  linux:x86_64) if [ "$MUSL" = 1 ]; then TARGET="x86_64-unknown-linux-musl"; else TARGET="x86_64-unknown-linux-gnu"; fi ;;
   linux:aarch64|linux:arm64) TARGET="aarch64-unknown-linux-gnu" ;;
   darwin:x86_64) TARGET="x86_64-apple-darwin" ;;
   darwin:arm64) TARGET="aarch64-apple-darwin" ;;
@@ -15,23 +28,47 @@ case "$OS:$ARCH" in
 esac
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
-TAG="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-[ -n "$TAG" ] || { echo "GitHub did not return a latest CipherVault release" >&2; exit 1; }
+if command -v sha256sum >/dev/null; then
+  sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null; then
+  sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+elif command -v openssl >/dev/null; then
+  sha256_file() { openssl dgst -sha256 "$1" | awk '{print $NF}'; }
+else
+  echo "a SHA-256 tool is required (sha256sum, shasum, or openssl)" >&2; exit 1
+fi
+
+TAG="${CIPHERVAULT_VERSION:-}"
+if [ -z "$TAG" ]; then
+  TAG="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$TAG" ] || { echo "GitHub did not return a latest CipherVault release" >&2; exit 1; }
+fi
 PKG_NAME="ciphervault-${TAG}-${TARGET}.tar.gz"
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
-if [ -w /usr/local/bin ]; then INSTALL_DIR=/usr/local/bin; else INSTALL_DIR="${HOME}/.local/bin"; mkdir -p "$INSTALL_DIR"; fi
+if [ -n "${CIPHERVAULT_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$CIPHERVAULT_INSTALL_DIR"; mkdir -p "$INSTALL_DIR"
+elif [ -w /usr/local/bin ]; then INSTALL_DIR=/usr/local/bin
+else INSTALL_DIR="${HOME}/.local/bin"; mkdir -p "$INSTALL_DIR"
+fi
 TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
 curl -fsSL "$BASE/$PKG_NAME" -o "$TMP_DIR/$PKG_NAME"
 curl -fsSL "$BASE/SHA256SUMS.txt" -o "$TMP_DIR/SHA256SUMS.txt"
-EXPECTED="$(awk -v name="$PKG_NAME" '$2==name || $2=="*"name {print $1; exit}' "$TMP_DIR/SHA256SUMS.txt")"
+# Same rule as the in-app updater: first field is the hex digest, second
+# (minus an optional '*' binary marker) is the file name.
+EXPECTED="$(awk -v name="$PKG_NAME" '{entry=$2; sub(/^\*/, "", entry); if (entry==name) {print $1; exit}}' "$TMP_DIR/SHA256SUMS.txt")"
 [ -n "$EXPECTED" ] || { echo "Release checksum does not list $PKG_NAME" >&2; exit 1; }
-ACTUAL="$(sha256sum "$TMP_DIR/$PKG_NAME" | awk '{print $1}')"
-[ "$EXPECTED" = "$ACTUAL" ] || { echo "Release checksum mismatch" >&2; exit 1; }
+ACTUAL="$(sha256_file "$TMP_DIR/$PKG_NAME")"
+[ "$EXPECTED" = "$ACTUAL" ] || { echo "Release checksum mismatch for $PKG_NAME" >&2; exit 1; }
 tar -xzf "$TMP_DIR/$PKG_NAME" -C "$TMP_DIR"
-BINARY="$(find "$TMP_DIR" -type f -name ciphervault -perm -u+x | head -n1)"
-[ -n "$BINARY" ] || { echo "Verified release archive has no ciphervault binary" >&2; exit 1; }
-install -m 0755 "$BINARY" "$INSTALL_DIR/ciphervault"
-echo "CipherVault $TAG installed to $INSTALL_DIR/ciphervault"
+for name in ciphervault ciphervault-operator ciphervault-agent ciphervault-maintenance; do
+  BINARY="$(find "$TMP_DIR" -type f -name "$name" | head -n 1)"
+  [ -n "$BINARY" ] || { echo "Verified release archive has no $name binary" >&2; exit 1; }
+  install -m 0755 "$BINARY" "$INSTALL_DIR/$name"
+done
+echo "CipherVault $TAG installed to $INSTALL_DIR"
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *) echo "NOTE: $INSTALL_DIR is not on PATH. Add: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+esac
 echo "Run 'ciphervault --help'. To update later, run 'ciphervault update' or rerun this installer."
-

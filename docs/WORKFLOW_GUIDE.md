@@ -76,15 +76,32 @@ promoted by digest — never by mutable tag, never built on the VM.
 
 ## Part 2 — Day-to-day user flow
 
-### Install (one minute)
+### Install (one command)
 
-1. Download the `ciphervault-<version>-<platform>` archive from the
-   [GitHub Releases](https://github.com/samuel-1-avson/CipherVault/releases)
-   page and unzip it.
-2. Run `ciphervault`. With no arguments it opens the interactive terminal
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
+```
+
+Linux & macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+```
+
+The installer fetches the latest release, verifies it against the
+published SHA256SUMS, and installs all four binaries (`ciphervault`,
+`ciphervault-operator`, `ciphervault-agent`, `ciphervault-maintenance`)
+with a PATH entry — no manual download. Then:
+
+1. Run `ciphervault`. With no arguments it opens the interactive terminal
    UI (TUI) instead of exiting, so double-clicking the binary just works.
-3. Afterwards, `ciphervault update` checks for and installs newer signed
+2. Afterwards, `ciphervault update` checks for and installs newer signed
    releases in place.
+3. Prefer manual control? Grab the archive for your platform from the
+   [GitHub Releases](https://github.com/samuel-1-avson/CipherVault/releases)
+   page, verify it against `SHA256SUMS.txt`, and unzip it yourself.
 
 ### First vault (five minutes)
 
@@ -154,10 +171,14 @@ plaintext, and the fleet treats your node as untrusted by design.
 ### Option A — single node from the release binary (fastest)
 
 ```bash
+# Strict auth is ON by default: a 32-byte hex service token is required.
+export CIPHERVAULT_OPERATOR_SERVICE_TOKEN=<64-hex-from-your-secret-manager>
 ciphervault-operator --port 8101 --data-dir ./operator-data --operator-id my-node
 curl http://localhost:8101/healthz   # {"status":"ready",...}
 ```
 
+- Local testing only: `CIPHERVAULT_OPERATOR_STRICT_AUTH=false` skips the
+  token requirement. Never use that on a reachable node.
 - First boot generates the persistent Ed25519 identity
   (`operator-data/operator.key`, 0600). Back it up: it is your node's
   long-term identity.
@@ -238,3 +259,133 @@ ciphervault invite join ticket.json --node http://127.0.0.1:8101 \
   capacity, run a relay/rendezvous seed (`--p2p-relay-server`,
   `--p2p-rendezvous-server`) to donate connectivity, or open PRs against
   this repo — CI enforces fmt, strict clippy, and the full test suite.
+
+---
+
+## Part 4 — Hands-on test walkthrough (verified 2026-09-20, v1.0.7-beta.7)
+
+Follow these steps exactly to prove every user flow works. Uses three
+throwaway operators on ports 8261–8263 and a scratch vault — nothing
+touches the live fleet. On Windows run the PowerShell variants; on
+Linux/macOS the same commands work in bash with `$env:TEMP` replaced by
+`/tmp`. All expected outputs below were observed on this tree.
+
+### 0. Build and boot
+
+```powershell
+cargo build --locked -p ciphervault-cli -p ciphervault-operator
+$cli = 'C:\Users\<you>\.cargo-targets\ciphervault\debug\ciphervault.exe'
+$op  = 'C:\Users\<you>\.cargo-targets\ciphervault\debug\ciphervault-operator.exe'
+$env:CIPHERVAULT_OPERATOR_STRICT_AUTH = 'false'   # LOCAL TESTING ONLY
+1..3 | ForEach-Object {
+  Start-Process -FilePath $op `
+    -ArgumentList "--port 826$_","--data-dir $env:TEMP\cv-op$_","--operator-id local-op$_" `
+    -WindowStyle Hidden
+}
+Start-Sleep -Seconds 4
+1..3 | ForEach-Object { Invoke-RestMethod "http://127.0.0.1:826$_/healthz" }
+# Expect: status=ready, operator_id=local-op1/2/3 on all three.
+```
+
+Without the `STRICT_AUTH=false` line the operators exit immediately:
+strict auth defaults ON and demands `CIPHERVAULT_OPERATOR_SERVICE_TOKEN`.
+
+### 1. Init
+
+```powershell
+mkdir $env:TEMP\cv-walk; cd $env:TEMP\cv-walk
+"DB_PASSWORD=fake-test-pw-001`nAPI_KEY=fake-test-key-002" > .env
+".env`n*.key" > .gitignore
+& $cli init -o http://127.0.0.1:8261 http://127.0.0.1:8262 http://127.0.0.1:8263 `
+  --save-kit .\kit.txt --import-gitignore
+# Answer "yes" at the kit confirmation. Expect:
+#   ✓ CipherVault initialized successfully! + 3 configured operators.
+# .ciphervault/vault.db and kit.txt must exist. Guard kit.txt: it holds R.
+```
+
+### 2. Status, push, diff
+
+```powershell
+& $cli status
+# Expect: Vault ID, Device ID, Epoch 1, "Active Head: None",
+# 3 operators, "Tracked Confidential Files (1): .env".
+& $cli push -m "walkthrough snapshot 1"
+# Expect: "Snapshot captured and encrypted locally!" then
+#   Durability: RemoteDurable (3/3 independent replicas verified and read back)
+Add-Content .env "`nSTRIPE_KEY=fake-test-key-003"
+& $cli diff
+# Expect: "+ STRIPE_KEY = fak***003" (masked by default).
+& $cli push -m "walkthrough snapshot 2"   # expect 3/3 again
+& $cli history
+# Expect: [1] genesis + [2] child, timestamps, epoch 1, manifest CIDs.
+```
+
+### 3. Second machine (pull)
+
+```powershell
+mkdir $env:TEMP\cv-walkB; Copy-Item .\.ciphervault $env:TEMP\cv-walkB\ -Recurse
+cd $env:TEMP\cv-walkB; & $cli pull
+# Expect: "✓ Successfully synchronized with operator cluster", "- Updated: .\.env".
+(Get-FileHash $env:TEMP\cv-walk\.env).Hash -eq (Get-FileHash .\.env).Hash
+# Expect: True (byte-identical).
+```
+
+### 4. Disaster recovery (clean room)
+
+```powershell
+mkdir $env:TEMP\cv-recover; cd $env:TEMP\cv-recover
+& $cli recover --kit $env:TEMP\cv-walk\kit.txt --to .\restored
+# Expect: "✓ CLEAN-MACHINE RECOVERY COMPLETED SUCCESSFULLY!", 1 file restored.
+(Get-FileHash $env:TEMP\cv-walk\.env).Hash -eq (Get-FileHash .\restored\.env).Hash
+# Expect: True.
+```
+
+### 5. Run, doctor, rekey
+
+```powershell
+cd $env:TEMP\cv-walk
+& $cli run --dry-run -- echo hello
+# Expect: "3 variable(s) ready for injection", values shown as [REDACTED].
+& $cli doctor
+# Expect: [PASS] vault, keyring, operators (3 ok), quorum (3/3), anchors.
+& $cli rekey
+# Expect: "Rotated: epoch 1 -> 2 (new snapshots use epoch 2)".
+& $cli push -m "post-rekey snapshot"      # expect 3/3; status shows Epoch 2.
+```
+
+### 6. Watcher
+
+```powershell
+$p = Start-Process -FilePath $cli -ArgumentList "watch --sync" `
+  -RedirectStandardOutput .\watch.log -WindowStyle Hidden -PassThru
+Start-Sleep 3; Add-Content .env "`nWATCH_PROBE=fake-004"; Start-Sleep 8
+Stop-Process -Id $p.Id -Force
+& $cli history   # Expect: one more snapshot than before, auto-committed.
+```
+
+### 7. Track / untrack / update
+
+```powershell
+"fake-key-material" > extra.key; & $cli track extra.key
+# Expect: "Appended 'extra.key' to .gitignore..." + "Tracked files registered."
+& $cli untrack extra.key                  # Expect: "- extra.key [untracked]".
+& $cli update --check                     # Expect: current version reported.
+```
+
+### 8. Manual-only steps (not scriptable here)
+
+- `ciphervault tui` — interactive 7-tab console; run it and tab through
+  Files/Snapshots/Operators/Explorer with `?` for help, `q` to quit.
+- `ciphervault anchor` — needs a deployed `CipherVaultRegistry` + funded
+  key on Arbitrum Sepolia; the loop is untested until the on-chain step.
+- `ciphervault ui` — serves the web dashboard; open the printed URL,
+  check Overview + Explorer tabs, then stop the server.
+
+### 9. Cleanup
+
+```powershell
+Get-Process ciphervault-operator | Stop-Process -Force
+Remove-Item -Recurse -Force $env:TEMP\cv-op1,$env:TEMP\cv-op2,$env:TEMP\cv-op3,
+  $env:TEMP\cv-walk,$env:TEMP\cv-walkB,$env:TEMP\cv-recover
+$env:CIPHERVAULT_OPERATOR_STRICT_AUTH = $null
+```
