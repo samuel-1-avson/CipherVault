@@ -93,7 +93,28 @@ curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dis
 The installer fetches the latest release, verifies it against the
 published SHA256SUMS, and installs all four binaries (`ciphervault`,
 `ciphervault-operator`, `ciphervault-agent`, `ciphervault-maintenance`)
-with a PATH entry — no manual download. Then:
+with a PATH entry — no manual download.
+
+> The repo is currently private, so the one-liners need a token. Create
+> a fine-grained personal access token with **Contents: read-only** on
+> this repo, then:
+>
+> ```powershell
+> $env:CIPHERVAULT_GITHUB_TOKEN = '<paste-token-here>'  # this shell only
+> $h = @{ Authorization = "Bearer $env:CIPHERVAULT_GITHUB_TOKEN" }
+> irm -Headers $h https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
+> ```
+>
+> ```bash
+> export CIPHERVAULT_GITHUB_TOKEN='<paste-token-here>'  # this shell only
+> curl -fsSL -H "Authorization: Bearer $CIPHERVAULT_GITHUB_TOKEN" \
+>   https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+> ```
+>
+> `GH_TOKEN` / `GITHUB_TOKEN` work too. `ciphervault update` reads the
+> same variable. Never commit the token anywhere.
+
+Then:
 
 1. Run `ciphervault`. With no arguments it opens the interactive terminal
    UI (TUI) instead of exiting, so double-clicking the binary just works.

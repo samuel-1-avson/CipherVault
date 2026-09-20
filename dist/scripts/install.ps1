@@ -9,6 +9,11 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::S
 $Repo = "samuel-1-avson/CipherVault"
 $Target = "x86_64-pc-windows-msvc"
 $Headers = @{ "Accept" = "application/vnd.github+json"; "User-Agent" = "CipherVault-Installer" }
+$GithubToken = $env:CIPHERVAULT_GITHUB_TOKEN
+if ([string]::IsNullOrWhiteSpace($GithubToken)) { $GithubToken = $env:GH_TOKEN }
+if ([string]::IsNullOrWhiteSpace($GithubToken)) { $GithubToken = $env:GITHUB_TOKEN }
+if (-not [string]::IsNullOrWhiteSpace($GithubToken)) { $Headers["Authorization"] = "Bearer $($GithubToken.Trim())" }
+$PrivateHint = "If the repo is private, set CIPHERVAULT_GITHUB_TOKEN (a token with Contents: read) and re-run."
 $InstallDir = $env:CIPHERVAULT_INSTALL_DIR
 if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Join-Path $HOME ".ciphervault" }
 $BinDir = Join-Path $InstallDir "bin"
@@ -17,7 +22,11 @@ $Binaries = @("ciphervault.exe", "ciphervault-operator.exe", "ciphervault-agent.
 $Tag = $env:CIPHERVAULT_VERSION
 $DownloadUrl = $null
 if ([string]::IsNullOrWhiteSpace($Tag)) {
-    $release = Invoke-RestMethod -Headers $Headers -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    try {
+        $release = Invoke-RestMethod -Headers $Headers -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    } catch {
+        throw "Could not read the release feed: $($_.Exception.Message). $PrivateHint"
+    }
     $Tag = [string]$release.tag_name
     if ([string]::IsNullOrWhiteSpace($Tag)) { throw "GitHub did not return a latest CipherVault release." }
     $PkgName = "ciphervault-$Tag-$Target.zip"
@@ -39,9 +48,17 @@ $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ciphervault-install-" 
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 try {
     $archive = Join-Path $tempRoot $PkgName
-    Invoke-WebRequest -Headers $Headers -Uri $DownloadUrl -OutFile $archive -UseBasicParsing
+    try {
+        Invoke-WebRequest -Headers $Headers -Uri $DownloadUrl -OutFile $archive -UseBasicParsing
+    } catch {
+        throw "Could not download ${PkgName}: $($_.Exception.Message). $PrivateHint"
+    }
     $sumsUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt"
-    $sumsResponse = Invoke-WebRequest -Headers $Headers -Uri $sumsUrl -UseBasicParsing
+    try {
+        $sumsResponse = Invoke-WebRequest -Headers $Headers -Uri $sumsUrl -UseBasicParsing
+    } catch {
+        throw "Could not download SHA256SUMS.txt: $($_.Exception.Message). $PrivateHint"
+    }
     $sums = if ($sumsResponse.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($sumsResponse.Content) } else { [string]$sumsResponse.Content }
     # Same rule as the in-app updater: first whitespace field is the hex
     # digest, second (minus an optional '*' binary marker) is the name.

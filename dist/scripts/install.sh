@@ -28,6 +28,12 @@ case "$OS:$ARCH" in
 esac
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+CV_TOKEN="${CIPHERVAULT_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+PRIVATE_HINT="If the repo is private, export CIPHERVAULT_GITHUB_TOKEN (a token with Contents: read) and re-run."
+cv_curl() {
+  if [ -n "$CV_TOKEN" ]; then curl -fsSL -H "Authorization: Bearer $CV_TOKEN" "$@";
+  else curl -fsSL "$@"; fi
+}
 if command -v sha256sum >/dev/null; then
   sha256_file() { sha256sum "$1" | awk '{print $1}'; }
 elif command -v shasum >/dev/null; then
@@ -40,8 +46,11 @@ fi
 
 TAG="${CIPHERVAULT_VERSION:-}"
 if [ -z "$TAG" ]; then
-  TAG="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  [ -n "$TAG" ] || { echo "GitHub did not return a latest CipherVault release" >&2; exit 1; }
+  if ! RELEASE_JSON="$(cv_curl -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "https://api.github.com/repos/${REPO}/releases/latest")"; then
+    echo "Could not read the release feed. $PRIVATE_HINT" >&2; exit 1
+  fi
+  TAG="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$TAG" ] || { echo "GitHub did not return a latest CipherVault release. $PRIVATE_HINT" >&2; exit 1; }
 fi
 PKG_NAME="ciphervault-${TAG}-${TARGET}.tar.gz"
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
@@ -52,8 +61,8 @@ elif [ -w /usr/local/bin ]; then INSTALL_DIR=/usr/local/bin
 else INSTALL_DIR="${HOME}/.local/bin"; mkdir -p "$INSTALL_DIR"
 fi
 TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
-curl -fsSL "$BASE/$PKG_NAME" -o "$TMP_DIR/$PKG_NAME"
-curl -fsSL "$BASE/SHA256SUMS.txt" -o "$TMP_DIR/SHA256SUMS.txt"
+cv_curl "$BASE/$PKG_NAME" -o "$TMP_DIR/$PKG_NAME" || { echo "Could not download $PKG_NAME. $PRIVATE_HINT" >&2; exit 1; }
+cv_curl "$BASE/SHA256SUMS.txt" -o "$TMP_DIR/SHA256SUMS.txt" || { echo "Could not download SHA256SUMS.txt. $PRIVATE_HINT" >&2; exit 1; }
 # Same rule as the in-app updater: first field is the hex digest, second
 # (minus an optional '*' binary marker) is the file name.
 EXPECTED="$(awk -v name="$PKG_NAME" '{entry=$2; sub(/^\*/, "", entry); if (entry==name) {print $1; exit}}' "$TMP_DIR/SHA256SUMS.txt")"

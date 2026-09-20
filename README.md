@@ -207,6 +207,26 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
 curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
 ```
 
+> Private repo: the commands above need a token until the repo is public.
+> Create a fine-grained personal access token with **Contents: read-only**
+> on this repo, export it as `CIPHERVAULT_GITHUB_TOKEN` (`GH_TOKEN` /
+> `GITHUB_TOKEN` also work), and add the auth header to the bootstrap
+> fetch — the installer reuses the variable for the release download:
+>
+> ```powershell
+> $env:CIPHERVAULT_GITHUB_TOKEN = '<paste-token-here>'
+> $h = @{ Authorization = "Bearer $env:CIPHERVAULT_GITHUB_TOKEN" }
+> irm -Headers $h https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
+> ```
+>
+> ```bash
+> export CIPHERVAULT_GITHUB_TOKEN='<paste-token-here>'
+> curl -fsSL -H "Authorization: Bearer $CIPHERVAULT_GITHUB_TOKEN" \
+>   https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+> ```
+>
+> `ciphervault update` reads the same variable.
+
 ---
 
 ### Option 2: Install via Cargo (Recommended for Rust Developers)

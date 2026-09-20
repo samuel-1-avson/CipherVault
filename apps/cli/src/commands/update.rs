@@ -128,6 +128,25 @@ pub(crate) struct ReleaseCheck {
     pub pending: Option<PendingUpdate>,
 }
 
+/// Token for private-repo release downloads, explicit var first. Never logged.
+fn github_token() -> Option<String> {
+    ["CIPHERVAULT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn authed_request(client: &HttpClient, url: String) -> reqwest::RequestBuilder {
+    let mut request = client.get(url);
+    if let Some(token) = github_token() {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+    request
+}
+
+const PRIVATE_REPO_HINT: &str = "if the repo is private, set CIPHERVAULT_GITHUB_TOKEN";
+
 /// Queries the latest GitHub release and reports whether it is newer than
 /// this binary. Network errors propagate; "already latest" is `Ok` with no
 /// pending update.
@@ -144,17 +163,21 @@ pub(crate) async fn check_for_updates() -> Result<ReleaseCheck> {
         .timeout(Duration::from_secs(20))
         .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let release: serde_json::Value = client
-        .get("https://api.github.com/repos/samuel-1-avson/CipherVault/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .context("checking the CipherVault release feed")?
-        .error_for_status()
-        .context("GitHub did not return the latest CipherVault release")?
-        .json()
-        .await
-        .context("decoding the CipherVault release feed")?;
+    let release: serde_json::Value = authed_request(
+        &client,
+        "https://api.github.com/repos/samuel-1-avson/CipherVault/releases/latest".to_string(),
+    )
+    .header("Accept", "application/vnd.github+json")
+    .send()
+    .await
+    .context("checking the CipherVault release feed")?
+    .error_for_status()
+    .with_context(|| {
+        format!("GitHub did not return the latest CipherVault release ({PRIVATE_REPO_HINT})")
+    })?
+    .json()
+    .await
+    .context("decoding the CipherVault release feed")?;
     let tag = release
         .get("tag_name")
         .and_then(serde_json::Value::as_str)
@@ -203,24 +226,26 @@ pub(crate) async fn apply_update(
     let sums_name = "SHA256SUMS.txt";
     let base_url = format!("https://github.com/samuel-1-avson/CipherVault/releases/download/{tag}");
     on_stage(&format!("Downloading {archive_name}..."));
-    let archive = client
-        .get(format!("{base_url}/{archive_name}"))
+    let archive = authed_request(&client, format!("{base_url}/{archive_name}"))
         .send()
         .await
         .context("downloading the latest CipherVault archive")?
         .error_for_status()
-        .context("latest CipherVault archive is unavailable")?
+        .with_context(|| {
+            format!("latest CipherVault archive is unavailable ({PRIVATE_REPO_HINT})")
+        })?
         .bytes()
         .await
         .context("reading the latest CipherVault archive")?;
     on_stage("Downloading checksums...");
-    let sums = client
-        .get(format!("{base_url}/{sums_name}"))
+    let sums = authed_request(&client, format!("{base_url}/{sums_name}"))
         .send()
         .await
         .context("downloading the CipherVault release checksum")?
         .error_for_status()
-        .context("latest CipherVault checksum is unavailable")?
+        .with_context(|| {
+            format!("latest CipherVault checksum is unavailable ({PRIVATE_REPO_HINT})")
+        })?
         .text()
         .await
         .context("reading the CipherVault release checksum")?;
@@ -426,5 +451,30 @@ mod update_version_tests {
         );
         assert_eq!(find_checksum(&sums, "other.zip"), None);
         assert_eq!(find_checksum("not a sums file", "other.zip"), None);
+    }
+
+    #[test]
+    fn github_token_prefers_explicit_var_and_trims() {
+        const NAMES: [&str; 3] = ["CIPHERVAULT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
+        let saved: Vec<(String, Option<String>)> = NAMES
+            .iter()
+            .map(|n| (n.to_string(), std::env::var(n).ok()))
+            .collect();
+        for name in NAMES {
+            std::env::remove_var(name);
+        }
+        assert_eq!(github_token(), None);
+        std::env::set_var("GITHUB_TOKEN", "fallback");
+        assert_eq!(github_token().as_deref(), Some("fallback"));
+        std::env::set_var("GH_TOKEN", "middle");
+        assert_eq!(github_token().as_deref(), Some("middle"));
+        std::env::set_var("CIPHERVAULT_GITHUB_TOKEN", "  explicit  ");
+        assert_eq!(github_token().as_deref(), Some("explicit"));
+        for (name, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
     }
 }
