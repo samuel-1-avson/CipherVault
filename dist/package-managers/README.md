@@ -48,10 +48,10 @@ Install via [Windows Package Manager (`winget`)](https://learn.microsoft.com/en-
 
 ```powershell
 # Local testing:
-winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.7-beta.8/
+winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.7-beta.9/
 
 # Upstream publication:
-wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.7-beta.8/
+wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.7-beta.9/
 ```
 
 ---
@@ -92,7 +92,7 @@ The newest `winget/.../*.installer.yaml` ships `InstallerSha256` as zeros.
 After the GitHub release publishes, fill it from `SHA256SUMS.txt`:
 
 ```powershell
-$tag = 'v1.0.7-beta.8'
+$tag = 'v1.0.7-beta.9'
 $zip = "ciphervault-$tag-x86_64-pc-windows-msvc.zip"
 (Get-Content SHA256SUMS.txt | Select-String $zip).ToString().Split()[0]
 ```

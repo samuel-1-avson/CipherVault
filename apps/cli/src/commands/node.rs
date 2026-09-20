@@ -178,16 +178,24 @@ fn restrict_secret_file(path: &Path) {
     // icacls parses a leading `/` as a flag, so normalize Rust's
     // forward-slash forms before invoking it.
     let for_icacls = path.to_string_lossy().replace('/', "\\");
-    let locked = Command::new("icacls")
-        .arg(&for_icacls)
-        .args(["/inheritance:r", "/grant:r"])
-        .arg(format!("{user}:(R,W)"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
+    // Two separate invocations: combining `/inheritance:r` with `/grant`
+    // in one call unreliably leaves inheritance enabled (observed on
+    // CI runners: inherited SYSTEM/Administrators ACEs survive and the
+    // lockdown test fails). Stripping first, then granting, is the
+    // deterministic recipe.
+    let run_icacls = |args: &[&str]| {
+        Command::new("icacls")
+            .arg(&for_icacls)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+    let grant = format!("{user}:(R,W)");
+    let locked = run_icacls(&["/inheritance:r"]) && run_icacls(&["/grant:r", &grant]);
     if !locked {
         eprintln!(
             "{}",
