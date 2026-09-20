@@ -3118,14 +3118,17 @@ mod tests {
 
         // Stale and future-dated announces are rejected even with a VALID
         // signature (re-signed after backdating so only freshness fails).
+        // Margins are an hour past each bound: register_peer reads its own
+        // clock, so a 1s margin flakes when a loaded runner stalls the
+        // thread across a second boundary between the two reads.
         let now = Utc::now().timestamp() as u64;
         let mut stale = peer.clone();
-        stale.timestamp_utc = now - MAX_PEER_ANNOUNCE_AGE_SECS - 1;
+        stale.timestamp_utc = now - MAX_PEER_ANNOUNCE_AGE_SECS - 3600;
         stale.sign(&peer_key);
         assert!(state.register_peer(stale).is_err());
 
         let mut future = peer.clone();
-        future.timestamp_utc = now + MAX_PEER_ANNOUNCE_SKEW_SECS + 1;
+        future.timestamp_utc = now + MAX_PEER_ANNOUNCE_SKEW_SECS + 3600;
         future.sign(&peer_key);
         assert!(state.register_peer(future).is_err());
 
