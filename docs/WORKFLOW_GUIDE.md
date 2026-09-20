@@ -106,7 +106,15 @@ with a PATH entry — no manual download. Then:
 ### First vault (five minutes)
 
 ```bash
-ciphervault init --operators http://op1:8201 http://op2:8202 http://op3:8203
+ciphervault init
+```
+
+No arguments needed: init uses the default fleet and checks every
+operator is reachable before finishing (`✓ 3/3 operators reachable`).
+Only pass `--operators` to aim at local or private nodes instead:
+
+```bash
+ciphervault init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://127.0.0.1:8203
 ```
 
 - Generates the 32-byte master secret, device identity, and epoch keys.
@@ -294,12 +302,15 @@ strict auth defaults ON and demands `CIPHERVAULT_OPERATOR_SERVICE_TOKEN`.
 
 ```powershell
 mkdir $env:TEMP\cv-walk; cd $env:TEMP\cv-walk
-"DB_PASSWORD=fake-test-pw-001`nAPI_KEY=fake-test-key-002" > .env
-".env`n*.key" > .gitignore
+# NOTE: use Set-Content, not ">". Bare ">" writes UTF-16 on PowerShell 5.1,
+# which init rejects ("stream did not contain valid UTF-8").
+Set-Content .env "DB_PASSWORD=fake-test-pw-001`nAPI_KEY=fake-test-key-002"
+Set-Content .gitignore ".env`n*.key"
 & $cli init -o http://127.0.0.1:8261 http://127.0.0.1:8262 http://127.0.0.1:8263 `
   --save-kit .\kit.txt --import-gitignore
+# (-o aims at the local nodes; bare "init" uses the live fleet instead.)
 # Answer "yes" at the kit confirmation. Expect:
-#   ✓ CipherVault initialized successfully! + 3 configured operators.
+#   "✓ 3/3 operators reachable." + "✓ CipherVault initialized successfully!".
 # .ciphervault/vault.db and kit.txt must exist. Guard kit.txt: it holds R.
 ```
 
@@ -366,7 +377,7 @@ Stop-Process -Id $p.Id -Force
 ### 7. Track / untrack / update
 
 ```powershell
-"fake-key-material" > extra.key; & $cli track extra.key
+Set-Content extra.key "fake-key-material"; & $cli track extra.key
 # Expect: "Appended 'extra.key' to .gitignore..." + "Tracked files registered."
 & $cli untrack extra.key                  # Expect: "- extra.key [untracked]".
 & $cli update --check                     # Expect: current version reported.
