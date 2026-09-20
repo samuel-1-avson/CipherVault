@@ -46,14 +46,28 @@ fi
 
 TAG="${CIPHERVAULT_VERSION:-}"
 if [ -z "$TAG" ]; then
-  if ! RELEASE_JSON="$(cv_curl -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "https://api.github.com/repos/${REPO}/releases/latest")"; then
-    echo "Could not read the release feed. $PRIVATE_HINT" >&2; exit 1
-  fi
+  API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+else
+  API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+fi
+if ! RELEASE_JSON="$(cv_curl -H 'Accept: application/vnd.github+json' -H 'User-Agent: CipherVault-Installer' "$API_URL")"; then
+  echo "Could not read the release feed. $PRIVATE_HINT" >&2; exit 1
+fi
+if [ -z "$TAG" ]; then
   TAG="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   [ -n "$TAG" ] || { echo "GitHub did not return a latest CipherVault release. $PRIVATE_HINT" >&2; exit 1; }
 fi
 PKG_NAME="ciphervault-${TAG}-${TARGET}.tar.gz"
-BASE="https://github.com/${REPO}/releases/download/${TAG}"
+SUMS_NAME="SHA256SUMS.txt"
+# Assets download through the API asset endpoint (Accept: octet-stream):
+# the browser-download redirector does not honor tokens on private repos.
+asset_id() {
+  printf '%s' "$RELEASE_JSON" | tr -d '\n' | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\)[^}]*"name":[[:space:]]*"'"$1"'"[^}]*}.*/\1/p'
+}
+PKG_ID="$(asset_id "$PKG_NAME")"
+[ -n "$PKG_ID" ] || { echo "Release $TAG has no $TARGET archive ($PKG_NAME)." >&2; exit 1; }
+SUMS_ID="$(asset_id "$SUMS_NAME")"
+[ -n "$SUMS_ID" ] || { echo "Release $TAG has no $SUMS_NAME." >&2; exit 1; }
 
 if [ -n "${CIPHERVAULT_INSTALL_DIR:-}" ]; then
   INSTALL_DIR="$CIPHERVAULT_INSTALL_DIR"; mkdir -p "$INSTALL_DIR"
@@ -61,8 +75,9 @@ elif [ -w /usr/local/bin ]; then INSTALL_DIR=/usr/local/bin
 else INSTALL_DIR="${HOME}/.local/bin"; mkdir -p "$INSTALL_DIR"
 fi
 TMP_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP_DIR"' EXIT
-cv_curl "$BASE/$PKG_NAME" -o "$TMP_DIR/$PKG_NAME" || { echo "Could not download $PKG_NAME. $PRIVATE_HINT" >&2; exit 1; }
-cv_curl "$BASE/SHA256SUMS.txt" -o "$TMP_DIR/SHA256SUMS.txt" || { echo "Could not download SHA256SUMS.txt. $PRIVATE_HINT" >&2; exit 1; }
+ASSETS="https://api.github.com/repos/${REPO}/releases/assets"
+cv_curl -H 'Accept: application/octet-stream' "$ASSETS/$PKG_ID" -o "$TMP_DIR/$PKG_NAME" || { echo "Could not download $PKG_NAME. $PRIVATE_HINT" >&2; exit 1; }
+cv_curl -H 'Accept: application/octet-stream' "$ASSETS/$SUMS_ID" -o "$TMP_DIR/SHA256SUMS.txt" || { echo "Could not download SHA256SUMS.txt. $PRIVATE_HINT" >&2; exit 1; }
 # Same rule as the in-app updater: first field is the hex digest, second
 # (minus an optional '*' binary marker) is the file name.
 EXPECTED="$(awk -v name="$PKG_NAME" '{entry=$2; sub(/^\*/, "", entry); if (entry==name) {print $1; exit}}' "$TMP_DIR/SHA256SUMS.txt")"

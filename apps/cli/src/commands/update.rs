@@ -104,6 +104,17 @@ fn release_target() -> Option<(&'static str, &'static str)> {
     )
 }
 
+/// Finds a release asset's numeric id by file name in `GET release` JSON.
+fn find_asset_id(release: &serde_json::Value, name: &str) -> Option<u64> {
+    release
+        .get("assets")?
+        .as_array()?
+        .iter()
+        .filter(|asset| asset.get("name").and_then(serde_json::Value::as_str) == Some(name))
+        .filter_map(|asset| asset.get("id").and_then(serde_json::Value::as_u64))
+        .next()
+}
+
 /// Looks up one file's digest in `sha256sum` output (`<hex>  <name>`).
 fn find_checksum(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
@@ -224,9 +235,33 @@ pub(crate) async fn apply_update(
         pending.target, pending.archive_suffix
     );
     let sums_name = "SHA256SUMS.txt";
-    let base_url = format!("https://github.com/samuel-1-avson/CipherVault/releases/download/{tag}");
+    // Assets download through the API asset endpoint (octet-stream): the
+    // browser-download redirector does not honor tokens on private repos.
+    let release: serde_json::Value = authed_request(
+        &client,
+        format!("https://api.github.com/repos/samuel-1-avson/CipherVault/releases/tags/{tag}"),
+    )
+    .header("Accept", "application/vnd.github+json")
+    .send()
+    .await
+    .context("reading the CipherVault release")?
+    .error_for_status()
+    .with_context(|| format!("GitHub did not return release {tag} ({PRIVATE_REPO_HINT})"))?
+    .json()
+    .await
+    .context("decoding the CipherVault release")?;
+    let asset_url = |name: &str| {
+        find_asset_id(&release, name).map(|id| {
+            format!("https://api.github.com/repos/samuel-1-avson/CipherVault/releases/assets/{id}")
+        })
+    };
+    let archive_url =
+        asset_url(&archive_name).with_context(|| format!("release {tag} has no {archive_name}"))?;
+    let sums_url =
+        asset_url(sums_name).with_context(|| format!("release {tag} has no {sums_name}"))?;
     on_stage(&format!("Downloading {archive_name}..."));
-    let archive = authed_request(&client, format!("{base_url}/{archive_name}"))
+    let archive = authed_request(&client, archive_url)
+        .header("Accept", "application/octet-stream")
         .send()
         .await
         .context("downloading the latest CipherVault archive")?
@@ -238,7 +273,8 @@ pub(crate) async fn apply_update(
         .await
         .context("reading the latest CipherVault archive")?;
     on_stage("Downloading checksums...");
-    let sums = authed_request(&client, format!("{base_url}/{sums_name}"))
+    let sums = authed_request(&client, sums_url)
+        .header("Accept", "application/octet-stream")
         .send()
         .await
         .context("downloading the CipherVault release checksum")?
@@ -451,6 +487,24 @@ mod update_version_tests {
         );
         assert_eq!(find_checksum(&sums, "other.zip"), None);
         assert_eq!(find_checksum("not a sums file", "other.zip"), None);
+    }
+
+    #[test]
+    fn asset_id_lookup_matches_by_exact_name() {
+        let release: serde_json::Value = serde_json::from_str(
+            r#"{"assets": [
+                {"id": 11, "name": "SHA256SUMS.txt"},
+                {"id": 22, "name": "ciphervault-v9-x86_64-pc-windows-msvc.zip"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            find_asset_id(&release, "ciphervault-v9-x86_64-pc-windows-msvc.zip"),
+            Some(22)
+        );
+        assert_eq!(find_asset_id(&release, "SHA256SUMS.txt"), Some(11));
+        assert_eq!(find_asset_id(&release, "other.zip"), None);
+        assert_eq!(find_asset_id(&serde_json::json!({}), "other.zip"), None);
     }
 
     #[test]

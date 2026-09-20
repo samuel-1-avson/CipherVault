@@ -20,7 +20,6 @@ $BinDir = Join-Path $InstallDir "bin"
 $Binaries = @("ciphervault.exe", "ciphervault-operator.exe", "ciphervault-agent.exe", "ciphervault-maintenance.exe")
 
 $Tag = $env:CIPHERVAULT_VERSION
-$DownloadUrl = $null
 if ([string]::IsNullOrWhiteSpace($Tag)) {
     try {
         $release = Invoke-RestMethod -Headers $Headers -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -29,15 +28,26 @@ if ([string]::IsNullOrWhiteSpace($Tag)) {
     }
     $Tag = [string]$release.tag_name
     if ([string]::IsNullOrWhiteSpace($Tag)) { throw "GitHub did not return a latest CipherVault release." }
-    $PkgName = "ciphervault-$Tag-$Target.zip"
-    $asset = @($release.assets) | Where-Object { $_.name -eq $PkgName } | Select-Object -First 1
-    if ($null -eq $asset) { throw "The latest release $Tag has no Windows x64 archive ($PkgName)." }
-    $DownloadUrl = [string]$asset.browser_download_url
 } else {
     $Tag = $Tag.Trim()
-    $PkgName = "ciphervault-$Tag-$Target.zip"
-    $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$PkgName"
+    try {
+        $release = Invoke-RestMethod -Headers $Headers -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag"
+    } catch {
+        throw "Could not read release $Tag : $($_.Exception.Message). $PrivateHint"
+    }
 }
+$PkgName = "ciphervault-$Tag-$Target.zip"
+$SumsName = "SHA256SUMS.txt"
+# Assets download through the API asset endpoint (Accept: octet-stream):
+# the browser-download redirector does not honor tokens on private repos.
+$DlHeaders = $Headers.Clone()
+$DlHeaders["Accept"] = "application/octet-stream"
+$pkgAsset = @($release.assets) | Where-Object { $_.name -eq $PkgName } | Select-Object -First 1
+if ($null -eq $pkgAsset) { throw "Release $Tag has no Windows x64 archive ($PkgName)." }
+$sumsAsset = @($release.assets) | Where-Object { $_.name -eq $SumsName } | Select-Object -First 1
+if ($null -eq $sumsAsset) { throw "Release $Tag has no $SumsName." }
+$ArchiveUrl = "https://api.github.com/repos/$Repo/releases/assets/$($pkgAsset.id)"
+$SumsUrl = "https://api.github.com/repos/$Repo/releases/assets/$($sumsAsset.id)"
 
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host "  Installing CipherVault $Tag (Windows x64)" -ForegroundColor Green
@@ -49,13 +59,12 @@ New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 try {
     $archive = Join-Path $tempRoot $PkgName
     try {
-        Invoke-WebRequest -Headers $Headers -Uri $DownloadUrl -OutFile $archive -UseBasicParsing
+        Invoke-WebRequest -Headers $DlHeaders -Uri $ArchiveUrl -OutFile $archive -UseBasicParsing
     } catch {
         throw "Could not download ${PkgName}: $($_.Exception.Message). $PrivateHint"
     }
-    $sumsUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt"
     try {
-        $sumsResponse = Invoke-WebRequest -Headers $Headers -Uri $sumsUrl -UseBasicParsing
+        $sumsResponse = Invoke-WebRequest -Headers $DlHeaders -Uri $SumsUrl -UseBasicParsing
     } catch {
         throw "Could not download SHA256SUMS.txt: $($_.Exception.Message). $PrivateHint"
     }
