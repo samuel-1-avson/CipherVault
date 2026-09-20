@@ -6,6 +6,7 @@ target/
 .cargo/config.toml
 dist/*.zip
 dist/*.tar.gz
+dist/bin/*.exe
 **/*.rs.bk
 
 # Safe, reproducible release bundles are intentionally versioned. Do not

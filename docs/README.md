@@ -1,6 +1,6 @@
 # CipherVault: Master Documentation Hub
 
-**Version:** `v1.0.7-beta.7` (Beta)  
+**Version:** `v1.0.7-beta.8` (Beta)  
 **Classification:** Enterprise System Documentation & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)
 
@@ -18,6 +18,7 @@ This documentation suite has been organized into **five focused manuals** for co
 
 | Document | Primary Audience | Scope & Topics Covered |
 |---|---|---|
+| [**`SETUP_GUIDE.md`**](./SETUP_GUIDE.md) | **Developers, Node Runners (all levels)** | **Two-Track Setup Guide**: installing (one-liners, role bundles, package managers), the 5-command developer start, the guided `node setup` path, and where to go next. Start here. |
 | [**`SYSTEM_WORKFLOW.md`**](./SYSTEM_WORKFLOW.md) | **Engineers, Architects, Security Teams** | **Master System Architecture & Operational Workflows**: Complete component architecture, cryptographic key hierarchy, 7 end-to-end workflows (Init, Watch, Push, L2 Rollup, Self-Repair, Disaster Recovery, YubiKey PIV), live GCP multi-region quorum status, crate directory map, and the 10.0/10.0 production readiness scorecard. |
 | [**`DEPLOYMENT_RUNBOOK.md`**](./DEPLOYMENT_RUNBOOK.md) | **DevOps, SREs, Infrastructure Engineers** | **Master Production Deployment & Operations Runbook**: Multi-region GCP Compute Engine VPS setup (`e2-micro`, ~$0.97/day), automated one-click provisioning (`deploy-operators.ps1` / `.sh`), teardown scripts, private VPC / on-premise Docker Compose, Caddy reverse proxy hardening, HSTS security headers, rate limiting, and autonomous fleet maintenance. |
 | [**`CICD_INTEGRATION.md`**](./CICD_INTEGRATION.md) | **DevOps, Security Engineers, Developers** | **Zero-Disk CI/CD Pipeline Guide**: In-memory secret injection (`ciphervault run`) for GitHub Actions, GitLab CI, and CircleCI. Log masking defense, ephemeral runner hygiene, and zero-disk environment variable security without persistent plaintext `.env` files. |

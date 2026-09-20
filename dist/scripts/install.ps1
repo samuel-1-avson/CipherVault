@@ -1,7 +1,9 @@
 # CipherVault - verified Windows installer/updater
 # Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.7 (pin, skips the
-# API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir).
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.8 (pin, skips the
+# API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir),
+# CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
+# node = CLI+operator+maintenance for guided `ciphervault node setup`).
 
 $ErrorActionPreference = "Stop"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -17,7 +19,15 @@ $PrivateHint = "If the repo is private, set CIPHERVAULT_GITHUB_TOKEN (a token wi
 $InstallDir = $env:CIPHERVAULT_INSTALL_DIR
 if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Join-Path $HOME ".ciphervault" }
 $BinDir = Join-Path $InstallDir "bin"
-$Binaries = @("ciphervault.exe", "ciphervault-operator.exe", "ciphervault-agent.exe", "ciphervault-maintenance.exe")
+$Role = $env:CIPHERVAULT_ROLE
+if ([string]::IsNullOrWhiteSpace($Role)) { $Role = "full" }
+$Role = $Role.Trim().ToLowerInvariant()
+$Binaries = switch ($Role) {
+    "developer" { @("ciphervault.exe", "ciphervault-agent.exe") }
+    "node" { @("ciphervault.exe", "ciphervault-operator.exe", "ciphervault-maintenance.exe") }
+    "full" { @("ciphervault.exe", "ciphervault-operator.exe", "ciphervault-agent.exe", "ciphervault-maintenance.exe") }
+    default { throw "Unknown CIPHERVAULT_ROLE '$Role'. Use developer, node, or full." }
+}
 
 $Tag = $env:CIPHERVAULT_VERSION
 if ([string]::IsNullOrWhiteSpace($Tag)) {
@@ -103,5 +113,10 @@ if ($UserPath -notlike "*$BinDir*") {
     $env:Path = "$env:Path;$BinDir"
 }
 
-Write-Host "[+] CipherVault $Tag installed to $BinDir" -ForegroundColor Green
-Write-Host "Run 'ciphervault --help' from a NEW terminal. To update later, run 'ciphervault update' or rerun this installer." -ForegroundColor Yellow
+Write-Host "[+] CipherVault $Tag ($Role) installed to $BinDir" -ForegroundColor Green
+if ($Role -eq "node") {
+    Write-Host "Next (from a NEW terminal): 'ciphervault node setup' for guided node onboarding." -ForegroundColor Yellow
+} else {
+    Write-Host "Next (from a NEW terminal): 'ciphervault init' (new vault), 'ciphervault --help' (command groups), or bare 'ciphervault' (guided TUI)." -ForegroundColor Yellow
+}
+Write-Host "To update later, run 'ciphervault update' or rerun this installer." -ForegroundColor Yellow

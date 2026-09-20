@@ -27,7 +27,10 @@ use ciphervault_operator::{create_router, OperatorState};
 #[derive(Parser, Debug)]
 #[command(name = "ciphervault-operator")]
 #[command(version)]
-#[command(about = "Independent storage operator daemon for CipherVault", long_about = None)]
+#[command(about = "Independent storage operator daemon for CipherVault")]
+#[command(
+    long_about = "Independent storage operator daemon for CipherVault.\n\nThis is the expert interface for node runners. For guided setup\n(walkthrough, background supervision, plain-language status), run\n`ciphervault node setup` from the developer CLI instead."
+)]
 struct Args {
     #[arg(short, long, default_value = "8101", help = "Port to listen on")]
     port: u16,

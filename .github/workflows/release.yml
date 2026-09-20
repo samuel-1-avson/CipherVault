@@ -91,34 +91,65 @@ jobs:
       - name: Package Release Archive
         shell: bash
         run: |
-          PKG_NAME="ciphervault-${{ github.ref_name }}-${{ matrix.target }}"
+          TAG="${{ github.ref_name }}"
+          TARGET="${{ matrix.target }}"
+          SUFFIX="${{ matrix.suffix }}"
+          RELEASE="target/$TARGET/release"
+
+          # Full bundle (backward compatible: in-app updater + existing installers)
+          PKG_NAME="ciphervault-$TAG-$TARGET"
           mkdir -p "$PKG_NAME/bin" "$PKG_NAME/config" "$PKG_NAME/scripts"
           
           # Copy Binaries
-          cp "target/${{ matrix.target }}/release/ciphervault${{ matrix.suffix }}" "$PKG_NAME/bin/"
-          cp "target/${{ matrix.target }}/release/ciphervault-operator${{ matrix.suffix }}" "$PKG_NAME/bin/"
-          cp "target/${{ matrix.target }}/release/ciphervault-agent${{ matrix.suffix }}" "$PKG_NAME/bin/"
-          cp "target/${{ matrix.target }}/release/ciphervault-maintenance${{ matrix.suffix }}" "$PKG_NAME/bin/"
+          cp "$RELEASE/ciphervault$SUFFIX" "$PKG_NAME/bin/"
+          cp "$RELEASE/ciphervault-operator$SUFFIX" "$PKG_NAME/bin/"
+          cp "$RELEASE/ciphervault-agent$SUFFIX" "$PKG_NAME/bin/"
+          cp "$RELEASE/ciphervault-maintenance$SUFFIX" "$PKG_NAME/bin/"
           
           # Copy Documentation and Configs
           cp README.md "$PKG_NAME/"
           cp -r dist/config/* "$PKG_NAME/config/" 2>/dev/null || true
           cp -r dist/scripts/* "$PKG_NAME/scripts/" 2>/dev/null || true
+
+          # Developer bundle: day-to-day secrets CLI + file-watcher agent
+          DEV_PKG="ciphervault-dev-$TAG-$TARGET"
+          mkdir -p "$DEV_PKG/bin" "$DEV_PKG/scripts"
+          cp "$RELEASE/ciphervault$SUFFIX" "$DEV_PKG/bin/"
+          cp "$RELEASE/ciphervault-agent$SUFFIX" "$DEV_PKG/bin/"
+          cp README.md "$DEV_PKG/"
+          cp -r dist/scripts/* "$DEV_PKG/scripts/" 2>/dev/null || true
+
+          # Node bundle: storage daemon + maintenance + CLI wrapper
+          # (`ciphervault node setup` is the guided onboarding front door,
+          # so the CLI ships here too).
+          NODE_PKG="ciphervault-node-$TAG-$TARGET"
+          mkdir -p "$NODE_PKG/bin" "$NODE_PKG/config" "$NODE_PKG/scripts"
+          cp "$RELEASE/ciphervault$SUFFIX" "$NODE_PKG/bin/"
+          cp "$RELEASE/ciphervault-operator$SUFFIX" "$NODE_PKG/bin/"
+          cp "$RELEASE/ciphervault-maintenance$SUFFIX" "$NODE_PKG/bin/"
+          cp README.md "$NODE_PKG/"
+          cp -r dist/config/* "$NODE_PKG/config/" 2>/dev/null || true
+          cp -r dist/scripts/* "$NODE_PKG/scripts/" 2>/dev/null || true
           
-          # Create Archive
+          # Create Archives (full + both role bundles)
           if [ "${{ matrix.archive }}" = "zip" ]; then
             7z a "$PKG_NAME.zip" "$PKG_NAME"
-            echo "ASSET=$PKG_NAME.zip" >> $GITHUB_ENV
+            7z a "$DEV_PKG.zip" "$DEV_PKG"
+            7z a "$NODE_PKG.zip" "$NODE_PKG"
           else
             tar -czvf "$PKG_NAME.tar.gz" "$PKG_NAME"
-            echo "ASSET=$PKG_NAME.tar.gz" >> $GITHUB_ENV
+            tar -czvf "$DEV_PKG.tar.gz" "$DEV_PKG"
+            tar -czvf "$NODE_PKG.tar.gz" "$NODE_PKG"
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.ASSET }}
+          path: |
+            ciphervault-${{ github.ref_name }}-${{ matrix.target }}.*
+            ciphervault-dev-${{ github.ref_name }}-${{ matrix.target }}.*
+            ciphervault-node-${{ github.ref_name }}-${{ matrix.target }}.*
 
   publish-release:
     name: Publish GitHub Release
@@ -174,7 +205,7 @@ jobs:
             dist-release/*
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images

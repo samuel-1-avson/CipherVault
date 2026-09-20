@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # CipherVault - verified Linux & macOS installer/updater
 # Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.7 (pin, skips the
-# API call), CIPHERVAULT_INSTALL_DIR=/opt/cv-bin (override bindir).
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.8 (pin, skips the
+# API call), CIPHERVAULT_INSTALL_DIR=/opt/cv-bin (override bindir),
+# CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
+# node = CLI+operator+maintenance for guided `ciphervault node setup`).
 set -euo pipefail
 
 REPO="samuel-1-avson/CipherVault"
@@ -85,14 +87,26 @@ EXPECTED="$(awk -v name="$PKG_NAME" '{entry=$2; sub(/^\*/, "", entry); if (entry
 ACTUAL="$(sha256_file "$TMP_DIR/$PKG_NAME")"
 [ "$EXPECTED" = "$ACTUAL" ] || { echo "Release checksum mismatch for $PKG_NAME" >&2; exit 1; }
 tar -xzf "$TMP_DIR/$PKG_NAME" -C "$TMP_DIR"
-for name in ciphervault ciphervault-operator ciphervault-agent ciphervault-maintenance; do
+ROLE="${CIPHERVAULT_ROLE:-full}"
+case "$ROLE" in
+  developer) WANT="ciphervault ciphervault-agent" ;;
+  node) WANT="ciphervault ciphervault-operator ciphervault-maintenance" ;;
+  full) WANT="ciphervault ciphervault-operator ciphervault-agent ciphervault-maintenance" ;;
+  *) echo "Unknown CIPHERVAULT_ROLE '$ROLE'. Use developer, node, or full." >&2; exit 1 ;;
+esac
+for name in $WANT; do
   BINARY="$(find "$TMP_DIR" -type f -name "$name" | head -n 1)"
   [ -n "$BINARY" ] || { echo "Verified release archive has no $name binary" >&2; exit 1; }
   install -m 0755 "$BINARY" "$INSTALL_DIR/$name"
 done
-echo "CipherVault $TAG installed to $INSTALL_DIR"
+echo "CipherVault $TAG ($ROLE) installed to $INSTALL_DIR"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) echo "NOTE: $INSTALL_DIR is not on PATH. Add: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
-echo "Run 'ciphervault --help'. To update later, run 'ciphervault update' or rerun this installer."
+if [ "$ROLE" = "node" ]; then
+  echo "Next: 'ciphervault node setup' for guided node onboarding."
+else
+  echo "Next: 'ciphervault init' (new vault), 'ciphervault --help' (command groups), or bare 'ciphervault' (guided TUI)."
+fi
+echo "To update later, run 'ciphervault update' or rerun this installer."

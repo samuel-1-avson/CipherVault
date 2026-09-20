@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use colored::*;
 use std::fs;
 use std::io::IsTerminal;
@@ -21,11 +21,75 @@ pub(crate) use dashboard::*;
 pub(crate) use diff::{cmd_diff, generate_diff_report};
 pub(crate) use util::*;
 
+/// Top-level help, grouped by role so developers and node runners
+/// each see their own path. Rendered from [`HELP_TEMPLATE`]; the
+/// `help_lists_every_subcommand` test fails if a subcommand or its
+/// description is missing here.
+const HELP_TEMPLATE: &str = "{about}
+
+Usage: {usage}
+
+Two roles, one binary. Pick your path:
+  Developers (day-to-day secrets): init, track, push, pull, run, ...
+  Node runners (contribute storage): `ciphervault node setup`
+
+Developer: vault & secrets:
+  init                 Initialize a new CipherVault in the current directory
+  track                Add confidential files to vault tracking (e.g. .env, keys)
+  untrack              Remove confidential files from vault tracking
+  status               Display current vault status and tracked files
+  push                 Create, encrypt, and replicate a snapshot across independent operators
+  pull                 Pull the latest snapshot from independent operators and update local files
+  history              Display snapshot history DAG
+  prune                Prune old snapshots per the retention policy (keeps head + unreplicated)
+  rekey                Rotate the vault epoch key (reports ages with --check)
+  restore              Restore confidential files from a snapshot
+  recover              Recover a vault from an offline recovery kit or threshold guardian shares on a clean machine
+  recovery             Emergency offline recovery commands
+  diff                 Compare changes in confidential files across snapshots or against working tree
+  hook                 Manage Git pre-commit hooks and secret leak prevention
+  audit                Audit ciphertext replica health across independent operators
+  repair               Detect and repair degraded replicas across operators
+  lease                Create and renew storage leases on an operator
+
+Developer: run & automate:
+  run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
+  watch                Watch tracked confidential files and automatically create snapshots on save
+  anchor               Anchor a snapshot head commitment to Arbitrum One
+  verify-anchor        Verify an Arbitrum on-chain commitment and finality stage
+  approve              Out-of-band cryptographic approval and multi-party authorization
+  token                Manage physical hardware security tokens (YubiKey PIV / PC/SC)
+
+Node operator:
+  node                 Run a storage node: guided setup, start, stop, status, backup, standing, p2p-info
+  peers                Inspect discovered peer operators and dynamic P2P gossip cluster
+
+Fleet administration:
+  invite               Fleet-signed join invites for new operator nodes
+  voucher              Issue write vouchers (operator-local administration, service token)
+  publish-public-feed  Publish a signed public checkpoint feed from local vault evidence
+
+Account & devices:
+  auth                 Manage the optional CipherVault control-plane account on this device
+  device               Manage devices enrolled in the local CipherVault account
+  vault                Link the current local vault to the optional CipherVault account
+
+App:
+  update               Check for and install the latest signed GitHub release for this platform
+  ui                   Open the production cloud dashboard or launch an offline local inspector
+  tui                  Launch interactive terminal user interface (TUI)
+  doctor               Run local self-checks (vault, keyring, operators, quorum, anchors)
+  completions          Generate shell autocompletion script for your shell
+  help                 Print this message or the help of the given subcommand(s)
+
+{options}
+";
+
 #[derive(Parser)]
 #[command(name = "ciphervault")]
 #[command(author = "CipherVault Team")]
 #[command(version)]
-#[command(about = "Decentralized, encrypted version control for confidential files", long_about = None)]
+#[command(about = "Decentralized, encrypted version control for confidential files")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -33,30 +97,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Check for and install the latest signed GitHub release for this platform
-    Update {
-        #[arg(long, help = "Only check the latest release; do not install it")]
-        check: bool,
-    },
-
-    /// Manage the optional CipherVault control-plane account on this device
-    Auth {
-        #[command(subcommand)]
-        sub: AuthSubcommand,
-    },
-
-    /// Manage devices enrolled in the local CipherVault account
-    Device {
-        #[command(subcommand)]
-        sub: DeviceSubcommand,
-    },
-
-    /// Link the current local vault to the optional CipherVault account
-    Vault {
-        #[command(subcommand)]
-        sub: VaultSubcommand,
-    },
-
     /// Initialize a new CipherVault in the current directory
     Init {
         #[arg(short, long, help = "Overwrite existing vault if present")]
@@ -164,6 +204,23 @@ enum Commands {
         replicas: Option<usize>,
     },
 
+    /// Pull the latest snapshot from independent operators and update local files
+    Pull {
+        #[arg(
+            short,
+            long,
+            help = "Check for remote updates without modifying local working files"
+        )]
+        dry_run: bool,
+
+        #[arg(
+            short,
+            long,
+            help = "Overwrite modified local files with remote snapshot contents"
+        )]
+        force: bool,
+    },
+
     /// Display snapshot history DAG
     History,
 
@@ -252,6 +309,123 @@ enum Commands {
         sub: RecoverySubcommand,
     },
 
+    /// Compare changes in confidential files across snapshots or against working tree
+    Diff {
+        #[arg(
+            help = "Old snapshot ID to compare (or compare working directory against latest head)"
+        )]
+        snapshot_a: Option<String>,
+
+        #[arg(help = "New snapshot ID to compare against snapshot_a")]
+        snapshot_b: Option<String>,
+
+        #[arg(short, long, help = "Limit diff to a specific relative file path")]
+        file: Option<String>,
+
+        #[arg(long, help = "Reveal full unmasked secret values in diff output")]
+        reveal: bool,
+
+        #[arg(long, help = "Output diff report in structured JSON format")]
+        json: bool,
+    },
+
+    /// Manage Git pre-commit hooks and secret leak prevention
+    Hook {
+        #[command(subcommand)]
+        sub: HookSubcommand,
+    },
+
+    /// Audit ciphertext replica health across independent operators
+    Audit {
+        #[arg(short, long, num_args = 1.., help = "Custom operator endpoints to audit")]
+        operators: Option<Vec<String>>,
+    },
+
+    /// Detect and repair degraded replicas across operators
+    Repair {
+        #[arg(short, long, num_args = 1.., help = "Custom operator endpoints to repair")]
+        operators: Option<Vec<String>>,
+
+        #[arg(long, help = "Replicas required for quorum (default 3, must be >= 1)")]
+        replicas: Option<usize>,
+    },
+
+    /// Create and renew storage leases on an operator
+    Lease {
+        #[command(subcommand)]
+        sub: LeaseSubcommand,
+    },
+
+    /// Run a command with decrypted secrets injected into its environment (zero-disk exposure)
+    Run {
+        #[arg(
+            short,
+            long,
+            help = "Snapshot ID (hex) to source secrets from (defaults to latest head)"
+        )]
+        snapshot: Option<String>,
+
+        #[arg(
+            short,
+            long,
+            help = "Specific secret file to load (e.g. .env.production)"
+        )]
+        env_file: Option<String>,
+
+        #[arg(
+            long,
+            help = "Do not inherit host process environment variables (except essential OS paths)"
+        )]
+        no_inherit: bool,
+
+        #[arg(
+            long,
+            help = "Display decrypted variable keys without executing command or exposing values"
+        )]
+        dry_run: bool,
+
+        #[arg(short, long, help = "Suppress CipherVault informational output banner")]
+        quiet: bool,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Additional KEY=VALUE overrides to inject"
+        )]
+        set: Option<Vec<String>>,
+
+        #[arg(
+            trailing_var_arg = true,
+            required = true,
+            help = "Command and arguments to execute"
+        )]
+        command: Vec<String>,
+    },
+
+    /// Watch tracked confidential files and automatically create snapshots on save
+    Watch {
+        #[arg(
+            short,
+            long,
+            default_value = "2",
+            help = "Debounce window in seconds before capturing snapshot"
+        )]
+        debounce: u64,
+
+        #[arg(
+            short,
+            long,
+            help = "Enable automatic remote replication to operators on snapshot"
+        )]
+        sync: bool,
+
+        #[arg(
+            long,
+            help = "Inspector mode: report captures without persisting or replicating"
+        )]
+        dry_run: bool,
+    },
+
     /// Anchor a snapshot head commitment to Arbitrum One
     Anchor {
         #[arg(
@@ -316,6 +490,52 @@ enum Commands {
         rpc: Option<String>,
     },
 
+    /// Out-of-band cryptographic approval and multi-party authorization
+    Approve {
+        #[command(subcommand)]
+        sub: ApproveSubcommand,
+    },
+
+    /// Manage physical hardware security tokens (YubiKey PIV / PC/SC)
+    Token {
+        #[command(subcommand)]
+        sub: TokenSubcommand,
+    },
+
+    /// Run a storage node: guided setup, start, stop, status, backup, standing, p2p-info
+    Node {
+        #[command(subcommand)]
+        sub: NodeSubcommand,
+    },
+
+    /// Inspect discovered peer operators and dynamic P2P gossip cluster
+    Peers {
+        #[arg(
+            short,
+            long,
+            help = "Query operators to dynamically discover new peer nodes"
+        )]
+        discover: bool,
+
+        #[arg(
+            long,
+            help = "Mesh routing tables: fetch each operator's self descriptor and announce it to all others"
+        )]
+        mesh: bool,
+    },
+
+    /// Fleet-signed join invites for new operator nodes
+    Invite {
+        #[command(subcommand)]
+        sub: InviteSubcommand,
+    },
+
+    /// Issue write vouchers (operator-local administration, service token)
+    Voucher {
+        #[command(subcommand)]
+        sub: VoucherSubcommand,
+    },
+
     /// Publish a signed public checkpoint feed from local vault evidence
     PublishPublicFeed {
         #[arg(short, long, help = "Output JSON path consumed by the public explorer")]
@@ -329,25 +549,28 @@ enum Commands {
         network: String,
     },
 
-    /// Manage Git pre-commit hooks and secret leak prevention
-    Hook {
+    /// Manage the optional CipherVault control-plane account on this device
+    Auth {
         #[command(subcommand)]
-        sub: HookSubcommand,
+        sub: AuthSubcommand,
     },
 
-    /// Audit ciphertext replica health across independent operators
-    Audit {
-        #[arg(short, long, num_args = 1.., help = "Custom operator endpoints to audit")]
-        operators: Option<Vec<String>>,
+    /// Manage devices enrolled in the local CipherVault account
+    Device {
+        #[command(subcommand)]
+        sub: DeviceSubcommand,
     },
 
-    /// Detect and repair degraded replicas across operators
-    Repair {
-        #[arg(short, long, num_args = 1.., help = "Custom operator endpoints to repair")]
-        operators: Option<Vec<String>>,
+    /// Link the current local vault to the optional CipherVault account
+    Vault {
+        #[command(subcommand)]
+        sub: VaultSubcommand,
+    },
 
-        #[arg(long, help = "Replicas required for quorum (default 3, must be >= 1)")]
-        replicas: Option<usize>,
+    /// Check for and install the latest signed GitHub release for this platform
+    Update {
+        #[arg(long, help = "Only check the latest release; do not install it")]
+        check: bool,
     },
 
     /// Open the production cloud dashboard or launch an offline local inspector
@@ -402,111 +625,10 @@ enum Commands {
         poll_ms: u64,
     },
 
-    /// Watch tracked confidential files and automatically create snapshots on save
-    Watch {
-        #[arg(
-            short,
-            long,
-            default_value = "2",
-            help = "Debounce window in seconds before capturing snapshot"
-        )]
-        debounce: u64,
-
-        #[arg(
-            short,
-            long,
-            help = "Enable automatic remote replication to operators on snapshot"
-        )]
-        sync: bool,
-
-        #[arg(
-            long,
-            help = "Inspector mode: report captures without persisting or replicating"
-        )]
-        dry_run: bool,
-    },
-
-    /// Run a command with decrypted secrets injected into its environment (zero-disk exposure)
-    Run {
-        #[arg(
-            short,
-            long,
-            help = "Snapshot ID (hex) to source secrets from (defaults to latest head)"
-        )]
-        snapshot: Option<String>,
-
-        #[arg(
-            short,
-            long,
-            help = "Specific secret file to load (e.g. .env.production)"
-        )]
-        env_file: Option<String>,
-
-        #[arg(
-            long,
-            help = "Do not inherit host process environment variables (except essential OS paths)"
-        )]
-        no_inherit: bool,
-
-        #[arg(
-            long,
-            help = "Display decrypted variable keys without executing command or exposing values"
-        )]
-        dry_run: bool,
-
-        #[arg(short, long, help = "Suppress CipherVault informational output banner")]
-        quiet: bool,
-
-        #[arg(
-            long,
-            num_args = 1..,
-            help = "Additional KEY=VALUE overrides to inject"
-        )]
-        set: Option<Vec<String>>,
-
-        #[arg(
-            trailing_var_arg = true,
-            required = true,
-            help = "Command and arguments to execute"
-        )]
-        command: Vec<String>,
-    },
-
-    /// Compare changes in confidential files across snapshots or against working tree
-    Diff {
-        #[arg(
-            help = "Old snapshot ID to compare (or compare working directory against latest head)"
-        )]
-        snapshot_a: Option<String>,
-
-        #[arg(help = "New snapshot ID to compare against snapshot_a")]
-        snapshot_b: Option<String>,
-
-        #[arg(short, long, help = "Limit diff to a specific relative file path")]
-        file: Option<String>,
-
-        #[arg(long, help = "Reveal full unmasked secret values in diff output")]
-        reveal: bool,
-
-        #[arg(long, help = "Output diff report in structured JSON format")]
+    /// Run local self-checks (vault, keyring, operators, quorum, anchors)
+    Doctor {
+        #[arg(long, help = "Output the report in structured JSON format")]
         json: bool,
-    },
-
-    /// Pull the latest snapshot from independent operators and update local files
-    Pull {
-        #[arg(
-            short,
-            long,
-            help = "Check for remote updates without modifying local working files"
-        )]
-        dry_run: bool,
-
-        #[arg(
-            short,
-            long,
-            help = "Overwrite modified local files with remote snapshot contents"
-        )]
-        force: bool,
     },
 
     /// Generate shell autocompletion script for your shell
@@ -516,64 +638,6 @@ enum Commands {
             help = "Target shell (bash, elvish, fish, powershell, zsh)"
         )]
         shell: clap_complete::Shell,
-    },
-
-    /// Manage physical hardware security tokens (YubiKey PIV / PC/SC)
-    Token {
-        #[command(subcommand)]
-        sub: TokenSubcommand,
-    },
-
-    /// Inspect discovered peer operators and dynamic P2P gossip cluster
-    Peers {
-        #[arg(
-            short,
-            long,
-            help = "Query operators to dynamically discover new peer nodes"
-        )]
-        discover: bool,
-
-        #[arg(
-            long,
-            help = "Mesh routing tables: fetch each operator's self descriptor and announce it to all others"
-        )]
-        mesh: bool,
-    },
-
-    /// Create and renew storage leases on an operator
-    Lease {
-        #[command(subcommand)]
-        sub: LeaseSubcommand,
-    },
-
-    /// Issue write vouchers (operator-local administration, service token)
-    Voucher {
-        #[command(subcommand)]
-        sub: VoucherSubcommand,
-    },
-
-    /// Fleet-signed join invites for new operator nodes
-    Invite {
-        #[command(subcommand)]
-        sub: InviteSubcommand,
-    },
-
-    /// Run a storage node: guided setup, start, stop, status, backup, standing, p2p-info
-    Node {
-        #[command(subcommand)]
-        sub: NodeSubcommand,
-    },
-
-    /// Out-of-band cryptographic approval and multi-party authorization
-    Approve {
-        #[command(subcommand)]
-        sub: ApproveSubcommand,
-    },
-
-    /// Run local self-checks (vault, keyring, operators, quorum, anchors)
-    Doctor {
-        #[arg(long, help = "Output the report in structured JSON format")]
-        json: bool,
     },
 }
 
@@ -979,7 +1043,14 @@ fn run_on_roomy_thread() {
         .build()
         .expect("build async runtime")
         .block_on(async {
-            let cli = Cli::parse();
+            let matches = match Cli::command()
+                .help_template(HELP_TEMPLATE)
+                .try_get_matches()
+            {
+                Ok(matches) => matches,
+                Err(err) => err.exit(),
+            };
+            let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
 
             if let Err(err) = run(cli).await {
                 eprintln!("{} {}", "Error:".bold().red(), err);
@@ -1003,7 +1074,10 @@ async fn default_no_subcommand() -> Result<()> {
             .name("help".into())
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                Cli::command().print_help().expect("print help");
+                Cli::command()
+                    .help_template(HELP_TEMPLATE)
+                    .print_help()
+                    .expect("print help");
                 println!();
             })
             .expect("spawn help thread")
@@ -1801,5 +1875,96 @@ mod entry_tests {
     fn explicit_subcommand_still_parses() {
         let cli = Cli::try_parse_from(["ciphervault", "tui"]).expect("tui must parse");
         assert!(matches!(cli.command, Some(Commands::Tui { .. })));
+    }
+}
+
+#[cfg(test)]
+mod help_template_tests {
+    use super::*;
+
+    /// Renders top-level help on a roomy thread (same giant-tree stack
+    /// hazard as the entry point) and returns it with the subcommand
+    /// inventory, so assertions below run on the test thread with clear
+    /// failure messages.
+    fn rendered_help() -> (String, Vec<(String, Option<String>)>) {
+        std::thread::Builder::new()
+            .name("help-template-test".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut cmd = Cli::command().help_template(HELP_TEMPLATE);
+                let mut buf = Vec::new();
+                cmd.write_long_help(&mut buf).expect("render help");
+                let subs: Vec<(String, Option<String>)> = cmd
+                    .get_subcommands()
+                    .map(|sub| {
+                        (
+                            sub.get_name().to_string(),
+                            sub.get_about().map(|about| about.to_string()),
+                        )
+                    })
+                    .collect();
+                (String::from_utf8(buf).expect("help is utf-8"), subs)
+            })
+            .expect("spawn help thread")
+            .join()
+            .expect("help thread")
+    }
+
+    #[test]
+    fn help_lists_every_subcommand_with_its_description() {
+        // The role-grouped template is handwritten; this test fails if a
+        // new subcommand (or a reworded description) is not mirrored there.
+        let (help, subs) = rendered_help();
+        assert!(!subs.is_empty());
+        for (name, about) in &subs {
+            assert!(
+                help.contains(name),
+                "top-level help is missing subcommand `{name}`"
+            );
+            if let Some(about) = about {
+                assert!(
+                    help.contains(about),
+                    "top-level help is missing the description of `{name}`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_shows_every_role_section() {
+        let (help, _) = rendered_help();
+        for heading in [
+            "Developer: vault & secrets:",
+            "Developer: run & automate:",
+            "Node operator:",
+            "Fleet administration:",
+            "Account & devices:",
+            "App:",
+        ] {
+            assert!(
+                help.contains(heading),
+                "top-level help is missing the `{heading}` section"
+            );
+        }
+    }
+
+    #[test]
+    fn templated_parse_path_matches_derive_parse() {
+        // The entry point parses via `try_get_matches` (to attach the
+        // template) instead of `Cli::parse`; both paths must agree.
+        let via_template = std::thread::Builder::new()
+            .name("parse-path-test".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let matches = Cli::command()
+                    .help_template(HELP_TEMPLATE)
+                    .try_get_matches_from(["ciphervault", "tui"])
+                    .expect("tui must parse via template path");
+                Cli::from_arg_matches(&matches).expect("tui must convert")
+            })
+            .expect("spawn parse thread")
+            .join()
+            .expect("parse thread");
+        assert!(matches!(via_template.command, Some(Commands::Tui { .. })));
     }
 }

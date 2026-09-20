@@ -48,10 +48,10 @@ Install via [Windows Package Manager (`winget`)](https://learn.microsoft.com/en-
 
 ```powershell
 # Local testing:
-winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.0/
+winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.7-beta.8/
 
 # Upstream publication:
-wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.0/
+wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.7-beta.8/
 ```
 
 ---
@@ -60,10 +60,39 @@ wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherV
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/master/dist/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
 ```
 
 ### Linux & macOS (Bash)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/master/dist/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
+```
+---
+
+## 5. Roles: developer vs node runner
+
+Every package installs the full binary set (guided `ciphervault node
+setup` needs the CLI next to the operator daemon). Pick your path after
+installing:
+
+- **Developers** (day-to-day secrets): `ciphervault init`,
+  `ciphervault --help` (command groups), or bare `ciphervault` (guided TUI).
+- **Node runners** (contribute storage): `ciphervault node setup`.
+- Smaller footprint? The one-liners accept
+  `CIPHERVAULT_ROLE=developer|node|full`, and each release ships
+  `ciphervault-dev-*` and `ciphervault-node-*` bundles beside the full archive.
+
+Full two-track walkthrough: [docs/SETUP_GUIDE.md](../../docs/SETUP_GUIDE.md).
+
+---
+
+## 6. Refreshing the winget hash for a new release
+
+The newest `winget/.../*.installer.yaml` ships `InstallerSha256` as zeros.
+After the GitHub release publishes, fill it from `SHA256SUMS.txt`:
+
+```powershell
+$tag = 'v1.0.7-beta.8'
+$zip = "ciphervault-$tag-x86_64-pc-windows-msvc.zip"
+(Get-Content SHA256SUMS.txt | Select-String $zip).ToString().Split()[0]
 ```

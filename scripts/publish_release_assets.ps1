@@ -3,11 +3,20 @@
 # ==============================================================================
 param(
     [string]$Repo = "samuel-1-avson/CipherVault",
-    [string]$Tag = "v1.0.0",
+    [string]$Tag = "",
     [string]$Token = $env:GITHUB_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
+
+# Default the tag from the workspace version so manual publishes always
+# match the release under test (override with -Tag for backfills).
+if ([string]::IsNullOrWhiteSpace($Tag)) {
+    $CargoToml = Get-Content (Join-Path $PSScriptRoot "..\Cargo.toml") -Raw
+    if ($CargoToml -match '(?m)^version\s*=\s*"([^"]+)"') { $Tag = "v$($Matches[1])" }
+    else { throw "Could not determine workspace version from Cargo.toml; pass -Tag explicitly." }
+}
+$IsPrerelease = $Tag -match '-'
 
 if (-not $Token) {
     try {
@@ -47,10 +56,10 @@ try {
     $Body = @{
         tag_name         = $Tag
         target_commitish = "main"
-        name             = "CipherVault v1.0.0 - Production General Availability & Visual Explorer Hardening"
-        body             = "CipherVault v1.0.0 - Production General Availability and Visual Explorer Hardening. Visit https://vault.cipherv.online for live explorer."
+        name             = "CipherVault $Tag"
+        body             = "CipherVault $Tag. Visit https://vault.cipherv.online for live explorer."
         draft            = $false
-        prerelease       = $false
+        prerelease       = $IsPrerelease
     } | ConvertTo-Json
 
     $Release = Invoke-RestMethod -Uri $CreateReleaseUrl -Headers $Headers -Method Post -Body $Body

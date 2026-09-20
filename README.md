@@ -14,7 +14,7 @@
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
-[The Problem It Solves](#-the-problem-ciphervault-solves) • [Architecture](#-system-architecture--trust-boundaries) • [Key Features](#-important-features) • [Installation](#-installation-guide) • [Quickstart Guide](#-quickstart-guide) • [CLI Reference](#-complete-cli-command-reference) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Docker Deployment](#-docker-compose--self-hosting) • [Docs Hub](docs/README.md)
+[The Problem It Solves](#-the-problem-ciphervault-solves) • [Architecture](#-system-architecture--trust-boundaries) • [Key Features](#-important-features) • [Installation](#-installation-guide) • [Setup Guide](docs/SETUP_GUIDE.md) • [Quickstart Guide](#-quickstart-guide) • [CLI Reference](#-complete-cli-command-reference) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Docker Deployment](#-docker-compose--self-hosting) • [Docs Hub](docs/README.md)
 
 </div>
 
