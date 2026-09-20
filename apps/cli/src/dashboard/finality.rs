@@ -837,6 +837,9 @@ mod tests {
 
     #[test]
     fn signed_public_checkpoint_feed_is_verified_before_publication() {
+        // Anchored to now: the verifier rejects feeds older than 7 days,
+        // so a fixed timestamp would turn this test into a time bomb.
+        let now = Utc::now().timestamp().max(0) as u64;
         let signing_key = ciphervault_crypto::generate_signing_key();
         let checkpoint = PublicCheckpointFeedEntry {
             network: "Arbitrum Sepolia".to_string(),
@@ -846,11 +849,11 @@ mod tests {
             head_record_cid_hex: "33".repeat(32),
             tx_hash_hex: Some(format!("0x{}", "44".repeat(32))),
             block_number: Some(123),
-            published_at_utc: 1_789_250_000,
+            published_at_utc: now,
         };
         let unsigned = PublicCheckpointFeedUnsigned {
             version: 1,
-            issued_at_utc: 1_789_250_001,
+            issued_at_utc: now,
             checkpoints: vec![checkpoint.clone()],
         };
         let message = ciphervault_format::to_canonical_cbor(&unsigned).unwrap();
