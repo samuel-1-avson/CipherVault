@@ -20,7 +20,36 @@ use crate::util::{
     scan_gitignore_for_secrets, DB_FILE, DEFAULT_PRODUCTION_OPERATORS, OPERATORS_FILE, VAULT_DIR,
 };
 
-pub(crate) fn cmd_init(
+/// Probes each operator's `/healthz` in parallel (5s timeout). Returns
+/// per-endpoint reachability; never fails, so init stays usable offline
+/// and against not-yet-booted custom operators (push enforces quorum).
+async fn probe_operator_reachability(endpoints: &[String]) -> Vec<(String, bool)> {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return endpoints.iter().map(|e| (e.clone(), false)).collect(),
+    };
+    futures_util::future::join_all(endpoints.iter().map(|endpoint| {
+        let client = client.clone();
+        let endpoint = endpoint.clone();
+        async move {
+            let url = format!("{}/healthz", endpoint.trim_end_matches('/'));
+            let reachable = client
+                .get(url)
+                .send()
+                .await
+                .map(|response| response.status().is_success())
+                .unwrap_or(false);
+            (endpoint, reachable)
+        }
+    }))
+    .await
+}
+
+pub(crate) async fn cmd_init(
     force: bool,
     custom_operators: Option<Vec<String>>,
     save_kit: Option<PathBuf>,
@@ -126,12 +155,47 @@ pub(crate) fn cmd_init(
     cert.sign(&recovery_sk)?;
     store.save_device_certificate(&cert)?;
 
-    let operator_endpoints = custom_operators.unwrap_or_else(|| {
+    let operator_endpoints: Vec<String> = custom_operators.unwrap_or_else(|| {
+        println!("  No --operators given; using the default fleet.");
         DEFAULT_PRODUCTION_OPERATORS
             .iter()
             .map(|s| s.to_string())
             .collect()
     });
+
+    let reachability = probe_operator_reachability(&operator_endpoints).await;
+    let reachable = reachability.iter().filter(|(_, ok)| *ok).count();
+    if reachable == operator_endpoints.len() {
+        println!(
+            "  {}",
+            format!(
+                "✓ {}/{} operators reachable.",
+                reachable,
+                operator_endpoints.len()
+            )
+            .green()
+        );
+    } else {
+        eprintln!(
+            "{}",
+            format!(
+                "WARNING: {}/{} operators reachable. Unreachable:",
+                reachable,
+                operator_endpoints.len()
+            )
+            .yellow()
+            .bold()
+        );
+        for (endpoint, ok) in &reachability {
+            if !ok {
+                eprintln!("  - {}", endpoint.yellow());
+            }
+        }
+        eprintln!(
+            "  {}",
+            "Init continues; push needs reachable operators for quorum.".yellow()
+        );
+    }
 
     // Save operators config
     let ops_json = serde_json::to_string_pretty(&operator_endpoints)?;
@@ -277,4 +341,22 @@ pub(crate) fn cmd_init(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn probe_reports_dead_endpoints_without_failing() {
+        // Connection-refused ports answer instantly; nothing here needs the
+        // network, and the probe must return (not hang or error).
+        let endpoints = vec![
+            "http://127.0.0.1:1".to_string(),
+            "http://127.0.0.1:2".to_string(),
+        ];
+        let results = probe_operator_reachability(&endpoints).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|(_, ok)| !ok));
+    }
 }

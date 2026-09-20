@@ -62,7 +62,7 @@ enum Commands {
         #[arg(short, long, help = "Overwrite existing vault if present")]
         force: bool,
 
-        #[arg(short, long, num_args = 1.., help = "Custom operator endpoints (space separated)")]
+        #[arg(short, long, num_args = 1.., help = "Custom operator endpoints (default: public fleet; checked for reachability)")]
         operators: Option<Vec<String>>,
 
         #[arg(
@@ -945,15 +945,18 @@ async fn run(cli: Cli) -> Result<()> {
             import_gitignore,
             reader,
             pin,
-        } => cmd_init(
-            force,
-            operators,
-            save_kit,
-            hardware_token,
-            import_gitignore,
-            reader,
-            pin,
-        ),
+        } => {
+            cmd_init(
+                force,
+                operators,
+                save_kit,
+                hardware_token,
+                import_gitignore,
+                reader,
+                pin,
+            )
+            .await
+        }
         Commands::Track {
             paths,
             from_gitignore,
