@@ -312,7 +312,9 @@ pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        // `!` negates (re-includes) a pattern: the file is meant to be
+        // tracked in git, so it must never be proposed as a secret.
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
             continue;
         }
         let clean = trimmed.trim_start_matches('/').trim_start_matches("./");
@@ -623,6 +625,29 @@ mod tests {
         let err = read_gitignore_text(&path).unwrap_err().to_string();
         assert!(err.contains(".gitignore"), "names the file: {err}");
         assert!(err.contains("UTF-8"), "names the fix: {err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gitignore_scan_skips_negated_patterns() {
+        let dir = std::env::temp_dir().join(format!("cv-neg-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("deploy/docker")).unwrap();
+        std::fs::write(
+            dir.join(".gitignore"),
+            "!deploy/docker/.env.example\nsecrets.env\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("deploy/docker/.env.example"), "EXAMPLE=1").unwrap();
+        std::fs::write(dir.join("secrets.env"), "K=V").unwrap();
+        let found = scan_gitignore_for_secrets(&dir).unwrap();
+        assert!(
+            found.iter().all(|p| !p.to_string_lossy().starts_with('!')),
+            "negations excluded: {found:?}"
+        );
+        assert!(
+            found.iter().any(|p| p.ends_with("secrets.env")),
+            "real secret kept: {found:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
