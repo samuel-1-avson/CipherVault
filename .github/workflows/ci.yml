@@ -23,6 +23,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Free runner disk space
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
