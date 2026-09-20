@@ -1,6 +1,6 @@
 //! Shared CLI leaves: vault paths, device identity, operator config, gitignore, UI helpers.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use colored::Colorize;
 use std::fs::{self, OpenOptions};
@@ -180,12 +180,29 @@ pub fn resolve_hardware_token(
     Ok(selected_token)
 }
 
+/// Reads `.gitignore` as text, translating an encoding failure into an
+/// actionable error: Windows PowerShell 5.1's `>` redirection writes
+/// UTF-16, which is the common way this file becomes non-UTF-8.
+fn read_gitignore_text(path: &Path) -> Result<String> {
+    fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            anyhow!(
+                "'{}' is not valid UTF-8 (PowerShell 5.1 '>' writes UTF-16; re-save the file as UTF-8 and retry): {}",
+                path.display(),
+                e
+            )
+        } else {
+            e.into()
+        }
+    })
+}
+
 pub(crate) fn ensure_gitignore() -> Result<()> {
     let gitignore_path = Path::new(".gitignore");
     let entry = "\n# CipherVault local keys, database, and cache\n.ciphervault/\n";
 
     if gitignore_path.exists() {
-        let content = fs::read_to_string(gitignore_path)?;
+        let content = read_gitignore_text(gitignore_path)?;
         if !content.contains(".ciphervault") {
             let mut file = OpenOptions::new().append(true).open(gitignore_path)?;
             file.write_all(entry.as_bytes())?;
@@ -202,7 +219,7 @@ pub(crate) fn ensure_file_in_gitignore(rel_path: &Path) -> Result<bool> {
     let target = norm.trim_start_matches("./");
 
     let existing = if gitignore_path.exists() {
-        fs::read_to_string(gitignore_path)?
+        read_gitignore_text(gitignore_path)?
     } else {
         String::new()
     };
@@ -290,7 +307,7 @@ pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>
         return Ok(Vec::new());
     }
 
-    let content = fs::read_to_string(gitignore_path)?;
+    let content = read_gitignore_text(&gitignore_path)?;
     let mut candidate_patterns = Vec::new();
 
     for line in content.lines() {
@@ -594,5 +611,18 @@ mod tests {
         assert_eq!(epoch_key_status(0, 90, now), (None, true));
         // Future timestamps saturate to age 0, never stale.
         assert_eq!(epoch_key_status(now + 86_400, 90, now), (Some(0), false));
+    }
+
+    #[test]
+    fn gitignore_encoding_failure_names_file_and_fix() {
+        let dir = std::env::temp_dir().join(format!("cv-gitignore-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".gitignore");
+        // UTF-16 LE BOM + ASCII, exactly what PowerShell 5.1 `>` writes.
+        std::fs::write(&path, [0xFFu8, 0xFE, b'.', 0, b'e', 0]).unwrap();
+        let err = read_gitignore_text(&path).unwrap_err().to_string();
+        assert!(err.contains(".gitignore"), "names the file: {err}");
+        assert!(err.contains("UTF-8"), "names the fix: {err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
