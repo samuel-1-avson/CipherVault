@@ -1,6 +1,6 @@
 # CipherVault: Master Documentation Hub
 
-**Version:** `v1.0.7-beta.2` (Beta)  
+**Version:** `v1.0.7-beta.7` (Beta)  
 **Classification:** Enterprise System Documentation & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)
 
@@ -47,9 +47,11 @@ These supersede the parent spec where they disagree (decisions are dated inline)
 | [`RELEASE_READINESS_2026-09-13.md`](./RELEASE_READINESS_2026-09-13.md) | Release-readiness review (2026-09-13). |
 | [`PRODUCTION_ROLLOUT_2026-09-15.md`](./PRODUCTION_ROLLOUT_2026-09-15.md) | Production rollout notes (2026-09-15). |
 | [`API_REFERENCE.md`](./API_REFERENCE.md) | Operator HTTP + P2P RPC reference: routes, auth, limits, error envelope. |
-| [`OPERATOR_PLAYBOOKS.md`](./OPERATOR_PLAYBOOKS.md) | Restart, mesh, vouchers, quarantine, chaos gates, backup/restore. |
+| [`OPERATOR_PLAYBOOKS.md`](./OPERATOR_PLAYBOOKS.md) | Restart, mesh, vouchers, quarantine, chaos gates, backup/restore, verified-join ceremony (§10). |
 | [`D7_ERASURE_SPIKE.md`](./D7_ERASURE_SPIKE.md) | Erasure-coding spike report (DECLINE; 3x replication kept). |
 | [`WORKFLOW_GUIDE.md`](./WORKFLOW_GUIDE.md) | System workflow: operator network, day-to-day user flow, run-a-node guide. |
+| [`TESTNET.md`](./TESTNET.md) | Public testnet: fleet endpoints, join flow, P2P status, reset path, known issues. |
+| [`EXTERNAL_REHEARSAL_PROOF_2026-09-20.md`](../report/EXTERNAL_REHEARSAL_PROOF_2026-09-20.md) | Live-fire evidence: fleet seed rotation + 3/3 probation join rehearsal (2026-09-20). |
 | [`adr/`](./adr/) | Architecture decision records (KDF, vouchers, repair lane, redb, erasure, recovery reads). |
 
 ---

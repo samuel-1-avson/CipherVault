@@ -121,7 +121,7 @@ CipherVault is engineered as a high-performance modular Rust workspace (11 crate
 
 | Component | Path | Language / Tech | Primary Responsibility |
 |---|---|---|---|
-| **CLI & Host** | `apps/cli` | Rust (Clap, Tokio, Axum) | Developer CLI (31 commands), embedded dashboard server, and Ratatui TUI host. |
+| **CLI & Host** | `apps/cli` | Rust (Clap, Tokio, Axum) | Developer CLI (36 commands), embedded dashboard server, and Ratatui TUI host. |
 | **Agent Daemon** | `apps/agent` | Rust (Notify) | Autonomous background file watcher with debounced coherent snapshot capture. |
 | **Web Dashboard** | `apps/ui` | HTML5, CSS3, Vanilla JS | Embedded visual secrets explorer, telemetry viewer, diff viewer, and Shamir simulator. |
 | **Crypto Core** | `crates/crypto` | Rust (XChaCha20, Ed25519, Dalek) | AEAD primitives, custom Blake2b KDF, constant-time $\text{GF}(2^8)$ Shamir, sealed boxes, PC/SC PIV driver. |
@@ -525,12 +525,14 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
 | `ciphervault anchor` | `[--head <CID>] [--auto-relay] [--relayer-url <URL>] [--daemon]` | Computes EIP-712 state commitment and submits to Arbitrum One L2 rollup. |
 | `ciphervault verify-anchor` | `[--head <CID>] [--rpc <URL>]` | Verifies on-chain commitment and finality on Arbitrum One. |
+| `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
 | `ciphervault audit` | `[-o/--operators <URL...>]` | Performs remote replication quorum and CID closure audit across operators. |
 | `ciphervault repair` | `[-o/--operators <URL...>] [--replicas <N>]` | Detects degraded replicas and self-heals by streaming missing chunks from surviving operators. |
 | `ciphervault peers` | `[--discover] [--mesh]` | Queries operators to inspect active nodes, dynamically discover peers via P2P gossip, or mesh routing tables via announce. |
 | `ciphervault lease create/renew` | `<CLOSURE|LEASE_ID> [--operator <URL>]` | Commits or renews a storage lease on one operator (device session auth). |
 | `ciphervault voucher issue` | `<HOLDER_PK> <QUOTA> [--operator <URL>]` | Issues a write voucher from an operator (service token admin). |
-| `ciphervault invite pubkey/issue/join/refresh` | `<NODE_PK> --fleet-key-file <PATH> [--ttl <S>] [--node <URL>] [--via <URL...>]` | Fleet-signed join tickets: print the fleet pin, issue a ticket offline, present it to join a fleet (probation), or refresh liveness toward graduation. |
+| `ciphervault invite pubkey/issue/join/refresh` | `<NODE_PK> --fleet-key-file <PATH> [--ttl <S>] [--keys-file <PATH>] [--out <PATH>] [--node <URL>] [--via <URL...>]` | Fleet-signed join tickets: print the fleet pin, issue a ticket offline (single key or batch file, `--out` writes UTF-8 directly), present it to join a fleet (probation), or refresh liveness toward graduation. |
+| `ciphervault node setup/start/stop/status/backup/standing/p2p-info` | `[--data-dir <DIR>]` | Run a storage node: guided first-run wizard, lifecycle, plain-language health and fleet-standing reports, identity backup, and P2P peering info. |
 | `ciphervault approve list/sign/status`| `<CHALLENGE_ID>` | Out-of-band cryptographic push authorization for high-risk operations. |
 | `ciphervault token status/probe/slots`| `[--reader <NAME>]` | Inspects attached PC/SC smartcard readers, PIV slots, and touch policies. |
 | `ciphervault hook install/check` | *None* | Installs or checks Git pre-commit hook to prevent secret leaks. |
@@ -570,6 +572,9 @@ open http://localhost:8080
 
 ### Self-Hosted Multi-Server Deployment
 For production deployments across independent servers or private clouds, deploy `ciphervault-operator` across 3+ distinct physical or virtual machines behind an HTTPS reverse proxy (such as Caddy or Nginx) with mutual TLS or bearer token authorization. Each operator requires only a persistent data directory and a single open port.
+
+### Join the Fleet as an Operator
+New operators start with the guided wizard (`ciphervault node setup` answers three questions, then starts the node), send their node public key to a fleet admin, and present the resulting ticket (`ciphervault invite join`) to enter probation — full trust after a day of uptime. Full ceremony: [operator playbook §10](docs/OPERATOR_PLAYBOOKS.md), [workflow guide Part 3](docs/WORKFLOW_GUIDE.md), and the [public testnet notes](docs/TESTNET.md).
 
 ---
 
@@ -615,6 +620,9 @@ forge test
 
 For deep technical specifications, audit reports, and deployment guides, explore the documentation hub in [`docs/`](docs/README.md):
 
+* [**`WORKFLOW_GUIDE.md`**](docs/WORKFLOW_GUIDE.md) — Operator network overview, day-to-day user flow, and the run-a-node guide (Part 3).
+* [**`OPERATOR_PLAYBOOKS.md`**](docs/OPERATOR_PLAYBOOKS.md) — Fleet operations: restart, mesh, vouchers, backup/restore, and the verified-join ceremony (§10).
+* [**`TESTNET.md`**](docs/TESTNET.md) — Public testnet endpoints, join flow, and known issues.
 * [**`SYSTEM_WORKFLOW.md`**](docs/SYSTEM_WORKFLOW.md) — Comprehensive architectural deep dive, cryptographic key hierarchy, and end-to-end sequence diagrams.
 * [**`CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md`**](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md) — Mathematical specifications, constant-time $\text{GF}(2^8)$ arithmetic, and threat boundary models.
 * [**`DEPLOYMENT_RUNBOOK.md`**](docs/DEPLOYMENT_RUNBOOK.md) — Production operations, multi-node deployment, reverse proxy hardening, and TLS configuration.

@@ -26,6 +26,9 @@ P2P mesh seeds come later (fleet runs HTTP-only today).
 Anyone can join; the fleet treats your node as untrusted by design.
 Full ceremony: operator playbook §10 (`docs/OPERATOR_PLAYBOOKS.md`)
 and [WORKFLOW_GUIDE §Part 3](./WORKFLOW_GUIDE.md).
+This flow was rehearsed live against the fleet on 2026-09-20
+(seed rotation + 3/3 probation join):
+[rehearsal proof](../report/EXTERNAL_REHEARSAL_PROOF_2026-09-20.md).
 
 1. Install the release binary, then print your identity:
    `ciphervault-operator --print-identity --operator-id <id> --data-dir ./operator-data`
