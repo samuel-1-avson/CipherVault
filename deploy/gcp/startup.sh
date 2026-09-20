@@ -114,6 +114,7 @@ services:
     environment:
       - CIPHERVAULT_OPERATOR_STRICT_AUTH=\${CIPHERVAULT_OPERATOR_STRICT_AUTH:-true}
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=\${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
+      - CIPHERVAULT_FLEET_KEY=\${CIPHERVAULT_FLEET_KEY:-}
     command: ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "$OPERATOR_ID"]
     volumes:
       - /opt/ciphervault/data:/var/lib/ciphervault
