@@ -8,18 +8,24 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client as HttpClient;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Release version for update comparison: numeric core plus an optional
 /// prerelease suffix (`v1.0.7-beta.1` -> core (1,0,7), pre "beta.1").
 /// Splitting the suffix out matters: parsing "7-beta" as a number yields 0,
 /// which previously made every prerelease tag compare older than any release.
-struct ReleaseVersion {
+pub(crate) struct ReleaseVersion {
     core: (u64, u64, u64),
     pre: Option<String>,
 }
 
 impl ReleaseVersion {
+    /// Numeric core of a tag/version string for cross-binary comparison.
+    pub(crate) fn core_of(tag: &str) -> (u64, u64, u64) {
+        Self::parse(tag).core
+    }
+
     fn parse(tag: &str) -> Self {
         let tag = tag.trim().trim_start_matches('v');
         let (core_part, pre_part) = match tag.split_once('-') {
@@ -113,6 +119,68 @@ fn find_asset_id(release: &serde_json::Value, name: &str) -> Option<u64> {
         .filter(|asset| asset.get("name").and_then(serde_json::Value::as_str) == Some(name))
         .filter_map(|asset| asset.get("id").and_then(serde_json::Value::as_u64))
         .next()
+}
+
+/// Companion binaries shipped in every release archive next to the CLI.
+/// `ciphervault update` refreshes all of these, so the operator daemon a
+/// wizard-run node uses can never silently lag the CLI (the stale-operator
+/// trap: old daemon, missing flags, confusing 404s).
+const COMPANION_BINARY_STEMS: &[&str] = &[
+    "ciphervault-operator",
+    "ciphervault-agent",
+    "ciphervault-maintenance",
+];
+
+fn platform_binary_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    }
+}
+
+/// Locates one binary by file name anywhere under an extracted release tree
+/// (archives nest binaries under `<pkg>/bin/`).
+fn find_binary_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().is_file() && entry.file_name() == name)
+        .map(|entry| entry.into_path())
+}
+
+/// Builds the post-exit swap script: the CLI move waits unbounded (this
+/// process is exiting, so its lock always clears), while each companion
+/// move retries for ~60 s and then skips — a running node daemon holds
+/// its own .exe locked, and the update must not hang forever on it.
+#[allow(dead_code)] // Windows install path only; exercised by tests everywhere.
+fn windows_update_script(
+    cli_staged: &Path,
+    cli_live: &Path,
+    companions: &[(PathBuf, PathBuf)],
+) -> String {
+    let mut script = String::from("@echo off\r\nsetlocal EnableDelayedExpansion\r\n");
+    script.push_str(":wait_cli\r\n");
+    script.push_str(&format!(
+        "move /Y \"{}\" \"{}\" >nul 2>&1\r\n",
+        cli_staged.display(),
+        cli_live.display()
+    ));
+    script.push_str("if errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait_cli)\r\n");
+    for (index, (staged, live)) in companions.iter().enumerate() {
+        script.push_str(&format!("set tries{index}=60\r\n"));
+        script.push_str(&format!(":wait_{index}\r\n"));
+        script.push_str(&format!(
+            "move /Y \"{}\" \"{}\" >nul 2>&1\r\n",
+            staged.display(),
+            live.display()
+        ));
+        script.push_str(&format!(
+            "if errorlevel 1 (set /a tries{index}-=1 >nul & if !tries{index}! GTR 0 (timeout /t 1 /nobreak >nul & goto wait_{index}))\r\n"
+        ));
+    }
+    script.push_str("del \"%~f0\"\r\n");
+    script
 }
 
 /// Looks up one file's digest in `sha256sum` output (`<hex>  <name>`).
@@ -336,30 +404,41 @@ pub(crate) async fn apply_update(
             bail!("release archive extraction failed");
         }
     }
-    let binary_name = if cfg!(windows) {
-        "ciphervault.exe"
-    } else {
-        "ciphervault"
-    };
-    let extracted_binary = walkdir::WalkDir::new(&extract_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .find(|entry| entry.file_type().is_file() && entry.file_name() == binary_name)
-        .map(|entry| entry.into_path())
+    let cli_name = platform_binary_name("ciphervault");
+    let extracted_cli = find_binary_in(&extract_dir, &cli_name)
         .context("release archive did not contain the CipherVault CLI")?;
+    let mut companions: Vec<(String, PathBuf)> = Vec::new();
+    for stem in COMPANION_BINARY_STEMS {
+        let name = platform_binary_name(stem);
+        match find_binary_in(&extract_dir, &name) {
+            Some(path) => companions.push((name, path)),
+            None => on_stage(&format!(
+                "{name} is not in this release; keeping the installed copy."
+            )),
+        }
+    }
     on_stage("Installing...");
     let current_exe = std::env::current_exe().context("locating the running CipherVault CLI")?;
+    let bin_dir = current_exe
+        .parent()
+        .context("locating the CipherVault install dir")?
+        .to_path_buf();
     #[cfg(windows)]
     let outcome = {
-        let replacement = current_exe.with_extension("exe.new");
-        fs::copy(&extracted_binary, &replacement)?;
+        let cli_staged = current_exe.with_extension("exe.new");
+        fs::copy(&extracted_cli, &cli_staged)?;
+        let mut moves: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for (name, src) in &companions {
+            let live = bin_dir.join(name);
+            let staged = live.with_extension("exe.new");
+            fs::copy(src, &staged)?;
+            moves.push((staged, live));
+        }
         let script = current_exe.with_extension("update.cmd");
-        let script_body = format!(
-            "@echo off\r\n:wait\r\nmove /Y \"{}\" \"{}\" >nul 2>&1\r\nif errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\ndel \"%~f0\"\r\n",
-            replacement.display(),
-            current_exe.display()
-        );
-        fs::write(&script, script_body)?;
+        fs::write(
+            &script,
+            windows_update_script(&cli_staged, &current_exe, &moves),
+        )?;
         std::process::Command::new("cmd.exe")
             .args(["/C", "start", "", "/B", &script.to_string_lossy()])
             .spawn()
@@ -368,9 +447,15 @@ pub(crate) async fn apply_update(
     };
     #[cfg(not(windows))]
     let outcome = {
-        let replacement = current_exe.with_extension("new");
-        fs::copy(&extracted_binary, &replacement)?;
-        fs::rename(replacement, current_exe)?;
+        let staged = current_exe.with_extension("new");
+        fs::copy(&extracted_cli, &staged)?;
+        fs::rename(&staged, &current_exe)?;
+        for (name, src) in &companions {
+            let live = bin_dir.join(name);
+            let staged = live.with_extension("new");
+            fs::copy(src, &staged)?;
+            fs::rename(&staged, &live)?;
+        }
         InstallOutcome::Installed
     };
     let _ = fs::remove_dir_all(temp_root);
@@ -393,12 +478,21 @@ pub(crate) async fn cmd_update(check_only: bool) -> Result<()> {
     }
     match apply_update(&pending, |_| {}).await? {
         InstallOutcome::Installed => {
-            println!("Verified and installed CipherVault {}.", pending.tag);
+            println!(
+                "Verified and installed CipherVault {} (CLI plus operator, agent, and maintenance binaries).",
+                pending.tag
+            );
+            println!(
+                "Restart any running node (`ciphervault node stop` / `node start`) to use the new operator binary."
+            );
         }
         InstallOutcome::PendingRestart => {
             println!(
-                "Verified {}; the new CLI will be installed after this process exits.",
+                "Verified {}; the new binaries will be installed after this process exits.",
                 pending.tag
+            );
+            println!(
+                "If a node daemon is running, restart it afterwards (`ciphervault node stop` / `node start`)."
             );
         }
     }
@@ -530,5 +624,54 @@ mod update_version_tests {
                 None => std::env::remove_var(name),
             }
         }
+    }
+
+    #[test]
+    fn companion_names_carry_platform_suffix() {
+        let operator = platform_binary_name("ciphervault-operator");
+        if cfg!(windows) {
+            assert_eq!(operator, "ciphervault-operator.exe");
+        } else {
+            assert_eq!(operator, "ciphervault-operator");
+        }
+        assert_eq!(COMPANION_BINARY_STEMS.len(), 3);
+    }
+
+    #[test]
+    fn binary_finder_searches_nested_archive_layout() {
+        let root = std::env::temp_dir().join(format!(
+            "cv-update-find-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        let bin_dir = root.join("ciphervault-v9-test").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let wanted = platform_binary_name("ciphervault-operator");
+        std::fs::write(bin_dir.join(&wanted), b"fake").unwrap();
+        assert_eq!(find_binary_in(&root, &wanted), Some(bin_dir.join(&wanted)));
+        assert_eq!(find_binary_in(&root, "no-such-binary"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn windows_script_swaps_cli_then_companions_with_bounded_retries() {
+        let script = windows_update_script(
+            Path::new("C:\\bin\\ciphervault.exe.new"),
+            Path::new("C:\\bin\\ciphervault.exe"),
+            &[(
+                PathBuf::from("C:\\bin\\op.exe.new"),
+                PathBuf::from("C:\\bin\\op.exe"),
+            )],
+        );
+        // CLI swap waits unbounded: this process is exiting.
+        assert!(script.contains(":wait_cli"));
+        assert!(script
+            .contains("move /Y \"C:\\bin\\ciphervault.exe.new\" \"C:\\bin\\ciphervault.exe\""));
+        // Companions retry ~60 s, then skip: a running daemon must not hang it.
+        assert!(script.contains("set tries0=60"));
+        assert!(script.contains("move /Y \"C:\\bin\\op.exe.new\" \"C:\\bin\\op.exe\""));
+        assert!(script.contains("if !tries0! GTR 0"));
+        assert!(script.contains("setlocal EnableDelayedExpansion"));
+        assert!(script.contains("del \"%~f0\""));
     }
 }

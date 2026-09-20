@@ -182,6 +182,49 @@ fn write_private_key(path: &std::path::Path, bytes: &[u8; 32]) -> io::Result<()>
     Ok(())
 }
 
+/// Locks a secret file down to the current user (Windows only): strips
+/// inherited ACLs and grants read+write to the login user via the inbox
+/// `icacls` tool. Best-effort with a loud warning: filesystems without
+/// ACLs must not brick the daemon, but any exposure must be visible.
+#[cfg(windows)]
+fn restrict_secret_file(path: &std::path::Path) {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    if user.trim().is_empty() {
+        eprintln!(
+            "{}",
+            format!(
+                "Warning: could not determine the login user; {} keeps inherited permissions.",
+                path.display()
+            )
+            .yellow()
+        );
+        return;
+    }
+    // icacls parses a leading `/` as a flag, so normalize Rust's
+    // forward-slash forms before invoking it.
+    let for_icacls = path.to_string_lossy().replace('/', "\\");
+    let locked = std::process::Command::new("icacls")
+        .arg(&for_icacls)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(format!("{user}:(R,W)"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !locked {
+        eprintln!(
+            "{}",
+            format!(
+                "Warning: could not lock down {}; anyone with disk access may read it.",
+                path.display()
+            )
+            .yellow()
+        );
+    }
+}
+
 fn ensure_private_key_permissions(path: &std::path::Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -197,8 +240,8 @@ fn ensure_private_key_permissions(path: &std::path::Path) -> io::Result<()> {
             ));
         }
     }
-    #[cfg(not(unix))]
-    let _ = path;
+    #[cfg(windows)]
+    restrict_secret_file(path);
     Ok(())
 }
 
@@ -331,6 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
         .map_err(|e| format!("failed to boot P2P swarm: {e}"))?;
+        state.set_swarm_handle(handle.clone());
         println!("  P2P Peer ID:     {}", handle.peer_id);
         for addr in handle.listeners().await.unwrap_or_default() {
             println!("  P2P Listening:   {addr}");
@@ -469,5 +513,37 @@ mod identity_tests {
             format_identity_registry_entry("op_8201", "ABCD"),
             "op_8201=ABCD"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_lockdown_grants_only_current_user() {
+        let path = std::env::temp_dir().join(format!(
+            "cv-op-restrict-{}-{}.txt",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::write(&path, "secret").unwrap();
+        // Forward-slash form: icacls misparses a leading `/` as a flag,
+        // so the helper must normalize before invoking it.
+        let slashed = path.to_string_lossy().replace('\\', "/");
+        super::restrict_secret_file(std::path::Path::new(&slashed));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+        let query = std::process::Command::new("icacls")
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&query.stdout).to_ascii_lowercase();
+        let user = std::env::var("USERNAME").unwrap().to_ascii_lowercase();
+        assert!(
+            listing.contains(&user),
+            "lockdown should grant {user}: {listing}"
+        );
+        assert!(
+            !listing.contains("builtin"),
+            "lockdown should strip inherited groups: {listing}"
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 }

@@ -10,7 +10,7 @@ use ciphervault_format::{from_canonical_cbor, ChunkWireObject, SnapshotManifest,
 use ciphervault_recovery::OfflineRecoveryKit;
 use ciphervault_snapshot::restore_snapshot;
 use ciphervault_storage::invites::JoinInvite;
-use ciphervault_storage::OperatorClient;
+use ciphervault_storage::{OperatorClient, StorageError};
 
 use crate::util::{configured_operator_pool, get_configured_operators, operator_service_request};
 
@@ -496,19 +496,206 @@ pub(crate) fn cmd_invite_pubkey(fleet_key_file: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Issues a fleet-signed join invite for a new operator node key. Fully
-/// offline: the fleet seed never leaves this machine, and the printed
-/// JSON ticket is handed to the joiner out of band.
-pub(crate) fn cmd_invite_issue(node_pk: String, ttl: u64, fleet_key_file: PathBuf) -> Result<()> {
+/// Decodes text bytes as UTF-8, or as UTF-16 when a BOM says so.
+/// PowerShell `>` redirection writes UTF-16LE, which `read_to_string`
+/// rejects outright — and tickets/keys files are exactly what admins
+/// redirect. BOM-less input must be valid UTF-8.
+fn decode_text_bytes(bytes: &[u8]) -> Result<String> {
+    let endian: Option<bool> = match bytes {
+        [0xFF, 0xFE, ..] => Some(false),
+        [0xFE, 0xFF, ..] => Some(true),
+        _ => None,
+    };
+    match endian {
+        None => String::from_utf8(bytes.to_vec()).context("file is not valid UTF-8"),
+        Some(big) => {
+            let (pairs, trailing) = bytes[2..].as_chunks::<2>();
+            if !trailing.is_empty() {
+                bail!("UTF-16 file has an odd byte count");
+            }
+            let units: Vec<u16> = pairs
+                .iter()
+                .map(|pair| {
+                    if big {
+                        u16::from_be_bytes(*pair)
+                    } else {
+                        u16::from_le_bytes(*pair)
+                    }
+                })
+                .collect();
+            String::from_utf16(&units).context("file is not valid UTF-16")
+        }
+    }
+}
+
+/// Reads a small text file (ticket, keys list), tolerating UTF-16 and a
+/// UTF-8 BOM: both are what Windows tooling actually produces.
+fn read_text_file(path: &PathBuf, what: &str) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("read {what} file {}", path.display()))?;
+    decode_text_bytes(&bytes).with_context(|| {
+        format!(
+            "decode {what} file {} (expected UTF-8 or UTF-16 text)",
+            path.display()
+        )
+    })
+}
+
+/// Reads node public keys for batch issuance: one 64-hex key per line,
+/// blank lines and `#` comments skipped. Errors name the bad line.
+fn read_node_keys_file(path: &PathBuf) -> Result<Vec<String>> {
+    let raw = read_text_file(path, "keys")?;
+    let mut keys = Vec::new();
+    for (index, line) in raw.trim_start_matches('\u{FEFF}').lines().enumerate() {
+        let key = line.trim();
+        if key.is_empty() || key.starts_with('#') {
+            continue;
+        }
+        let valid = key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit());
+        if !valid {
+            bail!(
+                "keys file {} line {}: expected 64-hex node public key",
+                path.display(),
+                index + 1
+            );
+        }
+        keys.push(key.to_string());
+    }
+    if keys.is_empty() {
+        bail!("keys file {} contains no node keys", path.display());
+    }
+    Ok(keys)
+}
+
+/// Issues one ticket per node key. Pure issuance loop behind both the
+/// single and batch CLI shapes.
+fn issue_tickets(fleet_key: &SigningKey, keys: &[String], ttl: u64) -> Result<Vec<JoinInvite>> {
+    keys.iter()
+        .map(|node_pk| {
+            JoinInvite::issue(fleet_key, node_pk.clone(), ttl)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+        })
+        .collect()
+}
+
+/// Issues fleet-signed join invites for new operator node keys. Fully
+/// offline: the fleet seed never leaves this machine, and the ticket
+/// JSON is handed to joiners out of band. Single key emits one ticket
+/// object; `--keys-file` emits an array of tickets in file order.
+/// `--out` writes UTF-8 directly and is the blessed path on Windows,
+/// where shell `>` redirection produces UTF-16.
+pub(crate) fn cmd_invite_issue(
+    node_pk: Option<String>,
+    keys_file: Option<PathBuf>,
+    ttl: u64,
+    fleet_key_file: PathBuf,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    let keys = match (node_pk, keys_file) {
+        (Some(pk), None) => vec![pk],
+        (None, Some(path)) => read_node_keys_file(&path)?,
+        _ => bail!("pass exactly one of <node-pk> or --keys-file"),
+    };
     let fleet_key = read_seed_file(&fleet_key_file)?;
-    let invite = JoinInvite::issue(&fleet_key, node_pk, ttl)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    println!("{}", serde_json::to_string_pretty(&invite)?);
+    let batch = keys.len() > 1;
+    let tickets = issue_tickets(&fleet_key, &keys, ttl)?;
+    let rendered = if batch {
+        serde_json::to_string_pretty(&tickets)?
+    } else {
+        serde_json::to_string_pretty(&tickets[0])?
+    };
+    if let Some(path) = &out {
+        fs::write(path, format!("{rendered}\n"))
+            .with_context(|| format!("write ticket file {}", path.display()))?;
+        eprintln!(
+            "{}",
+            format!(
+                "Wrote {} to {} (UTF-8).",
+                if batch {
+                    format!("{} tickets", tickets.len())
+                } else {
+                    "ticket".to_string()
+                },
+                path.display()
+            )
+            .green()
+        );
+    } else {
+        println!("{rendered}");
+        if batch {
+            eprintln!(
+                "Issued {} tickets (one per key, in file order).",
+                tickets.len()
+            );
+        }
+    }
+    // Stderr only: stdout stays pure JSON for shell redirects.
+    if ttl <= 86400 {
+        eprintln!(
+            "{}",
+            "Tip: grace rejoin lasts as long as the ticket — issue at least 7 days (--ttl 604800) so a lapsed node can rejoin without a fresh ticket."
+                .yellow()
+        );
+    }
     Ok(())
 }
 
+/// Actionable next step for a failed ticket join, by fleet status code.
+/// Playbook §10 failure hints, printed where the joiner sees them.
+fn join_failure_hint(status: u16) -> Option<&'static str> {
+    match status {
+        403 => Some(
+            "ticket rejected (bad, expired, or for a different node key) — ask your fleet admin for a fresh ticket",
+        ),
+        409 => Some(
+            "ticket already spent (each ticket admits once) — ask your fleet admin for a fresh ticket",
+        ),
+        _ => None,
+    }
+}
+
+/// Actionable next step for a failed liveness refresh, by status code.
+fn refresh_failure_hint(status: u16) -> Option<&'static str> {
+    match status {
+        404 => Some(
+            "the fleet has no entry for this node (refresh lapsed over 24h) — rejoin with your ORIGINAL ticket while it is valid, then refresh regularly",
+        ),
+        _ => None,
+    }
+}
+
+fn server_status(error: &StorageError) -> Option<u16> {
+    match error {
+        StorageError::ServerError { status, .. } => Some(*status),
+        _ => None,
+    }
+}
+
+fn print_hint(hint: Option<&'static str>) {
+    if let Some(hint) = hint {
+        eprintln!("{}", hint.yellow());
+    }
+}
+
+/// Decodes a ticket file, tolerating a UTF-8 BOM: Windows editors (e.g.
+/// Notepad) add one, and a ticket handed out of band often passes
+/// through them.
+fn decode_ticket(raw: &str) -> Result<JoinInvite> {
+    serde_json::from_str(raw.trim_start_matches('\u{FEFF}'))
+        .context("decode join invite ticket (expected JSON)")
+}
+
+/// Plain-language rendering of a fleet standing for beginners.
+pub(crate) fn describe_standing(status: &str) -> String {
+    match status {
+        "probation" => "in probation (stores data; full trust after a day of uptime)".to_string(),
+        "full" => "a full member".to_string(),
+        "unknown" => "not in the fleet".to_string(),
+        other => format!("in an unexpected state ({other:?})"),
+    }
+}
+
 /// Fetches the joiner's own fresh self-signed descriptor from its node.
-async fn fetch_self_descriptor(
+pub(crate) async fn fetch_self_descriptor(
     http: &reqwest::Client,
     node: &str,
 ) -> Result<ciphervault_storage::PeerDescriptor> {
@@ -536,10 +723,8 @@ pub(crate) async fn cmd_invite_join(
     node: String,
     via: Option<Vec<String>>,
 ) -> Result<()> {
-    let raw = fs::read_to_string(&ticket)
-        .with_context(|| format!("read ticket file {}", ticket.display()))?;
-    let invite: JoinInvite =
-        serde_json::from_str(&raw).context("decode join invite ticket (expected JSON)")?;
+    let raw = read_text_file(&ticket, "ticket")?;
+    let invite = decode_ticket(&raw)?;
     let targets = match via {
         Some(endpoints) if !endpoints.is_empty() => endpoints,
         _ => get_configured_operators(),
@@ -560,11 +745,14 @@ pub(crate) async fn cmd_invite_join(
     }
     for target in &targets {
         let client = OperatorClient::new(target.clone());
-        let response = client
-            .join_with_invite(&descriptor, &invite)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))
-            .with_context(|| format!("join via {target}"))?;
+        let response = match client.join_with_invite(&descriptor, &invite).await {
+            Ok(response) => response,
+            Err(error) => {
+                print_hint(server_status(&error).and_then(join_failure_hint));
+                return Err(anyhow::anyhow!(error.to_string()))
+                    .with_context(|| format!("join via {target}"));
+            }
+        };
         println!(
             "{}",
             format!(
@@ -575,6 +763,31 @@ pub(crate) async fn cmd_invite_join(
         );
     }
     Ok(())
+}
+
+/// Refreshes liveness against every `target`, returning each endpoint's
+/// reported standing (`"probation"`/`"full"`). Unknown joiners come back
+/// as `"unknown"` instead of failing, so status-style callers can tell
+/// a never-joined node from a failed refresh.
+pub(crate) async fn refresh_standing(
+    descriptor: &ciphervault_storage::PeerDescriptor,
+    targets: &[String],
+) -> Result<Vec<(String, String)>> {
+    let mut standings = Vec::new();
+    for target in targets {
+        let client = OperatorClient::new(target.clone());
+        match client.refresh_join(descriptor).await {
+            Ok(response) => standings.push((target.clone(), response.status)),
+            Err(StorageError::ServerError { status: 404, .. }) => {
+                standings.push((target.clone(), "unknown".to_string()));
+            }
+            Err(error) => {
+                return Err(anyhow::anyhow!(error.to_string()))
+                    .with_context(|| format!("refresh via {target}"));
+            }
+        }
+    }
+    Ok(standings)
 }
 
 /// Re-presents the joiner's fresh descriptor to fleet nodes to prove
@@ -593,17 +806,186 @@ pub(crate) async fn cmd_invite_refresh(node: String, via: Option<Vec<String>>) -
         .build()
         .unwrap_or_default();
     let descriptor = fetch_self_descriptor(&http, &node).await?;
-    for target in &targets {
-        let client = OperatorClient::new(target.clone());
-        client
-            .refresh_join(&descriptor)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))
-            .with_context(|| format!("refresh via {target}"))?;
+    for (target, status) in refresh_standing(&descriptor, &targets).await? {
+        if status == "unknown" {
+            print_hint(refresh_failure_hint(404));
+            bail!("{target} has no entry for this node (rejoin with your original ticket).");
+        }
         println!(
             "{}",
-            format!("  ✓ {} refreshed by {}", descriptor.operator_id, target).green()
+            format!(
+                "  ✓ {} refreshed by {} ({})",
+                descriptor.operator_id, target, status
+            )
+            .green()
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod invite_hint_tests {
+    use super::*;
+
+    fn server_error(status: u16) -> StorageError {
+        StorageError::ServerError {
+            status,
+            message: "fleet said no".to_string(),
+        }
+    }
+
+    #[test]
+    fn join_hints_cover_ticket_failures() {
+        assert!(join_failure_hint(403).unwrap().contains("fresh ticket"));
+        assert!(join_failure_hint(409).unwrap().contains("already spent"));
+        assert_eq!(join_failure_hint(500), None);
+        assert_eq!(server_status(&server_error(403)), Some(403));
+        assert_eq!(server_status(&StorageError::InvalidReceiptSignature), None);
+    }
+
+    #[test]
+    fn refresh_hint_covers_lapsed_entry() {
+        assert!(refresh_failure_hint(404).unwrap().contains("rejoin"));
+        assert_eq!(refresh_failure_hint(500), None);
+    }
+
+    #[test]
+    fn ticket_decode_tolerates_utf8_bom() {
+        let ticket = serde_json::json!({
+            "version": 1u8,
+            "issuer_pk_hex": "ab",
+            "node_pk_hex": "cd",
+            "expires_utc": 1u64,
+            "nonce_hex": "ef",
+            "signature_hex": "00",
+        });
+        let plain = serde_json::to_string(&ticket).unwrap();
+        let bomed = format!("\u{FEFF}{plain}");
+        // Signature is not verified at decode time (the fleet does that).
+        assert_eq!(
+            decode_ticket(&plain).unwrap().node_pk_hex,
+            decode_ticket(&bomed).unwrap().node_pk_hex
+        );
+        assert!(decode_ticket("not json").is_err());
+    }
+
+    #[test]
+    fn keys_file_skips_blanks_and_comments_and_names_bad_lines() {
+        let path = std::env::temp_dir().join(format!("cv-keys-{}.txt", rand::random::<u32>()));
+        let good = "ab".repeat(32);
+        std::fs::write(&path, format!("# comment\n\n  {good}  \n{good}\n")).unwrap();
+        let keys = read_node_keys_file(&path).unwrap();
+        assert_eq!(keys, vec![good.clone(), good]);
+        std::fs::write(&path, "not-hex\n").unwrap();
+        let error = read_node_keys_file(&path).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("line 1"),
+            "unexpected: {error:#}"
+        );
+        std::fs::write(&path, "# only comments\n\n").unwrap();
+        assert!(read_node_keys_file(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn batch_issuance_shape_is_one_ticket_per_key_in_order() {
+        let fleet = ciphervault_crypto::generate_signing_key();
+        let fleet_hex = hex::encode(fleet.verifying_key().to_bytes());
+        let key_a = hex::encode([1u8; 32]);
+        let key_b = hex::encode([2u8; 32]);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let tickets = issue_tickets(&fleet, &[key_a.clone(), key_b.clone()], 604800).unwrap();
+        assert_eq!(tickets.len(), 2);
+        assert_eq!(tickets[0].node_pk_hex, key_a);
+        assert_eq!(tickets[1].node_pk_hex, key_b);
+        assert_ne!(tickets[0].nonce_hex, tickets[1].nonce_hex);
+        for ticket in &tickets {
+            ticket.verify(&fleet_hex, now).unwrap();
+        }
+        // Batch stdout shape: a JSON array in file order.
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&tickets).unwrap()).unwrap();
+        assert!(value.is_array());
+        assert_eq!(value.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn standing_descriptions_stay_plain() {
+        assert!(describe_standing("probation").contains("probation"));
+        assert!(describe_standing("full").contains("full member"));
+        assert!(describe_standing("unknown").contains("not in the fleet"));
+        assert!(describe_standing("weird").contains("unexpected"));
+    }
+
+    #[test]
+    fn text_decode_accepts_utf8_and_bom_marked_utf16() {
+        assert_eq!(decode_text_bytes(b"{\"a\":1}").unwrap(), "{\"a\":1}");
+        // UTF-16LE with BOM, as PowerShell `>` redirection writes it.
+        let le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("{\"a\":1}".encode_utf16().flat_map(|u| u.to_le_bytes()))
+            .collect();
+        assert_eq!(decode_text_bytes(&le).unwrap(), "{\"a\":1}");
+        // UTF-16BE with BOM.
+        let be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain("{\"a\":1}".encode_utf16().flat_map(|u| u.to_be_bytes()))
+            .collect();
+        assert_eq!(decode_text_bytes(&be).unwrap(), "{\"a\":1}");
+        // Garbage stays an error: odd-length UTF-16 is rejected rather
+        // than truncated, lone surrogates fail, and BOM-less input must
+        // be valid UTF-8.
+        assert!(decode_text_bytes(&[0xFF, 0xFE, 0x41]).is_err());
+        assert!(decode_text_bytes(&[0xFF, 0xFE, 0x00, 0xD8]).is_err());
+        assert!(decode_text_bytes(&[0xC3, 0x28]).is_err());
+    }
+
+    #[test]
+    fn keys_file_accepts_utf16_and_utf8_bom() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cv-keys-{}.txt", rand::random::<u32>()));
+        let key = "ab".repeat(32);
+        // UTF-16LE file as PowerShell redirection would leave it.
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in format!("{key}\n").encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_node_keys_file(&path).unwrap(), vec![key.clone()]);
+        // A UTF-8 BOM (Windows editors) must not poison line 1.
+        std::fs::write(&path, format!("\u{FEFF}{key}\n")).unwrap();
+        assert_eq!(read_node_keys_file(&path).unwrap(), vec![key]);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn issue_out_writes_utf8_ticket_file() {
+        let dir = std::env::temp_dir();
+        let tag = rand::random::<u32>();
+        let seed_path = dir.join(format!("cv-seed-{tag}.bin"));
+        let seed = ciphervault_crypto::generate_signing_key();
+        std::fs::write(&seed_path, seed.to_bytes()).unwrap();
+        let out_path = dir.join(format!("cv-ticket-{tag}.json"));
+        let node_pk = hex::encode([7u8; 32]);
+        cmd_invite_issue(
+            Some(node_pk.clone()),
+            None,
+            604800,
+            seed_path.clone(),
+            Some(out_path.clone()),
+        )
+        .unwrap();
+        let bytes = std::fs::read(&out_path).unwrap();
+        assert!(
+            !bytes.starts_with(&[0xFF, 0xFE]),
+            "ticket file must be UTF-8, not UTF-16"
+        );
+        let ticket = decode_ticket(&String::from_utf8(bytes).unwrap()).unwrap();
+        assert_eq!(ticket.node_pk_hex, node_pk);
+        std::fs::remove_file(&seed_path).unwrap();
+        std::fs::remove_file(&out_path).unwrap();
+    }
 }

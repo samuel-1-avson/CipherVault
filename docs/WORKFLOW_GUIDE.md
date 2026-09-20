@@ -197,7 +197,32 @@ vault identities, files, and snapshots stay private by design.
 Anyone can run an operator: you store only opaque ciphertext, never
 plaintext, and the fleet treats your node as untrusted by design.
 
-### Option A — single node from the release binary (fastest)
+### Start here — guided setup (easiest)
+
+One command asks three plain questions, then runs your node:
+
+```bash
+ciphervault node setup
+```
+
+Press Enter through the nickname, folder, and port — it creates your
+admin password, generates the node identity, and starts the node in the
+background. Afterwards, everything is plain language:
+
+```bash
+ciphervault node status    # "running and healthy" — or what to do next
+ciphervault node stop      # stop it again (verifies before killing)
+ciphervault node backup --to <folder>  # copy the identity files somewhere safe
+ciphervault node standing  # fleet standing: probation / full / not-joined
+ciphervault node p2p-info  # P2P addresses to share with peering partners
+```
+
+To join the public fleet, answer the ticket question during setup (or
+follow Option D below afterwards). To peer over P2P, re-run setup with
+`--p2p` (see Option C). Everything below is the manual path for
+operators who want full control.
+
+### Option A — single node from the release binary (manual)
 
 ```bash
 # Strict auth is ON by default: a 32-byte hex service token is required.
@@ -209,11 +234,15 @@ curl http://localhost:8101/healthz   # {"status":"ready",...}
 - Local testing only: `CIPHERVAULT_OPERATOR_STRICT_AUTH=false` skips the
   token requirement. Never use that on a reachable node.
 - First boot generates the persistent Ed25519 identity
-  (`operator-data/operator.key`, 0600). Back it up: it is your node's
-  long-term identity.
+  (`operator-data/operator.key`, 0600 on Unix, locked to your user
+  account on Windows). Back it up: it is your node's long-term
+  identity (`ciphervault node backup` for wizard nodes).
 - `--print-identity` shows your registry entry without binding; publish
   it so clients can pin you via trusted identities.
 - `--rotate-key` retires a compromised key to a timestamped backup.
+- Keep binaries aligned: `ciphervault update` refreshes the CLI plus
+  the operator, agent, and maintenance binaries together. If the wizard
+  ever says your operator is too old, that command is the fix.
 
 ### Option B — local 3-node cluster with Docker
 
@@ -227,6 +256,27 @@ This mirrors the production quorum on your machine. Point a CLI at it
 with `ciphervault init --operators http://127.0.0.1:8201 ...`.
 
 ### Option C — join the P2P mesh (dual mode)
+
+Guided path first:
+
+```bash
+# First node (or a seed): P2P on, no bootstrap yet
+ciphervault node setup --p2p
+ciphervault node p2p-info   # addresses to hand a peering partner
+# Second node: point at the first node's address
+ciphervault node setup --p2p --p2p-bootstrap /ip4/<host>/tcp/<port>/p2p/<peer-id>
+```
+
+There are no fleet-run seeds at genesis (the fleet is HTTP-only —
+see [TESTNET.md](./TESTNET.md)), so peering is a mutual exchange:
+you and a partner swap `p2p-info` addresses and bootstrap to each
+other. To prove the mechanics locally first, run the two-node drill:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/drill/p2p-two-node.ps1
+```
+
+Manual equivalent of the wizard flags:
 
 ```bash
 ciphervault-operator --port 8101 --data-dir ./operator-data \
@@ -259,10 +309,15 @@ ciphervault invite join ticket.json --node http://127.0.0.1:8101 \
 ```
 
 - You land in **probation**: you hold data and may push repair, but
-  the fleet entrusts new replicas only to graduated members.
+  the fleet entrusts new replicas only to graduated members. Check
+  your standing any time: `ciphervault node standing` (wizard nodes)
+  or the `(probation)`/`(full)` tag on `ciphervault invite refresh`.
 - Graduation needs 24 h of fleet-visible life plus recent liveness:
   P2P heartbeats count automatically; otherwise re-run
   `ciphervault invite refresh --node ... --via ...` periodically.
+- Lapsed (>24 h without refresh)? Rejoin with your ORIGINAL ticket —
+  no admin round-trip while it is valid (ask the admin for 7-day
+  tickets). Your probation clock survives the lapse.
 - Fleet side: every node pins `CIPHERVAULT_FLEET_KEY`, and the admin
   graduates you (`POST /v1/peers/<id>/graduate`) or your time+liveness
   graduates you automatically. Full ceremony and failure hints:

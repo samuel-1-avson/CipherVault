@@ -3,7 +3,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use ciphervault_storage::types::{
@@ -631,6 +631,36 @@ pub async fn get_self_peer(
         endpoint,
         &state.signing_key,
     ))
+}
+
+/// Live P2P identity for peering: this node's PeerId plus its listen
+/// and AutoNAT-observed external addresses.
+#[derive(Serialize)]
+pub struct P2pInfoResponse {
+    peer_id: String,
+    listen_addrs: Vec<String>,
+    external_addrs: Vec<String>,
+}
+
+/// Reports the live P2P identity. Public like `/v1/peers/self` — peering
+/// data is meant to be shared with bootstrap partners. 503 when the
+/// swarm is off (HTTP-only node).
+pub async fn get_p2p_info(
+    State(state): State<Arc<OperatorState>>,
+) -> Result<Json<P2pInfoResponse>, (StatusCode, String)> {
+    let Some(handle) = state.swarm_handle() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "P2P swarm is not enabled on this node".into(),
+        ));
+    };
+    let to_strings =
+        |addrs: Vec<libp2p::Multiaddr>| addrs.into_iter().map(|addr| addr.to_string()).collect();
+    Ok(Json(P2pInfoResponse {
+        peer_id: handle.peer_id.to_string(),
+        listen_addrs: to_strings(handle.listeners().await.unwrap_or_default()),
+        external_addrs: to_strings(handle.external_addrs().await.unwrap_or_default()),
+    }))
 }
 
 /// Admits a new node into probation on a fleet-signed invite. Public by

@@ -36,14 +36,18 @@ and [WORKFLOW_GUIDE §Part 3](./WORKFLOW_GUIDE.md).
 4. You land in **probation**: you store data, but new replicas go only to
    graduated members. Graduation needs 24h of fleet-visible life + recent
    liveness (`ciphervault invite refresh …` periodically until P2P
-   heartbeats count automatically).
+   heartbeats count automatically). If your entry lapses (>24h without
+   refresh), rejoin with your ORIGINAL ticket — no admin round-trip
+   needed while it is valid (ask the admin for 7-day tickets).
 5. Harden: `CIPHERVAULT_OPERATOR_STRICT_AUTH=true`, a 32-byte service
    token from your own secret manager, enrolled client device keys, and
    backups of the data dir + `operator.key`.
 
 Scale cap at genesis: **10–25 community nodes**. Tickets are rate-limited
 by admin availability — this is intentional while restart behavior (§5)
-is under observation.
+is under observation. Ticket SLA: TBD — the fleet admin commits to a
+turnaround here before genesis (testnet target: first response
+within 48 h).
 
 ## 3. P2P mesh (not at genesis)
 

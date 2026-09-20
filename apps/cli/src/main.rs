@@ -558,6 +558,12 @@ enum Commands {
         sub: InviteSubcommand,
     },
 
+    /// Run a storage node: guided setup, start, stop, status, backup, standing, p2p-info
+    Node {
+        #[command(subcommand)]
+        sub: NodeSubcommand,
+    },
+
     /// Out-of-band cryptographic approval and multi-party authorization
     Approve {
         #[command(subcommand)]
@@ -568,6 +574,71 @@ enum Commands {
     Doctor {
         #[arg(long, help = "Output the report in structured JSON format")]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodeSubcommand {
+    /// Guided first run: answers three questions, then starts the node
+    Setup {
+        #[arg(long, help = "Node nickname (default: asked, or login-based)")]
+        name: Option<String>,
+        #[arg(long, help = "Data folder (default: asked, or app config dir)")]
+        data_dir: Option<PathBuf>,
+        #[arg(long, help = "Listen port (default: asked, or 8101)")]
+        port: Option<u16>,
+        #[arg(long, help = "Accept every default without asking")]
+        yes: bool,
+        #[arg(long, help = "Fleet invite ticket to join immediately")]
+        join_ticket: Option<PathBuf>,
+        #[arg(long, help = "Set up without starting the node")]
+        no_start: bool,
+        #[arg(long, help = "Enable P2P mesh mode (dual HTTP + libp2p)")]
+        p2p: bool,
+        #[arg(long, help = "Bootstrap peer multiaddr, repeatable (implies --p2p)")]
+        p2p_bootstrap: Vec<String>,
+        #[arg(long, help = "P2P TCP listen port (default: auto-picked free port)")]
+        p2p_tcp_port: Option<u16>,
+        #[arg(long, help = "P2P QUIC listen port (default: auto-picked free port)")]
+        p2p_quic_port: Option<u16>,
+    },
+
+    /// Start the background node
+    Start {
+        #[arg(long, help = "Node data folder from setup")]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Plain-language health report (exits nonzero when down)
+    Status {
+        #[arg(long, help = "Node data folder from setup")]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Stop the background node
+    Stop {
+        #[arg(long, help = "Node data folder from setup")]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Back up the node identity files (key, token, config)
+    Backup {
+        #[arg(long, help = "Node data folder from setup")]
+        data_dir: Option<PathBuf>,
+        #[arg(long, help = "Folder to copy the identity files into")]
+        to: PathBuf,
+    },
+
+    /// Fleet standing in plain language (probation/full/not-joined)
+    Standing {
+        #[arg(long, help = "Node data folder from setup")]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// P2P identity for peering (addresses to share with partners)
+    P2pInfo {
+        #[arg(long, help = "Node data folder from setup")]
+        data_dir: Option<PathBuf>,
     },
 }
 
@@ -776,13 +847,25 @@ enum InviteSubcommand {
     /// Issue a fleet-signed join invite for a node key (fully offline)
     Issue {
         #[arg(help = "64-char hex node public key the invite is issued to")]
-        node_pk: String,
+        node_pk: Option<String>,
+
+        #[arg(
+            long,
+            help = "File with one 64-hex node key per line (batch: prints a JSON array)"
+        )]
+        keys_file: Option<PathBuf>,
 
         #[arg(long, default_value = "86400", help = "Invite TTL in seconds")]
         ttl: u64,
 
         #[arg(long, help = "Path to the 32-byte fleet signing seed file")]
         fleet_key_file: PathBuf,
+
+        #[arg(
+            long,
+            help = "Write the ticket JSON to this file (UTF-8) instead of stdout; preferred on Windows where shell redirection writes UTF-16"
+        )]
+        out: Option<PathBuf>,
     },
 
     /// Present a join ticket to fleet nodes (admits this node into probation)
@@ -876,14 +959,33 @@ enum RecoverySubcommand {
     },
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
+/// Real entry point, on a roomy thread: the 40+-subcommand clap tree
+/// overflows small stacks during construction (immediate stack overflow
+/// on the 1 MiB Windows main thread), so parse and dispatch off-main.
+/// Same hazard as the help/completions renderers below.
+fn main() {
+    std::thread::Builder::new()
+        .name("ciphervault-main".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(run_on_roomy_thread)
+        .expect("spawn main thread")
+        .join()
+        .expect("main thread");
+}
 
-    if let Err(err) = run(cli).await {
-        eprintln!("{} {}", "Error:".bold().red(), err);
-        std::process::exit(1);
-    }
+fn run_on_roomy_thread() {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build async runtime")
+        .block_on(async {
+            let cli = Cli::parse();
+
+            if let Err(err) = run(cli).await {
+                eprintln!("{} {}", "Error:".bold().red(), err);
+                std::process::exit(1);
+            }
+        });
 }
 
 /// Poll interval used when the TUI is launched implicitly (bare invocation).
@@ -1183,13 +1285,51 @@ async fn run(cli: Cli) -> Result<()> {
             InviteSubcommand::Pubkey { fleet_key_file } => cmd_invite_pubkey(fleet_key_file),
             InviteSubcommand::Issue {
                 node_pk,
+                keys_file,
                 ttl,
                 fleet_key_file,
-            } => cmd_invite_issue(node_pk, ttl, fleet_key_file),
+                out,
+            } => cmd_invite_issue(node_pk, keys_file, ttl, fleet_key_file, out),
             InviteSubcommand::Join { ticket, node, via } => {
                 cmd_invite_join(ticket, node, via).await
             }
             InviteSubcommand::Refresh { node, via } => cmd_invite_refresh(node, via).await,
+        },
+        Commands::Node { sub } => match sub {
+            NodeSubcommand::Setup {
+                name,
+                data_dir,
+                port,
+                yes,
+                join_ticket,
+                no_start,
+                p2p,
+                p2p_bootstrap,
+                p2p_tcp_port,
+                p2p_quic_port,
+            } => {
+                cmd_node_setup(
+                    name,
+                    data_dir,
+                    port,
+                    yes,
+                    join_ticket,
+                    no_start,
+                    NodeP2pOptions {
+                        enabled: p2p,
+                        bootstrap: p2p_bootstrap,
+                        tcp_port: p2p_tcp_port,
+                        quic_port: p2p_quic_port,
+                    },
+                )
+                .await
+            }
+            NodeSubcommand::Start { data_dir } => cmd_node_start(data_dir).await,
+            NodeSubcommand::Status { data_dir } => cmd_node_status(data_dir).await,
+            NodeSubcommand::Stop { data_dir } => cmd_node_stop(data_dir).await,
+            NodeSubcommand::Backup { data_dir, to } => cmd_node_backup(data_dir, to),
+            NodeSubcommand::Standing { data_dir } => cmd_node_standing(data_dir).await,
+            NodeSubcommand::P2pInfo { data_dir } => cmd_node_p2p_info(data_dir).await,
         },
         Commands::Approve { sub } => match sub {
             ApproveSubcommand::List => cmd_approve_list().await,

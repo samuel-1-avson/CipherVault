@@ -14,6 +14,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::metrics::OperatorMetrics;
 use crate::swarm::repair::{TokenBucket, DEFAULT_REPAIR_BUDGET_PER_SEC};
+use crate::swarm::SwarmHandle;
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::{
     compute_digest, from_canonical_cbor, DeviceCertificate, EpochEnvelope, GenesisRecord,
@@ -338,6 +339,9 @@ pub struct OperatorState {
     // time (`Instant`), so there is no meaningful spend to persist — a
     // restart refills to full, admitting at most one capacity burst.
     repair_budget: Mutex<TokenBucket>,
+    // Live P2P swarm handle (dual mode only): set once at boot so HTTP
+    // handlers can report the peer id and listeners. Memory-only.
+    swarm_handle: Mutex<Option<SwarmHandle>>,
     // Out-of-band authorization challenges: challenge_id -> (ApprovalChallenge, Vec<SignedApprovalReceipt>)
     pub approval_challenges: Mutex<
         HashMap<
@@ -380,6 +384,7 @@ impl OperatorState {
             voucher_ledger: Mutex::new(VoucherLedger::new(u64::MAX)),
             vouchers_required: AtomicBool::new(false),
             repair_budget: Mutex::new(TokenBucket::new(DEFAULT_REPAIR_BUDGET_PER_SEC)),
+            swarm_handle: Mutex::new(None),
         };
         state.load_enrolled_identities();
         state.load_sessions();
@@ -391,6 +396,16 @@ impl OperatorState {
         state.load_approval_challenges();
         state.load_voucher_ledger();
         state
+    }
+
+    /// Stores the live swarm handle at boot (dual mode only).
+    pub fn set_swarm_handle(&self, handle: SwarmHandle) {
+        *lock_or_recover(&self.swarm_handle, "swarm_handle") = Some(handle);
+    }
+
+    /// Clones the live swarm handle, if P2P is enabled on this node.
+    pub fn swarm_handle(&self) -> Option<SwarmHandle> {
+        lock_or_recover(&self.swarm_handle, "swarm_handle").clone()
     }
 
     fn identity_store_path(&self) -> PathBuf {
@@ -2359,7 +2374,12 @@ impl OperatorState {
             return Err("Invite node key does not match the announced descriptor".into());
         }
         Self::validate_peer_descriptor(&peer)?;
-        self.spend_invite(&invite.nonce_hex, invite.expires_utc, now)?;
+        self.spend_invite(
+            &invite.nonce_hex,
+            invite.expires_utc,
+            &peer.operator_id,
+            now,
+        )?;
         let previous_peer = lock_or_recover(&self.peer_routing_table, "peer_routing_table")
             .get(&peer.operator_id)
             .cloned();
@@ -2423,13 +2443,45 @@ impl OperatorState {
         self.note_peer_liveness(&peer.operator_id, now)
     }
 
-    /// Spends one invite nonce (single-use). Expired entries are pruned
-    /// first so the ledger cannot grow without bound.
-    fn spend_invite(&self, nonce_hex: &str, expires_utc: u64, now: u64) -> Result<(), String> {
+    /// Spends one invite nonce (single-use per admission). Expired
+    /// entries are pruned first so the ledger cannot grow without bound.
+    ///
+    /// Trust note (grace rejoin): a spent nonce is re-presentable ONLY by
+    /// the same admission — the caller verified the fleet signature, the
+    /// ticket expiry, the ticket-to-descriptor key match, and the
+    /// descriptor's signature + recency before this point, and a
+    /// membership record must exist for `operator_id` (proof this node
+    /// admitted this id before). That combination means the presenter
+    /// holds the node key and the fleet authorized it within TTL: the
+    /// same bar as the first join, so no new trust is granted. New
+    /// admissions (no record: fresh id, or a different id reusing the
+    /// key) with a spent ticket stay 409. There is no HTTP-layer removal
+    /// API for grace to resurrect against (quarantine is P2P-layer
+    /// `blocked_peers` only), and standing is preserved, not reset, by
+    /// the existing rejoin path — authorization plus served time, not
+    /// continuous presence. Operationally, grace lasts as long as the
+    /// ticket: issue TTL comfortably beyond the 24 h routing TTL (e.g.
+    /// 7 days) so lapsed nodes self-recover; the 24 h issue default is
+    /// unchanged.
+    fn spend_invite(
+        &self,
+        nonce_hex: &str,
+        expires_utc: u64,
+        operator_id: &str,
+        now: u64,
+    ) -> Result<(), String> {
+        // Membership records are append-only (never evicted), so this
+        // check is race-safe outside the spend lock, which also avoids
+        // nesting the two mutexes.
+        let admitted =
+            lock_or_recover(&self.peer_membership, "peer_membership").contains_key(operator_id);
         let mut lock = lock_or_recover(&self.spent_invites, "spent_invites");
         lock.retain(|_, expiry| *expiry > now);
         if lock.contains_key(nonce_hex) {
-            return Err("Join invite was already spent".into());
+            if !admitted {
+                return Err("Join invite was already spent".into());
+            }
+            return Ok(());
         }
         lock.insert(nonce_hex.to_string(), expires_utc);
         let snapshot = lock.clone();
@@ -3646,7 +3698,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_join_ticket_is_single_use_across_restart() {
+    fn verified_join_ticket_is_single_use_per_admission() {
         let _guard = join_test_guard();
         let fleet = ciphervault_crypto::generate_signing_key();
         std::env::set_var(
@@ -3654,21 +3706,71 @@ mod tests {
             hex::encode(fleet.verifying_key().to_bytes()),
         );
         let (state, root) = join_test_state("joinonce");
-        let (peer, _) = join_test_peer("joiner-1");
+        let (peer, peer_key) = join_test_peer("joiner-1");
         let invite = JoinInvite::issue(&fleet, peer.signing_pk_hex.clone(), 3600).unwrap();
         assert!(state.join_with_invite(peer.clone(), &invite).is_ok());
-        let err = state.join_with_invite(peer.clone(), &invite).unwrap_err();
+        // Same admission re-presents the spent ticket: grace rejoin, still
+        // probationary, no duplicate routing entry.
+        assert_eq!(state.join_with_invite(peer.clone(), &invite).unwrap(), 1);
+        assert!(state.is_probationary("joiner-1"));
+        // Same key under a NEW operator id is a new admission: 409 stands.
+        // (Signed with the original key so only the id differs.)
+        let (mut renamed, _) = join_test_peer("joiner-2");
+        renamed.signing_pk_hex = peer.signing_pk_hex.clone();
+        renamed.timestamp_utc = Utc::now().timestamp() as u64;
+        renamed.sign(&peer_key);
+        let err = state.join_with_invite(renamed, &invite).unwrap_err();
         assert_eq!(err, "Join invite was already spent");
-        // The spend survives restarts: the ticket stays dead.
+        // Grace survives restarts: membership + spend both persist.
         drop(state);
         let reopened = OperatorState::new(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
         );
-        let err = reopened.join_with_invite(peer, &invite).unwrap_err();
-        assert_eq!(err, "Join invite was already spent");
+        assert!(reopened.join_with_invite(peer, &invite).is_ok());
         assert!(reopened.is_probationary("joiner-1"));
+        drop(reopened);
+        std::env::remove_var("CIPHERVAULT_FLEET_KEY");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grace_rejoin_after_lapse_keeps_probation_clock() {
+        let _guard = join_test_guard();
+        let fleet = ciphervault_crypto::generate_signing_key();
+        std::env::set_var(
+            "CIPHERVAULT_FLEET_KEY",
+            hex::encode(fleet.verifying_key().to_bytes()),
+        );
+        let (state, root) = join_test_state("joinlapse");
+        let (peer, peer_key) = join_test_peer("joiner-1");
+        let invite = JoinInvite::issue(&fleet, peer.signing_pk_hex.clone(), 7200).unwrap();
+        assert!(state.join_with_invite(peer.clone(), &invite).is_ok());
+        drop(state);
+        // 25 h pass with no refresh: served time, but lapsed.
+        backdate_membership(&root, "joiner-1", 90_000, 90_000);
+        let reopened = OperatorState::new(
+            "test-op".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        // Simulate the 24 h routing eviction (membership survives it).
+        lock_or_recover(&reopened.peer_routing_table, "peer_routing_table").remove("joiner-1");
+        let mut fresh = peer.clone();
+        fresh.timestamp_utc = Utc::now().timestamp() as u64;
+        fresh.sign(&peer_key);
+        let err = reopened.refresh_peer_join(fresh.clone()).unwrap_err();
+        assert!(err.starts_with("Unknown joiner"), "unexpected: {err}");
+        // Same ticket re-admits without an admin round-trip.
+        assert_eq!(reopened.join_with_invite(peer.clone(), &invite).unwrap(), 1);
+        // Probation clock survived the lapse: time served + fresh
+        // liveness graduates immediately.
+        assert_eq!(
+            reopened.refresh_peer_join(fresh).unwrap(),
+            MembershipStatus::Full
+        );
+        assert!(!reopened.is_probationary("joiner-1"));
         drop(reopened);
         std::env::remove_var("CIPHERVAULT_FLEET_KEY");
         fs::remove_dir_all(root).unwrap();

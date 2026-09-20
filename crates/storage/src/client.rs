@@ -320,10 +320,11 @@ impl OperatorClient {
 
     /// Re-presents a fresh self-signed descriptor to prove liveness of an
     /// already-joined node key. Public route, no service token attached.
+    /// Returns the joiner's standing (`"probation"` or `"full"`).
     pub async fn refresh_join(
         &self,
         descriptor: &crate::types::PeerDescriptor,
-    ) -> Result<(), StorageError> {
+    ) -> Result<crate::invites::JoinRefreshResponse, StorageError> {
         self.transport.refresh_join(descriptor).await
     }
 

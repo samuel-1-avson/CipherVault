@@ -183,9 +183,24 @@ pub struct JoinRefreshRequest {
     pub descriptor: crate::types::PeerDescriptor,
 }
 
+/// Probation refresh response: `status` is `"probation"` or `"full"`.
+/// The only standing signal a joiner can read without the fleet's
+/// service token, so clients must surface it, not swallow it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JoinRefreshResponse {
+    pub status: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_response_carries_standing() {
+        let parsed: JoinRefreshResponse =
+            serde_json::from_str(r#"{"status":"probation"}"#).unwrap();
+        assert_eq!(parsed.status, "probation");
+    }
 
     fn fleet_key() -> SigningKey {
         ciphervault_crypto::generate_signing_key()

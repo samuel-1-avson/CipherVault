@@ -28,7 +28,7 @@ use ciphervault_format::compute_digest;
 
 use crate::compute_pos_proof;
 use crate::error::StorageError;
-use crate::invites::{JoinInvite, JoinRequest, JoinResponse};
+use crate::invites::{JoinInvite, JoinRefreshResponse, JoinRequest, JoinResponse};
 use crate::types::{
     ApiErrorBody, AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt,
     LeaseRenewRequest, LeaseRequest, OperatorInfo, PeerDescriptor, PendingApprovalChallenge,
@@ -115,10 +115,11 @@ pub trait OperatorTransport: Send + Sync {
     ) -> BoxFuture<'a, Result<JoinResponse, StorageError>>;
     /// Re-presents a fresh self-signed descriptor to prove liveness of an
     /// already-joined node key. Public route, HTTP only like the join.
+    /// Returns the joiner's standing (`"probation"` or `"full"`).
     fn refresh_join<'a>(
         &'a self,
         descriptor: &'a PeerDescriptor,
-    ) -> BoxFuture<'a, Result<(), StorageError>>;
+    ) -> BoxFuture<'a, Result<JoinRefreshResponse, StorageError>>;
     fn get_pending_approvals<'a>(
         &'a self,
     ) -> BoxFuture<'a, Result<Vec<PendingApprovalChallenge>, StorageError>>;
@@ -573,10 +574,10 @@ impl OperatorTransport for HttpTransport {
     fn refresh_join<'a>(
         &'a self,
         descriptor: &'a PeerDescriptor,
-    ) -> BoxFuture<'a, Result<(), StorageError>> {
+    ) -> BoxFuture<'a, Result<JoinRefreshResponse, StorageError>> {
         Box::pin(async move {
             let url = format!("{}/v1/peers/join/refresh", self.endpoint);
-            Self::check_ok(
+            let resp = Self::check_ok(
                 self.http
                     .post(&url)
                     .json(&crate::invites::JoinRefreshRequest {
@@ -586,7 +587,7 @@ impl OperatorTransport for HttpTransport {
                     .await?,
             )
             .await?;
-            Ok(())
+            Ok(resp.json::<JoinRefreshResponse>().await?)
         })
     }
 
@@ -1231,7 +1232,7 @@ impl OperatorTransport for MemoryTransport {
     fn refresh_join<'a>(
         &'a self,
         _descriptor: &'a PeerDescriptor,
-    ) -> BoxFuture<'a, Result<(), StorageError>> {
+    ) -> BoxFuture<'a, Result<JoinRefreshResponse, StorageError>> {
         Box::pin(async move {
             Err(StorageError::ServerError {
                 status: 501,

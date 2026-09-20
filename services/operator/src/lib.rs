@@ -179,6 +179,7 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/peers/announce", post(handlers::post_peer_announce))
         .route("/v1/peers", get(handlers::get_peers))
         .route("/v1/peers/self", get(handlers::get_self_peer))
+        .route("/v1/peers/p2p", get(handlers::get_p2p_info))
         // Verified community join routes: join + refresh are public (the
         // ticket / node-key signature is the authorization); membership
         // and graduation are control-plane administration.
@@ -248,6 +249,22 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower05::ServiceExt;
+
+    #[tokio::test]
+    async fn p2p_info_reports_unavailable_without_swarm() {
+        let root = std::env::temp_dir().join(format!("cv-p2pinfo-{}", rand::random::<u128>()));
+        let state = Arc::new(OperatorState::new(
+            "test".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        ));
+        let response = create_router(state)
+            .oneshot(Request::get("/v1/peers/p2p").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn panic_in_handler_returns_500_json_envelope() {

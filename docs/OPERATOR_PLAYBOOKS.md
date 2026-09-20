@@ -194,10 +194,25 @@ ciphervault-operator --print-identity --operator-id <id> \
 Admin (fully offline; the seed never leaves this machine):
 
 ```sh
-ciphervault invite issue <node-pk> --ttl 86400 \
-  --fleet-key-file /secure/fleet.seed > ticket.json
+ciphervault invite issue <node-pk> --ttl 604800 \
+  --fleet-key-file /secure/fleet.seed --out ticket.json
 # hand ticket.json to the joiner out of band
+
+# Batch: one 64-hex key per line (blanks/# comments skipped),
+# writes a JSON array in file order — split per joiner.
+ciphervault invite issue --keys-file joiners.txt --ttl 604800 \
+  --fleet-key-file /secure/fleet.seed --out tickets.json
 ```
+
+Prefer `--out` over shell `>` redirection: Windows PowerShell
+`>` writes UTF-16, which older CLI versions reject. (Current
+versions read UTF-16 ticket/keys files anyway, but `--out` keeps
+the file UTF-8 from the start.)
+
+Ticket SLA: TBD — the fleet admin commits to a turnaround here
+before genesis (testnet target: first response within 48 h). Until
+then, tickets are rate-limited by admin availability, which is the
+deliberate brake on testnet growth (cap 10–25 nodes).
 
 Joiner (present the ticket to each fleet node):
 
@@ -211,7 +226,8 @@ Probation and graduation:
 
 - Probationers count as holders and may push repair, but are never
   chosen as repair recipients. Standing is per node: check it with
-  `GET /v1/peers/membership` (service token).
+  `GET /v1/peers/membership` (service token); joiners see their own
+  standing in `ciphervault invite refresh` / `ciphervault node standing`.
 - Graduation needs time served (`CIPHERVAULT_PROBATION_SECS`, default
   24 h) plus recent liveness: P2P heartbeats count automatically in
   dual mode; HTTP-only joiners re-run `ciphervault invite refresh
@@ -222,7 +238,18 @@ Probation and graduation:
 - Shortcuts: a service-token announce of the joiner's descriptor, or
   `POST /v1/peers/<id>/graduate`, confers full standing immediately.
 
+Grace rejoin (no admin round-trip): a routing entry lapses after 24 h
+without refresh, but the membership record survives — so the same
+node key may re-present its ORIGINAL ticket and rejoin on its own,
+keeping its probation clock and standing. Grace lasts as long as the
+ticket itself, so issue long TTLs for real joiners (`--ttl 604800`
+= 7 days; the 24 h default barely outlives one lapse). A new
+operator id, or a different key, is a new admission and needs a
+fresh ticket.
+
 Failure hints: 403 = bad/expired ticket or key mismatch (re-issue);
-409 = ticket already spent (each ticket admits once — issue a fresh
-one); 404 on refresh = routing entry expired before the first refresh
-(re-join with a new ticket, then refresh on a schedule).
+409 = ticket already spent by a NEW admission (each ticket admits one
+node key — the same key rejoining is grace, not 409; issue a fresh
+one for genuinely new nodes); 404 on refresh = routing entry lapsed
+(re-join with the ORIGINAL ticket while it is valid, then refresh on
+a schedule).

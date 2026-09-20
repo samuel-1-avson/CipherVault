@@ -420,7 +420,8 @@ impl OperatorTransport for Libp2pTransport {
     fn refresh_join<'a>(
         &'a self,
         _descriptor: &'a PeerDescriptor,
-    ) -> BoxFuture<'a, Result<(), StorageError>> {
+    ) -> BoxFuture<'a, Result<ciphervault_storage::invites::JoinRefreshResponse, StorageError>>
+    {
         Box::pin(async move {
             Err(StorageError::ServerError {
                 status: 501,
