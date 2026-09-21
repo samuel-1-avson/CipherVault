@@ -9,6 +9,12 @@ permissions:
   contents: write
   packages: write
 
+# Same-tag re-runs supersede each other so a re-pushed tag cannot
+# double-publish or burn a second full matrix.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pre-release-gate:
     name: Mandatory Pre-Release Verification Gate
@@ -27,6 +33,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
 
       - name: Enforce Code Formatting
         run: cargo fmt --all -- --check
@@ -88,9 +97,30 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Per-target cache key: each matrix leg restores only its own
+      # triple's artifacts instead of rebuilding all deps from scratch.
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Pinned prebuilt binary: compiling cross from git source on every
+      # release burned several minutes per cross leg.
       - name: Install Cross-Compilation Tools
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: |
+          set -euo pipefail
+          CROSS_VERSION="v0.2.5"
+          curl --fail --silent --show-error --location \
+            "https://github.com/cross-rs/cross/releases/download/${CROSS_VERSION}/cross-x86_64-unknown-linux-gnu.tar.gz" \
+            -o /tmp/cross.tar.gz
+          rm -rf /tmp/cross-bin && mkdir -p /tmp/cross-bin
+          tar -xzf /tmp/cross.tar.gz -C /tmp/cross-bin
+          CROSS_BIN="$(find /tmp/cross-bin -maxdepth 2 -name cross -type f | head -n 1)"
+          test -n "$CROSS_BIN"
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 0755 "$CROSS_BIN" "$HOME/.cargo/bin/cross"
+          cross --version
 
       - name: Build Release Binaries
         shell: bash
@@ -218,7 +248,7 @@ jobs:
             dist-release/*
           generate_release_notes: true
           draft: false
-          prerelease: false  # Betas ride the full-release flag: updater + installers resolve releases/latest
+          prerelease: false  # Updater + installers resolve releases/latest, which only lists full releases
 
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images

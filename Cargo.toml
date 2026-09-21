@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.7-beta.10"
+version = "1.0.7"
 edition = "2021"
 authors = ["CipherVault Contributors"]
 license = "MIT OR Apache-2.0"

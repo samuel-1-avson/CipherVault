@@ -3,12 +3,27 @@ name: Continuous Integration
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - 'report/**'
+      - '**/*.md'
   pull_request:
     branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - 'report/**'
+      - '**/*.md'
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+
+# A newer push supersedes an older one on the same ref: cancel the stale
+# run instead of burning billable minutes (macOS legs cost 10x Linux) on
+# code that is already outdated.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -35,16 +50,8 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Cache Cargo Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
 
       - name: Code Formatting Check
         run: cargo fmt --all -- --check
@@ -89,16 +96,8 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-bench-
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
 
       - name: Run push bench (sequential vs concurrent)
         run: cargo test --locked -p ciphervault-cli --release --test push_bench -- --ignored --nocapture

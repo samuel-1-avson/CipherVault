@@ -1,22 +1,22 @@
 class Ciphervault < Formula
   desc "Decentralized, zero-knowledge encrypted version control for confidential files"
   homepage "https://github.com/samuel-1-avson/CipherVault"
-  version "1.0.7-beta.10"
+  version "1.0.7"
   license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7-beta.10/ciphervault-v1.0.7-beta.10-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7/ciphervault-v1.0.7-aarch64-apple-darwin.tar.gz"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7-beta.10/ciphervault-v1.0.7-beta.10-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7/ciphervault-v1.0.7-x86_64-apple-darwin.tar.gz"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7-beta.10/ciphervault-v1.0.7-beta.10-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7/ciphervault-v1.0.7-aarch64-unknown-linux-gnu.tar.gz"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7-beta.10/ciphervault-v1.0.7-beta.10-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.7/ciphervault-v1.0.7-x86_64-unknown-linux-gnu.tar.gz"
     end
   end
 
