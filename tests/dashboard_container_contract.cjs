@@ -166,16 +166,16 @@ assert.match(
 
 console.log('Dashboard container deployment contract checks passed.');
 
-// F1 (edge half REVERTED 2026-09-21): the explorer object endpoint fans out
-// to every operator per request, so the public edge SHOULD bound it per
-// client -- but the pinned caddy:2-alpine predates 2.8 and rejects the
-// rate_limit directive (it crash-looped the edge during the 1.0.7
-// promotion). The Caddyfile must therefore stay free of rate_limit until
-// the compose pin is bumped to Caddy >= 2.8 and validated with
-// caddy validate. Re-adding the directive without the pin breaks prod.
+// F1 (edge half REMOVED 2026-09-21): the explorer object endpoint fans out
+// to every operator per request, so per-client bounding belongs in the app
+// (tower middleware), not the edge: stock Caddy has NO rate_limit
+// directive at all (verified: v2.11.4 rejects it, list-modules shows no
+// rate module, and the docs page 404s). The 1.0.7 promotion proved that
+// adding it crash-loops the edge, so the Caddyfile must stay free of
+// rate_limit permanently. See the runbook.
 const webCaddyfile = read('deploy', 'gcp', 'Caddyfile.web.gcp');
 assert.doesNotMatch(
   webCaddyfile,
   /rate_limit/,
-  'the public edge Caddyfile must not use rate_limit until the pinned Caddy is >= 2.8 (see runbook)',
+  'the public edge Caddyfile must not use rate_limit: stock Caddy has no such directive (see runbook)',
 );

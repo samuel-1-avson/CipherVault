@@ -168,12 +168,11 @@ If deploying behind an edge CDN (Cloudflare or Google Cloud Armor):
 - `POST /v1/objects/*`: 120 req/min per authenticated caller.
 - `GET /v1/objects/*`: 300 req/min per IP.
 
-### Public explorer edge limits (`deploy/gcp/Caddyfile.web.gcp`)
-TEMPORARILY REMOVED (2026-09-21): the `rate_limit` zones broke the 1.0.7 promotion - the pinned `caddy:2-alpine` image predates 2.8 and rejects the directive, which crash-looped the edge. Do NOT re-add edge rate limiting until the compose pin is bumped to Caddy >= 2.8 AND the Caddyfile is validated against the pinned image (`caddy validate`) before promotion. Planned zones when the pin allows them:
-- `GET /api/explorer/object/*`: 30 req/min per IP — each lookup fans out to
-  every operator, so this zone stops the explorer being used as an amplifier.
-- Everything else on the site: 600 req/min per IP (covers the 30 s UI polling
-  plus bursts).
+### Public explorer per-client limits (in-app, not the edge)
+Do NOT put `rate_limit` in `deploy/gcp/Caddyfile.web.gcp`: stock Caddy has no such directive (verified on the pinned v2.11.4 image - `list-modules` shows no rate module and the docs page 404s). The 1.0.7 promotion proved that adding it crash-loops the edge and takes the site down, and no version bump can fix that. Per-client bounding therefore lives in the dashboard as middleware. Budgets when implemented:
+- `GET /api/explorer/object/*`: 30 req/min per IP - each lookup fans out to every operator, so this budget stops the explorer being used as an amplifier.
+- Everything else on the site: 600 req/min per IP (covers the 30 s UI polling plus bursts).
+Every promotion runs `caddy validate` against the pinned image before the VM stops, and keeps a last-good config snapshot for rollback (see the promote script); both exist because of this incident.
 
 ### Explorer access-log hygiene
 `GET /api/explorer/object/:cid` carries the 64-hex content ID in the URL path,

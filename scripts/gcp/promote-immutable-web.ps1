@@ -161,6 +161,32 @@ function Confirm-LiveDeployment {
     Write-Host "Live deployment verified: build_version $deployedVersion, explorer routes responding." -ForegroundColor Green
 }
 
+function Get-StagedCaddyImage {
+    param([Parameter(Mandatory = $true)][string]$ComposePath)
+    $refs = @(Select-String -LiteralPath $ComposePath -Pattern '^\s*image:\s*(caddy:\S+)' -AllMatches |
+        ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    if ($refs.Count -ne 1) {
+        throw "Expected exactly one Caddy image pin in $ComposePath; found $($refs.Count)."
+    }
+    return $refs[0]
+}
+
+function Invoke-RemoteCaddyValidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstanceName,
+        [Parameter(Mandatory = $true)][string]$ProjectId,
+        [Parameter(Mandatory = $true)][string]$Zone,
+        [Parameter(Mandatory = $true)][string]$RemoteCaddyfile,
+        [Parameter(Mandatory = $true)][string]$CaddyImage
+    )
+    # VM-side gate: the candidate Caddyfile is adapted by the exact image
+    # pin the staged compose deploys. A broken edge config aborts the
+    # promotion BEFORE the VM stops, so the 1.0.7 outage class (bad
+    # directive crash-looping Caddy) cannot recur.
+    Write-Host "Validating the candidate Caddyfile against $CaddyImage..." -ForegroundColor Cyan
+    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo docker pull '$CaddyImage' >/dev/null; sudo docker run --rm -v '${RemoteCaddyfile}:/etc/caddy/Caddyfile:ro' '$CaddyImage' caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+}
+
 foreach ($command in @("gcloud", "cosign")) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
         throw "$command must be installed and authenticated before promotion."
@@ -215,6 +241,8 @@ foreach ($path in @($compose, $caddy, $startup)) {
     }
 }
 
+$caddyImage = Get-StagedCaddyImage -ComposePath $compose
+
 $stageId = $DashboardImage.Substring($DashboardImage.Length - 12)
 $remoteStage = "/tmp/ciphervault-release-$stageId"
 
@@ -222,6 +250,13 @@ Write-Host "Checking that the target VM can pull the candidate images..." -Foreg
 Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo docker pull '$DashboardImage' >/dev/null; sudo docker pull '$AccountImage' >/dev/null"
 
 if (-not $Apply) {
+    $preflightCaddy = "/tmp/ciphervault-caddy-preflight-$stageId"
+    Invoke-Gcloud compute scp $caddy "${InstanceName}:$preflightCaddy" --project $ProjectId --zone $Zone
+    try {
+        Invoke-RemoteCaddyValidate -InstanceName $InstanceName -ProjectId $ProjectId -Zone $Zone -RemoteCaddyfile $preflightCaddy -CaddyImage $caddyImage
+    } finally {
+        Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "rm -f '$preflightCaddy'"
+    }
     Write-Host "Preflight succeeded. Re-run with -Apply to stage the release and perform the controlled VM restart." -ForegroundColor Yellow
     return
 }
@@ -232,7 +267,12 @@ try {
     Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; rm -rf '$remoteStage'; mkdir -p '$remoteStage'"
     Invoke-Gcloud compute scp $compose "${InstanceName}:$remoteStage/docker-compose.yml" --project $ProjectId --zone $Zone
     Invoke-Gcloud compute scp $caddy "${InstanceName}:$remoteStage/Caddyfile" --project $ProjectId --zone $Zone
-    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo install -d -m 0755 /opt/ciphervault-ui/release; sudo install -m 0644 '$remoteStage/docker-compose.yml' /opt/ciphervault-ui/release/docker-compose.yml; sudo install -m 0644 '$remoteStage/Caddyfile' /opt/ciphervault-ui/release/Caddyfile; rm -rf '$remoteStage'"
+    Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo install -d -m 0755 /opt/ciphervault-ui/release/last-good; for f in docker-compose.yml Caddyfile; do if [ -f /opt/ciphervault-ui/release/`$f ]; then sudo install -m 0644 /opt/ciphervault-ui/release/`$f /opt/ciphervault-ui/release/last-good/`$f; fi; done; sudo install -m 0644 '$remoteStage/docker-compose.yml' /opt/ciphervault-ui/release/docker-compose.yml; sudo install -m 0644 '$remoteStage/Caddyfile' /opt/ciphervault-ui/release/Caddyfile; rm -rf '$remoteStage'"
+
+    # Mandatory gate on exactly what was staged: a broken edge config
+    # aborts here, before the VM stops, leaving the live deployment untouched.
+    Invoke-RemoteCaddyValidate -InstanceName $InstanceName -ProjectId $ProjectId -Zone $Zone -RemoteCaddyfile "/opt/ciphervault-ui/release/Caddyfile" -CaddyImage $caddyImage
+
 
     $metadata = @(
         "ciphervault-dashboard-image=$DashboardImage",
@@ -307,7 +347,15 @@ try {
     Write-Host "Promotion completed. Run scripts/gcp/verify-immutable-deployment.sh for independent post-deploy verification." -ForegroundColor Green
 } catch {
     if ($promotionStarted) {
-        Write-Warning "Promotion failed after the VM stop. Restoring the supplied signed rollback images."
+        Write-Warning "Promotion failed after the VM stop. Restoring the last-good staged configuration and the supplied signed rollback images."
+        try {
+            # The boot-time startup script reinstalls the active config from
+            # release/, so restoring the snapshot here makes the reset boot
+            # the last-good config: rollback restores config AND images.
+            Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; if [ -f /opt/ciphervault-ui/release/last-good/docker-compose.yml ] && [ -f /opt/ciphervault-ui/release/last-good/Caddyfile ]; then sudo install -m 0644 /opt/ciphervault-ui/release/last-good/docker-compose.yml /opt/ciphervault-ui/release/docker-compose.yml; sudo install -m 0644 /opt/ciphervault-ui/release/last-good/Caddyfile /opt/ciphervault-ui/release/Caddyfile; echo last-good configuration restored; else echo no last-good snapshot, keeping staged configuration; fi"
+        } catch {
+            Write-Warning "Could not restore the last-good staged configuration: $($_.Exception.Message)"
+        }
         $rollbackMetadata = @(
             "ciphervault-dashboard-image=$RollbackDashboardImage",
             "ciphervault-account-image=$RollbackAccountImage"

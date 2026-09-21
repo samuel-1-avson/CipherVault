@@ -33,6 +33,11 @@ Cost controls already in the workflows:
 - Docs-only pushes (`docs/**`, `report/**`, `*.md`) skip CI entirely.
 - Container builds use registry-layer caching (`type=gha`).
 
+## Edge images (cloud deploys without a release)
+`edge-images.yml` builds the dashboard + account images from `main` (server/container changes only, plus manual dispatch) and pushes `edge` and `main-<sha>` tags with SLSA provenance and keyless cosign signatures - no version bump, no 6-target matrix. Promote an edge digest with the usual script, overriding the signature identity and asserting the base Cargo version:
+`scripts/gcp/promote-immutable-web.ps1 ... -ExpectedBuildVersion <cargo-version> -CosignCertificateIdentityRegex 'https://github.com/samuel-1-avson/CipherVault/.github/workflows/edge-images.yml@refs/heads/main'`
+Caveat: edge images share the base version string, so the live version assertion cannot distinguish two edge builds - record the promoted digest. Prefer edge for urgent cloud-only fixes; cut a release for anything user-facing.
+
 ## Cutting a release
 
 1. Bump the version on the release track (workspace `Cargo.toml`,
