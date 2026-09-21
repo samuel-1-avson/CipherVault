@@ -188,7 +188,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bins-${{ matrix.target }}
+          name: ${{ matrix.target }}
           path: |
             ciphervault-${{ github.ref_name }}-${{ matrix.target }}.*
             ciphervault-dev-${{ github.ref_name }}-${{ matrix.target }}.*
@@ -206,16 +206,20 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
-          # Only the binary-target bundles (uploaded as `bins-<target>`).
-          # An unfiltered download also grabs the container job's
-          # .dockerbuild record, and a flake on that auxiliary file failed
-          # the 1.0.8 publish after all six binaries were intact.
-          pattern: 'bins-*'
+          # Only the six binary-target bundles. An unfiltered download
+          # also grabs the container job's .dockerbuild record, and a
+          # transient flake on that auxiliary file failed the whole
+          # 1.0.8 publish after all six binaries were intact.
+          pattern: '{x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin}'
 
       - name: Compute SHA256 Checksums
         shell: bash
         run: |
           mkdir -p dist-release
+          if [ ! -d release-assets ]; then
+            echo "release-assets directory missing; no artifacts were downloaded"
+            exit 1
+          fi
           find release-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec mv {} dist-release/ \;
           if ! compgen -G "dist-release/*" > /dev/null; then echo "ERROR: no release archives were downloaded" >&2; exit 1; fi
           # Extract standalone executables for direct downloads and the
@@ -337,4 +341,3 @@ jobs:
           COSIGN_YES: "true"
         run: |
           cosign sign "ghcr.io/${{ github.repository_owner }}/${{ matrix.service.name }}@${{ steps.build.outputs.digest }}"
-
