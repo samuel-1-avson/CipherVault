@@ -1035,7 +1035,19 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         assert!(!port_is_free(port));
         drop(listener);
-        assert!(port_is_free(port));
+        // The suite binds loopback listeners and connections on other
+        // threads, so a parallel test may briefly reuse this port before
+        // we re-probe. Retry briefly: a genuinely stuck port still fails
+        // after the budget.
+        let mut free = false;
+        for _ in 0..100 {
+            if port_is_free(port) {
+                free = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(free, "port {port} stayed bound after its listener dropped");
     }
 
     #[test]
