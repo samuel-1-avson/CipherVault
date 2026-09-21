@@ -218,7 +218,7 @@ jobs:
             dist-release/*
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: false  # Betas ride the full-release flag: updater + installers resolve releases/latest
 
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images
