@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/crypto",
+    "crates/file-lock",
     "crates/format",
     "crates/snapshot",
     "crates/local-store",
@@ -65,6 +66,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 
 # Internal workspace crates
 ciphervault-crypto = { path = "crates/crypto" }
+ciphervault-file-lock = { path = "crates/file-lock" }
 ciphervault-format = { path = "crates/format" }
 ciphervault-snapshot = { path = "crates/snapshot" }
 ciphervault-local-store = { path = "crates/local-store" }

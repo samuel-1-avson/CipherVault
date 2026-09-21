@@ -646,6 +646,7 @@ dependencies = [
  "chrono",
  "ciphervault-agent",
  "ciphervault-crypto",
+ "ciphervault-file-lock",
  "ciphervault-format",
  "ciphervault-local-store",
  "ciphervault-maintenance",
@@ -691,6 +692,10 @@ dependencies = [
  "x25519-dalek 2.0.1",
  "zeroize",
 ]
+
+[[package]]
+name = "ciphervault-file-lock"
+version = "1.0.7-beta.9"
 
 [[package]]
 name = "ciphervault-format"
@@ -754,6 +759,7 @@ dependencies = [
  "chrono",
  "ciborium",
  "ciphervault-crypto",
+ "ciphervault-file-lock",
  "ciphervault-format",
  "ciphervault-recovery",
  "ciphervault-storage",

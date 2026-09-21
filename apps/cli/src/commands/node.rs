@@ -154,70 +154,28 @@ fn generate_service_token() -> String {
     hex::encode(bytes)
 }
 
-/// Writes a secret file, best-effort 0600 like the operator's own key
-/// files (effective on Unix; Windows ACLs are out of `std`'s reach).
-/// Locks a secret file down to the current user (Windows only): strips
-/// inherited ACLs and grants read+write to the login user via the inbox
-/// `icacls` tool (no new dependency). Best-effort with a loud warning:
-/// filesystems without ACLs must not brick setup, but any exposure must
-/// be visible.
-#[cfg(windows)]
-fn restrict_secret_file(path: &Path) {
-    let user = std::env::var("USERNAME").unwrap_or_default();
-    if user.trim().is_empty() {
-        eprintln!(
-            "{}",
-            format!(
-                "Warning: could not determine the login user; {} keeps inherited permissions.",
-                path.display()
-            )
-            .yellow()
-        );
-        return;
-    }
-    // icacls parses a leading `/` as a flag, so normalize Rust's
-    // forward-slash forms before invoking it.
-    let for_icacls = path.to_string_lossy().replace('/', "\\");
-    // Two separate invocations: combining `/inheritance:r` with `/grant`
-    // in one call unreliably leaves inheritance enabled (observed on
-    // CI runners: inherited SYSTEM/Administrators ACEs survive and the
-    // lockdown test fails). Stripping first, then granting, is the
-    // deterministic recipe.
-    let run_icacls = |args: &[&str]| {
-        Command::new("icacls")
-            .arg(&for_icacls)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    };
-    let grant = format!("{user}:(R,W)");
-    let locked = run_icacls(&["/inheritance:r"]) && run_icacls(&["/grant:r", &grant]);
-    if !locked {
-        eprintln!(
-            "{}",
-            format!(
-                "Warning: could not lock down {}; anyone with disk access may read it.",
-                path.display()
-            )
-            .yellow()
-        );
-    }
-}
-
+/// Writes a secret file, then locks it down to the current user via the
+/// shared `ciphervault-file-lock` crate (0600 on Unix, protected DACL on
+/// Windows). Best-effort with a loud warning: filesystems without ACLs
+/// must not brick setup, but any exposure must be visible.
 fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(windows)]
-    restrict_secret_file(path);
+    lock_secret_file_best_effort(path);
     Ok(())
+}
+
+/// Shared best-effort wrapper so every secret-file write warns alike.
+fn lock_secret_file_best_effort(path: &Path) {
+    if let Err(error) = ciphervault_file_lock::lock_secret_file(path) {
+        eprintln!(
+            "{}",
+            format!(
+                "Warning: could not lock down {} ({error}); anyone with disk access may read it.",
+                path.display()
+            )
+            .yellow()
+        );
+    }
 }
 
 fn read_config(data_dir: &Path) -> Result<NodeConfig> {
@@ -878,8 +836,7 @@ pub(crate) fn cmd_node_backup(data_dir: Option<PathBuf>, dest: PathBuf) -> Resul
         if src.is_file() {
             let dest_file = dest.join(name);
             std::fs::copy(&src, &dest_file).with_context(|| format!("copy {}", src.display()))?;
-            #[cfg(windows)]
-            restrict_secret_file(&dest_file);
+            lock_secret_file_best_effort(&dest_file);
             println!("  saved {name}");
         } else {
             println!("  skipped {name} (not present)");
@@ -1167,26 +1124,26 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    // The lockdown primitive itself is covered by the
+    // ciphervault-file-lock crate tests; this guards the call-site wiring.
     #[cfg(windows)]
     #[test]
-    fn windows_lockdown_grants_only_current_user() {
-        use std::process::Stdio;
+    fn write_secret_file_locks_down_to_current_user() {
         let path = std::env::temp_dir().join(format!(
             "cv-restrict-{}-{}.txt",
             std::process::id(),
-            rand::random::<u32>()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
         ));
-        std::fs::write(&path, "secret").unwrap();
-        // Forward-slash form: icacls misparses a leading `/` as a flag,
-        // so the helper must normalize before invoking it.
-        let slashed = path.to_string_lossy().replace('\\', "/");
-        restrict_secret_file(Path::new(&slashed));
+        write_secret_file(&path, "secret").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
         let query = std::process::Command::new("icacls")
             .arg(&path)
-            .stdin(Stdio::null())
             .output()
             .unwrap();
+        assert!(query.status.success());
         let listing = String::from_utf8_lossy(&query.stdout).to_ascii_lowercase();
         let user = std::env::var("USERNAME").unwrap().to_ascii_lowercase();
         assert!(

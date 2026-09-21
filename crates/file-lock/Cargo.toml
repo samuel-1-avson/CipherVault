@@ -1,0 +1,9 @@
+[package]
+name = "ciphervault-file-lock"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Intentionally dependency-free: pure std plus hand-rolled Win32 FFI.

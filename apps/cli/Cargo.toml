@@ -20,6 +20,7 @@ ed25519-dalek.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 ciphervault-crypto = { path = "../../crates/crypto" }
+ciphervault-file-lock = { path = "../../crates/file-lock" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-snapshot = { path = "../../crates/snapshot" }
 ciphervault-local-store = { path = "../../crates/local-store" }
