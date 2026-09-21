@@ -206,6 +206,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+          # Only the six binary-target bundles. An unfiltered download
+          # also grabs the container job's .dockerbuild record, and a
+          # transient flake on that auxiliary file failed the whole
+          # 1.0.8 publish after all six binaries were intact.
+          pattern: |
+            *-linux-*
+            *-windows-*
+            *-darwin-*
 
       - name: Compute SHA256 Checksums
         shell: bash
