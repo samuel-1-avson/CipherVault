@@ -210,15 +210,16 @@ jobs:
           # also grabs the container job's .dockerbuild record, and a
           # transient flake on that auxiliary file failed the whole
           # 1.0.8 publish after all six binaries were intact.
-          pattern: |
-            *-linux-*
-            *-windows-*
-            *-darwin-*
+          pattern: '{x86_64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin}'
 
       - name: Compute SHA256 Checksums
         shell: bash
         run: |
           mkdir -p dist-release
+          if [ ! -d release-assets ]; then
+            echo "release-assets directory missing; no artifacts were downloaded"
+            exit 1
+          fi
           find release-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec mv {} dist-release/ \;
           # Extract standalone executables for direct downloads and the
           # in-app updater (one single-file binary per target, no extraction).
@@ -339,4 +340,3 @@ jobs:
           COSIGN_YES: "true"
         run: |
           cosign sign "ghcr.io/${{ github.repository_owner }}/${{ matrix.service.name }}@${{ steps.build.outputs.digest }}"
-
