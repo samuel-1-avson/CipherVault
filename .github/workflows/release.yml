@@ -188,7 +188,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: bins-${{ matrix.target }}
           path: |
             ciphervault-${{ github.ref_name }}-${{ matrix.target }}.*
             ciphervault-dev-${{ github.ref_name }}-${{ matrix.target }}.*
@@ -206,20 +206,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
-          # Only the six binary-target bundles. An unfiltered download
-          # also grabs the container job's .dockerbuild record, and a
-          # transient flake on that auxiliary file failed the whole
-          # 1.0.8 publish after all six binaries were intact.
-          pattern: |
-            *-linux-*
-            *-windows-*
-            *-darwin-*
+          # Only the binary-target bundles (uploaded as `bins-<target>`).
+          # An unfiltered download also grabs the container job's
+          # .dockerbuild record, and a flake on that auxiliary file failed
+          # the 1.0.8 publish after all six binaries were intact.
+          pattern: 'bins-*'
 
       - name: Compute SHA256 Checksums
         shell: bash
         run: |
           mkdir -p dist-release
           find release-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec mv {} dist-release/ \;
+          if ! compgen -G "dist-release/*" > /dev/null; then echo "ERROR: no release archives were downloaded" >&2; exit 1; fi
           # Extract standalone executables for direct downloads and the
           # in-app updater (one single-file binary per target, no extraction).
           if compgen -G "dist-release/ciphervault-*-x86_64-pc-windows-msvc.zip" > /dev/null; then
