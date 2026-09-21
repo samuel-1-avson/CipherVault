@@ -19,7 +19,7 @@ Remaining work is hardening, not repair. The two findings that deserve attention
 
 All eight findings were implemented and verified. CLI suite 92/92, `audit.test.cjs` green, container contract green, workspace clippy + fmt clean, plus a live pass against both modes (public `--serve` probing the production fleet; private `--local` on a populated scratch vault).
 
-- **F1** — Implemented: 60 s per-CID probe cache + 16-permit global probe semaphore in `finality.rs`; Caddy `rate_limit` zones (30/min object, 600/min general) in `deploy/gcp/Caddyfile.web.gcp`; contract-test pins. Live proof: repeat object lookup 785 ms → 26 ms.
+- **F1** — Partially implemented: 60 s per-CID probe cache + 16-permit global probe semaphore in `finality.rs` (shipped, live proof: repeat object lookup 785 ms → 26 ms). The Caddy `rate_limit` zones were REVERTED same-day: the pinned `caddy:2-alpine` predates 2.8, rejected the directive, and crash-looped the edge during the 1.0.7 promotion. Re-add only after bumping the compose Caddy pin to >= 2.8 with a `caddy validate` gate.
 - **F2** — Implemented: strict same-origin CSP on the shell document + router test asserting it. Verified no inline scripts/styles/handlers or dynamic code injection in the bundle.
 - **F3** — Implemented: `escapeHtml` now escapes single quotes + `audit.test.cjs` §18 (proven to fail before, pass after).
 - **F4** — Implemented: `nosniff` on every public response via middleware; `public, max-age=30` on telemetry endpoints; private side already had `no-store`/`nosniff`/`DENY` (confirmed live). Router test covers all four cases.

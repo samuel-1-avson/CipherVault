@@ -169,7 +169,7 @@ If deploying behind an edge CDN (Cloudflare or Google Cloud Armor):
 - `GET /v1/objects/*`: 300 req/min per IP.
 
 ### Public explorer edge limits (`deploy/gcp/Caddyfile.web.gcp`)
-The explorer site carries its own Caddy `rate_limit` zones (needs Caddy >= 2.8):
+TEMPORARILY REMOVED (2026-09-21): the `rate_limit` zones broke the 1.0.7 promotion - the pinned `caddy:2-alpine` image predates 2.8 and rejects the directive, which crash-looped the edge. Do NOT re-add edge rate limiting until the compose pin is bumped to Caddy >= 2.8 AND the Caddyfile is validated against the pinned image (`caddy validate`) before promotion. Planned zones when the pin allows them:
 - `GET /api/explorer/object/*`: 30 req/min per IP — each lookup fans out to
   every operator, so this zone stops the explorer being used as an amplifier.
 - Everything else on the site: 600 req/min per IP (covers the 30 s UI polling

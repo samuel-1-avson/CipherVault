@@ -166,21 +166,16 @@ assert.match(
 
 console.log('Dashboard container deployment contract checks passed.');
 
-// F1: the explorer object endpoint fans out to every operator per request,
-// so the public edge must bound it per client before traffic reaches the app.
+// F1 (edge half REVERTED 2026-09-21): the explorer object endpoint fans out
+// to every operator per request, so the public edge SHOULD bound it per
+// client -- but the pinned caddy:2-alpine predates 2.8 and rejects the
+// rate_limit directive (it crash-looped the edge during the 1.0.7
+// promotion). The Caddyfile must therefore stay free of rate_limit until
+// the compose pin is bumped to Caddy >= 2.8 and validated with
+// caddy validate. Re-adding the directive without the pin breaks prod.
 const webCaddyfile = read('deploy', 'gcp', 'Caddyfile.web.gcp');
-assert.match(
+assert.doesNotMatch(
   webCaddyfile,
-  /handle \/api\/explorer\/object\/\*/,
-  'the public edge must give the explorer object API its own rate-limited route',
-);
-assert.match(
-  webCaddyfile,
-  /zone explorer_object[\s\S]*events 30[\s\S]*window 1m/,
-  'the explorer object zone must stay at its reviewed budget',
-);
-assert.match(
-  webCaddyfile,
-  /zone explorer_general/,
-  'the public edge must rate-limit general explorer traffic',
+  /rate_limit/,
+  'the public edge Caddyfile must not use rate_limit until the pinned Caddy is >= 2.8 (see runbook)',
 );
