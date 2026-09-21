@@ -1,6 +1,6 @@
 # CipherVault - verified Windows installer/updater
 # Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.9 (pin, skips the
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.7-beta.10 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
 # node = CLI+operator+maintenance for guided `ciphervault node setup`).
