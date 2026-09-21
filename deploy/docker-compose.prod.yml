@@ -178,6 +178,8 @@ services:
     container_name: ciphervault-dashboard
     environment:
       - CIPHERVAULT_OPERATORS=http://operator-1:8201 http://operator-2:8202 http://operator-3:8203
+      # Behind the edge Caddy: key the in-app limiter on the XFF address Caddy appends.
+      - CIPHERVAULT_TRUST_XFF=${CIPHERVAULT_TRUST_XFF:-1}
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
       - CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES=${CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES:-}
       - CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=${CIPHERVAULT_PUBLIC_CHECKPOINT_FEED:-}

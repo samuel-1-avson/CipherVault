@@ -105,6 +105,12 @@ pub(crate) async fn cmd_ui(
         });
     }
 
-    axum::serve(listener, app).await?;
+    // Connect info feeds the public rate limiter's peer fallback (and
+    // is the sole client identity for direct `--serve` without a proxy).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

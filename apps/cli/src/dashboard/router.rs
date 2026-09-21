@@ -280,7 +280,160 @@ async fn public_api_headers(
     response
 }
 
+/// Per-IP rate budgets for the public explorer, requests per minute.
+/// Object lookups fan out to every operator, so they get the tight budget;
+/// everything else shares the general budget (covers 30 s UI polling).
+const EXPLORER_OBJECT_BUDGET_PER_MIN: u32 = 30;
+const EXPLORER_GENERAL_BUDGET_PER_MIN: u32 = 600;
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+/// Upper bound on tracked (client, budget) windows. Past this the limiter
+/// prunes expired windows and fails open for new clients rather than
+/// growing without bound under a distributed flood.
+const RATE_LIMIT_MAX_TRACKED_CLIENTS: usize = 10_000;
+
+#[derive(Clone)]
+pub(crate) struct RateLimiter {
+    object_budget: u32,
+    general_budget: u32,
+    window: std::time::Duration,
+    trust_xff: bool,
+    windows: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<(bool, std::net::IpAddr), RateWindow>>,
+    >,
+}
+
+struct RateWindow {
+    start: std::time::Instant,
+    count: u32,
+}
+
+impl RateLimiter {
+    fn production() -> Self {
+        let trust_xff = std::env::var("CIPHERVAULT_TRUST_XFF")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        Self::new(
+            EXPLORER_OBJECT_BUDGET_PER_MIN,
+            EXPLORER_GENERAL_BUDGET_PER_MIN,
+            std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS),
+            trust_xff,
+        )
+    }
+
+    fn new(
+        object_budget: u32,
+        general_budget: u32,
+        window: std::time::Duration,
+        trust_xff: bool,
+    ) -> Self {
+        Self {
+            object_budget,
+            general_budget,
+            window,
+            trust_xff,
+            windows: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Records one request; `Err(retry_after_secs)` when the budget is spent.
+    /// Fails open (allows) when the lock is poisoned or the tracker is full,
+    /// so limiter trouble never becomes an outage.
+    fn check(&self, ip: std::net::IpAddr, is_object_lookup: bool) -> Result<(), u64> {
+        let budget = if is_object_lookup {
+            self.object_budget
+        } else {
+            self.general_budget
+        };
+        let now = std::time::Instant::now();
+        let mut windows = match self.windows.lock() {
+            Ok(guard) => guard,
+            Err(_) => return Ok(()),
+        };
+        if windows.len() >= RATE_LIMIT_MAX_TRACKED_CLIENTS {
+            windows.retain(|_, window| now.duration_since(window.start) < self.window);
+            if windows.len() >= RATE_LIMIT_MAX_TRACKED_CLIENTS {
+                return Ok(());
+            }
+        }
+        let window = windows.entry((is_object_lookup, ip)).or_insert(RateWindow {
+            start: now,
+            count: 0,
+        });
+        if now.duration_since(window.start) >= self.window {
+            window.start = now;
+            window.count = 0;
+        }
+        if window.count >= budget {
+            let retry_after = self
+                .window
+                .saturating_sub(now.duration_since(window.start))
+                .as_secs()
+                .max(1);
+            return Err(retry_after);
+        }
+        window.count += 1;
+        Ok(())
+    }
+}
+
+/// Best-effort client identity for rate limiting. Behind the cloud edge
+/// (`CIPHERVAULT_TRUST_XFF=1`) the rightmost X-Forwarded-For entry is the
+/// address our own proxy appended — entries left of it are
+/// client-controlled. Direct `--serve` ignores XFF entirely (any client can
+/// spoof it) and keys on the TCP peer. `None` (fail open) only when neither
+/// source exists, which is just unit tests without connect info.
+fn rate_limit_client_ip(
+    request: &axum::extract::Request,
+    trust_xff: bool,
+) -> Option<std::net::IpAddr> {
+    if trust_xff {
+        if let Some(forwarded) = request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+        {
+            if let Some(ip) = forwarded
+                .rsplit(',')
+                .next()
+                .and_then(|part| part.trim().parse::<std::net::IpAddr>().ok())
+            {
+                return Some(ip);
+            }
+        }
+    }
+    request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip())
+}
+
+async fn public_rate_limit(
+    axum::extract::State(limiter): axum::extract::State<RateLimiter>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let is_object_lookup = request.uri().path().starts_with("/api/explorer/object/");
+    let limited = rate_limit_client_ip(&request, limiter.trust_xff)
+        .and_then(|ip| limiter.check(ip, is_object_lookup).err());
+    if let Some(retry_after) = limited {
+        let retry_after = axum::http::HeaderValue::from_str(&retry_after.to_string())
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("60"));
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, retry_after)],
+            "rate limit exceeded for this client; retry later",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 pub(crate) fn public_ui_router() -> axum::Router {
+    public_ui_router_with_limiter(RateLimiter::production())
+}
+
+/// Test seam: identical public routes with an explicit limiter.
+pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Router {
     use axum::routing::get;
 
     ui_shell_router()
@@ -398,6 +551,11 @@ pub(crate) fn public_ui_router() -> axum::Router {
             get(api_explorer_object_handler),
         )
         .fallback(api_public_fallback_handler)
+        // Innermost so 429s still pass through the hardening headers below.
+        .layer(axum::middleware::from_fn_with_state(
+            limiter,
+            public_rate_limit,
+        ))
         .layer(axum::middleware::from_fn(public_api_headers))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             UI_REQUEST_BODY_LIMIT_BYTES,
@@ -448,9 +606,40 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            axum::serve(listener, public_ui_router()).await.unwrap();
+            axum::serve(
+                listener,
+                public_ui_router().into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
         (server, format!("http://{}", address))
+    }
+
+    async fn start_public_test_server_with_limiter(
+        limiter: RateLimiter,
+    ) -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                public_ui_router_with_limiter(limiter)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (server, format!("http://{}", address))
+    }
+
+    fn test_limiter(object_budget: u32, general_budget: u32, trust_xff: bool) -> RateLimiter {
+        RateLimiter::new(
+            object_budget,
+            general_budget,
+            std::time::Duration::from_secs(60),
+            trust_xff,
+        )
     }
 
     /// Serializes tests that share process-global dashboard state: the
@@ -964,5 +1153,213 @@ mod tests {
 
         server.abort();
         let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn public_rate_limit_trips_429_with_retry_after() {
+        let (server, base_url) =
+            start_public_test_server_with_limiter(test_limiter(1000, 2, true)).await;
+        let client = reqwest::Client::new();
+        for _ in 0..2 {
+            let ok = client
+                .get(format!("{base_url}/api/context"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+        }
+        let limited = client
+            .get(format!("{base_url}/api/context"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = limited
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        let seconds: u64 = retry_after.parse().unwrap();
+        assert!((1..=60).contains(&seconds));
+        // The rejection still carries the public hardening headers.
+        assert_eq!(
+            limited
+                .headers()
+                .get(axum::http::header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff"),
+        );
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn public_rate_limit_object_path_uses_object_budget() {
+        // An invalid CID 400s without touching operators, so this proves
+        // path classification with no fleet contact: object budget 1.
+        let (server, base_url) =
+            start_public_test_server_with_limiter(test_limiter(1, 1000, true)).await;
+        let client = reqwest::Client::new();
+        let first = client
+            .get(format!("{base_url}/api/explorer/object/not-a-cid"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::BAD_REQUEST);
+        let limited = client
+            .get(format!("{base_url}/api/explorer/object/not-a-cid"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        // The general budget is untouched: context still answers.
+        let context = client
+            .get(format!("{base_url}/api/context"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(context.status(), StatusCode::OK);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn public_rate_limit_is_per_client() {
+        let (server, base_url) =
+            start_public_test_server_with_limiter(test_limiter(1000, 1, true)).await;
+        let client = reqwest::Client::new();
+        let first = client
+            .get(format!("{base_url}/api/context"))
+            .header("x-forwarded-for", "203.0.113.7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let tripped = client
+            .get(format!("{base_url}/api/context"))
+            .header("x-forwarded-for", "203.0.113.7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tripped.status(), StatusCode::TOO_MANY_REQUESTS);
+        let other = client
+            .get(format!("{base_url}/api/context"))
+            .header("x-forwarded-for", "198.51.100.9")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(other.status(), StatusCode::OK);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn public_rate_limit_trusts_rightmost_xff_entry() {
+        // Through the edge proxy Caddy appends the real peer rightmost, so
+        // spoofed entries left of it must not dodge the budget.
+        let (server, base_url) =
+            start_public_test_server_with_limiter(test_limiter(1000, 1, true)).await;
+        let client = reqwest::Client::new();
+        let first = client
+            .get(format!("{base_url}/api/context"))
+            .header("x-forwarded-for", "203.0.113.7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let spoofed = client
+            .get(format!("{base_url}/api/context"))
+            .header("x-forwarded-for", "192.0.2.1, 203.0.113.7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(spoofed.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn public_rate_limit_ignores_xff_when_direct() {
+        // Direct `--serve` keys on the TCP peer: rotating XFF values from
+        // the same peer share one bucket and still trip.
+        let (server, base_url) =
+            start_public_test_server_with_limiter(test_limiter(1000, 2, false)).await;
+        let client = reqwest::Client::new();
+        for (index, spoof) in ["10.1.0.1", "10.2.0.2", "10.3.0.3"].into_iter().enumerate() {
+            let response = client
+                .get(format!("{base_url}/api/context"))
+                .header("x-forwarded-for", spoof)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if index < 2 {
+                    StatusCode::OK
+                } else {
+                    StatusCode::TOO_MANY_REQUESTS
+                },
+            );
+        }
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_window_resets() {
+        let limiter = RateLimiter::new(1000, 1, std::time::Duration::from_millis(50), true);
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(limiter.check(ip, false).is_ok());
+        assert!(limiter.check(ip, false).is_err());
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert!(limiter.check(ip, false).is_ok());
+    }
+
+    fn test_request(
+        xff: Option<&str>,
+        peer: Option<std::net::SocketAddr>,
+    ) -> axum::extract::Request {
+        let mut builder = axum::extract::Request::builder().uri("http://localhost/api/context");
+        if let Some(xff) = xff {
+            builder = builder.header("x-forwarded-for", xff);
+        }
+        let mut request = builder.body(axum::body::Body::empty()).unwrap();
+        if let Some(peer) = peer {
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(peer));
+        }
+        request
+    }
+
+    #[test]
+    fn rate_limit_client_ip_selection() {
+        let peer: std::net::SocketAddr = "192.0.2.44:1234".parse().unwrap();
+        // Trusted proxy: rightmost entry wins, even with spoofed prefixes.
+        let request = test_request(Some("203.0.113.7, 198.51.100.9"), Some(peer));
+        assert_eq!(
+            rate_limit_client_ip(&request, true),
+            Some("198.51.100.9".parse().unwrap()),
+        );
+        // Trusted proxy with garbage XFF falls back to the peer.
+        let request = test_request(Some("not-an-ip"), Some(peer));
+        assert_eq!(
+            rate_limit_client_ip(&request, true),
+            Some("192.0.2.44".parse().unwrap()),
+        );
+        // Direct serve ignores XFF entirely.
+        let request = test_request(Some("203.0.113.7"), Some(peer));
+        assert_eq!(
+            rate_limit_client_ip(&request, false),
+            Some("192.0.2.44".parse().unwrap()),
+        );
+        // Nothing known: fail open.
+        let request = test_request(None, None);
+        assert_eq!(rate_limit_client_ip(&request, true), None);
     }
 }

@@ -232,7 +232,7 @@ routes pass through caller `Cookie`/`Authorization` headers, see below).
   checked, required: 3, satisfied }, replicas, note }`. Replicas are
   PoS-presence probes (8 s timeout, anonymous token); object bytes are
   never fetched. Malformed CID: `400 { status: "error", code:
-  "INVALID_CID", error }`; no operators: `503 NO_OPERATORS_CONFIGURED`.
+  "INVALID_CID", error }`; no operators: `503 NO_OPERATORS_CONFIGURED`; over budget: `429` + `Retry-After` (30/min per client on this route, 600/min elsewhere).
 
 ## Hosted-account routes (both modes unless noted)
 
