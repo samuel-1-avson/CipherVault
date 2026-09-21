@@ -2928,11 +2928,14 @@ function truncateHash(str, head = 8, tail = 6) {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  // Operator-reported sizes are untrusted: coerce, clamp, never render NaN/undefined.
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return '--';
+  if (n === 0) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KiB', 'MiB', 'GiB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB'];
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(k)), sizes.length - 1);
+  return parseFloat((n / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
 function formatTimestamp(unixSec) {
@@ -2958,7 +2961,8 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function showToast(message, type = 'info') {

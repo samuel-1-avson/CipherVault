@@ -245,6 +245,12 @@ non-empty bodies), returns the upstream status verbatim, passes through
 `404 ACCOUNT_SERVICE_NOT_CONFIGURED`; unreachable/bad response:
 `502 ACCOUNT_SERVICE_UNAVAILABLE` / `ACCOUNT_SERVICE_RESPONSE_INVALID`.
 
+> Design note: these proxy routes are intentionally mounted on the **public**
+> router as well as the private one — hosted account UX (register, login,
+> TOTP/WebAuthn ceremonies, invitations) must work from the public explorer.
+> Request bodies are capped at 2 MiB on both routers and oversized bodies
+> are rejected with `413` before any upstream contact.
+
 | Dashboard route | Upstream | Notes |
 |---|---|---|
 | `GET /api/account/status` | local | `current_account_context()` from the local `AccountStore` (no proxy). |

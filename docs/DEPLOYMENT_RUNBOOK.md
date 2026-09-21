@@ -168,6 +168,21 @@ If deploying behind an edge CDN (Cloudflare or Google Cloud Armor):
 - `POST /v1/objects/*`: 120 req/min per authenticated caller.
 - `GET /v1/objects/*`: 300 req/min per IP.
 
+### Public explorer edge limits (`deploy/gcp/Caddyfile.web.gcp`)
+The explorer site carries its own Caddy `rate_limit` zones (needs Caddy >= 2.8):
+- `GET /api/explorer/object/*`: 30 req/min per IP — each lookup fans out to
+  every operator, so this zone stops the explorer being used as an amplifier.
+- Everything else on the site: 600 req/min per IP (covers the 30 s UI polling
+  plus bursts).
+
+### Explorer access-log hygiene
+`GET /api/explorer/object/:cid` carries the 64-hex content ID in the URL path,
+so reverse-proxy access logs record every CID a visitor looks up. Presence
+still requires prior knowledge of the CID (the endpoint only answers "which
+operators hold it"), so impact is minimal — but treat explorer access logs as
+CID-bearing: keep rotation tight and redact `:cid` path segments before
+shipping logs anywhere operators or visitors cannot already see.
+
 ---
 
 ## 7. Monitoring, Health Probing & Maintenance

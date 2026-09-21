@@ -49,17 +49,49 @@
         }
     }
 
-    reverse_proxy 127.0.0.1:8080 {
-        header_up Host {host}
-        header_up X-Real-IP {remote}
-        header_up X-Forwarded-For {remote}
-        header_up X-Forwarded-Proto {scheme}
+    # F1: the explorer object endpoint fans out to every operator per
+    # request — bound it per client IP so the public explorer cannot be
+    # used as an amplifier. (Needs Caddy >= 2.8 for rate_limit.)
+    handle /api/explorer/object/* {
+        rate_limit {
+            zone explorer_object {
+                key    {remote_host}
+                events 30
+                window 1m
+            }
+        }
+        reverse_proxy 127.0.0.1:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote}
+            header_up X-Forwarded-For {remote}
+            header_up X-Forwarded-Proto {scheme}
 
-        # Crucial: disable response buffering for real-time SSE telemetry
-        flush_interval -1
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
 
-        transport http {
-            keepalive 60s
+    handle {
+        rate_limit {
+            zone explorer_general {
+                key    {remote_host}
+                events 600
+                window 1m
+            }
+        }
+        reverse_proxy 127.0.0.1:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote}
+            header_up X-Forwarded-For {remote}
+            header_up X-Forwarded-Proto {scheme}
+
+            # Crucial: disable response buffering for real-time SSE telemetry
+            flush_interval -1
+
+            transport http {
+                keepalive 60s
+            }
         }
     }
 }

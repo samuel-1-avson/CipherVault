@@ -29,6 +29,82 @@ use crate::{
 /// already knows the CID; object bytes are never fetched or displayed.
 pub(crate) const EXPLORER_ANON_TOKEN: &str = "recovery_anonymous";
 pub(crate) const EXPLORER_PROBE_TIMEOUT_SECS: u64 = 8;
+/// Explorer object-probe cache TTL: presence results are safe to reuse
+/// briefly, and every uncached lookup fans out to ALL operators — without
+/// a cache a single client could loop CIDs and turn the explorer into an
+/// amplifier against the operator fleet.
+const EXPLORER_PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
+const EXPLORER_PROBE_CACHE_MAX: usize = 512;
+/// Bound on concurrent outbound PoS probes across all object lookups.
+const EXPLORER_PROBE_MAX_CONCURRENT: usize = 16;
+
+struct ExplorerProbeCache {
+    entries: std::collections::HashMap<[u8; 32], (Instant, Vec<serde_json::Value>)>,
+}
+
+impl ExplorerProbeCache {
+    fn get(&self, cid: &[u8; 32]) -> Option<Vec<serde_json::Value>> {
+        self.entries
+            .get(cid)
+            .filter(|(probed_at, _)| probed_at.elapsed() < EXPLORER_PROBE_CACHE_TTL)
+            .map(|(_, replicas)| replicas.clone())
+    }
+
+    fn insert(&mut self, cid: [u8; 32], replicas: Vec<serde_json::Value>) {
+        self.entries
+            .retain(|_, (probed_at, _)| probed_at.elapsed() < EXPLORER_PROBE_CACHE_TTL);
+        if self.entries.len() >= EXPLORER_PROBE_CACHE_MAX {
+            // Full of fresh entries (hostile CID enumeration): drop
+            // everything rather than growing without bound.
+            self.entries.clear();
+        }
+        self.entries.insert(cid, (Instant::now(), replicas));
+    }
+
+    #[cfg(test)]
+    fn insert_at(&mut self, cid: [u8; 32], replicas: Vec<serde_json::Value>, probed_at: Instant) {
+        self.entries.insert(cid, (probed_at, replicas));
+    }
+}
+
+fn explorer_probe_cache() -> &'static tokio::sync::Mutex<ExplorerProbeCache> {
+    static CACHE: OnceLock<tokio::sync::Mutex<ExplorerProbeCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        tokio::sync::Mutex::new(ExplorerProbeCache {
+            entries: std::collections::HashMap::new(),
+        })
+    })
+}
+
+fn explorer_probe_permits() -> &'static tokio::sync::Semaphore {
+    static PERMITS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    PERMITS.get_or_init(|| tokio::sync::Semaphore::new(EXPLORER_PROBE_MAX_CONCURRENT))
+}
+
+async fn probe_explorer_object_cached(
+    cid: [u8; 32],
+    endpoints: Vec<String>,
+) -> Vec<serde_json::Value> {
+    {
+        let cache = explorer_probe_cache().lock().await;
+        if let Some(replicas) = cache.get(&cid) {
+            return replicas;
+        }
+    }
+    // Permits serialize the fan-out across simultaneous lookups instead of
+    // multiplying it: at most EXPLORER_PROBE_MAX_CONCURRENT outbound PoS
+    // probes are ever in flight, however many clients ask at once.
+    let probes = endpoints.into_iter().map(|endpoint| async move {
+        let _permit = explorer_probe_permits().acquire().await;
+        probe_explorer_replica(endpoint, cid).await
+    });
+    let replicas = join_all(probes).await;
+    explorer_probe_cache()
+        .lock()
+        .await
+        .insert(cid, replicas.clone());
+    replicas
+}
 
 pub(crate) fn explorer_error_response(
     status: axum::http::StatusCode,
@@ -124,10 +200,7 @@ pub(crate) async fn api_explorer_object_handler(
             "Explorer has no operator endpoints configured".to_string(),
         );
     }
-    let probes = endpoints
-        .into_iter()
-        .map(|endpoint| probe_explorer_replica(endpoint, cid));
-    let replicas = join_all(probes).await;
+    let replicas = probe_explorer_object_cached(cid, endpoints).await;
     let present = replicas
         .iter()
         .filter(|replica| {
@@ -151,7 +224,7 @@ pub(crate) async fn api_explorer_object_handler(
     .into_response()
 }
 
-pub(crate) async fn api_explorer_overview_handler() -> axum::Json<serde_json::Value> {
+pub(crate) async fn api_explorer_overview_handler() -> impl axum::response::IntoResponse {
     let telemetry = public_operator_telemetry().await;
     let total = telemetry.operators.len();
     let reachable = telemetry
@@ -170,17 +243,20 @@ pub(crate) async fn api_explorer_overview_handler() -> axum::Json<serde_json::Va
         .first()
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    axum::Json(serde_json::json!({
-        "observed_at_utc": telemetry.observed_at.to_rfc3339(),
-        "operators": {
-            "total": total,
-            "reachable": reachable,
-        },
-        "anchors": {
-            "count": checkpoints.len(),
-            "head": head,
-        },
-    }))
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=30")],
+        axum::Json(serde_json::json!({
+            "observed_at_utc": telemetry.observed_at.to_rfc3339(),
+            "operators": {
+                "total": total,
+                "reachable": reachable,
+            },
+            "anchors": {
+                "count": checkpoints.len(),
+                "head": head,
+            },
+        })),
+    )
 }
 
 /// Returns true when the feed publisher key matches the independently pinned
@@ -824,6 +900,51 @@ mod tests {
     use super::*;
     use crate::{build_public_checkpoint_feed, PublicCheckpointFeedEntry};
     use chrono::Utc;
+
+    #[test]
+    fn explorer_probe_cache_serves_fresh_and_drops_expired() {
+        let mut cache = ExplorerProbeCache {
+            entries: std::collections::HashMap::new(),
+        };
+        let cid = [7u8; 32];
+        let replicas = vec![serde_json::json!({"status": "present"})];
+        assert!(cache.get(&cid).is_none());
+        cache.insert(cid, replicas.clone());
+        assert_eq!(cache.get(&cid), Some(replicas.clone()));
+        cache.insert_at(
+            cid,
+            replicas,
+            Instant::now() - EXPLORER_PROBE_CACHE_TTL - Duration::from_secs(1),
+        );
+        assert!(cache.get(&cid).is_none());
+    }
+
+    #[test]
+    fn explorer_probe_concurrency_is_bounded() {
+        assert_eq!(
+            explorer_probe_permits().available_permits(),
+            EXPLORER_PROBE_MAX_CONCURRENT
+        );
+    }
+
+    #[tokio::test]
+    async fn explorer_object_endpoint_serves_cached_probes_without_network() {
+        // Pre-populate the shared cache with a marker CID, then prove the
+        // endpoint serves it: no operator contact, fully deterministic.
+        let cid = rand::random::<[u8; 32]>();
+        let marker = format!("test-cache-marker-{}", hex::encode(cid));
+        explorer_probe_cache().lock().await.insert(
+            cid,
+            vec![serde_json::json!({"status": "present", "operator_id": marker})],
+        );
+        let response = api_explorer_object_handler(axum::extract::Path(hex::encode(cid))).await;
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["cid"], hex::encode(cid));
+        assert_eq!(json["replicas"][0]["operator_id"], marker);
+    }
 
     #[test]
     fn explorer_cid_parser_normalizes_and_validates() {

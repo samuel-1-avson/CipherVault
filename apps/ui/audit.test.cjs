@@ -581,6 +581,17 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(explorerHtml.includes('QUORUM 3/3'), 'Explorer must render the quorum badge');
   assert(explorerHtml.includes('op_8201'), 'Explorer must render replica operator ids');
 
+  // =========================================================================
+  // 18. Output-Encoding Edge Cases (escapeHtml quotes, formatBytes clamp)
+  // =========================================================================
+  assert.equal(vm.runInContext(`escapeHtml("a'b\\"c<d>e&f")`, context), 'a&#39;b&quot;c&lt;d&gt;e&amp;f');
+  assert.equal(vm.runInContext(`formatBytes(-5)`, context), '--');
+  assert.equal(vm.runInContext(`formatBytes(NaN)`, context), '--');
+  assert.equal(vm.runInContext(`formatBytes(undefined)`, context), '--');
+  assert.equal(vm.runInContext(`formatBytes(0)`, context), '0 B');
+  assert.equal(vm.runInContext(`formatBytes(1024)`, context), '1 KiB');
+  assert.equal(vm.runInContext(`formatBytes('2048')`, context), '2 KiB');
+  assert.equal(vm.runInContext(`formatBytes(5 * 1024 ** 4)`, context), '5 TiB');
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

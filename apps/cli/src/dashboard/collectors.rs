@@ -618,7 +618,7 @@ pub(crate) async fn public_operator_telemetry() -> PublicOperatorTelemetry {
     snapshot
 }
 
-pub(crate) async fn api_public_operators_handler() -> axum::Json<serde_json::Value> {
+pub(crate) async fn api_public_operators_handler() -> impl axum::response::IntoResponse {
     let telemetry = public_operator_telemetry().await;
     let observed_at = telemetry.observed_at.to_rfc3339();
     let operators = telemetry
@@ -634,10 +634,13 @@ pub(crate) async fn api_public_operators_handler() -> axum::Json<serde_json::Val
             operator
         })
         .collect::<Vec<_>>();
-    axum::Json(serde_json::json!(operators))
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=30")],
+        axum::Json(serde_json::json!(operators)),
+    )
 }
 
-pub(crate) async fn api_public_operators_history_handler() -> axum::Json<serde_json::Value> {
+pub(crate) async fn api_public_operators_history_handler() -> impl axum::response::IntoResponse {
     let samples = public_operator_history_path()
         .and_then(|path| fs::read_to_string(path).ok())
         .map(|contents| {
@@ -655,18 +658,24 @@ pub(crate) async fn api_public_operators_history_handler() -> axum::Json<serde_j
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    axum::Json(serde_json::json!({
-        "samples": samples,
-        "sample_limit": PUBLIC_OPERATOR_HISTORY_MAX,
-    }))
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=30")],
+        axum::Json(serde_json::json!({
+            "samples": samples,
+            "sample_limit": PUBLIC_OPERATOR_HISTORY_MAX,
+        })),
+    )
 }
 
-pub(crate) async fn api_public_operators_jobs_handler() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({
-        "jobs": load_public_operator_jobs(),
-        "job_limit": PUBLIC_OPERATOR_JOB_HISTORY_MAX,
-        "message": "Collector job history is observational telemetry; it does not establish storage durability or quorum.",
-    }))
+pub(crate) async fn api_public_operators_jobs_handler() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=30")],
+        axum::Json(serde_json::json!({
+            "jobs": load_public_operator_jobs(),
+            "job_limit": PUBLIC_OPERATOR_JOB_HISTORY_MAX,
+            "message": "Collector job history is observational telemetry; it does not establish storage durability or quorum.",
+        })),
+    )
 }
 
 #[cfg(test)]

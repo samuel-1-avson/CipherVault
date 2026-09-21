@@ -32,11 +32,40 @@ use crate::{
     private_ui_request_guard, UI_APP_JS, UI_INDEX_HTML, UI_STYLES_CSS,
 };
 
+/// Content-Security-Policy for the UI shell document. The bundle is a
+/// separate same-origin file with no inline scripts, styles, or event
+/// handlers, and the app never injects script/style/iframe elements or
+/// uses string-compiled timers — so a strict same-origin policy holds.
+const UI_SHELL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+/// Cap on buffered request bodies for every dashboard route, private and
+/// public. Axum 0.7 defaults buffering extractors to 2 MiB, which already
+/// covers the account proxy's raw-`Bytes` handlers — this layer pins that
+/// behavior explicitly so it cannot silently change (or be disabled) later.
+/// Every dashboard POST is small control JSON, so nothing legitimate comes
+/// close; oversized bodies fail with 413 before any upstream contact.
+const UI_REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+
 pub(crate) fn ui_shell_router() -> axum::Router {
-    use axum::{http::header, response::Html, routing::get, Router};
+    use axum::{
+        http::header,
+        response::{Html, IntoResponse},
+        routing::get,
+        Router,
+    };
 
     Router::new()
-        .route("/", get(|| async { Html(UI_INDEX_HTML) }))
+        .route(
+            "/",
+            get(|| async {
+                let mut response = Html(UI_INDEX_HTML).into_response();
+                response.headers_mut().insert(
+                    header::CONTENT_SECURITY_POLICY,
+                    axum::http::HeaderValue::from_static(UI_SHELL_CSP),
+                );
+                response
+            }),
+        )
         .route(
             "/styles.css",
             get(|| async { ([(header::CONTENT_TYPE, "text/css")], UI_STYLES_CSS) }),
@@ -232,6 +261,23 @@ pub(crate) fn private_ui_router() -> axum::Router {
         )
         .fallback(api_private_fallback_handler)
         .layer(axum::middleware::from_fn(private_ui_request_guard))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            UI_REQUEST_BODY_LIMIT_BYTES,
+        ))
+}
+
+/// Hardening headers for every public response: MIME-sniffing off.
+/// (Caching is per-endpoint: telemetry opts into `public, max-age=30`.)
+async fn public_api_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 pub(crate) fn public_ui_router() -> axum::Router {
@@ -352,6 +398,10 @@ pub(crate) fn public_ui_router() -> axum::Router {
             get(api_explorer_object_handler),
         )
         .fallback(api_public_fallback_handler)
+        .layer(axum::middleware::from_fn(public_api_headers))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            UI_REQUEST_BODY_LIMIT_BYTES,
+        ))
 }
 
 pub(crate) fn ui_router(mode: UiServerMode) -> axum::Router {
@@ -679,6 +729,131 @@ mod tests {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "for {uri}");
             let body: serde_json::Value = response.json().await.unwrap();
             assert_eq!(body["code"], "INVALID_ACCOUNT_ID");
+        }
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn public_responses_carry_hardening_headers_and_shell_has_csp() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+
+        let shell = client.get(format!("{base_url}/")).send().await.unwrap();
+        assert_eq!(shell.status(), StatusCode::OK);
+        let csp = shell
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("script-src 'self'") && csp.contains("frame-ancestors 'none'"),
+            "unexpected shell CSP: {csp}"
+        );
+        assert_eq!(
+            shell.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+
+        for path in ["/api/operators", "/api/explorer/overview"] {
+            let telemetry = client
+                .get(format!("{base_url}{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(telemetry.status(), StatusCode::OK);
+            assert_eq!(
+                telemetry.headers().get("x-content-type-options").unwrap(),
+                "nosniff",
+                "{path} must disable sniffing"
+            );
+            assert_eq!(
+                telemetry.headers().get("cache-control").unwrap(),
+                "public, max-age=30",
+                "{path} must opt into shared caching"
+            );
+        }
+
+        // Non-telemetry public endpoints: sniffing off, no shared caching.
+        let fleet = client
+            .get(format!("{base_url}/api/fleet"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            fleet.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+        assert!(fleet.headers().get("cache-control").is_none());
+
+        let missing = client
+            .get(format!("{base_url}/api/nope"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            missing.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn account_proxy_rejects_oversized_bodies_before_upstream() {
+        struct EndpointGuard {
+            prior: Option<std::ffi::OsString>,
+        }
+
+        impl EndpointGuard {
+            fn point_at_closed_port() -> Self {
+                let prior = std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT");
+                std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", "http://127.0.0.1:9");
+                Self { prior }
+            }
+        }
+
+        impl Drop for EndpointGuard {
+            fn drop(&mut self) {
+                match self.prior.take() {
+                    Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", value),
+                    None => std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT"),
+                }
+            }
+        }
+
+        let _serialized = serialized_router_test().await;
+        let _endpoint = EndpointGuard::point_at_closed_port();
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+
+        // Small body reaches the (unreachable) upstream: 502 proves the
+        // proxy path is exercised, so the 413 below is meaningful.
+        let small = client
+            .post(format!("{base_url}/api/account/register"))
+            .json(&serde_json::json!({"public_key_hex": "ab"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(small.status(), StatusCode::BAD_GATEWAY);
+
+        // 3 MiB exceeds the dashboard cap: rejected while buffering,
+        // before any upstream contact. The server may answer 413 mid-upload
+        // (client sees the status) or hang up first (client sees a send
+        // error, with no response to assert on); both prove the limit
+        // engaged. What must NOT happen is a 502, which would mean the body
+        // reached the upstream — and the 502 control above proves the server
+        // is alive and proxying, so a hangup here cannot mask a dead server.
+        if let Ok(response) = client
+            .post(format!("{base_url}/api/account/register"))
+            .body(vec![b'x'; 3 * 1024 * 1024])
+            .send()
+            .await
+        {
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         }
 
         server.abort();

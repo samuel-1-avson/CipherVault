@@ -165,3 +165,22 @@ assert.match(
 );
 
 console.log('Dashboard container deployment contract checks passed.');
+
+// F1: the explorer object endpoint fans out to every operator per request,
+// so the public edge must bound it per client before traffic reaches the app.
+const webCaddyfile = read('deploy', 'gcp', 'Caddyfile.web.gcp');
+assert.match(
+  webCaddyfile,
+  /handle \/api\/explorer\/object\/\*/,
+  'the public edge must give the explorer object API its own rate-limited route',
+);
+assert.match(
+  webCaddyfile,
+  /zone explorer_object[\s\S]*events 30[\s\S]*window 1m/,
+  'the explorer object zone must stay at its reviewed budget',
+);
+assert.match(
+  webCaddyfile,
+  /zone explorer_general/,
+  'the public edge must rate-limit general explorer traffic',
+);
