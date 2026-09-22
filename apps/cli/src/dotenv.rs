@@ -11,6 +11,9 @@ pub fn parse_dotenv_bytes(bytes: &[u8]) -> Result<Vec<(String, String)>, String>
         Ok(t) => t,
         Err(e) => return Err(format!("Invalid UTF-8 in secret file: {}", e)),
     };
+    // Windows editors (Notepad, Out-File -Encoding utf8) prefix a BOM that
+    // would otherwise poison the first variable name.
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
 
     let mut result = Vec::new();
 
@@ -138,6 +141,17 @@ pub fn zeroize_env_pairs(pairs: &mut [(String, String)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_dotenv_strips_utf8_bom() {
+        let mut input = vec![0xEF, 0xBB, 0xBF];
+        input.extend_from_slice(b"STRIPE_KEY=sk_test_456\n");
+        let parsed = parse_dotenv_bytes(&input).unwrap();
+        assert_eq!(
+            parsed,
+            vec![("STRIPE_KEY".to_string(), "sk_test_456".to_string())]
+        );
+    }
 
     #[test]
     fn test_parse_dotenv_standard_and_export() {
