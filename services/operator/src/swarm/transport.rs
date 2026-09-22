@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use ciphervault_storage::transport::BoxFuture;
 use ciphervault_storage::types::{
-    ChallengeRequest, ChallengeResponse, LeaseReceipt, OperatorInfo, PeerDescriptor,
-    PendingApprovalChallenge, ProofOfStorageReceipt, SessionRequest, SessionResponse,
+    ChallengeRequest, ChallengeResponse, LeaseListResponse, LeaseReceipt, OperatorInfo,
+    PeerDescriptor, PendingApprovalChallenge, ProofOfStorageReceipt, SessionRequest,
+    SessionResponse,
 };
 use ciphervault_storage::{OperatorTransport, StorageError};
 use libp2p::{Multiaddr, PeerId};
@@ -330,6 +331,25 @@ impl OperatorTransport for Libp2pTransport {
                     Err(StorageError::ServerError { status, message })
                 }
                 _ => Err(Self::unexpected("renew_lease")),
+            }
+        })
+    }
+
+    fn list_leases<'a>(
+        &'a self,
+        token: &'a str,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<LeaseListResponse, StorageError>> {
+        Box::pin(async move {
+            let body = OperatorRpcBody::ListLeases { limit };
+            match self.rpc(self.scoped_auth(token), body).await? {
+                OperatorRpcResponse::Leases { leases, total } => {
+                    Ok(LeaseListResponse { leases, total })
+                }
+                OperatorRpcResponse::Err { status, message } => {
+                    Err(StorageError::ServerError { status, message })
+                }
+                _ => Err(Self::unexpected("list_leases")),
             }
         })
     }

@@ -161,7 +161,10 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             "/v1/objects/:cid/challenge",
             post(handlers::post_object_challenge),
         )
-        .route("/v1/leases", post(handlers::post_lease))
+        .route(
+            "/v1/leases",
+            post(handlers::post_lease).get(handlers::list_leases),
+        )
         .route("/v1/leases/:id/renew", post(handlers::post_renew_lease))
         .route(
             "/v1/recovery/:locator/records",

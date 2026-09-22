@@ -1,5 +1,5 @@
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -25,7 +25,7 @@ pub(crate) fn extract_token(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
 }
 
-fn extract_vault_id(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn extract_vault_id(headers: &HeaderMap) -> Option<&str> {
     headers.get("X-CipherVault-Id")?.to_str().ok()
 }
 
@@ -465,7 +465,71 @@ pub async fn post_lease(
             voucher.as_ref(),
         )
         .map_err(storage_error_response)?;
+    if let Some(vault_id_hex) = extract_vault_id(&headers) {
+        if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex) {
+            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
+        }
+    }
     Ok(Json(receipt))
+}
+
+#[derive(Deserialize)]
+pub struct ListLeasesQuery {
+    limit: Option<String>,
+}
+
+/// Operator kill-switch for lease listing (abuse bounds): when
+/// `CIPHERVAULT_DISABLE_LEASE_LIST` is 1/true/yes, both the HTTP
+/// `GET /v1/leases` handler and the P2P `ListLeases` RPC fail closed
+/// with 403 before touching auth, so a disabled endpoint costs no
+/// session or crypto work under flood.
+pub(crate) fn lease_list_disabled() -> bool {
+    parse_disable_flag(&std::env::var("CIPHERVAULT_DISABLE_LEASE_LIST").unwrap_or_default())
+}
+
+fn parse_disable_flag(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
+/// Lists the calling vault's leases. Strict session auth (no anonymous
+/// bypass): the vault comes from the validated session headers, never from
+/// a caller-supplied filter, so vaults cannot enumerate each other.
+pub async fn list_leases(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListLeasesQuery>,
+) -> Result<Json<ciphervault_storage::types::LeaseListResponse>, (StatusCode, String)> {
+    if lease_list_disabled() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Lease listing is disabled on this operator".to_string(),
+        ));
+    }
+    require_session(&state, &headers, true)?;
+    let vault_id_hex = extract_vault_id(&headers).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Missing X-CipherVault-Id header".to_string(),
+    ))?;
+    let limit: usize = match query.limit.as_deref() {
+        None => 100,
+        Some(raw) => raw.parse().unwrap_or(0),
+    };
+    if limit == 0 || limit > 1000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "limit must be between 1 and 1000".to_string(),
+        ));
+    }
+    let mut leases = state.list_leases_for_vault(vault_id_hex);
+    let total = leases.len();
+    leases.truncate(limit);
+    Ok(Json(ciphervault_storage::types::LeaseListResponse {
+        leases,
+        total,
+    }))
 }
 
 pub async fn post_renew_lease(
@@ -485,6 +549,11 @@ pub async fn post_renew_lease(
             voucher.as_ref(),
         )
         .map_err(storage_error_response)?;
+    if let Some(vault_id_hex) = extract_vault_id(&headers) {
+        if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex) {
+            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
+        }
+    }
     Ok(Json(receipt))
 }
 
@@ -863,6 +932,122 @@ mod tests {
         desc2.verify().expect("advertised descriptor verifies");
         std::env::remove_var("CIPHERVAULT_ADVERTISE_ENDPOINT");
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Highest-risk Unit 4 validation: `GET /v1/leases` never leaks
+    /// across vaults. Vault A's session sees only A's leases; the same
+    /// token under vault B's header, a missing token, and the anonymous
+    /// recovery token are all rejected; the kill-switch fails closed.
+    #[tokio::test]
+    async fn lease_list_is_session_scoped_per_vault() {
+        std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
+        std::env::remove_var("CIPHERVAULT_DISABLE_LEASE_LIST");
+        let dir = std::env::temp_dir().join(format!("cv-leaselistauth-{}", rand::random::<u128>()));
+        let state = Arc::new(OperatorState::new(
+            "lease-auth".into(),
+            dir.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        ));
+        let vault_a = "a".repeat(64);
+        let vault_b = "b".repeat(64);
+        let device_key = ciphervault_crypto::generate_signing_key();
+        let device_pk = hex::encode(device_key.verifying_key().as_bytes());
+        let (challenge_id, nonce_hex, _) = state.issue_challenge(&vault_a, &device_pk).unwrap();
+        let nonce = hex::decode(nonce_hex).unwrap();
+        let signature = ciphervault_crypto::signatures::sign_with_domain(
+            &device_key,
+            b"operator_challenge",
+            &nonce,
+        );
+        let token = state
+            .verify_and_create_session(&challenge_id, &device_pk, &hex::encode(signature))
+            .unwrap()
+            .unwrap();
+
+        let lease_a = state.create_lease(&"c".repeat(64), 100, 90).unwrap();
+        let lease_b = state.create_lease(&"d".repeat(64), 200, 30).unwrap();
+        state
+            .record_lease_owner(&lease_a.lease_id, &vault_a)
+            .unwrap();
+        state
+            .record_lease_owner(&lease_b.lease_id, &vault_b)
+            .unwrap();
+
+        let headers_for = |token: Option<&str>, vault: &str| {
+            let mut headers = HeaderMap::new();
+            if let Some(token) = token {
+                headers.insert(
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
+            }
+            headers.insert(
+                "X-CipherVault-Id",
+                axum::http::HeaderValue::from_str(vault).unwrap(),
+            );
+            headers
+        };
+        let query = || Query(ListLeasesQuery { limit: None });
+
+        // Happy path: vault A sees only its own lease.
+        let Json(listing) = list_leases(
+            State(state.clone()),
+            headers_for(Some(&token), &vault_a),
+            query(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listing.total, 1);
+        assert_eq!(listing.leases.len(), 1);
+        assert_eq!(listing.leases[0].lease_id, lease_a.lease_id);
+
+        // Cross-vault: A's token under B's header is rejected.
+        let err = list_leases(
+            State(state.clone()),
+            headers_for(Some(&token), &vault_b),
+            query(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        // Anonymous: missing token rejected.
+        let err = list_leases(State(state.clone()), headers_for(None, &vault_a), query())
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        // Anonymous: recovery bypass token rejected (strict session auth).
+        let err = list_leases(
+            State(state.clone()),
+            headers_for(Some("recovery_anonymous"), &vault_a),
+            query(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        // Kill-switch fails closed before auth.
+        std::env::set_var("CIPHERVAULT_DISABLE_LEASE_LIST", "true");
+        let err = list_leases(
+            State(state.clone()),
+            headers_for(Some(&token), &vault_a),
+            query(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        std::env::remove_var("CIPHERVAULT_DISABLE_LEASE_LIST");
+
+        assert!(parse_disable_flag("1"));
+        assert!(parse_disable_flag(" True "));
+        assert!(parse_disable_flag("YES"));
+        assert!(!parse_disable_flag(""));
+        assert!(!parse_disable_flag("false"));
+        assert!(!parse_disable_flag("0"));
+
+        std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1808,6 +1808,67 @@ impl OperatorState {
         self.persist_lease(receipt)
     }
 
+    /// Records which vault owns a lease in a `<id>.owner` sidecar. The
+    /// signed receipt itself is untouched, so legacy leases keep verifying.
+    pub fn record_lease_owner(&self, lease_id: &str, vault_id_hex: &str) -> Result<(), String> {
+        if lease_id.len() != 32 || hex::decode(lease_id).is_err() {
+            return Err("Invalid lease ID".into());
+        }
+        if vault_id_hex.len() != 64 || hex::decode(vault_id_hex).is_err() {
+            return Err("Invalid vault ID".into());
+        }
+        let path = self
+            .data_dir
+            .join("leases")
+            .join(format!("{}.owner", lease_id));
+        self.persist_atomic(&path, vault_id_hex.as_bytes())
+    }
+
+    /// Lists this vault's leases, soonest-expiring first. Legacy leases
+    /// without an owner sidecar, corrupt records, and signature failures
+    /// are skipped rather than failing the whole listing.
+    pub fn list_leases_for_vault(&self, vault_id_hex: &str) -> Vec<LeaseReceipt> {
+        let mut out = Vec::new();
+        let entries = match fs::read_dir(self.data_dir.join("leases")) {
+            Ok(entries) => entries,
+            Err(_) => return out,
+        };
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(lease_id) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if lease_id.len() != 32 || hex::decode(lease_id).is_err() {
+                continue;
+            }
+            let owner_path = self
+                .data_dir
+                .join("leases")
+                .join(format!("{lease_id}.owner"));
+            let owned_by_caller = fs::read_to_string(owner_path)
+                .map(|owner| owner.trim() == vault_id_hex)
+                .unwrap_or(false);
+            if !owned_by_caller {
+                continue;
+            }
+            let Ok(raw) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(receipt): Result<LeaseReceipt, _> = serde_json::from_slice(&raw) else {
+                continue;
+            };
+            if receipt
+                .verify(&self.signing_key.verifying_key().to_bytes())
+                .is_err()
+            {
+                continue;
+            }
+            out.push(receipt);
+        }
+        out.sort_by_key(|receipt| receipt.expires_at_utc);
+        out
+    }
+
     pub fn append_authorized_recovery_record(
         &self,
         locator_hex: &str,
@@ -2835,6 +2896,45 @@ mod tests {
         assert!(restarted.renew_lease(&"0".repeat(32), 30, 100).is_err());
         assert!(restarted.renew_lease(&receipt.lease_id, 30, 999).is_err());
         drop(restarted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_listing_is_vault_scoped_and_skips_legacy() {
+        let root = std::env::temp_dir().join(format!("cv-leaselist-{}", rand::random::<u128>()));
+        let key = ciphervault_crypto::generate_signing_key();
+        let state = OperatorState::new("test".into(), root.clone(), key);
+        let vault_a = "a".repeat(64);
+        let vault_b = "b".repeat(64);
+        let first = state.create_lease(&"c".repeat(64), 100, 90).unwrap();
+        let second = state.create_lease(&"d".repeat(64), 200, 30).unwrap();
+        let legacy = state.create_lease(&"e".repeat(64), 300, 30).unwrap();
+        state.record_lease_owner(&first.lease_id, &vault_a).unwrap();
+        state
+            .record_lease_owner(&second.lease_id, &vault_b)
+            .unwrap();
+        // No sidecar for `legacy`: it stays invisible to every vault.
+        let listed_a = state.list_leases_for_vault(&vault_a);
+        assert_eq!(listed_a.len(), 1);
+        assert_eq!(listed_a[0].lease_id, first.lease_id);
+        let listed_b = state.list_leases_for_vault(&vault_b);
+        assert_eq!(listed_b.len(), 1);
+        assert_eq!(listed_b[0].lease_id, second.lease_id);
+        assert!(listed_a.iter().all(|r| r.lease_id != legacy.lease_id));
+        assert!(state.list_leases_for_vault(&"f".repeat(64)).is_empty());
+        // Bad inputs never write.
+        assert!(state.record_lease_owner("../escape", &vault_a).is_err());
+        assert!(state.record_lease_owner(&first.lease_id, "short").is_err());
+        // Corrupt records are skipped, not fatal.
+        fs::write(
+            root.join("leases")
+                .join(format!("{}.json", second.lease_id)),
+            b"{not json",
+        )
+        .unwrap();
+        assert_eq!(state.list_leases_for_vault(&vault_b).len(), 0);
+        assert_eq!(state.list_leases_for_vault(&vault_a).len(), 1);
+        drop(state);
         fs::remove_dir_all(root).unwrap();
     }
 

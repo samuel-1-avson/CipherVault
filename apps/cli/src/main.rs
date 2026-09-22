@@ -50,7 +50,7 @@ Developer: vault & secrets:
   hook                 Manage Git pre-commit hooks and secret leak prevention
   audit                Audit ciphertext replica health across independent operators
   repair               Detect and repair degraded replicas across operators
-  lease                Create and renew storage leases on an operator
+  lease                Create, renew, and list storage leases on an operator
 
 Developer: run & automate:
   run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
@@ -356,7 +356,7 @@ enum Commands {
         replicas: Option<usize>,
     },
 
-    /// Create and renew storage leases on an operator
+    /// Create, renew, and list storage leases on an operator
     Lease {
         #[command(subcommand)]
         sub: LeaseSubcommand,
@@ -882,6 +882,19 @@ enum LeaseSubcommand {
         )]
         operator: Option<String>,
     },
+
+    /// List this vault's leases on one operator (merges them into the local receipt log)
+    List {
+        #[arg(long, default_value = "100", help = "Max leases to fetch (1-1000)")]
+        limit: u32,
+
+        #[arg(
+            short,
+            long,
+            help = "Target operator endpoint (default: first configured)"
+        )]
+        operator: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1352,6 +1365,7 @@ async fn run(cli: Cli) -> Result<()> {
                 bytes,
                 operator,
             } => cmd_lease_renew(lease_id, days, bytes, operator).await,
+            LeaseSubcommand::List { limit, operator } => cmd_lease_list(limit, operator).await,
         },
         Commands::Voucher { sub } => match sub {
             VoucherSubcommand::Issue {
@@ -1711,6 +1725,38 @@ async fn cmd_lease_renew(
     Ok(())
 }
 
+async fn cmd_lease_list(limit: u32, operator: Option<String>) -> Result<()> {
+    let endpoint = resolve_target_operator(operator)?;
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (_, device_sk, _, _) = store.get_device_state()?;
+    let client = OperatorClient::new(endpoint.clone());
+    let token = client
+        .authenticate(&vault_id, &device_sk)
+        .await
+        .context("device session authentication failed")?;
+    let listing = client
+        .list_leases(&token, limit)
+        .await
+        .context("lease list failed")?;
+    for receipt in &listing.leases {
+        store
+            .record_lease_receipt(
+                &receipt.lease_id,
+                &endpoint,
+                &receipt.closure_digest_hex,
+                receipt.term_days,
+                receipt.bytes,
+                receipt.issued_at_utc,
+                receipt.expires_at_utc,
+                &receipt.signature_hex,
+            )
+            .context("lease receipt log failed")?;
+    }
+    println!("{}", serde_json::to_string_pretty(&listing)?);
+    Ok(())
+}
+
 async fn cmd_voucher_issue(
     holder_pk: String,
     quota: u64,
@@ -1804,6 +1850,13 @@ mod ui_router_tests {
             cli.command,
             Some(Commands::Lease {
                 sub: LeaseSubcommand::Renew { days: 7, .. }
+            })
+        ));
+        let cli = Cli::try_parse_from(["ciphervault", "lease", "list", "--limit", "25"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Lease {
+                sub: LeaseSubcommand::List { limit: 25, .. }
             })
         ));
         let cli =

@@ -179,7 +179,15 @@ pub fn serve_operator_rpc(
                 *term_days,
                 request.auth.voucher.as_ref(),
             ) {
-                Ok(receipt) => OperatorRpcResponse::Lease(receipt),
+                Ok(receipt) => {
+                    if let Some(vault_id_hex) = handlers::extract_vault_id(&headers) {
+                        if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex)
+                        {
+                            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
+                        }
+                    }
+                    OperatorRpcResponse::Lease(receipt)
+                }
                 Err(e) => fail_storage(e),
             }
         }
@@ -198,9 +206,45 @@ pub fn serve_operator_rpc(
                 *byte_count,
                 request.auth.voucher.as_ref(),
             ) {
-                Ok(receipt) => OperatorRpcResponse::Lease(receipt),
+                Ok(receipt) => {
+                    if let Some(vault_id_hex) = handlers::extract_vault_id(&headers) {
+                        if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex)
+                        {
+                            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
+                        }
+                    }
+                    OperatorRpcResponse::Lease(receipt)
+                }
                 Err(e) => fail_storage(e),
             }
+        }
+        OperatorRpcBody::ListLeases { limit } => {
+            if handlers::lease_list_disabled() {
+                return OperatorRpcResponse::Err {
+                    status: 403,
+                    message: "Lease listing is disabled on this operator".to_string(),
+                };
+            }
+            if let Err(e) = handlers::require_session(state, &headers, true) {
+                return fail_auth(e);
+            }
+            let Some(vault_id_hex) = handlers::extract_vault_id(&headers) else {
+                return OperatorRpcResponse::Err {
+                    status: 400,
+                    message: "Missing vault scope".to_string(),
+                };
+            };
+            let limit = usize::try_from(*limit).unwrap_or(0);
+            if limit == 0 || limit > 1000 {
+                return OperatorRpcResponse::Err {
+                    status: 400,
+                    message: "limit must be between 1 and 1000".to_string(),
+                };
+            }
+            let mut leases = state.list_leases_for_vault(vault_id_hex);
+            let total = leases.len();
+            leases.truncate(limit);
+            OperatorRpcResponse::Leases { leases, total }
         }
         // mirrors post_recovery_record (`require_session` performs the
         // same missing-credential check first, so its 401 is identical)

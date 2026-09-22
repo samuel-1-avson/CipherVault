@@ -100,6 +100,9 @@ pub enum OperatorRpcBody {
         additional_days: u32,
         byte_count: u64,
     },
+    ListLeases {
+        limit: u32,
+    },
     AppendRecovery {
         locator: [u8; 32],
         record: Vec<u8>,
@@ -144,6 +147,10 @@ pub enum OperatorRpcResponse {
         receipt: ProofOfStorageReceipt,
     },
     Lease(LeaseReceipt),
+    Leases {
+        leases: Vec<LeaseReceipt>,
+        total: usize,
+    },
     Appended {
         sequence: u64,
     },

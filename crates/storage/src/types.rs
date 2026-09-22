@@ -115,6 +115,12 @@ pub struct LeaseReceipt {
     pub signature_hex: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LeaseListResponse {
+    pub leases: Vec<LeaseReceipt>,
+    pub total: usize,
+}
+
 impl LeaseReceipt {
     pub fn signing_bytes(&self) -> Vec<u8> {
         // All retention and accounting fields belong to the signed promise.

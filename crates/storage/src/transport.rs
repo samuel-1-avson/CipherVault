@@ -30,10 +30,10 @@ use crate::compute_pos_proof;
 use crate::error::StorageError;
 use crate::invites::{JoinInvite, JoinRefreshResponse, JoinRequest, JoinResponse};
 use crate::types::{
-    ApiErrorBody, AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt,
-    LeaseRenewRequest, LeaseRequest, OperatorInfo, PeerDescriptor, PendingApprovalChallenge,
-    PosChallengeRequest, ProofOfStorageReceipt, RecoveryRecordsResponse, SessionRequest,
-    SessionResponse, VoucherIssueRequest,
+    ApiErrorBody, AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseListResponse,
+    LeaseReceipt, LeaseRenewRequest, LeaseRequest, OperatorInfo, PeerDescriptor,
+    PendingApprovalChallenge, PosChallengeRequest, ProofOfStorageReceipt, RecoveryRecordsResponse,
+    SessionRequest, SessionResponse, VoucherIssueRequest,
 };
 use crate::vouchers::{VoucherLedger, WriteVoucher};
 
@@ -89,6 +89,11 @@ pub trait OperatorTransport: Send + Sync {
         additional_days: u32,
         byte_count: u64,
     ) -> BoxFuture<'a, Result<LeaseReceipt, StorageError>>;
+    fn list_leases<'a>(
+        &'a self,
+        token: &'a str,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<LeaseListResponse, StorageError>>;
     fn append_recovery_record<'a>(
         &'a self,
         token: &'a str,
@@ -476,6 +481,24 @@ impl OperatorTransport for HttpTransport {
             )
             .await?;
             Ok(resp.json::<LeaseReceipt>().await?)
+        })
+    }
+
+    fn list_leases<'a>(
+        &'a self,
+        token: &'a str,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<LeaseListResponse, StorageError>> {
+        Box::pin(async move {
+            let url = format!("{}/v1/leases?limit={}", self.endpoint, limit);
+            let resp = Self::check_ok(
+                self.with_vault_scope(self.http.get(&url))
+                    .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                    .send()
+                    .await?,
+            )
+            .await?;
+            Ok(resp.json::<LeaseListResponse>().await?)
         })
     }
 
@@ -1152,6 +1175,23 @@ impl OperatorTransport for MemoryTransport {
         })
     }
 
+    fn list_leases<'a>(
+        &'a self,
+        token: &'a str,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<LeaseListResponse, StorageError>> {
+        Box::pin(async move {
+            let state = self.lock();
+            Self::check_session(&state, token)?;
+            let limit = usize::try_from(limit).unwrap_or(usize::MAX).max(1);
+            let leases: Vec<LeaseReceipt> = state.leases.values().take(limit).cloned().collect();
+            Ok(LeaseListResponse {
+                total: state.leases.len(),
+                leases,
+            })
+        })
+    }
+
     fn append_recovery_record<'a>(
         &'a self,
         token: &'a str,
@@ -1422,6 +1462,39 @@ mod tests {
         assert_eq!(renewed.lease_id, receipt.lease_id);
         assert_eq!(renewed.term_days, 120);
         renewed.verify(&operator_pk(&info)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_list_leases_reports_total_and_truncates() {
+        let (client, _) = memory_client("mem-op-1");
+        let vault_id = [7u8; 32];
+        let key = ciphervault_crypto::generate_signing_key();
+        let token = client.authenticate(&vault_id, &key).await.unwrap();
+
+        let first = client
+            .commit_lease(&token, &[11u8; 32], 1024, 90)
+            .await
+            .unwrap();
+        let second = client
+            .commit_lease(&token, &[12u8; 32], 2048, 30)
+            .await
+            .unwrap();
+
+        let listing = client.list_leases(&token, 100).await.unwrap();
+        assert_eq!(listing.total, 2);
+        let ids: Vec<&str> = listing
+            .leases
+            .iter()
+            .map(|receipt| receipt.lease_id.as_str())
+            .collect();
+        assert!(ids.contains(&first.lease_id.as_str()));
+        assert!(ids.contains(&second.lease_id.as_str()));
+
+        let page = client.list_leases(&token, 1).await.unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.leases.len(), 1);
+
+        assert!(client.list_leases("bogus-token", 100).await.is_err());
     }
 
     #[tokio::test]

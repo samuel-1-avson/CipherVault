@@ -9,7 +9,8 @@ use ciphervault_format::compute_digest;
 use crate::error::StorageError;
 use crate::transport::{HttpTransport, OperatorTransport, SharedIdentity, SharedScope};
 use crate::types::{
-    ChallengeRequest, LeaseReceipt, OperatorInfo, ProofOfStorageReceipt, SessionRequest,
+    ChallengeRequest, LeaseListResponse, LeaseReceipt, OperatorInfo, ProofOfStorageReceipt,
+    SessionRequest,
 };
 
 #[derive(Clone)]
@@ -277,6 +278,15 @@ impl OperatorClient {
         self.transport
             .renew_lease(token, lease_id, additional_days, byte_count)
             .await
+    }
+
+    /// List the caller's own leases on this operator (session-scoped, vault-filtered).
+    pub async fn list_leases(
+        &self,
+        token: &str,
+        limit: u32,
+    ) -> Result<LeaseListResponse, StorageError> {
+        self.transport.list_leases(token, limit).await
     }
 
     pub async fn append_recovery_record(
