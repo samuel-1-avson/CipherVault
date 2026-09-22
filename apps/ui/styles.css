@@ -17,7 +17,7 @@
   /* Ink. */
   --bone: #ede6d6;
   --fog: #a8a294;
-  --ash: #6e6a5f;
+  --ash: #87827a;
 
   /* The one accent + semantic states. */
   --signal: #ffb000;
@@ -4613,6 +4613,41 @@ select.form-input option,
   gap: 10px;
   pointer-events: none;
   max-width: min(380px, 90vw);
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  background: var(--bg1);
+  border: var(--edge-line);
+  border-left: 3px solid var(--signal);
+  border-radius: var(--edge);
+  box-shadow: var(--shadow-hard);
+  font-size: 0.85rem;
+  color: var(--bone);
+}
+.toast svg {
+  flex: 0 0 auto;
+}
+.toast.success {
+  border-left-color: var(--ok);
+}
+.toast.error {
+  border-left-color: var(--bad);
+}
+.toast.warning {
+  border-left-color: var(--signal);
+}
+.toast.info {
+  border-left-color: var(--chain);
+}
+.secret-key-masked {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  letter-spacing: 0.15em;
+  color: var(--fog);
 }
 
 /* --- Utilities --- */
