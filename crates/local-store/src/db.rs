@@ -89,6 +89,19 @@ pub struct ActivityEntry {
     pub created_at_utc: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseReceiptRecord {
+    pub lease_id: String,
+    pub operator_endpoint: String,
+    pub closure_digest_hex: String,
+    pub term_days: u32,
+    pub bytes: u64,
+    pub issued_at_utc: u64,
+    pub expires_at_utc: u64,
+    pub signature_hex: String,
+    pub recorded_at_utc: i64,
+}
+
 impl LocalVaultStore {
     /// Opens or creates a local SQLite vault database at the specified file path.
     pub fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, LocalStoreError> {
@@ -190,6 +203,19 @@ impl LocalVaultStore {
                 created_at_utc INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at_utc DESC);
+
+            CREATE TABLE IF NOT EXISTS lease_receipts (
+                lease_id TEXT PRIMARY KEY,
+                operator_endpoint TEXT NOT NULL,
+                closure_digest_hex TEXT NOT NULL,
+                term_days INTEGER NOT NULL,
+                bytes INTEGER NOT NULL,
+                issued_at_utc INTEGER NOT NULL,
+                expires_at_utc INTEGER NOT NULL,
+                signature_hex TEXT NOT NULL,
+                recorded_at_utc INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lease_expires ON lease_receipts(expires_at_utc ASC);
             "#,
         )?;
         Ok(())
@@ -219,6 +245,25 @@ impl LocalVaultStore {
                 r#"
                 ALTER TABLE epoch_keys ADD COLUMN created_at_utc INTEGER NOT NULL DEFAULT 0;
                 PRAGMA user_version = 3;
+                "#,
+            )?;
+        }
+        if version < 4 {
+            self.conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS lease_receipts (
+                    lease_id TEXT PRIMARY KEY,
+                    operator_endpoint TEXT NOT NULL,
+                    closure_digest_hex TEXT NOT NULL,
+                    term_days INTEGER NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    issued_at_utc INTEGER NOT NULL,
+                    expires_at_utc INTEGER NOT NULL,
+                    signature_hex TEXT NOT NULL,
+                    recorded_at_utc INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_lease_expires ON lease_receipts(expires_at_utc ASC);
+                PRAGMA user_version = 4;
                 "#,
             )?;
         }
@@ -809,6 +854,66 @@ impl LocalVaultStore {
         Ok(())
     }
 
+    /// Records an operator lease receipt. Renewals upsert on the lease id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_lease_receipt(
+        &self,
+        lease_id: &str,
+        operator_endpoint: &str,
+        closure_digest_hex: &str,
+        term_days: u32,
+        bytes: u64,
+        issued_at_utc: u64,
+        expires_at_utc: u64,
+        signature_hex: &str,
+    ) -> Result<(), LocalStoreError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO lease_receipts (lease_id, operator_endpoint, closure_digest_hex, term_days, bytes, issued_at_utc, expires_at_utc, signature_hex, recorded_at_utc) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                lease_id,
+                operator_endpoint,
+                closure_digest_hex,
+                term_days as i64,
+                bytes as i64,
+                issued_at_utc as i64,
+                expires_at_utc as i64,
+                signature_hex,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Lists lease receipts soonest-expiring first.
+    pub fn list_lease_receipts(&self) -> Result<Vec<LeaseReceiptRecord>, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT lease_id, operator_endpoint, closure_digest_hex, term_days, bytes, issued_at_utc, expires_at_utc, signature_hex, recorded_at_utc FROM lease_receipts ORDER BY expires_at_utc ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LeaseReceiptRecord {
+                lease_id: row.get(0)?,
+                operator_endpoint: row.get(1)?,
+                closure_digest_hex: row.get(2)?,
+                term_days: row.get::<_, i64>(3)? as u32,
+                bytes: row.get::<_, i64>(4)? as u64,
+                issued_at_utc: row.get::<_, i64>(5)? as u64,
+                expires_at_utc: row.get::<_, i64>(6)? as u64,
+                signature_hex: row.get(7)?,
+                recorded_at_utc: row.get(8)?,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Lists recent activity events in reverse chronological order.
     pub fn list_activity(&self, limit: usize) -> Result<Vec<ActivityEntry>, LocalStoreError> {
         let mut stmt = self.conn.prepare(
@@ -1266,6 +1371,33 @@ mod tests {
     use ciphervault_format::PROTOCOL_VERSION;
 
     #[test]
+    fn test_lease_receipt_round_trip_and_renew_upsert() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        assert!(store.list_lease_receipts().unwrap().is_empty());
+        store
+            .record_lease_receipt("lease-1", "https://op1", "ab", 90, 100, 1000, 2000, "sig")
+            .unwrap();
+        store
+            .record_lease_receipt("lease-2", "https://op2", "cd", 30, 50, 1000, 1500, "sig2")
+            .unwrap();
+        // Soonest-expiring first.
+        let listed = store.list_lease_receipts().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].lease_id, "lease-2");
+        assert_eq!(listed[1].lease_id, "lease-1");
+        assert_eq!(listed[1].term_days, 90);
+        // Renewal upserts on the lease id.
+        store
+            .record_lease_receipt("lease-1", "https://op1", "ab", 180, 100, 1000, 5000, "sig3")
+            .unwrap();
+        let listed = store.list_lease_receipts().unwrap();
+        assert_eq!(listed.len(), 2);
+        let renewed = listed.iter().find(|r| r.lease_id == "lease-1").unwrap();
+        assert_eq!(renewed.expires_at_utc, 5000);
+        assert_eq!(renewed.term_days, 180);
+    }
+
+    #[test]
     fn test_vault_init_and_tracking() {
         let store = LocalVaultStore::open(":memory:").unwrap();
         let r = RecoverySecret::generate();
@@ -1657,7 +1789,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let infos = store.list_epoch_keys().unwrap();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].created_at_utc, 0);

@@ -15,6 +15,15 @@ use crate::util::{
 /// Machine-readable vault status for editor gutter feeds and CI (R17).
 /// Field names are the gutter data contract; see docs/PLATFORM_SUPPORT.md.
 #[derive(Debug, Clone, serde::Serialize)]
+struct LeaseStatusJson {
+    lease_id: String,
+    operator: String,
+    bytes: u64,
+    expires_at_utc: u64,
+    expired: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 struct StatusReport {
     vault_id_hex: String,
     device_id_hex: String,
@@ -26,6 +35,7 @@ struct StatusReport {
     pending_uploads: usize,
     active_epoch_age_days: Option<u64>,
     active_epoch_stale: bool,
+    leases: Vec<LeaseStatusJson>,
 }
 
 impl StatusReport {
@@ -44,6 +54,7 @@ impl StatusReport {
         active_epoch_created_at: Option<u64>,
         warn_days: u64,
         now_utc: u64,
+        leases: Vec<LeaseStatusJson>,
     ) -> Self {
         let (age_days, stale) = match active_epoch_created_at {
             Some(created) => epoch_key_status(created, warn_days, now_utc),
@@ -63,6 +74,7 @@ impl StatusReport {
             pending_uploads,
             active_epoch_age_days: age_days,
             active_epoch_stale: stale,
+            leases,
         }
     }
 }
@@ -84,6 +96,17 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
     let head_cid: Option<[u8; 32]> = active_head
         .as_ref()
         .and_then(|head| head.snapshot_id.as_slice().try_into().ok());
+    let lease_receipts = store.list_lease_receipts()?;
+    let lease_statuses: Vec<LeaseStatusJson> = lease_receipts
+        .iter()
+        .map(|receipt| LeaseStatusJson {
+            lease_id: receipt.lease_id.clone(),
+            operator: mask_operator_endpoint(&receipt.operator_endpoint),
+            bytes: receipt.bytes,
+            expires_at_utc: receipt.expires_at_utc,
+            expired: receipt.expires_at_utc <= now_utc,
+        })
+        .collect();
 
     if json {
         let report = StatusReport::new(
@@ -98,6 +121,7 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
             epoch_created_at,
             DEFAULT_REKEY_WARN_DAYS,
             now_utc,
+            lease_statuses,
         );
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -147,6 +171,31 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
                 rel_path.display(),
                 state,
                 hex::encode(&file_id[0..4]).dimmed()
+            );
+        }
+    }
+
+    println!("\nStorage Leases ({}):", lease_receipts.len());
+    if lease_receipts.is_empty() {
+        println!(
+            "  (None). Use '{}' to pin a snapshot closure on an operator.",
+            "ciphervault lease create <closure> <bytes>".cyan()
+        );
+    } else {
+        for receipt in &lease_receipts {
+            let short_id: String = receipt.lease_id.chars().take(12).collect();
+            let expiry = if receipt.expires_at_utc <= now_utc {
+                "expired".red()
+            } else {
+                let days_left = (receipt.expires_at_utc - now_utc) / 86400;
+                format!("in {}d", days_left).green()
+            };
+            println!(
+                "  - {} [{}] {} bytes ({})",
+                short_id.yellow(),
+                mask_operator_endpoint(&receipt.operator_endpoint).cyan(),
+                receipt.bytes,
+                expiry,
             );
         }
     }
@@ -353,8 +402,17 @@ mod tests {
             Some(2_000_000_000 - 100 * 86_400),
             90,
             2_000_000_000,
+            vec![LeaseStatusJson {
+                lease_id: "lease-1".to_string(),
+                operator: "https://op1.cipherv.online".to_string(),
+                bytes: 100,
+                expires_at_utc: 2_000_000_000 + 86_400,
+                expired: false,
+            }],
         );
         let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["leases"][0]["lease_id"], serde_json::json!("lease-1"));
+        assert_eq!(json["leases"][0]["expired"], serde_json::json!(false));
         assert_eq!(json["vault_id_hex"], serde_json::json!("11".repeat(32)));
         assert_eq!(json["current_epoch"], serde_json::json!(3));
         assert_eq!(json["active_head_hex"], serde_json::json!("33".repeat(32)));
@@ -379,8 +437,10 @@ mod tests {
             None,
             90,
             2_000_000_000,
+            Vec::new(),
         );
         let json = serde_json::to_value(&report).unwrap();
+        assert!(json["leases"].as_array().unwrap().is_empty());
         assert!(json["active_head_hex"].is_null());
         assert!(json["active_epoch_age_days"].is_null());
         assert_eq!(json["active_epoch_stale"], serde_json::json!(true));

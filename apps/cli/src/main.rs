@@ -1645,7 +1645,7 @@ async fn cmd_lease_create(
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (_, device_sk, _, _) = store.get_device_state()?;
-    let client = OperatorClient::new(endpoint);
+    let client = OperatorClient::new(endpoint.clone());
     let token = client
         .authenticate(&vault_id, &device_sk)
         .await
@@ -1654,6 +1654,18 @@ async fn cmd_lease_create(
         .commit_lease(&token, &closure_digest, bytes, term_days)
         .await
         .context("lease commit failed")?;
+    store
+        .record_lease_receipt(
+            &receipt.lease_id,
+            &endpoint,
+            &receipt.closure_digest_hex,
+            receipt.term_days,
+            receipt.bytes,
+            receipt.issued_at_utc,
+            receipt.expires_at_utc,
+            &receipt.signature_hex,
+        )
+        .context("lease receipt log failed")?;
     println!("{}", serde_json::to_string_pretty(&receipt)?);
     Ok(())
 }
@@ -1668,7 +1680,7 @@ async fn cmd_lease_renew(
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
     let (_, device_sk, _, _) = store.get_device_state()?;
-    let client = OperatorClient::new(endpoint);
+    let client = OperatorClient::new(endpoint.clone());
     let token = client
         .authenticate(&vault_id, &device_sk)
         .await
@@ -1677,6 +1689,18 @@ async fn cmd_lease_renew(
         .renew_lease(&token, &lease_id, days, bytes)
         .await
         .context("lease renew failed")?;
+    store
+        .record_lease_receipt(
+            &receipt.lease_id,
+            &endpoint,
+            &receipt.closure_digest_hex,
+            receipt.term_days,
+            receipt.bytes,
+            receipt.issued_at_utc,
+            receipt.expires_at_utc,
+            &receipt.signature_hex,
+        )
+        .context("lease receipt log failed")?;
     println!("{}", serde_json::to_string_pretty(&receipt)?);
     Ok(())
 }
