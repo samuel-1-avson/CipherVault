@@ -10,12 +10,12 @@ P2P mesh seeds come later (fleet runs HTTP-only today).
 
 | Node | Client endpoint | Operator |
 |---|---|---|
-| `cv-operator-1` | `https://vault.cipherv.online/op/1` | CipherVault team (Iowa, `us-central1-a`) |
-| `cv-operator-2` | `https://vault.cipherv.online/op/2` | CipherVault team (Iowa, `us-central1-b`) |
-| `cv-operator-3` | `https://vault.cipherv.online/op/3` | CipherVault team (S. Carolina, `us-east1-b`) |
+| `cv-operator-1` | `https://op1.cipherv.online` | CipherVault team (Iowa, `us-central1-a`) |
+| `cv-operator-2` | `https://op2.cipherv.online` | CipherVault team (Iowa, `us-central1-b`) |
+| `cv-operator-3` | `https://op3.cipherv.online` | CipherVault team (S. Carolina, `us-east1-b`) |
 
 - Client quickstart:
-  `ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cipherv.online/op/2 https://vault.cipherv.online/op/3`
+  `ciphervault init --operators https://op1.cipherv.online https://op2.cipherv.online https://op3.cipherv.online`
 - Dashboard / explorer: `https://vault.cipherv.online`
   (object CIDs, anchor receipts, operator telemetry — vault data stays private).
 - Genesis build: workspace `v1.0.7-beta.7` (exact commit + image digests

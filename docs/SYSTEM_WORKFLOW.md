@@ -767,15 +767,15 @@ CipherVault/
 
 The storage operator cluster is actively hosted on Google Cloud Platform across **2 geographical regions and 3 zones**, providing physical fault isolation at ~$0.97/day:
 
-| Node | GCP Region | Geographical Location | Availability Zone | Machine Type | Shielded Gateway Endpoint | Status |
+| Node | GCP Region | Geographical Location | Availability Zone | Machine Type | Direct TLS Endpoint | Status |
 |---|---|---|---|---|---|---|
-| **`cv-operator-1`** | `us-central1` | Council Bluffs, Iowa, USA | `us-central1-a` | `e2-micro` | `https://vault.cipherv.online/op/1` | **`200 OK` (TLS Shielded)** |
-| **`cv-operator-2`** | `us-central1` | Council Bluffs, Iowa, USA | `us-central1-b` | `e2-micro` | `https://vault.cipherv.online/op/2` | **`200 OK` (TLS Shielded)** |
-| **`cv-operator-3`** | `us-east1` | Moncks Corner, SC, USA | `us-east1-b` | `e2-micro` | `https://vault.cipherv.online/op/3` | **`200 OK` (TLS Shielded)** |
+| **`cv-operator-1`** | `us-central1` | Council Bluffs, Iowa, USA | `us-central1-a` | `e2-micro` | `https://op1.cipherv.online` | **`200 OK` (TLS Shielded)** |
+| **`cv-operator-2`** | `us-central1` | Council Bluffs, Iowa, USA | `us-central1-b` | `e2-micro` | `https://op2.cipherv.online` | **`200 OK` (TLS Shielded)** |
+| **`cv-operator-3`** | `us-east1` | Moncks Corner, SC, USA | `us-east1-b` | `e2-micro` | `https://op3.cipherv.online` | **`200 OK` (TLS Shielded)** |
 
 ### Client Connection String
 ```bash
-ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cipherv.online/op/2 https://vault.cipherv.online/op/3
+ciphervault init --operators https://op1.cipherv.online https://op2.cipherv.online https://op3.cipherv.online
 ```
 
 ---

@@ -381,19 +381,31 @@ pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>
 }
 
 pub const DEFAULT_PRODUCTION_OPERATORS: &[&str] = &[
-    "https://vault.cipherv.online/op/1",
-    "https://vault.cipherv.online/op/2",
-    "https://vault.cipherv.online/op/3",
+    "https://op1.cipherv.online",
+    "https://op2.cipherv.online",
+    "https://op3.cipherv.online",
 ];
 
 pub fn mask_operator_endpoint(endpoint: &str) -> String {
     let ep = endpoint.trim_end_matches('/');
-    if ep.ends_with("/op/1") || ep.contains("136.65.43.84") || ep.contains("10.128.0.39") {
-        "https://vault.cipherv.online/op/1".to_string()
-    } else if ep.ends_with("/op/2") || ep.contains("34.9.157.167") || ep.contains("10.128.0.40") {
-        "https://vault.cipherv.online/op/2".to_string()
-    } else if ep.ends_with("/op/3") || ep.contains("34.73.53.40") || ep.contains("10.142.0.2") {
-        "https://vault.cipherv.online/op/3".to_string()
+    if ep.ends_with("/op/1")
+        || ep.contains("op1.cipherv.online")
+        || ep.contains("136.65.43.84")
+        || ep.contains("10.128.0.39")
+    {
+        "https://op1.cipherv.online".to_string()
+    } else if ep.ends_with("/op/2")
+        || ep.contains("op2.cipherv.online")
+        || ep.contains("34.9.157.167")
+        || ep.contains("10.128.0.40")
+    {
+        "https://op2.cipherv.online".to_string()
+    } else if ep.ends_with("/op/3")
+        || ep.contains("op3.cipherv.online")
+        || ep.contains("34.73.53.40")
+        || ep.contains("10.142.0.2")
+    {
+        "https://op3.cipherv.online".to_string()
     } else if let Some(stripped) = ep
         .strip_prefix("http://")
         .or_else(|| ep.strip_prefix("https://"))

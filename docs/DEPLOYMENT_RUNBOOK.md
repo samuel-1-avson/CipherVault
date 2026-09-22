@@ -52,15 +52,15 @@ To guarantee continuous availability, zero single points of failure, and partiti
 
 The official CipherVault operator quorum is active and verified on Google Cloud Platform:
 
-| Node | GCP Region | Geographical Location | Availability Zone | Machine Type | Shielded Gateway Endpoint | Status |
+| Node | GCP Region | Geographical Location | Availability Zone | Machine Type | Direct TLS Endpoint | Status |
 |---|---|---|---|---|---|---|
-| **`cv-operator-1`** | `us-central1` | Council Bluffs, Iowa | `us-central1-a` | `e2-micro` | `https://vault.cipherv.online/op/1` | **`200 OK` (TLS Shielded)** |
-| **`cv-operator-2`** | `us-central1` | Council Bluffs, Iowa | `us-central1-b` | `e2-micro` | `https://vault.cipherv.online/op/2` | **`200 OK` (TLS Shielded)** |
-| **`cv-operator-3`** | `us-east1` | Moncks Corner, SC | `us-east1-b` | `e2-micro` | `https://vault.cipherv.online/op/3` | **`200 OK` (TLS Shielded)** |
+| **`cv-operator-1`** | `us-central1` | Council Bluffs, Iowa | `us-central1-a` | `e2-micro` | `https://op1.cipherv.online` | **`200 OK` (TLS Shielded)** |
+| **`cv-operator-2`** | `us-central1` | Council Bluffs, Iowa | `us-central1-b` | `e2-micro` | `https://op2.cipherv.online` | **`200 OK` (TLS Shielded)** |
+| **`cv-operator-3`** | `us-east1` | Moncks Corner, SC | `us-east1-b` | `e2-micro` | `https://op3.cipherv.online` | **`200 OK` (TLS Shielded)** |
 
 ### Client Connection String
 ```bash
-ciphervault init --operators https://vault.cipherv.online/op/1 https://vault.cipherv.online/op/2 https://vault.cipherv.online/op/3
+ciphervault init --operators https://op1.cipherv.online https://op2.cipherv.online https://op3.cipherv.online
 ```
 
 ---
@@ -181,6 +181,28 @@ still requires prior knowledge of the CID (the endpoint only answers "which
 operators hold it"), so impact is minimal — but treat explorer access logs as
 CID-bearing: keep rotation tight and redact `:cid` path segments before
 shipping logs anywhere operators or visitors cannot already see.
+
+### Open-network posture (public live test, since 2026-09-22)
+The seed fleet is intentionally permissionless: the staged operator compose
+files predate the strict-auth flags, so `CIPHERVAULT_OPERATOR_STRICT_AUTH` /
+`CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT` are unset and any keypair can
+challenge, session, and write. The repo compose defaults stay strict (`:-true`)
+so independent node runners default safe — only this fleet is open.
+World reachability comes from firewall rule `ciphervault-allow-public-api`
+(`tcp:80,443` from `0.0.0.0/0` on tag `ciphervault-operator`); the older
+`ciphervault-allow-ingress` (web VM only) is now redundant but harmless.
+Each operator edge serves automatic Let's Encrypt TLS on its own domain
+(`op1/op2/op3.cipherv.online`, A records at the domain registrar; staged
+Caddyfiles on the boxes, plaintext backup at
+`/opt/ciphervault/Caddyfile.bak-plaintext`): clients connect with
+`ciphervault init --operators https://op1.cipherv.online
+https://op2.cipherv.online https://op3.cipherv.online`, and plain `http://`
+requests redirect to `https://`. The `https://vault.cipherv.online/op/1..3`
+gateway stays as a TLS fallback. Abuse bounds meanwhile: 4 MiB
+object cap, 5 MiB edge body cap, lease expiry, bounded repair lane. To
+re-close the fleet: set both flags to `true` in each
+`/opt/ciphervault/.env`, recreate the operator containers, and delete the
+public firewall rule.
 
 ---
 

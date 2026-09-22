@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 
 PackageIdentifier: CipherVault.CipherVault
-PackageVersion: 1.0.9
+PackageVersion: 1.0.10
 PackageLocale: en-US
 Publisher: CipherVault Team
 PublisherUrl: https://github.com/samuel-1-avson/CipherVault
