@@ -198,7 +198,11 @@ Caddyfiles on the boxes, plaintext backup at
 `ciphervault init --operators https://op1.cipherv.online
 https://op2.cipherv.online https://op3.cipherv.online`, and plain `http://`
 requests redirect to `https://`. The `https://vault.cipherv.online/op/1..3`
-gateway stays as a TLS fallback. Abuse bounds meanwhile: 4 MiB
+gateway stays as a TLS fallback. The dashboard itself dials the `https://opN`
+endpoints (instance metadata `operator-endpoints`); every future
+`promote-immutable-web.ps1` run MUST pass `-OperatorEndpoints` with the https
+URLs or the explorer goes unreachable (plain `http://` IPs 308-redirect to
+unverifiable `https://` IP TLS). Abuse bounds meanwhile: 4 MiB
 object cap, 5 MiB edge body cap, lease expiry, bounded repair lane. To
 re-close the fleet: set both flags to `true` in each
 `/opt/ciphervault/.env`, recreate the operator containers, and delete the
