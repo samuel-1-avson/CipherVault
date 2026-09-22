@@ -592,6 +592,41 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert.equal(vm.runInContext(`formatBytes(1024)`, context), '1 KiB');
   assert.equal(vm.runInContext(`formatBytes('2048')`, context), '2 KiB');
   assert.equal(vm.runInContext(`formatBytes(5 * 1024 ** 4)`, context), '5 TiB');
+
+  // =========================================================================
+  // 19. My Data Overview rendering (private local surface)
+  // =========================================================================
+  vm.runInContext(`
+    renderOverview({
+      vault_id_hex: '${'aa'.repeat(32)}',
+      device_id_hex: '${'bb'.repeat(32)}',
+      current_epoch: 1,
+      snapshots: [{ snapshot_id_hex: '${'cc'.repeat(32)}', epoch: 1, advisory_timestamp_utc: 1000000 }],
+      active_head_hex: '${'cc'.repeat(32)}',
+      tracked_files: 2,
+      tracked_bytes_on_disk: 42,
+      operators: ['https://op1.cipherv.online'],
+      leases: [{ lease_id: 'lease-9', operator: 'https://op1.cipherv.online', bytes: 100, expires_at_utc: 2000000, expired: false }],
+      anchors: [{ tx_hash_hex: '${'dd'.repeat(32)}', block_number: 7, chain_id: 42161, timestamp_utc: 1000001 }],
+      recent_activity: [{ event_type: 'push', summary: 'snapshot captured', created_at_utc: 1000002 }]
+    });
+  `, context);
+  assert(getElementById('overview-metrics').innerHTML.includes('Storage Leases'), 'Overview must render metric cards');
+  assert(getElementById('table-overview-snapshots-body').innerHTML.includes('ccccc'), 'Overview must list snapshots');
+  assert(getElementById('table-overview-leases-body').innerHTML.includes('lease-9'), 'Overview must list leases');
+  assert(getElementById('table-overview-activity-body').innerHTML.includes('snapshot captured'), 'Overview must list activity');
+
+  vm.runInContext(`renderOverview(null);`, context);
+  assert(getElementById('table-overview-snapshots-body').innerHTML.includes('No vault initialized'), 'Overview must degrade honestly without a vault');
+
+  vm.runInContext(`renderOverview({ vault_id_hex: 'ee', snapshots: [], leases: [], anchors: [], recent_activity: [] });`, context);
+  assert(getElementById('table-overview-leases-body').innerHTML.includes('ciphervault lease create'), 'Overview must guide toward lease creation when empty');
+
+  // My Data tab must be a private surface (hidden on the public explorer).
+  const shellHtml = fs.readFileSync(`${__dirname}/index.html`, 'utf8');
+  assert(shellHtml.match(/id="tab-btn-overview"[^>]*data-private-surface/), 'My Data tab button must carry data-private-surface');
+  assert(shellHtml.match(/id="tab-overview"[^>]*data-private-surface/), 'My Data tab panel must carry data-private-surface');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

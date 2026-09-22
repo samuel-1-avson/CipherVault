@@ -21,15 +21,16 @@ use crate::{
     api_explorer_object_handler, api_explorer_overview_handler, api_fastcdc_inspect_handler,
     api_fastcdc_vault_files_handler, api_files_track_handler, api_files_untrack_handler,
     api_fleet_audit_handler, api_fleet_handler, api_guardians_handler, api_operators_handler,
-    api_private_context_handler, api_private_fallback_handler, api_private_session_revoke_handler,
-    api_public_anchors_handler, api_public_context_handler, api_public_fallback_handler,
-    api_public_fleet_handler, api_public_operators_handler, api_public_operators_history_handler,
-    api_public_operators_jobs_handler, api_public_relayer_checkpoints_handler,
-    api_public_stream_handler, api_public_vault_handler, api_relayer_anchor_handler,
-    api_relayer_checkpoints_handler, api_snapshot_manifest_handler, api_snapshots_handler,
-    api_snapshots_restore_handler, api_stream_handler, api_token_handler, api_vault_handler,
-    api_workspaces_handler, api_workspaces_scan_handler, api_workspaces_switch_handler,
-    private_ui_request_guard, UI_APP_JS, UI_INDEX_HTML, UI_STYLES_CSS,
+    api_overview_handler, api_private_context_handler, api_private_fallback_handler,
+    api_private_session_revoke_handler, api_public_anchors_handler, api_public_context_handler,
+    api_public_fallback_handler, api_public_fleet_handler, api_public_operators_handler,
+    api_public_operators_history_handler, api_public_operators_jobs_handler,
+    api_public_relayer_checkpoints_handler, api_public_stream_handler, api_public_vault_handler,
+    api_relayer_anchor_handler, api_relayer_checkpoints_handler, api_snapshot_manifest_handler,
+    api_snapshots_handler, api_snapshots_restore_handler, api_stream_handler, api_token_handler,
+    api_vault_handler, api_workspaces_handler, api_workspaces_scan_handler,
+    api_workspaces_switch_handler, private_ui_request_guard, UI_APP_JS, UI_INDEX_HTML,
+    UI_STYLES_CSS,
 };
 
 /// Content-Security-Policy for the UI shell document. The bundle is a
@@ -215,6 +216,7 @@ pub(crate) fn private_ui_router() -> axum::Router {
             axum::routing::post(api_private_session_revoke_handler),
         )
         .route("/api/vault", get(api_vault_handler))
+        .route("/api/overview", get(api_overview_handler))
         .route("/api/operators", get(api_operators_handler))
         .route("/api/approvals", get(api_approvals_handler))
         .route(
@@ -1063,6 +1065,60 @@ mod tests {
             assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         }
 
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn overview_route_is_private_only() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{base_url}/api/overview"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "public explorer unexpectedly exposed /api/overview"
+        );
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn private_overview_returns_local_aggregation_shape() {
+        let (server, base_url, _serialized) = start_private_test_server().await;
+        let _account_isolation = AccountPathGuard::isolate();
+        let client = reqwest::Client::new();
+        let session_token = private_ui_session_snapshot().token;
+        let response = client
+            .get(format!("{base_url}/api/overview"))
+            .header("Origin", &base_url)
+            .header(
+                "Cookie",
+                format!("ciphervault_private_session={session_token}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        for key in [
+            "vault_id_hex",
+            "snapshots",
+            "active_head_hex",
+            "tracked_files",
+            "operators",
+            "leases",
+            "anchors",
+            "recent_activity",
+        ] {
+            assert!(body.get(key).is_some(), "overview missing key {key}");
+        }
+        assert!(body["snapshots"].is_array());
+        assert!(body["leases"].is_array());
         server.abort();
         let _ = server.await;
     }

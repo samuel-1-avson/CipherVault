@@ -13,6 +13,7 @@ const state = {
   accountService: null,
   totpEnrollment: null,
   snapshots: [],
+  overview: null,
   context: null,
   // Treat an unrecognized server as public until it explicitly identifies a
   // loopback private workspace. This prevents private controls from flashing
@@ -106,6 +107,7 @@ async function fetchAllData() {
     }
 
     if (canAccessPrivateFeature('snapshot_history')) requests.push(fetchSnapshots());
+    if (canAccessPrivateFeature('my_data')) requests.push(fetchOverview());
     if (canAccessPrivateFeature('vault_workspace')) requests.push(fetchGuardians(), fetchActivity(), fetchFleet());
     if (canAccessPrivateFeature('workspace_switching')) requests.push(fetchWorkspaces());
 
@@ -1147,6 +1149,26 @@ async function fetchSnapshots() {
   }
 }
 
+async function fetchOverview() {
+  try {
+    const res = await fetch('/api/overview');
+    if (!res.ok) throw new Error(`Overview request failed (${res.status})`);
+    const data = await res.json();
+    state.overview = data;
+
+    const badge = document.getElementById('badge-tab-overview');
+    if (badge) badge.textContent = Array.isArray(data.snapshots) ? data.snapshots.length : '--';
+
+    renderOverview(data);
+  } catch (e) {
+    state.overview = null;
+    const badge = document.getElementById('badge-tab-overview');
+    if (badge) badge.textContent = '--';
+    renderOverview(null);
+    console.warn("fetchOverview error:", e);
+  }
+}
+
 async function fetchAnchors() {
   try {
     const res = await fetch('/api/anchors');
@@ -1487,6 +1509,60 @@ function dedupeSnapshots(snapshots) {
     if (!existing || preferSnapshot(snapshot, existing)) canonical.set(identity, snapshot);
   });
   return Array.from(canonical.values());
+}
+
+function renderOverview(data) {
+  const metrics = document.getElementById('overview-metrics');
+  const snapsBody = document.getElementById('table-overview-snapshots-body');
+  const leasesBody = document.getElementById('table-overview-leases-body');
+  const activityBody = document.getElementById('table-overview-activity-body');
+  if (!metrics || !snapsBody || !leasesBody || !activityBody) return;
+
+  const empty = !data || !data.vault_id_hex;
+  const snapshots = !empty && Array.isArray(data.snapshots) ? data.snapshots : [];
+  const leases = !empty && Array.isArray(data.leases) ? data.leases : [];
+  const anchors = !empty && Array.isArray(data.anchors) ? data.anchors : [];
+  const activity = !empty && Array.isArray(data.recent_activity) ? data.recent_activity : [];
+  const expiredLeases = leases.filter(l => l.expired).length;
+
+  const metric = (label, value, sub) => `
+    <div class="metric-card">
+      <div class="metric-top"><span class="metric-label">${escapeHtml(label)}</span></div>
+      <div class="metric-value">${escapeHtml(String(value))}</div>
+      <div class="metric-subtext">${escapeHtml(sub)}</div>
+    </div>`;
+  metrics.innerHTML =
+    metric('Snapshots', snapshots.length, empty ? 'no vault' : `head ${data.active_head_hex ? truncateHash(data.active_head_hex, 8, 6) : 'none'}`) +
+    metric('Tracked Files', empty ? 0 : (data.tracked_files || 0), `${empty ? 0 : (data.tracked_bytes_on_disk || 0)} bytes on disk`) +
+    metric('Storage Leases', leases.length, expiredLeases ? `${expiredLeases} expired` : 'all current') +
+    metric('Anchors', anchors.length, 'checkpoint evidence');
+
+  snapsBody.innerHTML = snapshots.length === 0
+    ? `<tr><td colspan="3" class="loading-placeholder">${empty ? 'No vault initialized on this device.' : 'No snapshots captured yet.'}</td></tr>`
+    : [...snapshots].reverse().slice(0, 10).map(snap => `
+      <tr>
+        <td><strong class="hash-click" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${escapeHtml(truncateHash(snap.snapshot_id_hex, 10, 8))}</strong></td>
+        <td>${escapeHtml(String(snap.epoch))}</td>
+        <td>${snap.advisory_timestamp_utc ? formatTimestamp(snap.advisory_timestamp_utc) : 'Recorded'}</td>
+      </tr>`).join('');
+
+  leasesBody.innerHTML = leases.length === 0
+    ? `<tr><td colspan="4" class="loading-placeholder">No leases recorded. Use the CLI: ciphervault lease create &lt;closure&gt; &lt;bytes&gt;</td></tr>`
+    : leases.map(lease => `
+      <tr>
+        <td><strong>${escapeHtml(truncateHash(lease.lease_id, 10, 6))}</strong></td>
+        <td>${escapeHtml(lease.operator)}</td>
+        <td>${escapeHtml(String(lease.bytes))}</td>
+        <td>${lease.expired ? '<span style="color: var(--bad);">expired</span>' : formatTimestamp(lease.expires_at_utc)}</td>
+      </tr>`).join('');
+
+  activityBody.innerHTML = activity.length === 0
+    ? `<tr><td colspan="2" class="loading-placeholder">No recent activity.</td></tr>`
+    : activity.map(entry => `
+      <tr>
+        <td><span style="color: var(--ash);">${escapeHtml(entry.event_type)}</span></td>
+        <td>${escapeHtml(entry.summary)}</td>
+      </tr>`).join('');
 }
 
 function renderSnapshots(snapshots) {

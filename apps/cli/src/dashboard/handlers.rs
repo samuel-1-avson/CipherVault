@@ -541,6 +541,83 @@ pub(crate) async fn api_approvals_handler() -> impl axum::response::IntoResponse
     axum::Json(serde_json::json!({ "operators": operators }))
 }
 
+/// My Data overview: local-first aggregation for the private dashboard.
+/// Reads only the on-device store; degrades to an empty shape without a vault.
+pub(crate) async fn api_overview_handler() -> impl axum::response::IntoResponse {
+    let empty = || {
+        serde_json::json!({
+            "vault_id_hex": null,
+            "device_id_hex": null,
+            "current_epoch": null,
+            "snapshots": [],
+            "active_head_hex": null,
+            "tracked_files": 0,
+            "tracked_bytes_on_disk": 0,
+            "operators": Vec::<String>::new(),
+            "leases": [],
+            "anchors": [],
+            "recent_activity": [],
+        })
+    };
+    let store = match get_vault_store() {
+        Ok(s) => s,
+        Err(_) => return axum::Json(empty()),
+    };
+    let (vault_id, device_id, epoch) = match (|| -> Result<_, String> {
+        let vault_id = store.get_vault_id().map_err(|e| e.to_string())?;
+        let (device_id, _, _, epoch) = store.get_device_state().map_err(|e| e.to_string())?;
+        Ok((vault_id, device_id, epoch))
+    })() {
+        Ok(identity) => identity,
+        Err(_) => return axum::Json(empty()),
+    };
+    let now_utc = chrono::Utc::now().timestamp().max(0) as u64;
+    let snapshots = store.list_snapshots().unwrap_or_default();
+    let active_head = store.get_active_head().ok().flatten();
+    let tracked = store.list_tracked_files().unwrap_or_default();
+    let leases = store.list_lease_receipts().unwrap_or_default();
+    let anchors = store.list_checkpoint_evidence().unwrap_or_default();
+    let activity = store.list_activity(5).unwrap_or_default();
+    let mut tracked_bytes: u64 = 0;
+    for (rel_path, _) in &tracked {
+        if let Ok(meta) = std::fs::metadata(rel_path) {
+            tracked_bytes = tracked_bytes.saturating_add(meta.len());
+        }
+    }
+    axum::Json(serde_json::json!({
+        "vault_id_hex": hex::encode(vault_id),
+        "device_id_hex": hex::encode(device_id),
+        "current_epoch": epoch,
+        "snapshots": snapshots.iter().map(|snap| serde_json::json!({
+            "snapshot_id_hex": hex::encode(&snap.snapshot_id),
+            "epoch": snap.epoch,
+            "advisory_timestamp_utc": snap.advisory_timestamp_utc,
+        })).collect::<Vec<_>>(),
+        "active_head_hex": active_head.as_ref().map(|head| hex::encode(&head.snapshot_id)),
+        "tracked_files": tracked.len(),
+        "tracked_bytes_on_disk": tracked_bytes,
+        "operators": get_configured_operators().iter().map(|op| mask_operator_endpoint(op)).collect::<Vec<_>>(),
+        "leases": leases.iter().map(|receipt| serde_json::json!({
+            "lease_id": receipt.lease_id,
+            "operator": mask_operator_endpoint(&receipt.operator_endpoint),
+            "bytes": receipt.bytes,
+            "expires_at_utc": receipt.expires_at_utc,
+            "expired": receipt.expires_at_utc <= now_utc,
+        })).collect::<Vec<_>>(),
+        "anchors": anchors.iter().map(|evidence| serde_json::json!({
+            "tx_hash_hex": hex::encode(&evidence.tx_hash),
+            "block_number": evidence.block_number,
+            "chain_id": evidence.chain_id,
+            "timestamp_utc": evidence.timestamp_utc,
+        })).collect::<Vec<_>>(),
+        "recent_activity": activity.iter().map(|entry| serde_json::json!({
+            "event_type": entry.event_type,
+            "summary": entry.summary,
+            "created_at_utc": entry.created_at_utc,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
 pub(crate) async fn api_snapshots_handler() -> impl axum::response::IntoResponse {
     let store_res = get_vault_store();
     let store = match store_res {

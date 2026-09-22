@@ -229,6 +229,17 @@
         <span class="tab-badge" id="badge-tab-operators">--</span>
       </button>
 
+      <button class="tab-btn" id="tab-btn-overview" data-target="tab-overview" role="tab" aria-selected="false" aria-controls="tab-overview" tabindex="-1" data-private-surface>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7"></rect>
+          <rect x="14" y="3" width="7" height="7"></rect>
+          <rect x="14" y="14" width="7" height="7"></rect>
+          <rect x="3" y="14" width="7" height="7"></rect>
+        </svg>
+        My Data
+        <span class="tab-badge" id="badge-tab-overview">--</span>
+      </button>
+
             <button class="tab-btn" id="tab-btn-explorer" data-target="tab-explorer" role="tab" aria-selected="false" aria-controls="tab-explorer" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8"></circle>
@@ -365,6 +376,65 @@
         <div class="latency-bars-container" id="latency-bars-container">
           <!-- Populated by app.js -->
         </div>
+      </div>
+    </section>
+
+    <!-- Tab: My Data Overview (local vault only) -->
+    <section class="tab-content" id="tab-overview" role="tabpanel" aria-labelledby="tab-btn-overview" tabindex="0" data-private-surface>
+      <div class="tab-header-row">
+        <div>
+          <h2 class="section-heading">My Data Overview</h2>
+          <p class="section-subheading">Local-first aggregation from this device's vault store. Nothing here phones home; live replica health stays under audit.</p>
+        </div>
+      </div>
+
+      <div class="metrics-ribbon" id="overview-metrics">
+        <!-- Populated by renderOverview -->
+      </div>
+
+      <div class="table-card">
+        <table class="data-table" id="table-overview-snapshots">
+          <thead>
+            <tr>
+              <th>Snapshot</th>
+              <th>Epoch</th>
+              <th>Timestamp (UTC)</th>
+            </tr>
+          </thead>
+          <tbody id="table-overview-snapshots-body">
+            <tr><td colspan="3" class="loading-placeholder">Loading snapshots...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-card">
+        <table class="data-table" id="table-overview-leases">
+          <thead>
+            <tr>
+              <th>Lease</th>
+              <th>Operator</th>
+              <th>Bytes</th>
+              <th>Expires (UTC)</th>
+            </tr>
+          </thead>
+          <tbody id="table-overview-leases-body">
+            <tr><td colspan="4" class="loading-placeholder">Loading leases...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-card">
+        <table class="data-table" id="table-overview-activity">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody id="table-overview-activity-body">
+            <tr><td colspan="2" class="loading-placeholder">Loading activity...</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
