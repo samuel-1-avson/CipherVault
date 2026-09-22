@@ -256,6 +256,30 @@ pub fn diff_text(file_path: &str, old_text: &str, new_text: &str, reveal: bool) 
     }
 }
 
+/// Diffs one file's raw bytes, routing dotenv files through the masked
+/// variable diff. Unparseable dotenv content (e.g. UTF-16) falls back to a
+/// lossy text diff so changes are never silently reported as identical.
+pub fn diff_file_bytes(
+    path: &str,
+    old_bytes: &[u8],
+    new_bytes: &[u8],
+    reveal: bool,
+) -> FileDiffReport {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let is_dotenv_file = name == ".env" || name.starts_with(".env.") || name.ends_with(".env");
+    if is_dotenv_file {
+        if let (Ok(old_vars), Ok(new_vars)) = (
+            dotenv::parse_dotenv_bytes(old_bytes),
+            dotenv::parse_dotenv_bytes(new_bytes),
+        ) {
+            return diff_dotenv(path, &old_vars, &new_vars, reveal);
+        }
+    }
+    let old_str = String::from_utf8_lossy(old_bytes);
+    let new_str = String::from_utf8_lossy(new_bytes);
+    diff_text(path, &old_str, &new_str, reveal)
+}
+
 /// Prints a colorized diff report to stdout.
 pub fn print_diff_report(report: &DiffReport) {
     println!(
@@ -570,22 +594,8 @@ pub fn generate_diff_report(
         let old_bytes = old_files.get(&path).cloned().unwrap_or_default();
         let new_bytes = new_files.get(&path).cloned().unwrap_or_default();
 
-        let is_dotenv_file = {
-            let name = path.rsplit('/').next().unwrap_or(&path);
-            name == ".env" || name.starts_with(".env.") || name.ends_with(".env")
-        };
-
-        if is_dotenv_file {
-            let old_vars = dotenv::parse_dotenv_bytes(&old_bytes).unwrap_or_default();
-            let new_vars = dotenv::parse_dotenv_bytes(&new_bytes).unwrap_or_default();
-            let file_rep = diff_dotenv(&path, &old_vars, &new_vars, reveal);
-            report.add_file_report(file_rep);
-        } else {
-            let old_str = String::from_utf8_lossy(&old_bytes);
-            let new_str = String::from_utf8_lossy(&new_bytes);
-            let file_rep = diff_text(&path, &old_str, &new_str, reveal);
-            report.add_file_report(file_rep);
-        }
+        let file_rep = diff_file_bytes(&path, &old_bytes, &new_bytes, reveal);
+        report.add_file_report(file_rep);
     }
 
     Ok(report)
@@ -609,6 +619,25 @@ pub(crate) fn cmd_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn test_diff_file_bytes_utf16_never_reports_identical() {
+        let old = utf16le("STRIPE_KEY=sk_test_123\n");
+        let new = utf16le("STRIPE_KEY=sk_test_456\n");
+        let report = diff_file_bytes(".env", &old, &new, false);
+        assert!(
+            report.added_count + report.removed_count + report.modified_count > 0,
+            "changed UTF-16 dotenv must not diff as identical"
+        );
+    }
 
     #[test]
     fn test_mask_value() {
