@@ -7,7 +7,7 @@
   <meta name="author" content="CipherVault Contributors">
   <title>CipherVault — Vault Inspector & Health Dashboard</title>
   <link rel="stylesheet" href="styles.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300f0ff'><path d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 6c1.66 0 3 1.34 3 3 0 .78-.3 1.49-.8 2.02l1.3 2.98h-7l1.3-2.98c-.5-.53-.8-1.24-.8-2.02 0-1.66 1.34-3 3-3z'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23FFB000'><path d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 6c1.66 0 3 1.34 3 3 0 .78-.3 1.49-.8 2.02l1.3 2.98h-7l1.3-2.98c-.5-.53-.8-1.24-.8-2.02 0-1.66 1.34-3 3-3z'/></svg>">
 </head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
@@ -155,12 +155,12 @@
           <span class="badge-status-subtle" id="badge-durability-state">Unverified</span>
         </div>
         <div class="metric-value" id="val-metric-durability">
-          <span id="durability-ratio" style="color: var(--accent-amber);">--/3</span>
+          <span id="durability-ratio" style="color: var(--signal);">--/3</span>
           <span class="metric-unit">Replicas</span>
         </div>
         <div class="metric-subtext" id="sub-metric-durability">No completed recovery verification</div>
         <div class="progress-bar-container">
-          <div class="progress-bar-fill" id="bar-durability" style="width: 0%; background: var(--accent-emerald);"></div>
+          <div class="progress-bar-fill" id="bar-durability" style="width: 0%; background: var(--ok);"></div>
         </div>
       </article>
 
@@ -171,12 +171,12 @@
           <span class="badge-status-subtle" id="badge-retention-state">Not reported</span>
         </div>
         <div class="metric-value" id="val-metric-runway">
-          <span id="val-retention-days" style="color: var(--accent-cyan);">--</span>
+          <span id="val-retention-days" style="color: var(--signal);">--</span>
           <span class="metric-unit" id="val-retention-unit">days</span>
         </div>
         <div class="metric-subtext" id="sub-metric-runway">No retention receipt expiry is available</div>
         <div class="progress-bar-container">
-          <div class="progress-bar-fill" id="bar-runway" style="width: 0%; background: var(--accent-cyan);"></div>
+          <div class="progress-bar-fill" id="bar-runway" style="width: 0%; background: var(--signal);"></div>
         </div>
       </article>
 
@@ -187,11 +187,11 @@
           <span class="badge-status-subtle" id="badge-anchor-stage">No verified receipt</span>
         </div>
         <div class="metric-value" id="val-metric-anchor">
-          <span id="val-anchor-block" style="color: var(--accent-purple); font-size: 1.25rem; font-family: var(--font-mono);">#--</span>
+          <span id="val-anchor-block" style="color: var(--chain); font-size: 1.25rem; font-family: var(--font-mono);">#--</span>
         </div>
         <div class="metric-subtext" id="sub-metric-anchor">No checkpoint evidence recorded</div>
         <div class="progress-bar-container">
-          <div class="progress-bar-fill" id="bar-anchor" style="width: 0%; background: var(--accent-purple);"></div>
+          <div class="progress-bar-fill" id="bar-anchor" style="width: 0%; background: var(--chain);"></div>
         </div>
       </article>
 
@@ -207,7 +207,7 @@
         </div>
         <div class="metric-subtext" id="sub-metric-inventory">-- chunks encrypted</div>
         <div class="progress-bar-container">
-          <div class="progress-bar-fill" id="bar-files" style="width: 100%; background: var(--accent-cyan);"></div>
+          <div class="progress-bar-fill" id="bar-files" style="width: 100%; background: var(--signal);"></div>
         </div>
       </article>
 
@@ -337,7 +337,7 @@
         </div>
         <div class="latency-summary-pill" id="latency-summary-pill">
           <span>Avg Cluster Latency:</span>
-          <strong id="avg-latency-display" style="color: var(--accent-emerald);">-- ms</strong>
+          <strong id="avg-latency-display" style="color: var(--ok);">-- ms</strong>
         </div>
       </div>
 
@@ -590,7 +590,7 @@
           <div>
             <div class="op-meta-row">
               <span class="op-meta-label">Contract Address</span>
-              <span class="op-meta-val" id="anchor-contract-addr" style="color: var(--accent-cyan);">--</span>
+              <span class="op-meta-val" id="anchor-contract-addr" style="color: var(--signal);">--</span>
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Target Chain</span>
@@ -598,14 +598,14 @@
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Reported Block</span>
-              <span class="op-meta-val" id="anchor-block-num" style="color: var(--accent-purple); font-weight: 600;">--</span>
+              <span class="op-meta-val" id="anchor-block-num" style="color: var(--chain); font-weight: 600;">--</span>
             </div>
           </div>
 
           <div>
             <div class="op-meta-row">
               <span class="op-meta-label">Finality Status</span>
-              <span class="op-meta-val" id="anchor-finality-status" style="color: var(--text-muted); font-weight: 600;">Not submitted</span>
+              <span class="op-meta-val" id="anchor-finality-status" style="color: var(--ash); font-weight: 600;">Not submitted</span>
             </div>
             <div class="op-meta-row" data-private-surface>
               <span class="op-meta-label">Salt Preimage (Hex)</span>
@@ -613,22 +613,22 @@
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Opaque Commitment</span>
-              <span class="op-meta-val" id="anchor-commitment-val" style="color: var(--accent-cyan);">--</span>
+              <span class="op-meta-val" id="anchor-commitment-val" style="color: var(--signal);">--</span>
             </div>
           </div>
         </div>
 
-        <div class="op-meta-row" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-subtle);">
+        <div class="op-meta-row" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line);">
           <span class="op-meta-label">Transaction Hash</span>
           <span class="op-meta-val" id="anchor-tx-hash-wrap">
-            <span id="anchor-tx-hash" style="font-family: var(--font-mono); color: var(--accent-purple);">--</span>
+            <span id="anchor-tx-hash" style="font-family: var(--font-mono); color: var(--chain);">--</span>
             <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash" disabled aria-disabled="true">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
             </button>
-            <a href="#" id="anchor-arbiscan-link" target="_blank" rel="noopener noreferrer" class="arbiscan-link" style="display: none; margin-left: 10px; color: var(--accent-cyan); font-size: 0.82rem; text-decoration: none;">
+            <a href="#" id="anchor-arbiscan-link" target="_blank" rel="noopener noreferrer" class="arbiscan-link" style="display: none; margin-left: 10px; color: var(--signal); font-size: 0.82rem; text-decoration: none;">
               <span>View on Arbiscan ↗</span>
             </a>
           </span>
@@ -640,7 +640,7 @@
             <h4>Live Cryptographic Proof Verifier</h4>
             <button class="btn-action secondary small" id="btn-run-math-verify">Run Browser SHA-256 Proof</button>
           </div>
-          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
+          <p style="font-size: 0.85rem; color: var(--fog); margin-bottom: 12px;">
             Verify client-side in WebCrypto that the local salt preimage and head record CID compute the recorded 32-byte commitment. This calculation does not verify an on-chain transaction or finality.
           </p>
           <div class="verify-result-output" id="verify-result-output" style="display: none;">
@@ -653,7 +653,7 @@
       <div class="table-card" style="margin-top: 24px;">
         <div class="table-header-title">
           <h3 style="font-size: 1.05rem; font-weight: 600;">Arbitrum Relayed Checkpoints Ledger</h3>
-          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Recorded checkpoint receipts. A transaction link is not proof of current inclusion or finality.</p>
+          <p style="font-size: 0.8rem; color: var(--fog); margin-top: 2px;">Recorded checkpoint receipts. A transaction link is not proof of current inclusion or finality.</p>
         </div>
         <table class="data-table" id="table-relayer-checkpoints" style="margin-top: 12px;">
           <thead>
@@ -711,7 +711,7 @@
         <div class="simulator-header">
           <div>
             <h3 class="card-subheading">Recovery Ceremony Stays Local</h3>
-            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
+            <p style="font-size: 0.85rem; color: var(--fog); margin-top: 4px;">
               Use the local CLI with the approved offline procedure to create, distribute, or verify guardian material. This dashboard only presents non-secret readiness metadata.
             </p>
           </div>
@@ -739,22 +739,22 @@
       <div class="fleet-kpi-ribbon" id="fleet-kpi-ribbon">
         <div class="fleet-kpi-card">
           <div class="kpi-title">Tracked Vaults</div>
-          <div class="kpi-value" id="fleet-kpi-vaults" style="color: var(--accent-cyan);">--</div>
+          <div class="kpi-value" id="fleet-kpi-vaults" style="color: var(--signal);">--</div>
           <div class="kpi-subtext">Active in fleet registry</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Active Operators</div>
-          <div class="kpi-value" id="fleet-kpi-operators" style="color: var(--accent-emerald);">-- / --</div>
+          <div class="kpi-value" id="fleet-kpi-operators" style="color: var(--ok);">-- / --</div>
           <div class="kpi-subtext">Operator response counts not reported</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Cluster Latency (Avg)</div>
-          <div class="kpi-value" id="fleet-kpi-latency" style="color: var(--accent-amber);">-- ms</div>
+          <div class="kpi-value" id="fleet-kpi-latency" style="color: var(--signal);">-- ms</div>
           <div class="kpi-subtext">Roundtrip probe time</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Audits Completed</div>
-          <div class="kpi-value" id="fleet-kpi-audits" style="color: var(--accent-purple);">--</div>
+          <div class="kpi-value" id="fleet-kpi-audits" style="color: var(--chain);">--</div>
           <div class="kpi-subtext">SQLite audit log entries</div>
         </div>
       </div>
@@ -771,7 +771,7 @@
       <div class="table-card" style="margin-top: 20px;">
         <div class="table-header-title">
           <h3 style="font-size: 1.05rem; font-weight: 600;">Fleet Vault Registrations</h3>
-          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Locally tracked vaults synchronized with fleet maintenance database</p>
+          <p style="font-size: 0.8rem; color: var(--fog); margin-top: 2px;">Locally tracked vaults synchronized with fleet maintenance database</p>
         </div>
         <table class="data-table" id="table-fleet-vaults" style="margin-top: 12px;">
           <thead>
@@ -792,7 +792,7 @@
       <div class="table-card" style="margin-top: 20px;">
         <div class="table-header-title">
           <h3 style="font-size: 1.05rem; font-weight: 600;">Autonomous Self-Repair Audit History</h3>
-          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Historical verification and repair runs recorded in SQLite fleet.db</p>
+          <p style="font-size: 0.8rem; color: var(--fog); margin-top: 2px;">Historical verification and repair runs recorded in SQLite fleet.db</p>
         </div>
         <table class="data-table" id="table-fleet-audits" style="margin-top: 12px;">
           <thead>
@@ -851,7 +851,7 @@
               <span class="readiness-card-title">Offline Paper Kit</span>
               <span class="readiness-status-badge recommended">Not recorded</span>
             </div>
-            <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+            <p style="font-size: 0.8rem; color: var(--fog); line-height: 1.5; margin: 0;">
               This dashboard cannot confirm possession of an offline recovery kit. Record and test recovery material through the approved local procedure.
             </p>
           </div>
@@ -860,7 +860,7 @@
               <span class="readiness-card-title">Threshold Quorum</span>
               <span class="readiness-status-badge recommended">Not configured here</span>
             </div>
-            <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+            <p style="font-size: 0.8rem; color: var(--fog); line-height: 1.5; margin: 0;">
               Guardian metadata may describe a policy, but it is not proof that usable recovery shares are held or have been tested.
             </p>
           </div>
@@ -869,7 +869,7 @@
               <span class="readiness-card-title">Replication Quorum</span>
               <span class="readiness-status-badge recommended">No audit evidence</span>
             </div>
-            <p style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+            <p style="font-size: 0.8rem; color: var(--fog); line-height: 1.5; margin: 0;">
               Remote recovery coverage is shown only when a snapshot-scoped audit provides evidence.
             </p>
           </div>
@@ -878,11 +878,11 @@
         <div class="recovery-metadata-grid">
           <div class="op-meta-row">
             <span class="op-meta-label">Vault ID</span>
-            <span class="op-meta-val" id="rec-vault-id" style="font-family: var(--font-mono); color: var(--text-primary);">--</span>
+            <span class="op-meta-val" id="rec-vault-id" style="font-family: var(--font-mono); color: var(--bone);">--</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Checksum Verification</span>
-            <span class="op-meta-val" id="rec-crc32" style="color: var(--text-muted); font-weight: 600;">Checksum not available</span>
+            <span class="op-meta-val" id="rec-crc32" style="color: var(--ash); font-weight: 600;">Checksum not available</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Signing PK</span>
@@ -894,18 +894,18 @@
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Locator</span>
-            <span class="op-meta-val" id="rec-locator" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent-cyan);">--</span>
+            <span class="op-meta-val" id="rec-locator" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--signal);">--</span>
           </div>
         </div>
 
-        <div class="secret-reveal-box" style="border-left: 3px solid var(--accent-cyan);">
+        <div class="secret-reveal-box" style="border-left: 3px solid var(--signal);">
           <div style="flex: 1;">
             <div class="secret-box-label" style="display: flex; align-items: center; gap: 8px;">
               <span>Zero-Knowledge Secret Boundary</span>
-              <span class="badge-status-subtle" style="color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.3);">Protected</span>
+              <span class="badge-status-subtle" style="color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">Protected</span>
             </div>
-            <div id="secret-display" class="secret-key-revealed" style="font-size: 0.82rem; line-height: 1.5; color: var(--text-secondary);">
-              🔒 Zero-Knowledge Security Invariant: Your master recovery secret R is never transmitted across the network or stored in browser cache. Run <code>ciphervault recover</code> directly in your local terminal.
+            <div id="secret-display" class="secret-key-revealed" style="font-size: 0.82rem; line-height: 1.5; color: var(--fog);">
+              <span aria-hidden="true" style="color: var(--signal);">▪</span> Zero-Knowledge Security Invariant: Your master recovery secret R is never transmitted across the network or stored in browser cache. Run <code>ciphervault recover</code> directly in your local terminal.
             </div>
           </div>
           <div class="secret-box-actions" style="display: none;">
@@ -916,8 +916,8 @@
 
         <!-- Clean-machine recovery instructions -->
         <div class="recovery-drill-guide">
-          <h4 style="font-size: 0.95rem; margin-bottom: 8px; color: var(--text-primary);">Disaster Recovery Procedure on a Clean Machine:</h4>
-          <ol style="padding-left: 20px; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.8;">
+          <h4 style="font-size: 0.95rem; margin-bottom: 8px; color: var(--bone);">Disaster Recovery Procedure on a Clean Machine:</h4>
+          <ol style="padding-left: 20px; font-size: 0.85rem; color: var(--fog); line-height: 1.8;">
             <li>Install or copy the standalone <code>ciphervault.exe</code> binary to your clean machine.</li>
             <li>Execute the clean recovery command with your paper recovery secret:</li>
           </ol>
@@ -1030,7 +1030,7 @@
         </div>
         <div class="fastcdc-metric-box">
           <div class="f-metric-label">Deduplication Savings</div>
-          <div class="f-metric-val highlight-emerald" id="f-metric-savings-pct">--%</div>
+          <div class="f-metric-val highlight-ok" id="f-metric-savings-pct">--%</div>
           <div class="f-metric-sub" id="f-metric-saved-bytes">-- estimated duplicate bytes</div>
         </div>
         <div class="fastcdc-metric-box">
@@ -1040,7 +1040,7 @@
         </div>
           <div class="fastcdc-metric-box">
             <div class="f-metric-label">Boundary Shift Resilience</div>
-            <div class="f-metric-val highlight-cyan" id="f-metric-boundary-status">Not measured</div>
+            <div class="f-metric-val highlight-signal" id="f-metric-boundary-status">Not measured</div>
             <div class="f-metric-sub">Run an explicit comparison to measure boundary changes.</div>
           </div>
         <div class="fastcdc-metric-box">
@@ -1105,7 +1105,7 @@
           </div>
           <div class="detail-cell full-width">
             <span class="detail-label">Canonical SHA-256 Content ID (CID)</span>
-            <span class="detail-val font-mono highlight-cyan" id="detail-chunk-cid">--</span>
+            <span class="detail-val font-mono highlight-signal" id="detail-chunk-cid">--</span>
           </div>
           <div class="detail-cell full-width">
             <span class="detail-label">Content Preview Policy</span>
@@ -1150,7 +1150,7 @@
         <button class="btn-modal-close" id="btn-close-modal-snapshot" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
           CipherVault uses content-defined FastCDC chunks with 4 KiB, 16 KiB, and 64 KiB boundaries. Small files may receive 4 KiB bucket padding. Capture and remote recovery verification are reported as separate stages.
         </p>
         <div class="form-group">
@@ -1199,7 +1199,7 @@
         <button class="btn-modal-close" id="btn-close-modal-guardian" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body" id="modal-guardian-body">
-        <pre id="modal-guardian-text" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 16px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; max-height: 400px; overflow-y: auto; color: var(--accent-cyan);"></pre>
+        <pre id="modal-guardian-text" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg0); padding: 16px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; max-height: 400px; overflow-y: auto; color: var(--signal);"></pre>
       </div>
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-close-guardian-footer">Close</button>
@@ -1214,7 +1214,7 @@
     <div class="drawer-header">
       <div>
         <span class="drawer-tag">Snapshot Deep Inspector</span>
-        <h3 id="drawer-title" class="drawer-title">Snapshot <span id="drawer-snap-id" class="font-mono highlight-cyan">--</span></h3>
+        <h3 id="drawer-title" class="drawer-title">Snapshot <span id="drawer-snap-id" class="font-mono highlight-signal">--</span></h3>
       </div>
       <button class="btn-modal-close" id="btn-close-drawer" aria-label="Close drawer">&times;</button>
     </div>
@@ -1256,7 +1256,7 @@
         <button class="btn-modal-close" id="btn-close-modal-account-connect" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
           Production account enrollment is signed by the account key and the current vault device. The key stays in your OS keystore; the browser never receives it.
         </p>
         <p class="form-help">Run this from the CipherVault repository that contains your vault. The command signs a short-lived browser handoff locally and prints a one-time production link; open that link to finish sign-in and enroll your passkey or authenticator:</p>
@@ -1278,7 +1278,7 @@
         <button class="btn-modal-close" id="btn-close-modal-account-passkey" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
           Use a passkey stored by your browser, operating system, or security key. The dashboard receives only a short-lived session cookie; vault plaintext and private keys stay local.
         </p>
         <div class="form-group">
@@ -1302,7 +1302,7 @@
         <button class="btn-modal-close" id="btn-close-modal-account-totp" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
           Enter the six-digit code from your enrolled authenticator app. This creates a short-lived account session; it never exposes your vault key.
         </p>
         <div class="form-group">
@@ -1343,7 +1343,7 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="account-membership-list">Memberships</label>
-          <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; max-height: 170px; overflow-y: auto; color: var(--accent-cyan);">Loading…</pre>
+          <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg0); padding: 12px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; max-height: 170px; overflow-y: auto; color: var(--signal);">Loading…</pre>
         </div>
         <div class="form-group">
           <label class="form-label">Role matrix</label>
@@ -1393,7 +1393,7 @@
         <div class="form-group">
           <label class="form-label">Recovery codes</label>
           <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
-          <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg-base); padding: 12px; margin-top: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); white-space: pre-wrap; color: var(--accent-amber);" hidden></pre>
+          <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg0); padding: 12px; margin-top: 8px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; color: var(--signal);" hidden></pre>
           <p class="form-help">Codes are displayed once. Store them offline; generating a new set invalidates unused codes.</p>
         </div>
         <div class="form-group">
@@ -1406,10 +1406,10 @@
           <div id="totp-enrollment-panel" hidden style="margin-top:10px;">
             <p class="form-help">Scan the setup URI or enter the secret manually in your authenticator app. The secret is shown only during enrollment.</p>
             <label class="form-label" for="totp-enrollment-uri">Setup URI</label>
-            <code id="totp-enrollment-uri" style="display:block; word-break:break-all; color:var(--accent-cyan); margin:8px 0;"></code>
+            <code id="totp-enrollment-uri" style="display:block; word-break:break-all; color:var(--signal); margin:8px 0;"></code>
             <button class="btn-action secondary small" id="btn-copy-totp-uri" type="button">Copy setup URI</button>
             <label class="form-label" for="totp-enrollment-secret" style="display:block; margin-top:10px;">Manual secret</label>
-            <code id="totp-enrollment-secret" style="display:block; word-break:break-all; color:var(--accent-cyan); margin:8px 0;"></code>
+            <code id="totp-enrollment-secret" style="display:block; word-break:break-all; color:var(--signal); margin:8px 0;"></code>
             <input type="text" id="input-enrollment-totp-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter the six-digit code to confirm">
             <button class="btn-action primary small" id="btn-confirm-totp-enrollment" type="button" style="margin-top:8px;">Confirm enrollment</button>
           </div>
@@ -1427,7 +1427,7 @@
         <button class="btn-modal-close" id="btn-close-modal-track" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 16px;">
+        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
           Tracking a file registers it for FastCDC chunking and encrypted replication. CipherVault will automatically append it to <code>.gitignore</code> to prevent accidental repository leaks.
         </p>
         <div class="form-group">

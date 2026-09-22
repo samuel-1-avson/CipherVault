@@ -63,18 +63,36 @@ pub(crate) fn ui_shell_router() -> axum::Router {
                     header::CONTENT_SECURITY_POLICY,
                     axum::http::HeaderValue::from_static(UI_SHELL_CSP),
                 );
+                // The shell must never stick in caches: a stale index.html
+                // or bundle is exactly how users end up staring at last
+                // release's UI. Assets are small; always revalidate.
+                response.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-store"),
+                );
                 response
             }),
         )
         .route(
             "/styles.css",
-            get(|| async { ([(header::CONTENT_TYPE, "text/css")], UI_STYLES_CSS) }),
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/css"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    UI_STYLES_CSS,
+                )
+            }),
         )
         .route(
             "/app.js",
             get(|| async {
                 (
-                    [(header::CONTENT_TYPE, "application/javascript")],
+                    [
+                        (header::CONTENT_TYPE, "application/javascript"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
                     UI_APP_JS,
                 )
             }),
@@ -1150,6 +1168,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(revoked_session.status(), StatusCode::UNAUTHORIZED);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn shell_assets_are_not_cached() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        for path in ["/", "/app.js", "/styles.css"] {
+            let response = client
+                .get(format!("{base_url}{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::CACHE_CONTROL)
+                    .and_then(|value| value.to_str().ok()),
+                Some("no-store"),
+                "missing no-store on {path}",
+            );
+        }
 
         server.abort();
         let _ = server.await;

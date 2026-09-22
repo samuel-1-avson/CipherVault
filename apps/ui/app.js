@@ -225,7 +225,7 @@ function renderAccountStatus(account) {
   if (!text) return;
   if (!account || account.configured !== true) {
     text.textContent = 'Account: Local-only';
-    if (dot) dot.style.background = 'var(--text-muted)';
+    if (dot) dot.style.background = 'var(--ash)';
     if (loginButton) loginButton.hidden = true;
     if (connectButton) connectButton.hidden = true;
     if (passkeyButton) passkeyButton.hidden = state.accountService == null;
@@ -241,13 +241,13 @@ function renderAccountStatus(account) {
   const hosted = state.accountService && state.accountService.configured === true;
   if (authenticated) {
     text.textContent = `${hosted ? 'Hosted account' : 'Account'}: ${id} · Session active`;
-    if (dot) dot.style.background = 'var(--accent-green)';
+    if (dot) dot.style.background = 'var(--ok)';
   } else if (account.required) {
     text.textContent = `Account: ${id} · Login required`;
-    if (dot) dot.style.background = 'var(--accent-amber)';
+    if (dot) dot.style.background = 'var(--signal)';
   } else {
     text.textContent = hosted ? 'Hosted account · Sign in with a passkey' : `Account: ${id} · Not linked`;
-    if (dot) dot.style.background = 'var(--text-muted)';
+    if (dot) dot.style.background = 'var(--ash)';
   }
   if (loginButton) {
     loginButton.hidden = hosted || authenticated || !account.required;
@@ -992,7 +992,7 @@ async function fetchVault() {
     if (modalFilesList) {
       modalFilesList.innerHTML = (data.tracked_files || []).map(f => 
         `<span class="file-tag">${escapeHtml(f.path)}</span>`
-      ).join('') || '<span style="color: var(--text-muted); font-size: 0.8rem;">No files currently tracked</span>';
+      ).join('') || '<span style="color: var(--ash); font-size: 0.8rem;">No files currently tracked</span>';
     }
   } catch (e) {
     state.vault = null;
@@ -1045,8 +1045,8 @@ async function fetchOperators() {
 
     if (pulseDot) {
       const pulseColor = isPublicExplorer()
-        ? (onlineCount > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)')
-        : (onlineCount > 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)');
+        ? (onlineCount > 0 ? 'var(--signal)' : 'var(--ash)')
+        : (onlineCount > 0 ? 'var(--ok)' : 'var(--bad)');
       pulseDot.style.backgroundColor = pulseColor;
       pulseDot.style.boxShadow = onlineCount > 0 ? `0 0 10px ${pulseColor}` : 'none';
     }
@@ -1076,7 +1076,7 @@ async function fetchOperators() {
     const avgLatencyElem = document.getElementById('avg-latency-display');
     if (statusText) statusText.textContent = 'Operator telemetry unavailable';
     if (pulseDot) {
-      pulseDot.style.backgroundColor = 'var(--text-muted)';
+      pulseDot.style.backgroundColor = 'var(--ash)';
       pulseDot.style.boxShadow = 'none';
     }
     if (avgLatencyElem) avgLatencyElem.textContent = '-- ms';
@@ -1105,7 +1105,7 @@ function renderAudit(audit) {
     ? state.operators.length
     : null;
   const label = audit ? (audit.healthy ? 'Verified' : 'Degraded') : 'Unverified';
-  const color = audit && audit.healthy ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+  const color = audit && audit.healthy ? 'var(--ok)' : 'var(--signal)';
   const badge = document.getElementById('badge-durability-state');
   if (badge) { badge.textContent = label; badge.style.color = color; }
   const ratio = document.getElementById('durability-ratio');
@@ -1269,15 +1269,15 @@ function renderOperators(operators) {
       ? `${onlineCount}/${totalCount} operators responding`
       : 'Operator status not reported';
     quorumElem.style.color = onlineCount > 0
-      ? (isPublicExplorer() ? 'var(--accent-cyan)' : 'var(--accent-emerald)')
-      : 'var(--text-muted)';
+      ? (isPublicExplorer() ? 'var(--signal)' : 'var(--ok)')
+      : 'var(--ash)';
   }
   if (quorumPill) {
     const dot = quorumPill.querySelector ? quorumPill.querySelector('.pulse-dot') : null;
     if (dot) {
       const dotColor = onlineCount > 0
-        ? (isPublicExplorer() ? 'var(--accent-cyan)' : 'var(--accent-emerald)')
-        : 'var(--text-muted)';
+        ? (isPublicExplorer() ? 'var(--signal)' : 'var(--ok)')
+        : 'var(--ash)';
       dot.style.backgroundColor = dotColor;
       dot.style.boxShadow = onlineCount > 0 ? `0 0 10px ${dotColor}` : 'none';
     }
@@ -1318,12 +1318,12 @@ function renderOperators(operators) {
               <span class="op-id">${escapeHtml(opId)}</span>
               <span class="${isOnline ? 'badge-online' : 'badge-offline'}">${statusLabel}</span>
             </div>
-            <span style="font-size: 0.8rem; color: ${isOnline ? 'var(--accent-cyan)' : 'var(--accent-rose)'}; font-family: var(--font-mono);">${latencyDisplay}</span>
+            <span style="font-size: 0.8rem; color: ${isOnline ? 'var(--signal)' : 'var(--bad)'}; font-family: var(--font-mono);">${latencyDisplay}</span>
           </div>
 
           <div class="op-meta-row">
             <span class="op-meta-label">Endpoint</span>
-            <span class="op-meta-val">${escapeHtml(op.endpoint || 'Not reported')}${op.transport_security === 'https' ? ' <span class="shield-badge" style="color:var(--accent-cyan); font-size:0.75rem; margin-left:6px;">🔒 HTTPS configured</span>' : ''}</span>
+            <span class="op-meta-val">${escapeHtml(op.endpoint || 'Not reported')}${op.transport_security === 'https' ? ' <span class="shield-badge" style="color:var(--signal); font-size:0.75rem; margin-left:6px;">🔒 HTTPS configured</span>' : ''}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Public Key</span>
@@ -1341,24 +1341,24 @@ function renderOperators(operators) {
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Retention Policy</span>
-            <span class="op-meta-val" style="color: ${op.retention_terms ? 'var(--text-secondary)' : 'var(--text-muted)'};">${escapeHtml(retentionTerms)}</span>
+            <span class="op-meta-val" style="color: ${op.retention_terms ? 'var(--fog)' : 'var(--ash)'};">${escapeHtml(retentionTerms)}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Identity</span>
-            <span class="op-meta-val" style="color: ${identityLabel === 'Verified' ? 'var(--accent-emerald)' : identityLabel === 'Expiring soon' ? 'var(--accent-amber)' : 'var(--accent-rose)'};">${identityLabel}</span>
+            <span class="op-meta-val" style="color: ${identityLabel === 'Verified' ? 'var(--ok)' : identityLabel === 'Expiring soon' ? 'var(--signal)' : 'var(--bad)'};">${identityLabel}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Location</span>
-            <span class="op-meta-val" style="color: var(--accent-cyan); font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(op.location || (op.region ? `${op.region} (${op.zone || 'zone not reported'})` : 'Not reported'))}</span>
+            <span class="op-meta-val" style="color: var(--signal); font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(op.location || (op.region ? `${op.region} (${op.zone || 'zone not reported'})` : 'Not reported'))}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Quorum Role</span>
-            <span class="op-meta-val" style="color: var(--accent-purple); font-size: 0.78rem;">${escapeHtml(op.quorum_role || 'Policy not reported')}</span>
+            <span class="op-meta-val" style="color: var(--chain); font-size: 0.78rem;">${escapeHtml(op.quorum_role || 'Policy not reported')}</span>
           </div>
         </div>
-        <div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.75rem; color: var(--text-muted);">Replication Transport</span>
-          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">${transportLabel}</span>
+        <div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.75rem; color: var(--ash);">Replication Transport</span>
+          <span style="font-size: 0.75rem; color: var(--ash); font-weight: 600;">${transportLabel}</span>
         </div>
       </article>
     `;
@@ -1428,7 +1428,7 @@ function renderLatencyBars(operators) {
     && o.latency_ms >= 0
   ));
   if (onlineOps.length === 0) {
-    container.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted);">No operator response latency is reported.</div>`;
+    container.innerHTML = `<div style="font-size: 0.8rem; color: var(--ash);">No operator response latency is reported.</div>`;
     return;
   }
 
@@ -1437,11 +1437,11 @@ function renderLatencyBars(operators) {
   container.innerHTML = onlineOps.map(op => {
     const lat = op.latency_ms;
     const pct = Math.max(8, Math.min(100, Math.round((lat / maxLatency) * 100)));
-    const color = lat < 5 ? 'var(--accent-emerald)' : lat < 25 ? 'var(--accent-cyan)' : 'var(--accent-amber)';
+    const color = lat < 5 ? 'var(--ok)' : lat < 25 ? 'var(--signal)' : 'var(--signal)';
 
     return `
       <div class="latency-bar-row">
-        <span style="font-family: var(--font-mono); color: var(--text-primary); font-weight: 600;">${escapeHtml(op.operator_id || 'op')}</span>
+        <span style="font-family: var(--font-mono); color: var(--bone); font-weight: 600;">${escapeHtml(op.operator_id || 'op')}</span>
         <div class="latency-bar-track">
           <div class="latency-bar-fill" style="width: ${pct}%; background: ${color};"></div>
         </div>
@@ -1523,19 +1523,19 @@ function renderSnapshots(snapshots) {
           <div class="dag-card-header">
             <div style="display: flex; align-items: center; gap: 10px;">
               <span class="dag-message">Snapshot #${snap.device_counter || (sorted.length - idx)}</span>
-              ${isHead ? '<span class="badge-online" style="background: rgba(0, 240, 255, 0.12); color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.4);">ACTIVE HEAD</span>' : ''}
-              ${hasHeadConflict ? '<span class="badge-status-subtle" style="color: var(--accent-amber); border-color: rgba(255, 179, 0, 0.35);">HEAD CONFLICT</span>' : ''}
-              <span style="font-size: 0.75rem; color: var(--text-muted);">(Epoch #${snap.epoch || 1})</span>
+              ${isHead ? '<span class="badge-online" style="background: rgba(255, 176, 0, 0.09); color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">ACTIVE HEAD</span>' : ''}
+              ${hasHeadConflict ? '<span class="badge-status-subtle" style="color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">HEAD CONFLICT</span>' : ''}
+              <span style="font-size: 0.75rem; color: var(--ash);">(Epoch #${snap.epoch || 1})</span>
             </div>
             <span class="dag-time">${timeDisplay}</span>
           </div>
           <div class="dag-hashes">
-            <span>Snapshot CID: <strong style="color: var(--text-primary); cursor: pointer;" class="hash-click" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${snapIdTrunc}</strong></span>
-            <span>Manifest CID: <strong style="color: var(--accent-cyan);">${manifestTrunc}</strong></span>
-            <span>Device: <strong style="color: var(--text-secondary);">${deviceTrunc}</strong></span>
+            <span>Snapshot CID: <strong style="color: var(--bone); cursor: pointer;" class="hash-click" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${snapIdTrunc}</strong></span>
+            <span>Manifest CID: <strong style="color: var(--signal);">${manifestTrunc}</strong></span>
+            <span>Device: <strong style="color: var(--fog);">${deviceTrunc}</strong></span>
           </div>
           <div style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
-            <button class="btn-action-ghost btn-drawer-inspect" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" style="padding: 3px 10px; font-size: 0.75rem; color: var(--accent-cyan); border-color: rgba(0, 240, 255, 0.3);">
+            <button class="btn-action-ghost btn-drawer-inspect" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" style="padding: 3px 10px; font-size: 0.75rem; color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">
               Inspect Manifest ➔
             </button>
           </div>
@@ -1591,14 +1591,14 @@ function renderTrackedFiles(files) {
       <tr>
         <td>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--signal)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
               <polyline points="13 2 13 9 20 9"></polyline>
             </svg>
-            <strong style="color: var(--accent-cyan); font-family: var(--font-mono);">${escapeHtml(file.path)}</strong>
+            <strong style="color: var(--signal); font-family: var(--font-mono);">${escapeHtml(file.path)}</strong>
           </div>
         </td>
-        <td style="font-family: var(--font-mono); color: var(--text-secondary);" title="${escapeHtml(file.file_id_hex)}">
+        <td style="font-family: var(--font-mono); color: var(--fog);" title="${escapeHtml(file.file_id_hex)}">
           ${fileIdTrunc}
         </td>
         <td>${sizeStr}</td>
@@ -1612,7 +1612,7 @@ function renderTrackedFiles(files) {
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
             </button>
-            <button class="btn-action-ghost btn-untrack-file" data-path="${escapeHtml(file.path)}" title="Untrack from vault" style="padding: 3px 8px; font-size: 0.75rem; color: var(--accent-rose); border: 1px solid rgba(248, 113, 113, 0.3);">
+            <button class="btn-action-ghost btn-untrack-file" data-path="${escapeHtml(file.path)}" title="Untrack from vault" style="padding: 3px 8px; font-size: 0.75rem; color: var(--bad); border: 1px solid rgba(255, 92, 92, 0.32);">
               Untrack
             </button>
           </div>
@@ -1643,10 +1643,10 @@ function isMeaningfulHex(value) {
 
 function checkpointDisplayState(record, transactionHash) {
   if (isZeroTransactionHash(transactionHash)) {
-    return { label: 'Not submitted', tone: 'var(--text-muted)', confirmed: false };
+    return { label: 'Not submitted', tone: 'var(--ash)', confirmed: false };
   }
   if (record && record.finality_status === 'reorg_suspected') {
-    return { label: 'Reorg suspected — finalized receipt regressed', tone: 'var(--accent-rose)', confirmed: false };
+    return { label: 'Reorg suspected — finalized receipt regressed', tone: 'var(--bad)', confirmed: false };
   }
 
   const verificationStatus = record && typeof record.verification_status === 'string'
@@ -1659,12 +1659,12 @@ function checkpointDisplayState(record, transactionHash) {
     ? 'Receipt unverified'
     : (normalized === 'submitted' ? 'Submitted — receipt unverified' : rawLabel);
   if (normalized.includes('fail') || normalized.includes('revert')) {
-    return { label, tone: 'var(--accent-rose)', confirmed: false };
+    return { label, tone: 'var(--bad)', confirmed: false };
   }
   if (record && (verificationStatus === 'verified' || record.inclusion_verified === true || record.verified === true)) {
-    return { label, tone: 'var(--accent-emerald)', confirmed: true };
+    return { label, tone: 'var(--ok)', confirmed: true };
   }
-  return { label, tone: 'var(--accent-amber)', confirmed: false };
+  return { label, tone: 'var(--signal)', confirmed: false };
 }
 
 function checkpointExplorerUrl(record, transactionHash) {
@@ -1711,7 +1711,7 @@ function renderAnchorUnavailable() {
   if (elements.inclusionBlock) elements.inclusionBlock.textContent = '#--';
   if (elements.status) {
     elements.status.textContent = 'Not submitted';
-    elements.status.style.color = 'var(--text-muted)';
+    elements.status.style.color = 'var(--ash)';
   }
   if (elements.salt) elements.salt.textContent = '--';
   if (elements.commitment) elements.commitment.textContent = '--';
@@ -1852,7 +1852,7 @@ function renderGuardians(data) {
         <div class="guardian-meta-list">
           <div class="guardian-meta-item">
             <span class="key">Threshold:</span>
-            <span class="val" style="color: var(--accent-cyan);">${threshold}-of-${total}</span>
+            <span class="val" style="color: var(--signal);">${threshold}-of-${total}</span>
           </div>
           <div class="guardian-meta-item">
             <span class="key">Signing PK:</span>
@@ -1864,7 +1864,7 @@ function renderGuardians(data) {
           </div>
           <div class="guardian-meta-item">
             <span class="key">Integrity:</span>
-            <span class="val" style="color: var(--accent-emerald);">CRC32: ${escapeHtml(crc)}</span>
+            <span class="val" style="color: var(--ok);">CRC32: ${escapeHtml(crc)}</span>
           </div>
         </div>
 
@@ -1952,16 +1952,16 @@ function renderRelayerCheckpoints(data) {
       : '';
     if (canary === 'ok') {
       canaryDisplay.textContent = 'Checkpoint canary: fresh';
-      canaryDisplay.style.color = 'var(--accent-emerald)';
+      canaryDisplay.style.color = 'var(--ok)';
     } else if (canary === 'stale') {
       canaryDisplay.textContent = 'Checkpoint canary: STALE - no recent checkpoint';
-      canaryDisplay.style.color = 'var(--accent-amber)';
+      canaryDisplay.style.color = 'var(--signal)';
     } else if (canary === 'missing') {
       canaryDisplay.textContent = 'Checkpoint canary: MISSING - feed unavailable';
-      canaryDisplay.style.color = 'var(--accent-rose)';
+      canaryDisplay.style.color = 'var(--bad)';
     } else {
       canaryDisplay.textContent = 'Checkpoint canary: not reported';
-      canaryDisplay.style.color = 'var(--text-muted)';
+      canaryDisplay.style.color = 'var(--ash)';
     }
   }
 
@@ -1972,10 +1972,10 @@ function renderRelayerCheckpoints(data) {
         ? response.relayer_status.reorg_suspect_tx_hashes.length
         : 0;
       reorgDisplay.textContent = `Reorg suspected (${suspectCount})`;
-      reorgDisplay.style.color = 'var(--accent-rose)';
+      reorgDisplay.style.color = 'var(--bad)';
     } else {
       reorgDisplay.textContent = 'No reorg detected';
-      reorgDisplay.style.color = 'var(--text-muted)';
+      reorgDisplay.style.color = 'var(--ash)';
     }
   }
 
@@ -1984,7 +1984,7 @@ function renderRelayerCheckpoints(data) {
     const status = response.relayer_status || {};
     const isPublicFeed = status.public_read_only === true;
     const isVerifiedOperational = status.operational === true && !isPublicFeed;
-    const color = isVerifiedOperational ? 'var(--accent-emerald)' : 'var(--text-muted)';
+    const color = isVerifiedOperational ? 'var(--ok)' : 'var(--ash)';
     relayerPulse.style.backgroundColor = color;
     relayerPulse.style.boxShadow = isVerifiedOperational ? `0 0 10px ${color}` : 'none';
   }
@@ -2015,7 +2015,7 @@ function renderRelayerCheckpoints(data) {
 
     return `
       <tr>
-        <td style="font-family: var(--font-mono); color: var(--accent-purple); font-weight: 600;">${blockStr}</td>
+        <td style="font-family: var(--font-mono); color: var(--chain); font-weight: 600;">${blockStr}</td>
         <td>
           <div style="display: flex; align-items: center; gap: 6px;">
             <code style="font-family: var(--font-mono); font-size: 0.8rem;">${txTrunc}</code>
@@ -2034,7 +2034,7 @@ function renderRelayerCheckpoints(data) {
             ${escapeHtml(displayState.label)}
           </span>
         </td>
-        <td style="font-family: var(--font-mono); color: var(--accent-cyan);" title="${escapeHtml(cp.commitment || cp.commitment_hex || '')}">
+        <td style="font-family: var(--font-mono); color: var(--signal);" title="${escapeHtml(cp.commitment || cp.commitment_hex || '')}">
           ${commitTrunc}
         </td>
         <td>
@@ -2042,7 +2042,7 @@ function renderRelayerCheckpoints(data) {
             <a href="${escapeHtml(explorerUrl)}" target="_blank" rel="noopener noreferrer" class="arbiscan-link">
               Arbiscan ↗
             </a>
-          ` : '<span style="color: var(--text-muted); font-size: 0.78rem;">No verified explorer link</span>'}
+          ` : '<span style="color: var(--ash); font-size: 0.78rem;">No verified explorer link</span>'}
         </td>
       </tr>
     `;
@@ -2099,11 +2099,11 @@ function renderFleet(data) {
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Probe RTT</span>
-              <span class="op-meta-val" style="color: ${isOnline ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; font-family: var(--font-mono);">${lat}</span>
+              <span class="op-meta-val" style="color: ${isOnline ? 'var(--ok)' : 'var(--bad)'}; font-family: var(--font-mono);">${lat}</span>
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Heartbeat</span>
-              <span class="op-meta-val" style="font-size: 0.76rem; color: var(--text-muted);">${escapeHtml(op.last_heartbeat)}</span>
+              <span class="op-meta-val" style="font-size: 0.76rem; color: var(--ash);">${escapeHtml(op.last_heartbeat)}</span>
             </div>
           </div>
         `;
@@ -2119,14 +2119,14 @@ function renderFleet(data) {
     } else {
       vBody.innerHTML = data.vaults.map(v => `
         <tr>
-          <td style="font-family: var(--font-mono); color: var(--accent-cyan); font-weight: 500;">
+          <td style="font-family: var(--font-mono); color: var(--signal); font-weight: 500;">
             ${truncateHash(v.vault_id, 10, 8)}
           </td>
-          <td style="font-family: var(--font-mono); color: var(--text-secondary);">
+          <td style="font-family: var(--font-mono); color: var(--fog);">
             ${v.head_cid ? truncateHash(v.head_cid, 10, 8) : '<em>Not reported</em>'}
           </td>
           <td>${v.storage_allowance_bytes == null ? 'Not reported' : formatBytes(v.storage_allowance_bytes)}</td>
-          <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(v.registered_at)}</td>
+          <td style="font-size: 0.8rem; color: var(--ash);">${escapeHtml(v.registered_at)}</td>
         </tr>
       `).join('');
     }
@@ -2140,15 +2140,15 @@ function renderFleet(data) {
     } else {
       aBody.innerHTML = data.audit_history.map(a => {
         const isHealthy = a.status === 'Healthy';
-        const color = isHealthy ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+        const color = isHealthy ? 'var(--ok)' : 'var(--signal)';
         return `
           <tr>
-            <td style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(a.timestamp)}</td>
+            <td style="font-size: 0.8rem; color: var(--ash);">${escapeHtml(a.timestamp)}</td>
             <td style="font-family: var(--font-mono);">${truncateHash(a.vault_id, 8, 6)}</td>
             <td><strong style="color: ${color};">${escapeHtml(a.status)}</strong></td>
-            <td style="color: var(--accent-emerald); font-family: var(--font-mono);">${a.healthy_objects ?? '--'}</td>
-            <td style="color: var(--accent-rose); font-family: var(--font-mono);">${a.degraded_objects ?? '--'}</td>
-            <td style="color: var(--accent-cyan); font-family: var(--font-mono);">${a.repaired_objects ?? '--'}</td>
+            <td style="color: var(--ok); font-family: var(--font-mono);">${a.healthy_objects ?? '--'}</td>
+            <td style="color: var(--bad); font-family: var(--font-mono);">${a.degraded_objects ?? '--'}</td>
+            <td style="color: var(--signal); font-family: var(--font-mono);">${a.repaired_objects ?? '--'}</td>
             <td style="font-family: var(--font-mono);">${a.duration_ms == null ? 'Not reported' : `${a.duration_ms} ms`}</td>
           </tr>
         `;
@@ -2169,10 +2169,10 @@ function renderRecoveryKit(recovery, vaultIdHex) {
       recCrc32.textContent = verified
         ? `CRC32: ${checksum} (verified)`
         : `CRC32: ${checksum} (reported; not rechecked)`;
-      recCrc32.style.color = verified ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+      recCrc32.style.color = verified ? 'var(--ok)' : 'var(--signal)';
     } else {
       recCrc32.textContent = 'Checksum not available';
-      recCrc32.style.color = 'var(--text-muted)';
+      recCrc32.style.color = 'var(--ash)';
     }
   }
 
@@ -2563,13 +2563,13 @@ function openSnapshotInspector(snap) {
 
   const parentsList = (snap.parent_ids_hex || []).length > 0 
     ? snap.parent_ids_hex.map(p => `<code>${p}</code>`).join(', ')
-    : '<em style="color: var(--text-muted);">Genesis (No parents)</em>';
+    : '<em style="color: var(--ash);">Genesis (No parents)</em>';
 
   body.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: 14px;">
       <div class="op-meta-row">
         <span class="op-meta-label">Snapshot ID:</span>
-        <span class="op-meta-val" style="color: var(--accent-cyan); word-break: break-all;">${snap.snapshot_id_hex}</span>
+        <span class="op-meta-val" style="color: var(--signal); word-break: break-all;">${snap.snapshot_id_hex}</span>
       </div>
       <div class="op-meta-row">
         <span class="op-meta-label">Manifest CID:</span>
@@ -2593,7 +2593,7 @@ function openSnapshotInspector(snap) {
       </div>
       <div class="op-meta-row">
         <span class="op-meta-label">Cryptographic Signature:</span>
-        <span class="op-meta-val" style="color: var(--accent-emerald);">Ed25519 Verified</span>
+        <span class="op-meta-val" style="color: var(--ok);">Ed25519 Verified</span>
       </div>
     </div>
   `;
@@ -2859,12 +2859,12 @@ function initMathVerifier() {
         const matches = computedHex.toLowerCase() === latest.commitment_hex.toLowerCase();
 
         outputBox.innerHTML = `
-          <div style="font-weight: 700; color: ${matches ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; margin-bottom: 6px;">
+          <div style="font-weight: 700; color: ${matches ? 'var(--ok)' : 'var(--bad)'}; margin-bottom: 6px;">
             ${matches ? '✓ COMMITMENT PREIMAGE MATCHES' : '✗ COMMITMENT MISMATCH'}
           </div>
           <div>Recorded commitment: <code>0x${latest.commitment_hex}</code></div>
           <div>Browser Computed:  <code>0x${computedHex}</code></div>
-          <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 6px;">
+          <div style="color: var(--ash); font-size: 0.75rem; margin-top: 6px;">
             This verifies the local commitment preimage only. It does not verify transaction inclusion or chain finality.
           </div>
         `;
@@ -2973,17 +2973,17 @@ function showToast(message, type = 'info') {
   const typeClass = type === 'error' ? 'error' : (type === 'warning' ? 'warning' : (type === 'success' ? 'success' : 'info'));
   toast.className = `toast ${typeClass}`;
 
-  let strokeColor = 'var(--accent-cyan)';
+  let strokeColor = 'var(--signal)';
   let iconSvg = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>';
 
   if (typeClass === 'error') {
-    strokeColor = 'var(--accent-rose)';
+    strokeColor = 'var(--bad)';
     iconSvg = '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>';
   } else if (typeClass === 'warning') {
-    strokeColor = 'var(--accent-amber)';
+    strokeColor = 'var(--signal)';
     iconSvg = '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>';
   } else if (typeClass === 'success') {
-    strokeColor = 'var(--accent-emerald)';
+    strokeColor = 'var(--ok)';
     iconSvg = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>';
   }
 
@@ -3029,14 +3029,14 @@ function initSseStream() {
       const sseText = document.getElementById('sse-stream-text');
       const sseDot = document.getElementById('sse-pulse-dot');
       if (sseText) sseText.textContent = "Telemetry stream: Active";
-      if (sseDot) sseDot.style.backgroundColor = "var(--accent-cyan)";
+      if (sseDot) sseDot.style.backgroundColor = "var(--signal)";
     };
 
     sse.onerror = () => {
       const sseText = document.getElementById('sse-stream-text');
       const sseDot = document.getElementById('sse-pulse-dot');
       if (sseText) sseText.textContent = "Telemetry stream: Reconnecting";
-      if (sseDot) sseDot.style.backgroundColor = "var(--accent-amber)";
+      if (sseDot) sseDot.style.backgroundColor = "var(--signal)";
     };
   } catch (e) {
     console.warn("SSE initialization error:", e);
@@ -3062,14 +3062,14 @@ function handleTelemetryPacket(data) {
           elem.textContent = typeof op.latency_ms === 'number' && Number.isFinite(op.latency_ms)
             ? `${op.latency_ms} ms`
             : 'Not reported';
-          elem.style.color = "var(--accent-emerald)";
+          elem.style.color = "var(--ok)";
           if (typeof op.latency_ms === 'number' && Number.isFinite(op.latency_ms)) {
             totalLat += op.latency_ms;
             onlineCount++;
           }
         } else {
           elem.textContent = "OFFLINE";
-          elem.style.color = "#ef4444";
+          elem.style.color = "#FF5C5C";
         }
       }
     });
@@ -3087,10 +3087,10 @@ function handleTelemetryPacket(data) {
   if (tokenElem) {
     if (data.token_attached) {
       tokenElem.textContent = "PIV Smartcard Detected (Slot 9C/9D Ready)";
-      tokenElem.style.color = "var(--accent-emerald)";
+      tokenElem.style.color = "var(--ok)";
     } else {
       tokenElem.textContent = "No Physical Smartcard Attached";
-      tokenElem.style.color = "var(--text-secondary)";
+      tokenElem.style.color = "var(--fog)";
     }
   }
 }
@@ -3245,7 +3245,7 @@ function closeSseStream() {
   const sseText = document.getElementById('sse-stream-text');
   const sseDot = document.getElementById('sse-pulse-dot');
   if (sseText) sseText.textContent = 'Telemetry stream: Paused';
-  if (sseDot) sseDot.style.backgroundColor = 'var(--text-muted)';
+  if (sseDot) sseDot.style.backgroundColor = 'var(--ash)';
 }
 
 function cycleFocusWithin(container, event) {
@@ -3277,7 +3277,7 @@ function resetFastCdcMetrics() {
   const boundaryStatus = document.getElementById('f-metric-boundary-status');
   if (boundaryStatus) {
     boundaryStatus.textContent = 'Not measured';
-    boundaryStatus.style.color = 'var(--text-muted)';
+    boundaryStatus.style.color = 'var(--ash)';
   }
 }
 
@@ -3359,13 +3359,13 @@ function renderFastCdcResults(data) {
   if (boundaryStatusElem) {
     if (m.boundary_shift_resilient === true) {
       boundaryStatusElem.textContent = 'Measured: resilient';
-      boundaryStatusElem.style.color = 'var(--accent-emerald)';
+      boundaryStatusElem.style.color = 'var(--ok)';
     } else if (m.boundary_shift_resilient === false) {
       boundaryStatusElem.textContent = 'Measured: changes detected';
-      boundaryStatusElem.style.color = 'var(--accent-amber)';
+      boundaryStatusElem.style.color = 'var(--signal)';
     } else {
       boundaryStatusElem.textContent = 'Not measured';
-      boundaryStatusElem.style.color = 'var(--text-muted)';
+      boundaryStatusElem.style.color = 'var(--ash)';
     }
   }
 
@@ -3445,12 +3445,12 @@ function selectChunk(index) {
   if (badgeElem) {
     if (chunk.is_duplicate) {
       badgeElem.textContent = "Duplicate chunk in this inspection";
-      badgeElem.style.color = "#f87171";
-      badgeElem.style.borderColor = "rgba(239, 68, 68, 0.4)";
+      badgeElem.style.color = "#FF8A8A";
+      badgeElem.style.borderColor = "rgba(255, 92, 92, 0.32)";
     } else {
       badgeElem.textContent = "Unique chunk in this inspection";
-      badgeElem.style.color = "var(--accent-emerald)";
-      badgeElem.style.borderColor = "rgba(0, 230, 118, 0.4)";
+      badgeElem.style.color = "var(--ok)";
+      badgeElem.style.borderColor = "rgba(87, 227, 137, 0.3)";
     }
   }
 
@@ -3564,7 +3564,7 @@ async function runDiffComparison() {
     console.error("Diff computation error:", err);
     if (container) {
       container.innerHTML = `
-        <div class="diff-placeholder" style="color: var(--accent-rose);">
+        <div class="diff-placeholder" style="color: var(--bad);">
           <p>Failed to calculate diff: ${escapeHtml(err.message)}</p>
         </div>
       `;
@@ -3614,12 +3614,12 @@ function renderDiffResults(report) {
   if (files.length === 0) {
     container.innerHTML = `
       <div class="diff-placeholder">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent-emerald)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 12px;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 12px;">
           <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
           <polyline points="22 4 12 14.01 9 11.01"></polyline>
         </svg>
         <p>No confidential differences detected between <strong>${escapeHtml(baseLabel)}</strong> and <strong>${escapeHtml(targetLabel)}</strong>.</p>
-        <span style="font-size: 0.8rem; color: var(--text-muted);">All secrets, keys, and values are byte-identical.</span>
+        <span style="font-size: 0.8rem; color: var(--ash);">All secrets, keys, and values are byte-identical.</span>
       </div>
     `;
     return;
@@ -3637,7 +3637,7 @@ function renderDiffResults(report) {
       ? '<span class="diff-badge removed">- DELETED</span>'
       : isModifiedFile
       ? '<span class="diff-badge modified">~ MODIFIED</span>'
-      : '<span class="diff-badge" style="background: rgba(255,255,255,0.06); color: var(--text-muted);">UNCHANGED</span>';
+      : '<span class="diff-badge" style="background: rgba(255,255,255,0.06); color: var(--ash);">UNCHANGED</span>';
 
     const rawEntries = file.entries || file.lines || [];
     const linesHtml = rawEntries.map(entry => {
@@ -3701,7 +3701,7 @@ function renderDiffResults(report) {
       <article class="diff-card">
         <div class="diff-card-header">
           <div class="diff-file-info">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--signal)" stroke-width="2">
               <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
               <polyline points="13 2 13 9 20 9"></polyline>
             </svg>
@@ -3785,7 +3785,7 @@ function initFileManagement() {
         }
 
         showToast(data.message || `Tracked '${pathVal}' successfully`);
-        appendTerminalLog('TRACK', `Tracked confidential file: ${pathVal} (.gitignore updated)`, 'var(--accent-emerald)');
+        appendTerminalLog('TRACK', `Tracked confidential file: ${pathVal} (.gitignore updated)`, 'var(--ok)');
         closeModal(modalTrack);
         fetchVault();
       } catch (err) {
@@ -3824,7 +3824,7 @@ function initFileManagement() {
         }
 
         showToast(data.message || `Untracked '${filePath}'`);
-        appendTerminalLog('UNTRACK', `Untracked secret file: ${filePath}`, 'var(--accent-rose)');
+        appendTerminalLog('UNTRACK', `Untracked secret file: ${filePath}`, 'var(--bad)');
         fetchVault();
       } catch (err) {
         showToast(err.message, 'error');
@@ -3880,7 +3880,7 @@ function openSnapshotDrawer(snap) {
     const manifestCid = snap.manifest_cid_hex;
     const parents = (snap.parent_ids_hex || []).length > 0
       ? snap.parent_ids_hex.map(p => `<code>${truncateHash(p, 8, 6)}</code>`).join(', ')
-      : '<em style="color: var(--text-muted);">Genesis</em>';
+      : '<em style="color: var(--ash);">Genesis</em>';
 
     body.innerHTML = `
       <div class="drawer-section">
@@ -3888,7 +3888,7 @@ function openSnapshotDrawer(snap) {
         <div class="drawer-meta-grid">
           <div class="drawer-meta-item">
             <span class="lbl">Snapshot ID</span>
-            <span class="val font-mono highlight-cyan" style="word-break: break-all;">${escapeHtml(snap.snapshot_id_hex)}</span>
+            <span class="val font-mono highlight-signal" style="word-break: break-all;">${escapeHtml(snap.snapshot_id_hex)}</span>
           </div>
           <div class="drawer-meta-item">
             <span class="lbl">Manifest CID</span>
@@ -3941,8 +3941,8 @@ function openSnapshotDrawer(snap) {
           <span id="drawer-files-count-badge" class="badge-status-subtle">Inspecting...</span>
         </div>
         <div class="drawer-files-list" id="drawer-files-list">
-          <div style="color: var(--accent-cyan); font-size: 0.85rem; padding: 8px 0;">
-            <span class="spinner" style="display:inline-block; width:12px; height:12px; border:2px solid var(--accent-cyan); border-top-color:transparent; border-radius:50%; animation:spin 1s linear infinite; margin-right:8px; vertical-align:middle;"></span>
+          <div style="color: var(--signal); font-size: 0.85rem; padding: 8px 0;">
+            <span class="spinner" style="display:inline-block; width:12px; height:12px; border:2px solid var(--signal); border-top-color:transparent; border-radius:50%; animation:spin 1s linear infinite; margin-right:8px; vertical-align:middle;"></span>
             Decrypting historical snapshot manifest...
           </div>
         </div>
@@ -3950,7 +3950,7 @@ function openSnapshotDrawer(snap) {
 
       <div class="drawer-section">
         <span class="drawer-sec-title">Quorum Replicas</span>
-        <div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+        <div style="font-size: 0.82rem; color: var(--fog); line-height: 1.5;">
           No snapshot-scoped replica proof is loaded here. Run an explicit local recovery audit before treating this snapshot as recoverable.
         </div>
       </div>
@@ -3974,7 +3974,7 @@ function openSnapshotDrawer(snap) {
         if (data && data.status === 'ok' && Array.isArray(data.files)) {
           if (badgeElem) badgeElem.textContent = `${data.files_count} files (${formatBytes(data.total_bytes)})`;
           if (data.files.length === 0) {
-            filesListElem.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No confidential files registered in this snapshot manifest.</div>';
+            filesListElem.innerHTML = '<div style="color: var(--ash); font-size: 0.85rem;">No confidential files registered in this snapshot manifest.</div>';
           } else {
             filesListElem.innerHTML = data.files.map(f => `
               <div class="drawer-file-item ${f.is_deleted ? 'deleted' : ''}">
@@ -3984,14 +3984,14 @@ function openSnapshotDrawer(snap) {
                 </div>
                 <div class="file-sub font-mono text-muted" style="display: flex; justify-content: space-between; align-items: center;">
                   <span>${f.chunk_count} chunk${f.chunk_count === 1 ? '' : 's'} · ID: ${truncateHash(f.file_id_hex, 6, 4)}</span>
-                  ${f.is_deleted ? '<span class="badge-status-subtle" style="color: var(--accent-rose); border-color: rgba(248, 113, 113, 0.3);">DELETED</span>' : ''}
+                  ${f.is_deleted ? '<span class="badge-status-subtle" style="color: var(--bad); border-color: rgba(255, 92, 92, 0.32);">DELETED</span>' : ''}
                 </div>
               </div>
             `).join('');
           }
         } else {
           if (badgeElem) badgeElem.textContent = 'Unavailable';
-          filesListElem.innerHTML = '<div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">This snapshot manifest is unavailable or cannot be decoded locally. Current vault files are intentionally not shown here because they may belong to a different snapshot.</div>';
+          filesListElem.innerHTML = '<div style="font-size: 0.82rem; color: var(--fog); line-height: 1.5;">This snapshot manifest is unavailable or cannot be decoded locally. Current vault files are intentionally not shown here because they may belong to a different snapshot.</div>';
         }
       })
       .catch(() => {
@@ -4000,7 +4000,7 @@ function openSnapshotDrawer(snap) {
         const badgeElem = document.getElementById('drawer-files-count-badge');
         if (badgeElem) badgeElem.textContent = 'Unavailable';
         if (filesListElem) {
-          filesListElem.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">Historical manifest could not be loaded. Current vault files are intentionally not substituted.</div>';
+          filesListElem.innerHTML = '<div style="color: var(--ash); font-size: 0.85rem;">Historical manifest could not be loaded. Current vault files are intentionally not substituted.</div>';
         }
       });
     // Safe restore prompt with target folder selection (F12)
@@ -4030,7 +4030,7 @@ function openSnapshotDrawer(snap) {
           }
 
           showToast(data.message || `Snapshot restored to ${targetDir}`, 'success');
-          appendTerminalLog('RESTORE', `Restored snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 8, 6)}) to ${targetDir}`, 'var(--accent-emerald)');
+          appendTerminalLog('RESTORE', `Restored snapshot #${counter} (${truncateHash(snap.snapshot_id_hex, 8, 6)}) to ${targetDir}`, 'var(--ok)');
           if (typeof fetchActivity === 'function') fetchActivity();
           closeSnapshotDrawer();
         } catch (err) {
@@ -4119,7 +4119,7 @@ function initTerminalConsole() {
     if (!cmd) return;
     cmdInput.value = '';
 
-    appendTerminalLog('CLI', cmd, 'var(--text-primary)');
+    appendTerminalLog('CLI', cmd, 'var(--bone)');
     handleTerminalCommand(cmd);
   };
 
@@ -4135,7 +4135,7 @@ function initTerminalConsole() {
   }
 }
 
-function appendTerminalLog(tag, message, color = 'var(--accent-cyan)') {
+function appendTerminalLog(tag, message, color = 'var(--signal)') {
   const logs = document.getElementById('terminal-logs');
   const counter = document.getElementById('terminal-event-counter');
 
@@ -4165,13 +4165,13 @@ function handleTerminalCommand(cmd) {
 
   switch (root) {
     case 'help':
-      appendTerminalLog('SYS', 'Available commands: status, diff, audit, refresh, fleet, clear', 'var(--accent-purple)');
+      appendTerminalLog('SYS', 'Available commands: status, diff, audit, refresh, fleet, clear', 'var(--chain)');
       break;
     case 'status':
       const vId = state.vault ? truncateHash(state.vault.vault_id_hex, 8, 6) : 'Uninitialized';
       const onlineOps = (state.operators || []).filter(operatorResponded).length;
       const totalOps = (state.operators || []).length;
-      appendTerminalLog('STATUS', `Vault: ${vId} | Operators: ${onlineOps}/${totalOps || '--'} responding | Files: ${(state.vault?.tracked_files || []).length}`, 'var(--accent-cyan)');
+      appendTerminalLog('STATUS', `Vault: ${vId} | Operators: ${onlineOps}/${totalOps || '--'} responding | Files: ${(state.vault?.tracked_files || []).length}`, 'var(--signal)');
       break;
     case 'diff':
       const tabDiffBtn = document.getElementById('tab-btn-diff');
@@ -4179,24 +4179,24 @@ function handleTerminalCommand(cmd) {
       runDiffComparison();
       break;
     case 'audit':
-      appendTerminalLog('AUDIT', 'Triggering live multi-operator audit verification...', 'var(--accent-amber)');
+      appendTerminalLog('AUDIT', 'Triggering live multi-operator audit verification...', 'var(--signal)');
       fetchAudit();
       break;
     case 'refresh':
-      appendTerminalLog('REFRESH', 'Synchronizing entire vault state...', 'var(--accent-cyan)');
+      appendTerminalLog('REFRESH', 'Synchronizing entire vault state...', 'var(--signal)');
       fetchAllData();
       break;
     case 'fleet':
       const tabFleetBtn = document.querySelector('[data-target="tab-fleet"]');
       if (tabFleetBtn) tabFleetBtn.click();
-      appendTerminalLog('FLEET', 'Switched to Maintenance Fleet Overview', 'var(--accent-purple)');
+      appendTerminalLog('FLEET', 'Switched to Maintenance Fleet Overview', 'var(--chain)');
       break;
     case 'clear':
       const logs = document.getElementById('terminal-logs');
       if (logs) logs.innerHTML = '<div class="terminal-line system-line">[SYSTEM] Terminal logs cleared.</div>';
       break;
     default:
-      appendTerminalLog('SYS', `Unknown command: '${cmd}'. Type 'help' for options.`, 'var(--accent-rose)');
+      appendTerminalLog('SYS', `Unknown command: '${cmd}'. Type 'help' for options.`, 'var(--bad)');
       break;
   }
 }
