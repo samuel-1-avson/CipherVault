@@ -88,7 +88,13 @@ Generated 2026-09-19 from the 1.0.7-beta.6 tree; when in doubt the code wins.
 - `POST /v1/leases`
   `{ closure_digest_hex, byte_count, term_days }` → `LeaseReceipt`.
 - `POST /v1/leases/:id/renew` `{ additional_days, byte_count }` →
-  `LeaseReceipt`. CLI: `lease create|renew`.
+  `LeaseReceipt`. CLI: `lease create|renew|list`.
+- `GET /v1/leases?limit=N` (strict session, N = 1–1000, default 100) →
+  `{ leases: [LeaseReceipt], total }`. Lists only the calling vault's
+  leases (owner sidecars; legacy leases without sidecars stay invisible).
+  Same-vault session required — cross-vault and anonymous callers get
+  401; disabled via `CIPHERVAULT_DISABLE_LEASE_LIST` → 403.
+  CLI: `lease list` (merges receipts into the local log).
 
 ### Recovery log
 

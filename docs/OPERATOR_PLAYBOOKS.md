@@ -253,3 +253,36 @@ node key — the same key rejoining is grace, not 409; issue a fresh
 one for genuinely new nodes); 404 on refresh = routing entry lapsed
 (re-join with the ORIGINAL ticket while it is valid, then refresh on
 a schedule).
+
+## 11. Lease listing and its abuse bounds
+
+`GET /v1/leases?limit=N` (and the P2P `ListLeases` RPC) lets a vault
+list its own leases for cross-device confirmation and receipt repair
+(CLI: `lease list`, which merges into the local receipt log). The
+endpoint is session-scoped AND vault-scoped: the vault comes from the
+validated session headers, never from a caller filter, so vaults
+cannot enumerate each other. Legacy leases without owner sidecars
+(`leases/<lease-id>.owner`, written on create/renew) stay invisible to every
+vault rather than leaking.
+
+Abuse bounds, in order of escalation:
+
+- Pagination cap: `limit` must be 1-1000 (default 100); the response
+  carries `total` so clients page without refetching everything.
+- Kill-switch: set `CIPHERVAULT_DISABLE_LEASE_LIST=1` (also accepts
+  `true`/`yes`) and restart; listing fails closed with 403 on both
+  transports before any session or crypto work. Lease create/renew
+  are unaffected.
+- P2P flood: the per-peer RPC rate limiter runs before auth/serve, so
+  over-limit callers get a plain 429 without burning session work.
+- HTTP flood: there is no HTTP rate limiter on any route (lease
+  listing shares the object routes' posture); if `GET /v1/leases` is
+  abused, use the kill-switch above and front the node with your
+  usual L7 throttle.
+
+Failure hints: 401 = missing/foreign-vault session (each vault sees
+only its own sidecars); 400 = bad `limit` or missing vault header;
+403 = listing disabled on this node. Locked by
+`handlers::tests::lease_list_is_session_scoped_per_vault` (two vaults
+plus anonymous) and
+`state::tests::lease_listing_is_vault_scoped_and_skips_legacy`.

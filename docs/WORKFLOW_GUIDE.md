@@ -468,7 +468,38 @@ Set-Content extra.key "fake-key-material"; & $cli track extra.key
 - `ciphervault ui` — serves the web dashboard; open the printed URL,
   check Overview + Explorer tabs, then stop the server.
 
-### 9. Cleanup
+### 9. My Data overview
+
+```powershell
+cd $env:TEMP\cv-walk
+& $cli status --overview
+# Expect: Snapshots, Files, Leases, Anchors, Recent activity sections —
+# all aggregated on-device, no login needed.
+& $cli status --overview --json | ConvertFrom-Json | Select-Object -ExpandProperty leases
+# Expect: parses; each entry has lease_id, operator, bytes, expires_at_utc, expired.
+$closure = "ab" * 32
+& $cli lease create $closure 1024 --term-days 30
+# Expect: JSON LeaseReceipt; the receipt lands in the local log immediately.
+& $cli lease list
+# Expect: JSON { leases, total }; entries merge into the local receipt log, so
+# `status --overview` keeps showing them afterwards, even offline.
+& $cli lease list --limit 10 -o http://127.0.0.1:8262
+# Expect: same shape against the second node (per-operator listing).
+$dash = Start-Process -FilePath $cli -ArgumentList "ui --local --no-browser --port 8080" `
+  -WindowStyle Hidden -PassThru
+Start-Sleep 2
+(Invoke-RestMethod http://127.0.0.1:8080/api/overview).leases.Count -ge 1
+# Expect: True — the Overview tab's API mirrors the CLI sections.
+# Open http://127.0.0.1:8080 in a browser to see the tab.
+# The public explorer is untouched (verification-only, no login wall).
+Stop-Process -Id $dash.Id -Force
+cd $env:TEMP\cv-walkB
+& $cli status --overview
+# Expect: the same snapshots/leases as cv-walk — the full data picture
+# follows `pull` to a second device with no extra steps.
+```
+
+### 10. Cleanup
 
 ```powershell
 Get-Process ciphervault-operator | Stop-Process -Force
