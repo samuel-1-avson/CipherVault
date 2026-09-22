@@ -79,8 +79,205 @@ impl StatusReport {
     }
 }
 
-pub(crate) fn cmd_status(json: bool) -> Result<()> {
+#[derive(Debug, Clone, serde::Serialize)]
+struct OverviewSnapshotJson {
+    snapshot_id_hex: String,
+    epoch: u64,
+    advisory_timestamp_utc: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OverviewAnchorJson {
+    tx_hash_hex: String,
+    block_number: u64,
+    chain_id: u64,
+    timestamp_utc: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OverviewActivityJson {
+    event_type: String,
+    summary: String,
+    created_at_utc: i64,
+}
+
+/// My Data overview: local-first aggregation. Everything here reads the
+/// on-device store; nothing phones home. Live replica health stays in `audit`.
+#[derive(Debug, Clone, serde::Serialize)]
+struct OverviewReport {
+    vault_id_hex: String,
+    device_id_hex: String,
+    current_epoch: u64,
+    snapshots: Vec<OverviewSnapshotJson>,
+    active_head_hex: Option<String>,
+    tracked_files: usize,
+    tracked_bytes_on_disk: u64,
+    operators: Vec<String>,
+    leases: Vec<LeaseStatusJson>,
+    anchors: Vec<OverviewAnchorJson>,
+    recent_activity: Vec<OverviewActivityJson>,
+}
+
+fn short_hex(bytes: &[u8], len: usize) -> String {
+    hex::encode(bytes).chars().take(len).collect::<String>()
+}
+
+fn build_overview_report(
+    store: &ciphervault_local_store::LocalVaultStore,
+    now_utc: u64,
+) -> Result<OverviewReport> {
+    let vault_id = store.get_vault_id()?;
+    let (device_id, _, _, epoch) = store.get_device_state()?;
+    let snapshots = store.list_snapshots()?;
+    let active_head = store.get_active_head()?;
+    let tracked = store.list_tracked_files()?;
+    let operators = get_configured_operators();
+    let lease_receipts = store.list_lease_receipts()?;
+    let anchors = store.list_checkpoint_evidence()?;
+    let activity = store.list_activity(5)?;
+
+    let mut tracked_bytes: u64 = 0;
+    for (rel_path, _) in &tracked {
+        if let Ok(meta) = fs::metadata(rel_path) {
+            tracked_bytes = tracked_bytes.saturating_add(meta.len());
+        }
+    }
+
+    Ok(OverviewReport {
+        vault_id_hex: hex::encode(vault_id),
+        device_id_hex: hex::encode(device_id),
+        current_epoch: epoch,
+        snapshots: snapshots
+            .iter()
+            .map(|snap| OverviewSnapshotJson {
+                snapshot_id_hex: hex::encode(&snap.snapshot_id),
+                epoch: snap.epoch,
+                advisory_timestamp_utc: snap.advisory_timestamp_utc,
+            })
+            .collect(),
+        active_head_hex: active_head
+            .as_ref()
+            .map(|head| hex::encode(&head.snapshot_id)),
+        tracked_files: tracked.len(),
+        tracked_bytes_on_disk: tracked_bytes,
+        operators: operators
+            .iter()
+            .map(|op| mask_operator_endpoint(op))
+            .collect::<Vec<_>>(),
+        leases: lease_receipts
+            .iter()
+            .map(|receipt| LeaseStatusJson {
+                lease_id: receipt.lease_id.clone(),
+                operator: mask_operator_endpoint(&receipt.operator_endpoint),
+                bytes: receipt.bytes,
+                expires_at_utc: receipt.expires_at_utc,
+                expired: receipt.expires_at_utc <= now_utc,
+            })
+            .collect(),
+        anchors: anchors
+            .iter()
+            .map(|evidence| OverviewAnchorJson {
+                tx_hash_hex: hex::encode(&evidence.tx_hash),
+                block_number: evidence.block_number,
+                chain_id: evidence.chain_id,
+                timestamp_utc: evidence.timestamp_utc,
+            })
+            .collect(),
+        recent_activity: activity
+            .iter()
+            .map(|entry| OverviewActivityJson {
+                event_type: entry.event_type.clone(),
+                summary: entry.summary.clone(),
+                created_at_utc: entry.created_at_utc,
+            })
+            .collect(),
+    })
+}
+
+fn print_overview_report(report: &OverviewReport, now_utc: u64) {
+    println!("{}", "CipherVault My Data Overview".bold());
+    println!("--------------------------------------------------");
+    println!("  Vault ID:        {}", report.vault_id_hex.yellow());
+    println!("  Device ID:       {}", report.device_id_hex.cyan());
+    println!("  Current Epoch:   {}", report.current_epoch);
+
+    println!("\nSnapshots ({}):", report.snapshots.len());
+    match &report.active_head_hex {
+        Some(head) => println!(
+            "  Active Head:     {}",
+            short_hex(&hex::decode(head).unwrap_or_default(), 16).green()
+        ),
+        None => println!(
+            "  Active Head:     {}",
+            "None (no snapshots committed yet)".dimmed()
+        ),
+    }
+    for snap in report.snapshots.iter().rev().take(5) {
+        println!(
+            "  - {} (epoch {}, t={})",
+            short_hex(&hex::decode(&snap.snapshot_id_hex).unwrap_or_default(), 16),
+            snap.epoch,
+            snap.advisory_timestamp_utc,
+        );
+    }
+    if report.snapshots.len() > 5 {
+        println!("  ... and {} older", report.snapshots.len() - 5);
+    }
+
+    println!(
+        "\nTracked Files ({}):      {} bytes on disk",
+        report.tracked_files, report.tracked_bytes_on_disk
+    );
+    println!("\nOperators ({}):", report.operators.len());
+    for op in &report.operators {
+        println!("  - {}", op.cyan());
+    }
+
+    println!("\nStorage Leases ({}):", report.leases.len());
+    for lease in &report.leases {
+        let expiry = if lease.expired {
+            "expired".red()
+        } else {
+            let days_left = lease.expires_at_utc.saturating_sub(now_utc) / 86400;
+            format!("in {}d", days_left).green()
+        };
+        println!(
+            "  - {} [{}] {} bytes ({})",
+            lease.lease_id.chars().take(12).collect::<String>().yellow(),
+            lease.operator.cyan(),
+            lease.bytes,
+            expiry,
+        );
+    }
+
+    println!("\nAnchors ({}):", report.anchors.len());
+    for anchor in &report.anchors {
+        println!(
+            "  - tx {} block {} (chain {})",
+            short_hex(&hex::decode(&anchor.tx_hash_hex).unwrap_or_default(), 16),
+            anchor.block_number,
+            anchor.chain_id,
+        );
+    }
+
+    println!("\nRecent Activity ({}):", report.recent_activity.len());
+    for entry in &report.recent_activity {
+        println!("  - [{}] {}", entry.event_type.dimmed(), entry.summary);
+    }
+}
+
+pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
     let store = get_vault_store()?;
+    if overview {
+        let now_utc = Utc::now().timestamp().max(0) as u64;
+        let report = build_overview_report(&store, now_utc)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_overview_report(&report, now_utc);
+        }
+        return Ok(());
+    }
     let vault_id = store.get_vault_id()?;
     let (device_id, _, counter, epoch) = store.get_device_state()?;
     let tracked = store.list_tracked_files()?;
@@ -444,6 +641,51 @@ mod tests {
         assert!(json["active_head_hex"].is_null());
         assert!(json["active_epoch_age_days"].is_null());
         assert_eq!(json["active_epoch_stale"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn overview_report_serializes_stable_contract() {
+        let report = OverviewReport {
+            vault_id_hex: "aa".repeat(32),
+            device_id_hex: "bb".repeat(32),
+            current_epoch: 1,
+            snapshots: vec![OverviewSnapshotJson {
+                snapshot_id_hex: "cc".repeat(32),
+                epoch: 1,
+                advisory_timestamp_utc: 1_000_000,
+            }],
+            active_head_hex: Some("cc".repeat(32)),
+            tracked_files: 1,
+            tracked_bytes_on_disk: 42,
+            operators: vec!["https://op1.cipherv.online".to_string()],
+            leases: vec![LeaseStatusJson {
+                lease_id: "lease-1".to_string(),
+                operator: "https://op1.cipherv.online".to_string(),
+                bytes: 100,
+                expires_at_utc: 2_000_000,
+                expired: false,
+            }],
+            anchors: vec![OverviewAnchorJson {
+                tx_hash_hex: "dd".repeat(32),
+                block_number: 7,
+                chain_id: 42161,
+                timestamp_utc: 1_000_001,
+            }],
+            recent_activity: vec![OverviewActivityJson {
+                event_type: "push".to_string(),
+                summary: "snapshot".to_string(),
+                created_at_utc: 1_000_002,
+            }],
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["snapshots"].as_array().unwrap().len(), 1);
+        assert_eq!(json["tracked_files"], serde_json::json!(1));
+        assert_eq!(json["leases"][0]["lease_id"], serde_json::json!("lease-1"));
+        assert_eq!(json["anchors"][0]["chain_id"], serde_json::json!(42161));
+        assert_eq!(
+            json["recent_activity"][0]["event_type"],
+            serde_json::json!("push")
+        );
     }
 
     #[test]

@@ -163,6 +163,12 @@ enum Commands {
             help = "Emit machine-readable JSON for editor gutter feeds and CI"
         )]
         json: bool,
+
+        #[arg(
+            long,
+            help = "Show the full My Data overview: snapshots, files, leases, anchors, recent activity"
+        )]
+        overview: bool,
     },
 
     /// Create, encrypt, and replicate a snapshot across independent operators
@@ -1139,7 +1145,7 @@ async fn run(cli: Cli) -> Result<()> {
             no_gitignore,
         } => cmd_track(paths, from_gitignore, no_gitignore),
         Commands::Untrack { paths } => cmd_untrack(paths),
-        Commands::Status { json } => cmd_status(json),
+        Commands::Status { json, overview } => cmd_status(json, overview),
         Commands::Push {
             message,
             touch,
