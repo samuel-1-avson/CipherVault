@@ -179,9 +179,16 @@ vault identities, files, and snapshots stay private by design.
 
 ### Recovery and safety nets
 
-- **New machine:** install the binary, then
+- **New machine (files only):** install the binary, then
   `ciphervault recover --kit printed_kit.txt --to ./restored/` — no
-  account, no password, no coordinator needed.
+  account, no password, no coordinator needed. This restores file
+  contents only; it creates no vault store, so `pull`, `status`,
+  and the overview are unavailable there.
+- **Second device (full vault):** the canonical new-device flow is
+  copying `.ciphervault/` from an existing device, then
+  `ciphervault pull`. The store — snapshots, receipt log, overview —
+  travels with the copy and syncs from the operator cluster
+  (walkthrough §3 and §9 verify this end to end).
 - **Rotation:** `ciphervault rekey` starts a new epoch; old chunks stay
   readable, new writes use the new key.
 - **Teams:** `auth` (account login), `device list|revoke`, and guardian

@@ -88,8 +88,8 @@ Full two-track walkthrough: [docs/SETUP_GUIDE.md](../../docs/SETUP_GUIDE.md).
 
 ## 6. Refreshing the winget hash for a new release
 
-The newest `winget/.../*.installer.yaml` ships `InstallerSha256` as zeros.
-After the GitHub release publishes, fill it from `SHA256SUMS.txt`:
+The release workflow fills `InstallerSha256` (plus the scoop/brew hashes) automatically from the published `SHA256SUMS.txt` and commits the result to `main`.
+If that job ever fails, fill manually from `SHA256SUMS.txt`:
 
 ```powershell
 $tag = 'v1.0.12'

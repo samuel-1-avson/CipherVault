@@ -26,7 +26,7 @@ Unlike traditional cloud SaaS tools where developers must register centralized a
 | **Identity & Access** | Centralized username, password, OAuth, and API tokens. | **Self-sovereign cryptographic keypairs** derived locally from Master Secret $R$. No email, account, or registration. |
 | **Where Files Reside** | Centralized multi-tenant servers (e.g., Microsoft Azure / AWS). | **Untrusted Storage Operator Federation** holding opaque, client-side encrypted chunks. |
 | **Server Knowledge** | Host servers can inspect plaintexts, files, and metadata. | **Zero Knowledge**: Operators only observe SHA-256 content hashes (CIDs). |
-| **New Computer Recovery** | Log in with password + 2FA $\to$ clone repo. | Download binary $\to$ run `ciphervault recover --kit kit.txt` (or Shamir shares) to restore bit-for-bit onto virgin machine. |
+| **New Computer Recovery** | Log in with password + 2FA $\to$ clone repo. | Download binary $\to$ run `ciphervault recover --kit kit.txt` (or Shamir shares) to restore files bit-for-bit onto a virgin machine; full second device via `.ciphervault/` copy + `pull`. |
 | **Blockchain / Wallet** | None. | **No cryptocurrency wallet required** (No MetaMask, seed phrases, or gas tokens for standard developer workflows). |
 | **Developer Synchronization** | Explicit `git push` / `git pull`. | **Dual Operating Modes**: Explicit manual CLI (`push`) or fully automated background file watcher (`watch --sync`). |
 

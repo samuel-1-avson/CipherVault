@@ -44,5 +44,7 @@ Caveat: edge images share the base version string, so the live version assertion
    `dist/scripts/install.*`, scoop/homebrew/winget manifests, docs).
 2. Commit and push; wait for CI green on `main`.
 3. Tag (`git tag vX.Y.Z`) and push the tag; confirm the release workflow
-   and the published release + GHCR digests.
+   and the published release + GHCR digests. The workflow's
+   `fill-manifest-hashes` job commits the winget/scoop/brew hashes to
+   `main` automatically — verify that commit landed before announcing.
 4. Promote to the cloud per `docs/DEPLOYMENT_RUNBOOK.md` §10/R4.

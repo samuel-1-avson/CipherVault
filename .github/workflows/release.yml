@@ -260,6 +260,106 @@ jobs:
           draft: false
           prerelease: false  # Updater + installers resolve releases/latest, which only lists full releases
 
+  fill-manifest-hashes:
+    name: Fill Package Manifest Hashes
+    needs: publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download published SHA256SUMS
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS.txt" -o SHA256SUMS.txt; then
+              break
+            fi
+            echo "SHA256SUMS not yet served (attempt $i); waiting 20s"
+            sleep 20
+          done
+          test -s SHA256SUMS.txt || { echo "ERROR: SHA256SUMS.txt missing after retries" >&2; exit 1; }
+          cat SHA256SUMS.txt
+
+      - name: Fill winget/scoop/brew hashes
+        shell: bash
+        run: |
+          # Strict single-match replacements: any pattern matching anything
+          # other than exactly once fails the job instead of corrupting a
+          # manifest (a sloppy sed once shipped a hash containing ".0.10").
+          python3 - dist/package-managers SHA256SUMS.txt "${{ github.ref_name }}" <<'EOF'
+          import re, sys
+          dist, sums_path, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+          version = tag[1:] if tag.startswith("v") else tag
+          sums = {}
+          for line in open(sums_path):
+              parts = line.split()
+              if len(parts) == 2:
+                  sums[parts[1].strip()] = parts[0].strip()
+          for name, digest in sums.items():
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  sys.exit(f"non-hex digest for {name}: {digest}")
+
+          def asset(name):
+              key = f"ciphervault-{tag}-{name}"
+              if key not in sums:
+                  sys.exit(f"missing checksum for {key}")
+              return sums[key]
+
+          jobs = [
+              ("homebrew/Formula/ciphervault.rb",
+               r'(url "[^"]*aarch64-apple-darwin\.tar\.gz"\n\s*sha256 ")[^"]+(")',
+               asset("aarch64-apple-darwin.tar.gz")),
+              ("homebrew/Formula/ciphervault.rb",
+               r'(url "[^"]*x86_64-apple-darwin\.tar\.gz"\n\s*sha256 ")[^"]+(")',
+               asset("x86_64-apple-darwin.tar.gz")),
+              ("homebrew/Formula/ciphervault.rb",
+               r'(url "[^"]*aarch64-unknown-linux-gnu\.tar\.gz"\n\s*sha256 ")[^"]+(")',
+               asset("aarch64-unknown-linux-gnu.tar.gz")),
+              ("homebrew/Formula/ciphervault.rb",
+               r'(url "[^"]*x86_64-unknown-linux-gnu\.tar\.gz"\n\s*sha256 ")[^"]+(")',
+               asset("x86_64-unknown-linux-gnu.tar.gz")),
+              ("scoop/ciphervault.json",
+               r'("url": "[^"]*x86_64-pc-windows-msvc\.zip",\n\s*"hash": ")[^"]+(")',
+               asset("x86_64-pc-windows-msvc.zip")),
+              (f"winget/manifests/c/CipherVault/CipherVault/{version}/CipherVault.CipherVault.installer.yaml",
+               r"(InstallerSha256: )[0-9a-f]{64}",
+               asset("x86_64-pc-windows-msvc.zip")),
+          ]
+          by_file = {}
+          for path, pattern, digest in jobs:
+              by_file.setdefault(path, []).append((pattern, digest))
+          for path, edits in by_file.items():
+              full = f"{dist}/{path}"
+              text = open(full).read()
+              for pattern, digest in edits:
+                  found = re.findall(pattern, text)
+                  if len(found) != 1:
+                      sys.exit(f"pattern matches {len(found)}x (want 1x) in {path}")
+                  match = re.search(pattern, text)
+                  if match.lastindex == 2:
+                      text = text[:match.start()] + match.group(1) + digest + match.group(2) + text[match.end():]
+                  else:
+                      text = text[:match.start()] + match.group(1) + digest + text[match.end():]
+              open(full, "w").write(text)
+              print(f"filled {path}")
+          EOF
+
+      - name: Commit and push filled manifests
+        shell: bash
+        run: |
+          git config user.name "ciphervault-release"
+          git config user.email "ciphervault-release@users.noreply.github.com"
+          git add dist/package-managers/homebrew/Formula/ciphervault.rb dist/package-managers/scoop/ciphervault.json "dist/package-managers/winget/manifests/c/CipherVault/CipherVault/*/CipherVault.CipherVault.installer.yaml"
+          git diff --cached --quiet && { echo "no manifest changes to commit"; exit 0; }
+          git pull --rebase origin main || { echo "rebase failed; aborting fill" >&2; exit 1; }
+          git commit -m "fix(release): fill ${{ github.ref_name }} winget/scoop/brew hashes from SHA256SUMS"
+          git push origin main
+
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images
     needs: pre-release-gate
