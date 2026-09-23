@@ -1,6 +1,6 @@
 # CipherVault: Master Documentation Hub
 
-**Version:** `v1.0.11` (Beta)  
+**Version:** `v1.0.12` (Beta)  
 **Classification:** Enterprise System Documentation & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)
 

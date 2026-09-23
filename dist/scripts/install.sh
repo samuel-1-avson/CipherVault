@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CipherVault - verified Linux & macOS installer/updater
 # Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.11 (pin, skips the
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.12 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=/opt/cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
 # node = CLI+operator+maintenance for guided `ciphervault node setup`).

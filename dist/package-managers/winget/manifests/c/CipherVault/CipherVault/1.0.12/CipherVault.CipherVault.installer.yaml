@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 
 PackageIdentifier: CipherVault.CipherVault
-PackageVersion: 1.0.11
+PackageVersion: 1.0.12
 Platform:
   - Windows.Desktop
 InstallModes:
@@ -20,7 +20,7 @@ Installers:
         PortableCommandAlias: ciphervault-agent
       - RelativeFilePath: bin\ciphervault-maintenance.exe
         PortableCommandAlias: ciphervault-maintenance
-    InstallerUrl: https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.11/ciphervault-v1.0.11-x86_64-pc-windows-msvc.zip
+    InstallerUrl: https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.12/ciphervault-v1.0.12-x86_64-pc-windows-msvc.zip
     # Refresh from the release SHA256SUMS.txt line for the Windows zip before submit:
     #   (Get-Content SHA256SUMS.txt | Select-String "x86_64-pc-windows-msvc.zip")
     InstallerSha256: adbf6aa348a0d504798fdbe148f4b717639ed00b69d2df56e89cae3866092652
