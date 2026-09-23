@@ -356,6 +356,78 @@ impl MultiOperatorPool {
         recovery_records: &[Vec<u8>],
         required_replicas: usize,
     ) -> Result<Vec<LeaseReceipt>, StorageError> {
+        Ok(self
+            .replicate_and_verify_inner(
+                vault_id,
+                signing_key,
+                objects,
+                closure_digest,
+                total_bytes,
+                term_days,
+                locator,
+                head_record_bytes,
+                recovery_records,
+                required_replicas,
+            )
+            .await?
+            .into_iter()
+            .map(|(_, receipt)| receipt)
+            .collect())
+    }
+
+    /// Same pipeline as [`Self::replicate_and_verify`], but each verified
+    /// receipt is paired with the endpoint that issued it so callers can
+    /// file per-operator records (e.g. the CLI lease receipt log) without
+    /// guessing which receipt came from where.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep explicit protocol bindings matching replicate_and_verify"
+    )]
+    pub async fn replicate_and_verify_with_endpoints(
+        &self,
+        vault_id: &[u8; 32],
+        signing_key: &SigningKey,
+        objects: &[([u8; 32], Vec<u8>)], // (cid, raw_bytes)
+        closure_digest: &[u8; 32],
+        total_bytes: u64,
+        term_days: u32,
+        locator: &[u8; 32],
+        head_record_bytes: &[u8],
+        recovery_records: &[Vec<u8>],
+        required_replicas: usize,
+    ) -> Result<Vec<(String, LeaseReceipt)>, StorageError> {
+        self.replicate_and_verify_inner(
+            vault_id,
+            signing_key,
+            objects,
+            closure_digest,
+            total_bytes,
+            term_days,
+            locator,
+            head_record_bytes,
+            recovery_records,
+            required_replicas,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep explicit protocol bindings in the existing public API"
+    )]
+    async fn replicate_and_verify_inner(
+        &self,
+        vault_id: &[u8; 32],
+        signing_key: &SigningKey,
+        objects: &[([u8; 32], Vec<u8>)], // (cid, raw_bytes)
+        closure_digest: &[u8; 32],
+        total_bytes: u64,
+        term_days: u32,
+        locator: &[u8; 32],
+        head_record_bytes: &[u8],
+        recovery_records: &[Vec<u8>],
+        required_replicas: usize,
+    ) -> Result<Vec<(String, LeaseReceipt)>, StorageError> {
         let sessions = self.authenticate_all(vault_id, signing_key).await;
         if sessions.len() < required_replicas {
             return Err(StorageError::QuorumDeficit {
@@ -371,7 +443,8 @@ impl MultiOperatorPool {
         // operators cannot possibly reach quorum, stragglers are abandoned.
         let object_concurrency = self.object_concurrency.load(Ordering::Relaxed);
         let attempts = sessions.iter().map(|(client, token)| {
-            Self::replicate_to_single_operator(
+            let endpoint = client.endpoint().to_string();
+            let pipeline = Self::replicate_to_single_operator(
                 client,
                 token,
                 objects,
@@ -382,16 +455,21 @@ impl MultiOperatorPool {
                 head_record_bytes,
                 recovery_records,
                 object_concurrency,
-            )
+            );
+            async move {
+                pipeline
+                    .await
+                    .map(|(operator_pk, receipt)| (operator_pk, endpoint, receipt))
+            }
         });
 
         let mut pending: FuturesUnordered<_> = attempts.collect();
-        let mut verified_receipts = Vec::new();
+        let mut verified_receipts: Vec<(String, LeaseReceipt)> = Vec::new();
         let mut verified_keys = std::collections::HashSet::new();
         while let Some(outcome) = pending.next().await {
-            if let Some((operator_pk, receipt)) = outcome {
+            if let Some((operator_pk, endpoint, receipt)) = outcome {
                 if verified_keys.insert(operator_pk) {
-                    verified_receipts.push(receipt);
+                    verified_receipts.push((endpoint, receipt));
                 }
             }
             if verified_receipts.len() + pending.len() < required_replicas {
@@ -400,7 +478,7 @@ impl MultiOperatorPool {
         }
         // Concurrent tasks complete in nondeterministic order; restore a stable
         // receipt ordering so callers never observe completion order.
-        verified_receipts.sort_by(|a, b| a.operator_id.cmp(&b.operator_id));
+        verified_receipts.sort_by(|a, b| a.1.operator_id.cmp(&b.1.operator_id));
 
         if verified_receipts.len() < required_replicas {
             return Err(StorageError::QuorumDeficit {

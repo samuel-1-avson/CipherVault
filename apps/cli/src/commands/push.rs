@@ -196,7 +196,7 @@ pub(crate) async fn cmd_push(
     let required_replicas = resolve_required_replicas(replicas)?;
     let replication_started = std::time::Instant::now();
     let rep_result = pool
-        .replicate_and_verify(
+        .replicate_and_verify_with_endpoints(
             &vault_id,
             &device_sk,
             &wire_objects,
@@ -211,19 +211,20 @@ pub(crate) async fn cmd_push(
         .await;
 
     match rep_result {
-        Ok(receipts) => {
-            if receipts.len() >= required_replicas {
+        Ok(issued) => {
+            record_replication_receipts(&store, &issued);
+            if issued.len() >= required_replicas {
                 println!(
                     "  Durability:     {} ({}/{} independent replicas verified and read back)",
                     "RemoteDurable".green().bold(),
-                    receipts.len(),
+                    issued.len(),
                     operators.len()
                 );
             } else {
                 println!(
                     "  Durability:     {} ({}/{} replicas verified; degraded)",
                     "Degraded".yellow().bold(),
-                    receipts.len(),
+                    issued.len(),
                     operators.len()
                 );
             }
@@ -255,4 +256,72 @@ pub(crate) async fn cmd_push(
     }
 
     Ok(())
+}
+
+/// Files replication receipts (push, repair) into the local lease receipt
+/// log so `status --overview` shows them without a `lease list` round-trip.
+/// A log failure warns instead of failing the command: the data is safe on
+/// the operators and `lease list` backfills the log. Returns the count filed.
+pub(crate) fn record_replication_receipts(
+    store: &ciphervault_local_store::LocalVaultStore,
+    issued: &[(String, ciphervault_storage::LeaseReceipt)],
+) -> usize {
+    let mut recorded = 0;
+    for (endpoint, receipt) in issued {
+        if let Err(e) = store.record_lease_receipt(
+            &receipt.lease_id,
+            endpoint,
+            &receipt.closure_digest_hex,
+            receipt.term_days,
+            receipt.bytes,
+            receipt.issued_at_utc,
+            receipt.expires_at_utc,
+            &receipt.signature_hex,
+        ) {
+            eprintln!(
+                "warning: lease receipt log failed for {}: {e}; run `lease list` to backfill",
+                receipt.lease_id
+            );
+            continue;
+        }
+        recorded += 1;
+    }
+    recorded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Push-time receipt filing maps every field to the right column:
+    /// distinct values per field catch transposition, and re-filing the
+    /// same receipts is idempotent (INSERT OR REPLACE).
+    #[test]
+    fn replication_receipts_file_with_exact_fields() {
+        let store = ciphervault_local_store::LocalVaultStore::open(":memory:").unwrap();
+        let receipt = ciphervault_storage::LeaseReceipt {
+            lease_id: "push-lease-1".to_string(),
+            operator_id: "op-1".to_string(),
+            closure_digest_hex: "cc".to_string(),
+            term_days: 90,
+            bytes: 30,
+            issued_at_utc: 1000,
+            expires_at_utc: 2000,
+            signature_hex: "sig".to_string(),
+        };
+        let issued = vec![("https://op1.test".to_string(), receipt)];
+        assert_eq!(record_replication_receipts(&store, &issued), 1);
+        assert_eq!(record_replication_receipts(&store, &issued), 1);
+        let rows = store.list_lease_receipts().unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.lease_id, "push-lease-1");
+        assert_eq!(row.operator_endpoint, "https://op1.test");
+        assert_eq!(row.closure_digest_hex, "cc");
+        assert_eq!(row.term_days, 90);
+        assert_eq!(row.bytes, 30);
+        assert_eq!(row.issued_at_utc, 1000);
+        assert_eq!(row.expires_at_utc, 2000);
+        assert_eq!(row.signature_hex, "sig");
+    }
 }

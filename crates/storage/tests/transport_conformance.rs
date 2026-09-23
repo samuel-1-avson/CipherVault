@@ -90,6 +90,47 @@ async fn pool_replicates_closure_across_memory_operators() {
 }
 
 #[tokio::test]
+async fn pool_pairs_each_receipt_with_its_issuing_endpoint() {
+    let (client_a, _) = memory_client("pool-op-a");
+    let (client_b, _) = memory_client("pool-op-b");
+    let pool = MultiOperatorPool::from_clients(vec![client_a, client_b]);
+
+    let vault_id: [u8; 32] = rand::random();
+    let recovery_key = generate_signing_key();
+    let (cid, bytes) = sample_object();
+    let closure_digest: [u8; 32] = rand::random();
+    let locator: [u8; 32] = rand::random();
+    let genesis = genesis_bytes(&vault_id, &recovery_key);
+
+    let issued = pool
+        .replicate_and_verify_with_endpoints(
+            &vault_id,
+            &recovery_key,
+            &[(cid, bytes.clone())],
+            &closure_digest,
+            bytes.len() as u64,
+            30,
+            &locator,
+            &genesis,
+            std::slice::from_ref(&genesis),
+            2,
+        )
+        .await
+        .expect("quorum of 2 over healthy memory operators");
+    assert_eq!(issued.len(), 2);
+    for (endpoint, receipt) in &issued {
+        assert!(
+            endpoint.ends_with(&receipt.operator_id),
+            "endpoint {endpoint} must belong to operator {}",
+            receipt.operator_id
+        );
+    }
+    let endpoints: Vec<&str> = issued.iter().map(|(e, _)| e.as_str()).collect();
+    assert!(endpoints.contains(&"memory://pool-op-a"));
+    assert!(endpoints.contains(&"memory://pool-op-b"));
+}
+
+#[tokio::test]
 async fn pool_skips_offline_operator_and_reports_quorum_deficit() {
     let (client_a, offline) = memory_client("pool-op-offline");
     let (client_b, _) = memory_client("pool-op-healthy");

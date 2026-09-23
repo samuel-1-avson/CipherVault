@@ -87,8 +87,8 @@ pub(crate) async fn cmd_repair(
     let head_bytes = to_canonical_cbor(&active_head)?;
     let required_replicas = resolve_required_replicas(replicas)?;
     // Local verified ciphertext can also repair a total remote loss.
-    configured_operator_pool(operators)
-        .replicate_and_verify(
+    let issued = configured_operator_pool(operators)
+        .replicate_and_verify_with_endpoints(
             &vault_id,
             &device_sk,
             &objects,
@@ -101,6 +101,7 @@ pub(crate) async fn cmd_repair(
             required_replicas,
         )
         .await?;
+    super::push::record_replication_receipts(&store, &issued);
     println!("Repair completed: complete recovery set read back on {required_replicas} operators ({} previously degraded objects).", audit.degraded_objects.len());
 
     Ok(())
