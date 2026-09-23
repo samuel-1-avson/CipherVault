@@ -275,10 +275,13 @@ Abuse bounds, in order of escalation:
   are unaffected.
 - P2P flood: the per-peer RPC rate limiter runs before auth/serve, so
   over-limit callers get a plain 429 without burning session work.
-- HTTP flood: there is no HTTP rate limiter on any route (lease
-  listing shares the object routes' posture); if `GET /v1/leases` is
-  abused, use the kill-switch above and front the node with your
-  usual L7 throttle.
+- HTTP flood: every route sits behind a per-client sliding-window
+  limiter (default 600 req/min, `CIPHERVAULT_HTTP_RATE_LIMIT_PER_MIN`,
+  0 disables) that 429s before auth/serve. Client identity is the
+  first `X-Forwarded-For` entry (the fleet runs behind local Caddy),
+  else the socket IP. Direct-exposure operators accept that clients
+  can rotate that header — front with L7 if that matters. If
+  `GET /v1/leases` specifically is abused, use the kill-switch above.
 
 Failure hints: 401 = missing/foreign-vault session (each vault sees
 only its own sidecars); 400 = bad `limit` or missing vault header;
