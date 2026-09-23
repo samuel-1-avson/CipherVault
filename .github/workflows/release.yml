@@ -354,9 +354,11 @@ jobs:
         run: |
           git config user.name "ciphervault-release"
           git config user.email "ciphervault-release@users.noreply.github.com"
+          # Sync BEFORE staging: rebase refuses with staged changes, and
+          # --autostash carries the unstaged fill across the sync.
+          git pull --rebase --autostash origin main || { echo "rebase failed; aborting fill" >&2; exit 1; }
           git add dist/package-managers/homebrew/Formula/ciphervault.rb dist/package-managers/scoop/ciphervault.json "dist/package-managers/winget/manifests/c/CipherVault/CipherVault/*/CipherVault.CipherVault.installer.yaml"
           git diff --cached --quiet && { echo "no manifest changes to commit"; exit 0; }
-          git pull --rebase origin main || { echo "rebase failed; aborting fill" >&2; exit 1; }
           git commit -m "fix(release): fill ${{ github.ref_name }} winget/scoop/brew hashes from SHA256SUMS"
           git push origin main
 
