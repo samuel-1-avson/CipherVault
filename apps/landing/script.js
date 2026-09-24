@@ -1517,7 +1517,13 @@ function initCryptoDonations() {
     });
 
     if (networkLabel) networkLabel.textContent = netConfig.label;
-    if (noticeText) noticeText.innerHTML = netConfig.notice;
+    if (noticeText) {
+      noticeText.style.opacity = '0';
+      setTimeout(() => {
+        noticeText.innerHTML = netConfig.notice;
+        noticeText.style.opacity = '1';
+      }, 100);
+    }
     if (linkExplorer) {
       linkExplorer.href = netConfig.explorerUrl;
       linkExplorer.title = `Verify on-chain on ${netConfig.name}`;
@@ -1528,16 +1534,50 @@ function initCryptoDonations() {
   if (tabEth) tabEth.addEventListener('click', () => setNetwork('ethereum'));
   if (tabSep) tabSep.addEventListener('click', () => setNetwork('sepolia'));
 
-  if (btnCopy) {
-    btnCopy.addEventListener('click', () => {
-      navigator.clipboard.writeText(currentAddress).then(() => {
-        btnCopy.textContent = '[ COPIED ✓ ]';
-        if (feedback) feedback.classList.add('show');
-        setTimeout(() => {
-          btnCopy.textContent = '[ 📋 COPY ADDRESS ]';
-          if (feedback) feedback.classList.remove('show');
-        }, 2200);
+  const performCopy = () => {
+    const doFeedback = () => {
+      if (btnCopy) {
+        btnCopy.classList.add('copied');
+        btnCopy.innerHTML = `
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          <span>Copied!</span>
+        `;
+      }
+      if (feedback) feedback.classList.add('show');
+      setTimeout(() => {
+        if (btnCopy) {
+          btnCopy.classList.remove('copied');
+          btnCopy.innerHTML = `
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span>Copy Address</span>
+          `;
+        }
+        if (feedback) feedback.classList.remove('show');
+      }, 2200);
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(currentAddress).then(doFeedback).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = currentAddress;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        doFeedback();
       });
-    });
-  }
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = currentAddress;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      doFeedback();
+    }
+  };
+
+  if (btnCopy) btnCopy.addEventListener('click', performCopy);
+  if (addressText) addressText.addEventListener('click', performCopy);
+  if (qrContainer) qrContainer.addEventListener('click', performCopy);
 }

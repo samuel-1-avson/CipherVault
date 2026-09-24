@@ -1399,7 +1399,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               </p>
               <div class="support-infra-actions">
                 <button class="tui-btn-action primary-gold" id="btn-trigger-donate-card">
-                  [ ❤ Donate Crypto (ETH, USDT, ARB) ]
+                  ❤ Donate Crypto (ETH, USDT, ARB)
                 </button>
                 <div class="support-network-badges">
                   <span class="net-badge"><span class="badge-dot cyan">●</span> Arbitrum One L2</span>
@@ -1477,67 +1477,89 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
     <div class="donation-modal-card" id="donation-modal-card">
       <div class="modal-header">
         <div class="modal-title-wrap">
-          <span class="modal-kicker">[COMMUNITY INFRASTRUCTURE SPONSORSHIP]</span>
+          <div class="modal-eyebrow">
+            <span class="status-pulse-dot"></span>
+            <span class="modal-kicker">COMMUNITY INFRASTRUCTURE SPONSORSHIP</span>
+          </div>
           <h3 class="modal-title" id="modal-donate-title">Support CipherVault with Crypto</h3>
         </div>
-        <button class="btn-close-modal" id="btn-close-donate-modal" aria-label="Close donation modal">[ESC ✕]</button>
+        <button class="btn-close-modal" id="btn-close-donate-modal" aria-label="Close donation modal" title="Close modal (Esc)">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>
+          <kbd class="kbd-esc">ESC</kbd>
+        </button>
       </div>
 
       <div class="modal-body">
         <p class="modal-lead">
-          Help fund independent storage operators, Arbitrum L2 settlement gas, and continuous zero-knowledge security research.
+          Directly fund independent storage operator quorums, Arbitrum L2 gas settlement, and reproducible zero-knowledge security research.
         </p>
 
-        <!-- Network Tabs (Arbitrum One vs Ethereum vs Sepolia) -->
+        <!-- Network Tabs (Linear-Grade Segmented Control) -->
         <div class="donation-net-tabs" role="tablist" aria-label="Donation Network">
           <button class="net-tab-btn active" id="tab-net-arb" data-net="arbitrum" role="tab" aria-selected="true">
-            <span class="tab-net-icon">⚡</span> Arbitrum One <span class="net-fee-tag">&lt; $0.05</span>
+            <span class="tab-net-dot cyan">●</span>
+            <span class="tab-net-name">Arbitrum One</span>
+            <span class="net-fee-tag">&lt; $0.05</span>
           </button>
           <button class="net-tab-btn" id="tab-net-eth" data-net="ethereum" role="tab" aria-selected="false">
-            <span class="tab-net-icon">Ξ</span> Ethereum L1
+            <span class="tab-net-dot purple">●</span>
+            <span class="tab-net-name">Ethereum L1</span>
           </button>
           <button class="net-tab-btn" id="tab-net-sep" data-net="sepolia" role="tab" aria-selected="false">
-            <span class="tab-net-icon">🧪</span> Sepolia Testnet
+            <span class="tab-net-dot yellow">●</span>
+            <span class="tab-net-name">Sepolia Testnet</span>
           </button>
         </div>
 
-        <!-- Accepted Assets Pills -->
+        <!-- Accepted Assets Line -->
         <div class="modal-assets-row">
           <span class="assets-label">ACCEPTED ASSETS:</span>
-          <span class="asset-pill" id="pill-asset-eth">ETH</span>
-          <span class="asset-pill" id="pill-asset-usdt">USDT</span>
-          <span class="asset-pill" id="pill-asset-arb">ARB</span>
-          <span class="asset-pill" id="pill-asset-sep">Sepolia ETH</span>
+          <div class="assets-chips-wrap">
+            <span class="asset-pill" id="pill-asset-eth">ETH</span>
+            <span class="asset-pill" id="pill-asset-usdt">USDT</span>
+            <span class="asset-pill" id="pill-asset-arb">ARB</span>
+            <span class="asset-pill" id="pill-asset-sep">Sepolia ETH</span>
+          </div>
         </div>
 
-        <!-- QR Code & Address Display Canvas -->
+        <!-- QR Code & Address Display Deck -->
         <div class="modal-qr-address-deck">
-          <div class="qr-canvas-box" id="donation-qr-container" title="Scan with mobile wallet">
-            <!-- SVG QR Code is injected here dynamically -->
+          <div class="qr-preview-wrapper">
+            <div class="qr-canvas-box" id="donation-qr-container" title="Scan with mobile wallet">
+              <!-- SVG QR Code is injected here dynamically -->
+            </div>
+            <span class="qr-caption-hint">SCAN WITH WALLET</span>
           </div>
           <div class="address-details-box">
             <div class="address-label-row">
               <span class="address-hint-tag" id="donation-network-label">ARBITRUM ONE (L2) EVM ADDRESS:</span>
-              <span class="address-sec-badge">100% NON-CUSTODIAL</span>
+              <span class="address-sec-badge">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                NON-CUSTODIAL
+              </span>
             </div>
-            <div class="address-code-block" id="donation-address-text">
+            <div class="address-code-block" id="donation-address-text" title="Click to copy address">
               0x5f424b4ec88073fd461eb194833681a31adfa311
             </div>
             <div class="address-actions-row">
               <button class="btn-copy-address" id="btn-copy-donation-address">
-                [ 📋 COPY ADDRESS ]
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Copy Address</span>
               </button>
               <a href="https://arbiscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311" target="_blank" rel="noopener noreferrer" class="btn-view-explorer" id="link-view-explorer" title="Verify on-chain in public block explorer">
-                [ ↗ EXPLORER ]
+                <span>Explorer</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
               </a>
             </div>
-            <div class="donation-copy-feedback" id="donation-copy-feedback">✓ ADDRESS COPIED TO CLIPBOARD</div>
+            <div class="donation-copy-feedback" id="donation-copy-feedback">✓ Address copied to clipboard</div>
           </div>
         </div>
 
-        <!-- Warning Notice -->
+        <!-- Sleek Minimalist Notice Box -->
         <div class="modal-notice-box">
-          <span class="notice-icon">⚠️</span>
+          <span class="notice-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+          </span>
           <span class="notice-text" id="donation-notice-text">
             Send only <strong>ETH</strong>, <strong>USDT</strong>, or <strong>ARB</strong> to this EVM address on Arbitrum One or Ethereum Mainnet. Transactions on unsupported networks may result in lost funds.
           </span>
@@ -1545,8 +1567,11 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
       </div>
 
       <div class="modal-footer">
-        <span class="modal-footer-meta">A single EVM address receives funds across Arbitrum One, Ethereum Mainnet, and Sepolia Testnet.</span>
-        <button class="tui-btn-action secondary" id="btn-dismiss-donate">[DONE / CLOSE]</button>
+        <div class="modal-footer-meta">
+          <span class="meta-dot"></span>
+          <span>Single EVM address across Arbitrum One, Ethereum Mainnet, and Sepolia.</span>
+        </div>
+        <button class="tui-btn-action secondary" id="btn-dismiss-donate">Close</button>
       </div>
     </div>
   </div>
