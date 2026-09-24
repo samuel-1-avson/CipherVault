@@ -403,6 +403,8 @@ values warn and fall back to defaults):
 - `CIPHERVAULT_FLEET_KEY` (no default): fleet public key (hex) that
   `/v1/peers/join` verifies tickets against. Unset = join fails closed;
   set the same pin on every fleet node that admits community operators.
+  Legacy single-key mode; quorum mode (§18) uses `CIPHERVAULT_FLEET_KEYS`
+  + `CIPHERVAULT_QUORUM_K` instead when the set is pinned.
 - `CIPHERVAULT_PROBATION_SECS` (default 86400 = 24 h, floor 60): minimum
   fleet-visible life before a ticket joiner can graduate.
 - `CIPHERVAULT_JOIN_LIVENESS_GRACE_SECS` (default 7200 = 2 h, floor 60):
@@ -461,6 +463,8 @@ Every operator serves `GET /metrics` (same unauthenticated posture as
   `ciphervault_swarm_peer_graduations_total`: verified community joins
   admitted into probation and probation-to-full graduations (ADR-008).
   Standing per peer: `GET /v1/peers/membership` (service token).
+- `ciphervault_swarm_peer_quorum_joins_total`: K-of-N quorum-mode joins
+  (ADR-011). Admission evidence: `GET /v1/peers/admissions`.
 
 Scrape example (all three operators):
 
@@ -606,3 +610,75 @@ Rollback (per node, one command each): restore the compose backup
 fleet rollback is the R5 re-promote of pinned HTTP-only digests. To
 fully darken the mesh, delete the firewall rule
 (`gcloud compute firewall-rules delete ciphervault-allow-p2p`).
+
+## 18. Quorum Admission (K-of-N invite tickets)
+
+Verified join (§12 knobs, ADR-008) admits operators on one fleet-signed
+ticket. Quorum admission (ADR-011) replaces the single offline seed with
+K-of-N keyholder signatures on a v2 ticket, plus a mandatory admission
+evidence log. Probation, liveness, graduation, refresh, and admin
+overrides are unchanged — only the minter moved.
+
+Config (quorum mode wins when the set is pinned; legacy single-key mode
+when only `CIPHERVAULT_FLEET_KEY` is set; fail-closed otherwise):
+
+- `CIPHERVAULT_FLEET_KEYS` (no default): comma-separated fleet key-set
+  hex pubkeys. Same set on every admitting node.
+- `CIPHERVAULT_QUORUM_K` (default: strict majority of the set, so 2 for
+  3 keys): required distinct approvals. Out-of-range or unparsable
+  values fail closed with a stderr diagnostic.
+
+### Key ceremony
+
+Each keyholder generates their seed independently and never shares it.
+A seed file is exactly 32 raw bytes:
+
+```sh
+# Per keyholder, on their own machine:
+ciphervault invite pubkey --fleet-key-file k0.seed   # hex pubkey to pin
+```
+
+Collect the N pubkeys into `CIPHERVAULT_FLEET_KEYS` and re-promote the
+fleet (two windows recommended: pin the set with K=1 first and verify a
+join, then raise K=2). Archive retired seeds; rotation invalidates every
+ticket signed by removed keys, by design.
+
+### Approval flow (all steps fully offline)
+
+```sh
+# 1. Coordinator (or the joiner) creates the request:
+ciphervault invite request <64-hex-node-pk> --ttl 604800 --out req.json
+
+# 2. Each keyholder signs the SAME request file on their own machine:
+ciphervault invite approve --request req.json --fleet-key-file k0.seed --out a0.json
+ciphervault invite approve --request req.json --fleet-key-file k2.seed --out a2.json
+
+# 3. Coordinator assembles (every approval re-verified; mismatched,
+#    duplicate-signer, and bad-signature approvals are rejected):
+ciphervault invite combine --request req.json --approval a0.json --approval a2.json --out ticket.json
+
+# 4. Confidence check before handing the ticket out (exit 0 valid):
+ciphervault invite verify ticket.json --fleet-keys <k0,k1,k2>
+# ticket valid: version 2 quorum 2/2 (2 distinct approvals)
+
+# 5. Joiner presents the ticket exactly as before:
+ciphervault invite join ticket.json --node <own-endpoint>
+```
+
+Rejections: below-threshold tickets fail 403
+(`invite quorum not reached (have X of K)`); reused nonces 409; unknown
+signers 403. A v1 single-sig ticket counts as one approval in quorum
+mode (so K=1 admits legacy tickets from a pinned key).
+
+### Evidence log
+
+Every successful admission appends `join-admissions.json`
+(`admitted_utc`, node key, operator id, nonce, expiry, ticket version,
+signer keys, ticket SHA-256). The write is mandatory: a log failure
+rolls back routing, membership, and spend, and the ticket stays
+redeemable. Read it (service token) or watch the counter:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" https://op1.cipherv.online/v1/peers/admissions
+# `ciphervault_swarm_peer_quorum_joins_total` on /metrics
+```

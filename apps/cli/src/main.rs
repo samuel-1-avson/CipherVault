@@ -985,6 +985,73 @@ enum InviteSubcommand {
         )]
         via: Option<Vec<String>>,
     },
+
+    /// Create a quorum ticket request for a node key (fully offline; anyone may create it)
+    Request {
+        #[arg(help = "64-char hex node public key the ticket is requested for")]
+        node_pk: String,
+
+        #[arg(long, default_value = "86400", help = "Invite TTL in seconds")]
+        ttl: u64,
+
+        #[arg(
+            long,
+            help = "Write the request JSON to this file (UTF-8) instead of stdout; preferred on Windows where shell redirection writes UTF-16"
+        )]
+        out: Option<PathBuf>,
+    },
+
+    /// Sign a quorum ticket request with one keyholder seed (fully offline)
+    Approve {
+        #[arg(long, help = "Path to the JSON request file from `invite request`")]
+        request: PathBuf,
+
+        #[arg(long, help = "Path to the 32-byte keyholder signing seed file")]
+        fleet_key_file: PathBuf,
+
+        #[arg(
+            long,
+            help = "Write the approval JSON to this file (UTF-8) instead of stdout; preferred on Windows where shell redirection writes UTF-16"
+        )]
+        out: Option<PathBuf>,
+    },
+
+    /// Combine a request plus keyholder approvals into a v2 quorum ticket (fully offline)
+    Combine {
+        #[arg(long, help = "Path to the JSON request file from `invite request`")]
+        request: PathBuf,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Approval JSON files from `invite approve` (repeatable)"
+        )]
+        approval: Vec<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Write the ticket JSON to this file (UTF-8) instead of stdout; preferred on Windows where shell redirection writes UTF-16"
+        )]
+        out: Option<PathBuf>,
+    },
+
+    /// Verify a ticket against a fleet key set without joining (fully offline)
+    Verify {
+        #[arg(help = "Path to the JSON invite ticket file")]
+        ticket: PathBuf,
+
+        #[arg(
+            long,
+            help = "Comma-separated fleet key-set hex pubkeys to verify against"
+        )]
+        fleet_keys: String,
+
+        #[arg(
+            long,
+            help = "Required distinct approvals (default: strict majority of the key set)"
+        )]
+        quorum_k: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1395,6 +1462,24 @@ async fn run(cli: Cli) -> Result<()> {
                 cmd_invite_join(ticket, node, via).await
             }
             InviteSubcommand::Refresh { node, via } => cmd_invite_refresh(node, via).await,
+            InviteSubcommand::Request { node_pk, ttl, out } => {
+                cmd_invite_request(node_pk, ttl, out)
+            }
+            InviteSubcommand::Approve {
+                request,
+                fleet_key_file,
+                out,
+            } => cmd_invite_approve(request, fleet_key_file, out),
+            InviteSubcommand::Combine {
+                request,
+                approval,
+                out,
+            } => cmd_invite_combine(request, approval, out),
+            InviteSubcommand::Verify {
+                ticket,
+                fleet_keys,
+                quorum_k,
+            } => cmd_invite_verify(ticket, fleet_keys, quorum_k),
         },
         Commands::Node { sub } => match sub {
             NodeSubcommand::Setup {

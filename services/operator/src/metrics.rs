@@ -103,6 +103,7 @@ pub struct OperatorMetrics {
     control_unknown_kind_ignored_total: AtomicU64,
     peers_live: AtomicU64,
     peer_joins_total: AtomicU64,
+    peer_quorum_joins_total: AtomicU64,
     peer_graduations_total: AtomicU64,
     repair_checks_total: AtomicU64,
     repair_jobs_started_total: AtomicU64,
@@ -152,6 +153,7 @@ impl OperatorMetrics {
             control_unknown_kind_ignored_total: AtomicU64::new(0),
             peers_live: AtomicU64::new(0),
             peer_joins_total: AtomicU64::new(0),
+            peer_quorum_joins_total: AtomicU64::new(0),
             peer_graduations_total: AtomicU64::new(0),
             repair_checks_total: AtomicU64::new(0),
             repair_jobs_started_total: AtomicU64::new(0),
@@ -298,6 +300,11 @@ impl OperatorMetrics {
     /// Records one verified ticket join admitted into probation.
     pub fn observe_peer_joined(&self) {
         self.peer_joins_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one quorum-mode ticket join (K-of-N approvals).
+    pub fn observe_quorum_peer_joined(&self) {
+        self.peer_quorum_joins_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records one probation-to-full graduation (earned or admin-granted).
@@ -550,6 +557,12 @@ impl OperatorMetrics {
             "ciphervault_swarm_peer_joins_total",
             "Verified ticket joins admitted into probation.",
             self.peer_joins_total.load(Ordering::Relaxed),
+        );
+        render_counter(
+            &mut out,
+            "ciphervault_swarm_peer_quorum_joins_total",
+            "Quorum-mode (K-of-N) ticket joins admitted into probation.",
+            self.peer_quorum_joins_total.load(Ordering::Relaxed),
         );
         render_counter(
             &mut out,

@@ -16,7 +16,7 @@ use ciphervault_format::{
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_recovery::OfflineRecoveryKit;
 use ciphervault_snapshot::restore_snapshot;
-use ciphervault_storage::invites::JoinInvite;
+use ciphervault_storage::invites::{InviteApproval, InviteRequest, JoinInvite};
 use ciphervault_storage::{OperatorClient, StorageError};
 
 use crate::util::{
@@ -777,6 +777,212 @@ pub(crate) fn cmd_invite_issue(
         );
     }
     Ok(())
+}
+
+/// Emits one JSON document to stdout or a `--out` file (UTF-8, the
+/// blessed path on Windows). Stdout stays pure JSON; confirmations go
+/// to stderr.
+fn emit_json(rendered: &str, out: &Option<PathBuf>, what: &str) -> Result<()> {
+    if let Some(path) = out {
+        fs::write(path, format!("{rendered}\n"))
+            .with_context(|| format!("write {what} file {}", path.display()))?;
+        eprintln!(
+            "{}",
+            format!("Wrote {what} to {} (UTF-8).", path.display()).green()
+        );
+    } else {
+        println!("{rendered}");
+    }
+    Ok(())
+}
+
+fn read_request_file(path: &PathBuf) -> Result<InviteRequest> {
+    let raw = read_text_file(path, "request")?;
+    serde_json::from_str(raw.trim_start_matches('\u{FEFF}'))
+        .context("decode request file (expected JSON)")
+}
+
+fn read_approval_file(path: &PathBuf) -> Result<InviteApproval> {
+    let raw = read_text_file(path, "approval")?;
+    serde_json::from_str(raw.trim_start_matches('\u{FEFF}'))
+        .context("decode approval file (expected JSON)")
+}
+
+/// Quorum ceremony step 1: creates the unsigned ticket body for a node
+/// key. Fully offline; anyone (including the joiner) may create it —
+/// authority comes from keyholder approvals, not from this step.
+pub(crate) fn cmd_invite_request(node_pk: String, ttl: u64, out: Option<PathBuf>) -> Result<()> {
+    let request =
+        InviteRequest::new(node_pk, ttl).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let rendered = serde_json::to_string_pretty(&request)?;
+    emit_json(&rendered, &out, "request")
+}
+
+/// Quorum ceremony step 2: signs a request with one keyholder seed.
+/// Fully offline: the seed never leaves this machine.
+pub(crate) fn cmd_invite_approve(
+    request: PathBuf,
+    fleet_key_file: PathBuf,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    let req = read_request_file(&request)?;
+    let seed = read_seed_file(&fleet_key_file)?;
+    let approval =
+        InviteApproval::approve(&seed, &req).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let rendered = serde_json::to_string_pretty(&approval)?;
+    emit_json(&rendered, &out, "approval")
+}
+
+/// Quorum ceremony step 3: assembles a request plus keyholder approvals
+/// into a v2 ticket. Fully offline; every approval is re-verified, so
+/// the coordinator is never trusted.
+pub(crate) fn cmd_invite_combine(
+    request: PathBuf,
+    approval: Vec<PathBuf>,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    if approval.is_empty() {
+        bail!("pass at least one --approval file");
+    }
+    let req = read_request_file(&request)?;
+    let mut approvals = Vec::new();
+    for path in &approval {
+        approvals.push(read_approval_file(path)?);
+    }
+    let ticket = JoinInvite::issue_quorum(&req, &approvals)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let rendered = serde_json::to_string_pretty(&ticket)?;
+    emit_json(&rendered, &out, "ticket")
+}
+
+/// Verifies a ticket against a fleet key set without joining. Fully
+/// offline: ceremony confidence before the ticket is handed out, and a
+/// diagnostic for rejected joins. Prints the signer set on success.
+pub(crate) fn cmd_invite_verify(
+    ticket: PathBuf,
+    fleet_keys: String,
+    quorum_k: Option<usize>,
+) -> Result<()> {
+    let raw = read_text_file(&ticket, "ticket")?;
+    let invite = decode_ticket(&raw)?;
+    let set: Vec<String> = fleet_keys
+        .split(',')
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect();
+    if set.is_empty() {
+        bail!("--fleet-keys must list at least one key");
+    }
+    let threshold = quorum_k.unwrap_or_else(|| JoinInvite::quorum_default(set.len()));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    match invite.verify_quorum(&set, threshold, now) {
+        Ok(signers) => {
+            println!(
+                "ticket valid: version {} quorum {}/{} ({} distinct approvals)",
+                invite.version,
+                signers.len(),
+                threshold,
+                signers.len()
+            );
+            for signer in &signers {
+                println!("  signer: {signer}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("{}", format!("ticket INVALID: {error}").red());
+            Err(anyhow::anyhow!(error.to_string()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod quorum_ceremony_cli_tests {
+    use super::*;
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("ciphervault-{name}-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_seed(dir: &std::path::Path, name: &str, byte: u8) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, [byte; 32]).unwrap();
+        path
+    }
+
+    fn pubkey_hex(seed_byte: u8) -> String {
+        let key = SigningKey::from_bytes(&[seed_byte; 32]);
+        hex::encode(key.verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn ceremony_files_end_to_end() {
+        let dir = scratch_dir("ceremony");
+        let req_path = dir.join("request.json");
+        cmd_invite_request(hex::encode([0xAAu8; 32]), 3600, Some(req_path.clone())).unwrap();
+        let s0 = write_seed(&dir, "k0.seed", 0x11);
+        let s1 = write_seed(&dir, "k1.seed", 0x22);
+        let a0 = dir.join("a0.json");
+        let a1 = dir.join("a1.json");
+        cmd_invite_approve(req_path.clone(), s0, Some(a0.clone())).unwrap();
+        cmd_invite_approve(req_path.clone(), s1, Some(a1.clone())).unwrap();
+        let ticket_path = dir.join("ticket.json");
+        cmd_invite_combine(req_path, vec![a0, a1], Some(ticket_path.clone())).unwrap();
+        let set = format!(
+            "{},{},{}",
+            pubkey_hex(0x11),
+            pubkey_hex(0x22),
+            pubkey_hex(0x33)
+        );
+        // Default K is strict majority: 2 approvals satisfy 2-of-3.
+        cmd_invite_verify(ticket_path.clone(), set.clone(), None).unwrap();
+        // Explicit K=3 fails on a 2-approval ticket.
+        assert!(cmd_invite_verify(ticket_path, set, Some(3)).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn combine_rejects_cross_request_approvals() {
+        let dir = scratch_dir("cross");
+        let r0 = dir.join("r0.json");
+        let r1 = dir.join("r1.json");
+        cmd_invite_request(hex::encode([0xAAu8; 32]), 3600, Some(r0.clone())).unwrap();
+        cmd_invite_request(hex::encode([0xBBu8; 32]), 3600, Some(r1.clone())).unwrap();
+        let s0 = write_seed(&dir, "k0.seed", 0x11);
+        let s1 = write_seed(&dir, "k1.seed", 0x22);
+        let a0 = dir.join("a0.json");
+        let a1 = dir.join("a1.json");
+        cmd_invite_approve(r0.clone(), s0, Some(a0.clone())).unwrap();
+        cmd_invite_approve(r1, s1, Some(a1.clone())).unwrap();
+        assert!(cmd_invite_combine(r0, vec![a0, a1], None).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_reports_shortfall() {
+        let dir = scratch_dir("verify");
+        let req = dir.join("req.json");
+        cmd_invite_request(hex::encode([0xAAu8; 32]), 3600, Some(req.clone())).unwrap();
+        let s0 = write_seed(&dir, "k0.seed", 0x11);
+        let a0 = dir.join("a0.json");
+        cmd_invite_approve(req.clone(), s0, Some(a0.clone())).unwrap();
+        let ticket = dir.join("ticket.json");
+        cmd_invite_combine(req, vec![a0], Some(ticket.clone())).unwrap();
+        let set = format!("{},{}", pubkey_hex(0x11), pubkey_hex(0x22));
+        let err = cmd_invite_verify(ticket, set, Some(2)).expect_err("shortfall");
+        assert!(err.to_string().contains("have 1 of 2"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 /// Actionable next step for a failed ticket join, by fleet status code.

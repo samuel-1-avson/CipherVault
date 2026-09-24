@@ -806,6 +806,16 @@ pub async fn get_peer_membership(
     Ok(Json(state.membership_snapshot()))
 }
 
+/// Lists the ticket admission evidence log in admission order.
+/// Control-plane route: admission evidence is fleet administration.
+pub async fn get_peer_admissions(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::state::AdmissionRecord>>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
+    Ok(Json(state.admissions_snapshot()))
+}
+
 /// Admin graduation override: confers full membership immediately.
 /// Control-plane route like `/v1/peers/announce`. Unknown ids → 404.
 pub async fn post_peer_graduate(

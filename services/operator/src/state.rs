@@ -24,6 +24,7 @@ use ciphervault_storage::invites::JoinInvite;
 use ciphervault_storage::types::LeaseReceipt;
 use ciphervault_storage::vouchers::{VoucherLedger, WriteVoucher};
 use ciphervault_storage::StorageError;
+use sha2::{Digest, Sha256};
 
 pub const MAX_OBJECT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB max per chunk/manifest object
 pub const MAX_RECOVERY_RECORD_SIZE: usize = 64 * 1024; // 64 KiB max per recovery record
@@ -284,6 +285,30 @@ pub struct MembershipView {
     pub graduated_utc: Option<u64>,
 }
 
+/// Tamper-evident admission record (`join-admissions.json`): who admitted
+/// whom, under what rule, and when. One entry per successful ticket
+/// admission (legacy single-sig and quorum alike); `signer_pks` holds
+/// the distinct approving fleet keys and `ticket_sha256` pins the exact
+/// ticket bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmissionRecord {
+    pub admitted_utc: u64,
+    pub node_pk_hex: String,
+    pub operator_id: String,
+    pub nonce_hex: String,
+    pub expires_utc: u64,
+    pub ticket_version: u32,
+    pub signer_pks: Vec<String>,
+    pub ticket_sha256: String,
+}
+
+/// Verified-join authorization mode: legacy single fleet key, or a
+/// quorum key set with threshold.
+enum JoinAuth {
+    Legacy { key: String },
+    Quorum { set: Vec<String>, threshold: usize },
+}
+
 pub struct OperatorState {
     pub operator_id: String,
     pub signing_key: SigningKey,
@@ -320,6 +345,11 @@ pub struct OperatorState {
     // write so the set cannot grow without bound. Persisted via
     // join-invites.json so a restart cannot double-spend a ticket.
     spent_invites: Mutex<HashMap<String, u64>>,
+    // Ticket admission evidence: one record per successful join, in
+    // admission order. Append-only; persisted via join-admissions.json
+    // so restarts keep the full history. Read via the control-plane
+    // admissions route.
+    admissions: Mutex<Vec<AdmissionRecord>>,
     // Write-voucher spend ledger (D4): nonce -> charge. Held across
     // verify→charge→persist so concurrent writes on one voucher cannot
     // overspend (in memory or in the file). Spend survives restarts via
@@ -380,6 +410,7 @@ impl OperatorState {
             peer_routing_table: Mutex::new(HashMap::new()),
             peer_membership: Mutex::new(HashMap::new()),
             spent_invites: Mutex::new(HashMap::new()),
+            admissions: Mutex::new(Vec::new()),
             approval_challenges: Mutex::new(HashMap::new()),
             voucher_ledger: Mutex::new(VoucherLedger::new(u64::MAX)),
             vouchers_required: AtomicBool::new(false),
@@ -393,6 +424,7 @@ impl OperatorState {
         state.load_peer_routing_table();
         state.load_peer_membership();
         state.load_spent_invites();
+        state.load_admissions();
         state.load_approval_challenges();
         state.load_voucher_ledger();
         state
@@ -852,6 +884,25 @@ impl OperatorState {
     fn persist_spent_invites(&self, records: &HashMap<String, u64>) -> Result<(), String> {
         let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
         self.persist_atomic(&self.spent_invites_store_path(), &encoded)
+    }
+
+    fn admissions_store_path(&self) -> PathBuf {
+        self.data_dir.join("join-admissions.json")
+    }
+
+    fn load_admissions(&self) {
+        let Ok(bytes) = fs::read(self.admissions_store_path()) else {
+            return;
+        };
+        let Ok(records) = serde_json::from_slice::<Vec<AdmissionRecord>>(&bytes) else {
+            return;
+        };
+        *lock_or_recover(&self.admissions, "admissions") = records;
+    }
+
+    fn persist_admissions(&self, records: &[AdmissionRecord]) -> Result<(), String> {
+        let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
+        self.persist_atomic(&self.admissions_store_path(), &encoded)
     }
 
     fn approval_store_path(&self) -> PathBuf {
@@ -2420,24 +2471,33 @@ impl OperatorState {
 
     /// Admits a new node into probation on a fleet-signed invite (public
     /// `POST /v1/peers/join`: no service token — the ticket is the
-    /// authorization). Fails closed when `CIPHERVAULT_FLEET_KEY` is unset,
-    /// so static fleets keep working byte-for-byte. The invite nonce is
-    /// spent before the insert, so one ticket admits exactly one node key
-    /// even if the insert fails partway.
+    /// authorization). Two modes: legacy single-key (only
+    /// `CIPHERVAULT_FLEET_KEY` set — byte-for-byte the v1 behavior) and
+    /// quorum (`CIPHERVAULT_FLEET_KEYS` + `CIPHERVAULT_QUORUM_K`). Fails
+    /// closed when neither is configured, so static fleets keep working
+    /// byte-for-byte. The invite nonce is spent before the insert, so one
+    /// ticket admits exactly one node key even if the insert fails
+    /// partway; the admission evidence entry is mandatory — a log-write
+    /// failure rolls back routing, membership, and spend.
     pub fn join_with_invite(
         &self,
         peer: ciphervault_storage::PeerDescriptor,
         invite: &JoinInvite,
     ) -> Result<usize, String> {
-        let fleet_key = std::env::var("CIPHERVAULT_FLEET_KEY")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Verified join is not configured on this node".to_string())?;
+        let auth = Self::join_auth_config()?;
         let now = Utc::now().timestamp() as u64;
-        invite
-            .verify(&fleet_key, now)
-            .map_err(|error| error.to_string())?;
+        let (signers, quorum_mode) = match &auth {
+            JoinAuth::Legacy { key } => {
+                invite.verify(key, now).map_err(|error| error.to_string())?;
+                (vec![invite.issuer_pk_hex.clone()], false)
+            }
+            JoinAuth::Quorum { set, threshold } => {
+                let signers = invite
+                    .verify_quorum(set, *threshold, now)
+                    .map_err(|error| error.to_string())?;
+                (signers, true)
+            }
+        };
         if !peer
             .signing_pk_hex
             .eq_ignore_ascii_case(&invite.node_pk_hex)
@@ -2454,6 +2514,9 @@ impl OperatorState {
         let previous_peer = lock_or_recover(&self.peer_routing_table, "peer_routing_table")
             .get(&peer.operator_id)
             .cloned();
+        let previous_membership = lock_or_recover(&self.peer_membership, "peer_membership")
+            .get(&peer.operator_id)
+            .cloned();
         let count = match self.insert_peer(peer.clone()) {
             Ok(count) => count,
             Err(error) => {
@@ -2462,25 +2525,33 @@ impl OperatorState {
             }
         };
         if let Err(error) = self.mark_probation_member(&peer.operator_id, now) {
-            let mut lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
-            match previous_peer {
-                Some(descriptor) => {
-                    lock.insert(peer.operator_id.clone(), descriptor);
-                }
-                None => {
-                    lock.remove(&peer.operator_id);
-                }
-            }
-            let snapshot = lock.clone();
-            if let Err(rollback_error) = self.persist_peer_routing_table(&snapshot) {
-                eprintln!(
-                    "operator peer rollback failed after membership error ({error}): {rollback_error}"
-                );
-            }
+            self.rollback_peer_insert(&peer.operator_id, previous_peer, "membership", &error);
+            self.unspend_invite(&invite.nonce_hex);
+            return Err(error);
+        }
+        let ticket_json = serde_json::to_vec(invite).map_err(|error| error.to_string())?;
+        let mut hasher = Sha256::new();
+        hasher.update(&ticket_json);
+        let record = AdmissionRecord {
+            admitted_utc: now,
+            node_pk_hex: invite.node_pk_hex.clone(),
+            operator_id: peer.operator_id.clone(),
+            nonce_hex: invite.nonce_hex.clone(),
+            expires_utc: invite.expires_utc,
+            ticket_version: invite.version,
+            signer_pks: signers,
+            ticket_sha256: hex::encode(hasher.finalize()),
+        };
+        if let Err(error) = self.log_admission(record) {
+            self.rollback_peer_insert(&peer.operator_id, previous_peer, "admission-log", &error);
+            self.restore_membership(&peer.operator_id, previous_membership);
             self.unspend_invite(&invite.nonce_hex);
             return Err(error);
         }
         self.metrics.observe_peer_joined();
+        if quorum_mode {
+            self.metrics.observe_quorum_peer_joined();
+        }
         Ok(count)
     }
 
@@ -2574,6 +2645,119 @@ impl OperatorState {
                 eprintln!("operator invite unspend persist failed for {nonce_hex}: {error}");
             }
         }
+    }
+
+    /// Appends one admission record after a successful probation insert.
+    /// Evidence is mandatory: a persist failure removes the record and
+    /// errors, and the caller rolls back the admission.
+    fn log_admission(&self, record: AdmissionRecord) -> Result<(), String> {
+        let mut lock = lock_or_recover(&self.admissions, "admissions");
+        lock.push(record);
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_admissions(&snapshot) {
+            lock.pop();
+            return Err(format!("Unable to persist admission log: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Clones the admission evidence log (control-plane route).
+    pub fn admissions_snapshot(&self) -> Vec<AdmissionRecord> {
+        lock_or_recover(&self.admissions, "admissions").clone()
+    }
+
+    /// Restores the routing table after a post-insert failure (membership
+    /// or evidence-log write). Best-effort persist; the spend release is
+    /// the caller's job.
+    fn rollback_peer_insert(
+        &self,
+        operator_id: &str,
+        previous: Option<ciphervault_storage::PeerDescriptor>,
+        stage: &str,
+        cause: &str,
+    ) {
+        let mut lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
+        match previous {
+            Some(descriptor) => {
+                lock.insert(operator_id.to_string(), descriptor);
+            }
+            None => {
+                lock.remove(operator_id);
+            }
+        }
+        let snapshot = lock.clone();
+        if let Err(rollback_error) = self.persist_peer_routing_table(&snapshot) {
+            eprintln!(
+                "operator peer rollback failed after {stage} error ({cause}): {rollback_error}"
+            );
+        }
+    }
+
+    /// Restores the membership map after an evidence-log failure that
+    /// voids the admission: reinserts the pre-join record, or removes the
+    /// fresh probation entry when the joiner was new. Best-effort persist
+    /// (the spend release is what keeps the ticket redeemable).
+    fn restore_membership(&self, operator_id: &str, previous: Option<PeerMembership>) {
+        let mut lock = lock_or_recover(&self.peer_membership, "peer_membership");
+        match previous {
+            Some(record) => {
+                lock.insert(operator_id.to_string(), record);
+            }
+            None => {
+                lock.remove(operator_id);
+            }
+        }
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_peer_membership(&snapshot) {
+            eprintln!("operator membership restore failed for {operator_id}: {error}");
+        }
+    }
+
+    /// Resolves verified-join authorization from env. Quorum mode wins
+    /// when `CIPHERVAULT_FLEET_KEYS` is set; legacy single-key mode when
+    /// only `CIPHERVAULT_FLEET_KEY` is set; fail-closed otherwise.
+    /// Config mistakes fail closed with a stderr diagnostic, never open.
+    fn join_auth_config() -> Result<JoinAuth, String> {
+        const CLOSED: &str = "Verified join is not configured on this node";
+        let list = std::env::var("CIPHERVAULT_FLEET_KEYS")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if let Some(list) = list {
+            let set: Vec<String> = list
+                .split(',')
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+                .collect();
+            if set.is_empty() {
+                eprintln!("operator join disabled: CIPHERVAULT_FLEET_KEYS lists no keys");
+                return Err(CLOSED.into());
+            }
+            let raw = std::env::var("CIPHERVAULT_QUORUM_K")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let threshold = match raw {
+                None => JoinInvite::quorum_default(set.len()),
+                Some(text) => match text.parse::<usize>() {
+                    Ok(value) if value >= 1 && value <= set.len() => value,
+                    _ => {
+                        eprintln!(
+                            "operator join disabled: CIPHERVAULT_QUORUM_K must be 1..={}",
+                            set.len()
+                        );
+                        return Err(CLOSED.into());
+                    }
+                },
+            };
+            return Ok(JoinAuth::Quorum { set, threshold });
+        }
+        let key = std::env::var("CIPHERVAULT_FLEET_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| CLOSED.to_string())?;
+        Ok(JoinAuth::Legacy { key })
     }
 
     /// Inserts a probation record for a ticket join, or notes liveness on
@@ -3721,6 +3905,184 @@ mod tests {
         record.joined_utc = now - joined_ago;
         record.last_seen_utc = now - seen_ago;
         fs::write(&path, serde_json::to_vec_pretty(&records).unwrap()).unwrap();
+    }
+
+    fn quorum_test_keys(n: usize) -> (Vec<SigningKey>, Vec<String>) {
+        let keys: Vec<SigningKey> = (0..n)
+            .map(|_| ciphervault_crypto::generate_signing_key())
+            .collect();
+        let pks = keys
+            .iter()
+            .map(|key| hex::encode(key.verifying_key().to_bytes()))
+            .collect();
+        (keys, pks)
+    }
+
+    fn pin_quorum_keys(pks: &[String], k: Option<usize>) {
+        std::env::set_var("CIPHERVAULT_FLEET_KEYS", pks.join(","));
+        match k {
+            Some(threshold) => std::env::set_var("CIPHERVAULT_QUORUM_K", threshold.to_string()),
+            None => std::env::remove_var("CIPHERVAULT_QUORUM_K"),
+        }
+        std::env::remove_var("CIPHERVAULT_FLEET_KEY");
+    }
+
+    fn unpin_quorum_keys() {
+        std::env::remove_var("CIPHERVAULT_FLEET_KEYS");
+        std::env::remove_var("CIPHERVAULT_QUORUM_K");
+        std::env::remove_var("CIPHERVAULT_FLEET_KEY");
+    }
+
+    fn quorum_ticket(keys: &[SigningKey], approvers: &[usize], node_pk_hex: String) -> JoinInvite {
+        use ciphervault_storage::invites::{InviteApproval, InviteRequest};
+        let request = InviteRequest::new(node_pk_hex, 3600).unwrap();
+        let approvals: Vec<InviteApproval> = approvers
+            .iter()
+            .map(|index| InviteApproval::approve(&keys[*index], &request).unwrap())
+            .collect();
+        JoinInvite::issue_quorum(&request, &approvals).unwrap()
+    }
+
+    #[test]
+    fn quorum_join_admits_and_logs_evidence() {
+        let _guard = join_test_guard();
+        let (keys, pks) = quorum_test_keys(3);
+        pin_quorum_keys(&pks, None);
+        let (state, root) = join_test_state("quorum-join");
+        let (peer, _) = join_test_peer("quorum-joiner");
+        let invite = quorum_ticket(&keys, &[0, 2], peer.signing_pk_hex.clone());
+        assert_eq!(state.join_with_invite(peer.clone(), &invite).unwrap(), 1);
+        assert!(state.is_probationary("quorum-joiner"));
+        let admissions = state.admissions_snapshot();
+        assert_eq!(admissions.len(), 1);
+        let record = &admissions[0];
+        assert_eq!(record.ticket_version, 2);
+        assert_eq!(record.operator_id, "quorum-joiner");
+        assert_eq!(record.node_pk_hex, peer.signing_pk_hex);
+        assert_eq!(record.nonce_hex, invite.nonce_hex);
+        assert_eq!(record.signer_pks, vec![pks[0].clone(), pks[2].clone()]);
+        assert_eq!(record.ticket_sha256.len(), 64);
+        assert!(root.join("join-admissions.json").is_file());
+        // Evidence survives restarts.
+        drop(state);
+        let reopened = OperatorState::new(
+            "test-op".into(),
+            root.clone(),
+            ciphervault_crypto::generate_signing_key(),
+        );
+        assert_eq!(reopened.admissions_snapshot().len(), 1);
+        drop(reopened);
+        unpin_quorum_keys();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quorum_join_rejects_below_threshold_without_side_effects() {
+        let _guard = join_test_guard();
+        let (keys, pks) = quorum_test_keys(3);
+        pin_quorum_keys(&pks, None);
+        let (state, root) = join_test_state("quorum-short");
+        let (peer, _) = join_test_peer("short-joiner");
+        let invite = quorum_ticket(&keys, &[1], peer.signing_pk_hex.clone());
+        let err = state
+            .join_with_invite(peer.clone(), &invite)
+            .expect_err("below threshold");
+        assert!(err.contains("have 1 of 2"), "{err}");
+        assert!(state.admissions_snapshot().is_empty());
+        assert!(state.membership_snapshot().is_empty());
+        // A quorate ticket for the same node still works: nothing poisoned.
+        let full = quorum_ticket(&keys, &[0, 1], peer.signing_pk_hex.clone());
+        assert_eq!(state.join_with_invite(peer, &full).unwrap(), 1);
+        assert_eq!(state.admissions_snapshot().len(), 1);
+        drop(state);
+        unpin_quorum_keys();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quorum_v1_ticket_counts_as_single_approval_at_k1() {
+        let _guard = join_test_guard();
+        let (keys, pks) = quorum_test_keys(2);
+        pin_quorum_keys(&pks, Some(1));
+        let (state, root) = join_test_state("quorum-v1");
+        let (peer, _) = join_test_peer("v1-joiner");
+        let invite = JoinInvite::issue(&keys[1], peer.signing_pk_hex.clone(), 3600).unwrap();
+        assert_eq!(state.join_with_invite(peer, &invite).unwrap(), 1);
+        let admissions = state.admissions_snapshot();
+        assert_eq!(admissions.len(), 1);
+        assert_eq!(admissions[0].ticket_version, 1);
+        assert_eq!(admissions[0].signer_pks, vec![pks[1].clone()]);
+        drop(state);
+        unpin_quorum_keys();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quorum_config_fails_closed() {
+        let _guard = join_test_guard();
+        let (keys, pks) = quorum_test_keys(2);
+        let (state, root) = join_test_state("quorum-closed");
+        let (peer, _) = join_test_peer("closed-joiner");
+        let invite = quorum_ticket(&keys, &[0, 1], peer.signing_pk_hex.clone());
+        for bad_k in ["0", "3", "99", "nope"] {
+            pin_quorum_keys(&pks, None);
+            std::env::set_var("CIPHERVAULT_QUORUM_K", bad_k);
+            let err = state
+                .join_with_invite(peer.clone(), &invite)
+                .expect_err("bad K fails closed");
+            assert_eq!(err, "Verified join is not configured on this node");
+        }
+        // Default K with 2 keys is strict majority (2): the 2-approval
+        // ticket passes once K is valid again.
+        pin_quorum_keys(&pks, None);
+        assert_eq!(state.join_with_invite(peer, &invite).unwrap(), 1);
+        drop(state);
+        unpin_quorum_keys();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quorum_rotation_rejects_old_tickets() {
+        let _guard = join_test_guard();
+        let (keys_a, pks_a) = quorum_test_keys(2);
+        let (_, pks_b) = quorum_test_keys(2);
+        pin_quorum_keys(&pks_a, Some(1));
+        let (state, root) = join_test_state("quorum-rotate");
+        let (peer, _) = join_test_peer("rotate-joiner");
+        let invite = quorum_ticket(&keys_a, &[0], peer.signing_pk_hex.clone());
+        assert_eq!(state.join_with_invite(peer.clone(), &invite).unwrap(), 1);
+        // Same ticket under the rotated set: signer no longer pinned.
+        pin_quorum_keys(&pks_b, Some(1));
+        let (peer2, _) = join_test_peer("rotate-joiner-2");
+        let stale = quorum_ticket(&keys_a, &[1], peer2.signing_pk_hex.clone());
+        let err = state
+            .join_with_invite(peer2, &stale)
+            .expect_err("rotated signer rejected");
+        assert!(err.contains("not in fleet key set"), "{err}");
+        assert_eq!(state.admissions_snapshot().len(), 1);
+        drop(state);
+        unpin_quorum_keys();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_mode_join_logs_evidence() {
+        let _guard = join_test_guard();
+        unpin_quorum_keys();
+        let fleet = ciphervault_crypto::generate_signing_key();
+        let fleet_pk = hex::encode(fleet.verifying_key().to_bytes());
+        std::env::set_var("CIPHERVAULT_FLEET_KEY", &fleet_pk);
+        let (state, root) = join_test_state("legacy-evidence");
+        let (peer, _) = join_test_peer("legacy-joiner");
+        let invite = JoinInvite::issue(&fleet, peer.signing_pk_hex.clone(), 3600).unwrap();
+        assert_eq!(state.join_with_invite(peer, &invite).unwrap(), 1);
+        let admissions = state.admissions_snapshot();
+        assert_eq!(admissions.len(), 1);
+        assert_eq!(admissions[0].ticket_version, 1);
+        assert_eq!(admissions[0].signer_pks, vec![fleet_pk]);
+        drop(state);
+        unpin_quorum_keys();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

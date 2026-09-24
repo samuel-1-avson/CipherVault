@@ -323,6 +323,7 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             post(handlers::post_peer_join_refresh),
         )
         .route("/v1/peers/membership", get(handlers::get_peer_membership))
+        .route("/v1/peers/admissions", get(handlers::get_peer_admissions))
         .route("/v1/peers/:id/graduate", post(handlers::post_peer_graduate))
         // Out-of-Band Cryptographic Approval routes
         .route(
