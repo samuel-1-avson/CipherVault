@@ -762,7 +762,7 @@ function initShamirSimulator() {
         badge.style.color = 'var(--term-mint)';
         if (hudText) hudText.textContent = `Unique polynomial reconstructed! Constant term f(0) extracted in constant time.`;
         output.className = 'shamir-terminal-output solved';
-        output.innerHTML = `[SUCCESS] Lagrange interpolation in GF(2^8) solved!<br>RECONSTRUCTED MASTER ROOT (R): <span class="text-gold">0x4F9B72C1-E8A3-4D90-B831-C038592FA711</span> (Vault unsealed)`;
+        output.innerHTML = `[SUCCESS] Lagrange interpolation in GF(2^8) solved!<br>RECONSTRUCTED MASTER ROOT (R): <span class="text-gold">0xDEMO-DEADBEEF-CAFEBABE-0123456789AB</span> (Vault unsealed)`;
       }, 240);
     }
   };
@@ -811,7 +811,8 @@ function initPaperKit() {
 
   if (!btn || !keyDisplay) return;
 
-  const RAW_SLOTS = ['8A4F-29E1', 'C73B-99D0', 'F41A-66E8', 'B2C5-9011'];
+  // Simulated mock paper recovery key for interactive UI demonstration
+  const RAW_SLOTS = ['DEMO-DEAD', 'BEEF-CAFE', 'BABE-0123', '4567-89AB']; // ggignore
   const MASK_SLOTS = ['••••••••', '••••••••', '••••••••', '••••••••'];
   let revealed = false;
 
@@ -825,7 +826,7 @@ function initPaperKit() {
           slot.classList.remove('masked');
         });
       } else {
-        keyDisplay.textContent = '8A4F-29E1-C73B-99D0-F41A-66E8-B2C5-9011 [CRC32: 8F2A]';
+        keyDisplay.textContent = 'DEMO-DEAD-BEEF-CAFE-BABE-0123-4567-89AB [CRC32: TEST]';
         keyDisplay.style.color = 'var(--term-gold)';
       }
       btn.textContent = '[🔒 MASK KEY]';
@@ -836,7 +837,7 @@ function initPaperKit() {
           slot.classList.add('masked');
         });
       } else {
-        keyDisplay.textContent = '••••••••-••••••••-••••••••-•••••••• [CRC32: 8F2A]';
+        keyDisplay.textContent = '••••••••-••••••••-••••••••-•••••••• [CRC32: TEST]';
         keyDisplay.style.color = 'var(--text-main)';
       }
       btn.textContent = '[👁 REVEAL SIMULATED KEY]';
@@ -938,7 +939,7 @@ const REPL_RESPONSES = {
     'ciphervault init',
     '🔐 Probing OS secure enclave (Windows DPAPI CryptProtectData)... [OK]',
     '✓ Master secret R generated (256-bit high-entropy Blake2b KDF)',
-    'ROOT SECRET: 8A4F-29E1-C73B-99D0-F41A-66E8-B2C5-9011 [CRC32: 8F2A]',
+    'ROOT SECRET: DEMO-DEAD-BEEF-CAFE-BABE-0123-4567-89AB [CRC32: TEST]', // ggignore
     '✓ Local SQLite WAL vault initialized at .ciphervault/state.db'
   ],
   track: [

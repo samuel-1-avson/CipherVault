@@ -1,0 +1,13 @@
+# GitGuardian Configuration
+# https://docs.gitguardian.com/internal-repositories-monitoring/integrations/git-hooks/pre-commit
+version: 2
+
+secret:
+  ignored_paths:
+    - "apps/landing/**"
+    - "docs/**"
+  ignored_matches:
+    - name: Simulated paper kit recovery mock key
+      match: "8A4F-29E1-C73B-99D0-F41A-66E8-B2C5-9011"
+    - name: Demo master root mock key
+      match: "DEMO-DEAD-BEEF-CAFE-BABE-0123-4567-89AB"
