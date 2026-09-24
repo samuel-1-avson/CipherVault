@@ -460,17 +460,16 @@ const PIPELINE_STAGES = {
   1: {
     kicker: 'STAGE [01] DEEP-DIVE SPECIFICATION',
     heading: 'Developer Working Tree Secret Enrollment',
-    mechanics: 'CipherVault tracks secret files completely out-of-band from Git. During enrollment via `ciphervault track .env`, the file is hashed with BLAKE2b-256, and metadata is recorded in an encrypted local SQLite WAL ledger (`.ciphervault/state.db`). The Git working tree and `.gitignore` remain completely untouched.',
+    mechanics: 'CipherVault tracks confidential files completely out-of-band from Git. During enrollment via `ciphervault track .env`, the file is indexed into an encrypted local SQLite WAL database (`vault.db`) with cryptographic content digest binding. The Git working tree and `.gitignore` remain completely untouched.',
     security: 'Guarantees zero accidental staging into Git commits (`git add .` will never expose secrets). Host OS hardware keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R.',
     statVal: '< 1.2 ms',
     statDesc: 'Local metadata indexing & DPAPI hardware key binding',
-    code: `// crates/vault-core/src/tracker.rs
-pub fn enroll_secret_file(path: &Path) -> Result<TrackedMetadata> {
+    code: `// apps/cli/src/commands/track.rs & crates/local-store/src/db.rs
+pub fn enroll_secret_file(path: &Path, store: &LocalVaultStore) -> Result<TrackedMetadata> {
     let raw = std::fs::read(path)?;
-    let cid = blake2b_256(&raw);
-    let master_key = platform::get_dpapi_master_key()?;
-    state_db::insert_tracked(path, &cid)?;
-    Ok(TrackedMetadata { cid, bytes: raw.len() })
+    let digest = blake2b_256(&raw);
+    store.track_file(path, &digest, raw.len() as u64)?;
+    Ok(TrackedMetadata { digest, bytes: raw.len() })
 }`
   },
   2: {
@@ -480,7 +479,7 @@ pub fn enroll_secret_file(path: &Path) -> Result<TrackedMetadata> {
     security: 'Ensures localized byte edits only produce 1 modified chunk while 96%+ of all other chunks retain identical cryptographic hashes across versions, enabling extreme sub-file deduplication.',
     statVal: '96.15% Deduplication',
     statDesc: '25 of 26 chunks reused per localized edit; 1.85 GB/s hashing throughput',
-    code: `// crates/vault-core/src/chunker.rs
+    code: `// crates/storage/src/chunk.rs
 use fastcdc::v2020::FastCDC;
 
 pub fn slice_into_chunks(buffer: &[u8]) -> Vec<Chunk> {
@@ -499,7 +498,7 @@ pub fn slice_into_chunks(buffer: &[u8]) -> Vec<Chunk> {
     security: 'Zero-knowledge guarantee: plaintext is never sent over any network. Storage operators and cloud custodians only ever receive opaque high-entropy ciphertext blobs with zero metadata leakage.',
     statVal: '558.62 MiB/s',
     statDesc: 'AES-NI / SIMD accelerated client encryption (Poly1305 MAC)',
-    code: `// crates/vault-crypto/src/cipher.rs
+    code: `// crates/crypto/src/cipher.rs
 use chacha20poly1305::{XChaCha20Poly1305, Key, XNonce, aead::{Aead, KeyInit}};
 use zeroize::ZeroizeOnDrop;
 
@@ -513,19 +512,23 @@ pub fn encrypt_chunk(key: &Key, nonce: &XNonce, chunk: &SecretBuffer) -> Result<
   },
   4: {
     kicker: 'STAGE [04] DEEP-DIVE SPECIFICATION',
-    heading: 'Federated Quorum Storage Mesh Replication',
-    mechanics: 'Opaque ciphertext chunks are pushed across a peer-to-peer storage mesh composed of independent operator nodes (running in Council Bluffs, IA and Moncks Corner, SC). Multi-chunk uploads use encrypted TLS 1.3 multiplexed HTTP/2 streams.',
-    security: 'Byzantine quorum fault tolerance: requiring a 2-of-3 quorum ensures secret snapshots survive catastrophic node wipes, cloud provider outages, or network partitions without centralized single points of failure.',
-    statVal: '3/3 Synced',
-    statDesc: 'Geo-distributed libp2p mesh latency < 45 ms across testnet nodes',
-    code: `// services/operator/src/state.rs
-pub async fn ingest_chunk(&self, cid: &ChunkId, payload: Bytes) -> Result<IngestReceipt> {
-    if !self.verify_cid(cid, &payload) {
-        return Err(OperatorError::CorruptedPayload);
+    heading: 'K-of-N Quorum Admission & Capability Vouchers',
+    mechanics: 'Operator nodes must pass a K-of-N multi-signature admission ceremony (ADR-011) with offline fleet seed keys and immutable join-admissions.json logs before joining the mesh. Client writes require signed capability vouchers (WriteVoucher) tracked in a persistent ledger with uniform per-user lifetime quotas (--user-quota-bytes).',
+    security: 'Byzantine fault-tolerant storage + strict abuse defense: 429 quota limits prevent sybil disk-fill attacks, while K-of-N multi-signatures guarantee that no single compromised keyholder can admit rogue operators into the routing table.',
+    statVal: 'K-of-N Quorum',
+    statDesc: 'Multi-sig admission + voucher quotas (--user-quota-bytes)',
+    code: `// crates/storage/src/invites.rs & vouchers.rs
+pub fn verify_quorum_admission(
+    ticket: &JoinInvite,
+    fleet_keys: &[VerifyingKey],
+    k_threshold: usize
+) -> Result<(), StorageError> {
+    let valid_approvals = ticket.count_distinct_approvals(fleet_keys)?;
+    if valid_approvals < k_threshold {
+        return Err(forbidden("insufficient keyholder approvals for quorum admission"));
     }
-    self.storage.write_opaque_blob(cid, &payload).await?;
-    self.broadcast_quorum_ack(cid).await?;
-    Ok(IngestReceipt { cid: *cid, status: QuorumStatus::Acknowledged })
+    log_admission_evidence(ticket)?; // Appends join-admissions.json
+    Ok(())
 }`
   },
   5: {
@@ -535,7 +538,7 @@ pub async fn ingest_chunk(&self, cid: &ChunkId, payload: Bytes) -> Result<Ingest
     security: 'Prevents operators from silently dropping data, claiming phantom storage, or executing data-withholding attacks. Verified in sub-millisecond execution on the client.',
     statVal: '99.956% Wire Savings',
     statDesc: '1 MiB raw chunk verified with only 461 bytes transmitted over wire',
-    code: `// crates/vault-pos/src/verifier.rs
+    code: `// crates/storage/src/pos.rs
 pub fn verify_pos_proof(expected_cid: &ChunkId, challenge_nonce: &[u8; 32], proof: &PoSProof) -> bool {
     let computed_hash = hmac_blake2b(proof.chunk_sample(), challenge_nonce);
     computed_hash == proof.signature() && proof.wire_size() == 461
@@ -544,23 +547,22 @@ pub fn verify_pos_proof(expected_cid: &ChunkId, challenge_nonce: &[u8; 32], proo
   6: {
     kicker: 'STAGE [06] DEEP-DIVE SPECIFICATION',
     heading: 'Arbitrum One L2 Blockchain Anchor & Consensus',
-    mechanics: 'Each snapshot epoch DAG root is signed with EIP-712 structured typed data and published to the CipherVault state anchor contract on Arbitrum One L2 rollup. This anchors a permanent, decentralized timestamp and Merkle state root.',
-    security: 'Prevents secret history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify the snapshot root against the public Ethereum L2 ledger without trusting any server.',
+    mechanics: 'Snapshot commitments (SHA-256 of salt || head_cid) are anchored to the immutable CipherVaultRegistry.sol smart contract on Arbitrum One L2. The client CLI (ciphervault anchor) submits raw L2 transactions or uses automated relayers, polling for sequencer receipt confirmation (eth_getTransactionReceipt).',
+    security: 'Zero plaintext, zero filenames, and zero user keys are ever revealed on-chain. Permanent L2 immutable timestamp prevents history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify with ciphervault verify-anchor.',
     statVal: '< $0.002 Gas',
-    statDesc: 'Arbitrum One L2 transaction settlement finality on block #14809',
-    code: `// crates/vault-blockchain/src/anchor.rs
-use ethers::prelude::*;
+    statDesc: 'Arbitrum One L2 sequencer finality + on-chain receipt verification',
+    code: `// contracts/CipherVaultRegistry.sol (Arbitrum One L2)
+contract CipherVaultRegistry {
+    event CommitmentPublished(bytes32 indexed commitment, address indexed publisher, uint256 blockNumber, uint256 timestamp);
+    mapping(bytes32 => uint256) public firstSeenBlock;
 
-#[eip712(name = "CipherVaultAnchor", version = "1")]
-pub struct SnapshotCommitment {
-    pub epoch: U256,
-    pub merkle_root: [u8; 32],
-    pub timestamp: U256,
-}
-
-pub async fn commit_snapshot_to_l2(contract: &AnchorContract, commit: SnapshotCommitment) -> Result<TxHash> {
-    let tx = contract.commit_state_root(commit.epoch, commit.merkle_root).send().await?;
-    Ok(tx.tx_hash())
+    function publish(bytes32 commitment) external {
+        require(commitment != bytes32(0), "Invalid commitment: zero digest");
+        if (firstSeenBlock[commitment] == 0) {
+            firstSeenBlock[commitment] = block.number;
+            emit CommitmentPublished(commitment, msg.sender, block.number, block.timestamp);
+        }
+    }
 }`
   }
 };
@@ -866,10 +868,13 @@ function initPaperKit() {
    8. Live Real-Time Cryptographic Audit Telemetry Stream
    ============================================================================== */
 const TELEMETRY_EVENTS = [
-  'PoS challenge verified on cv-operator-1 (461-byte wire proof)',
-  'FastCDC gear rolling hash sliced chunk at boundary 16,384 bytes',
-  'Arbitrum One L2 anchor commitment receipt confirmed [block #14809]',
-  'libp2p mesh peer discovery: 3/3 storage operators connected',
+  'Arbitrum One L2 anchor commitment published (CipherVaultRegistry.sol) [block #248901422]',
+  'K-of-N quorum admission evidence appended to join-admissions.json [ADR-011]',
+  'PoS challenge verified on cv-operator-1 (461-byte HMAC-BLAKE2b wire proof)',
+  'FastCDC gear rolling hash sliced chunk at boundary 16,384 bytes (96.15% deduplication)',
+  'Voucher ledger verified per-user lifetime quota: 0 / 100 MiB spent [HTTP 200 OK]',
+  'Automated store reconstruction initialized vault.db at epoch 2 (init_vault_at_epoch)',
+  'libp2p mesh peer discovery: 3/3 storage operators connected & synchronized',
   'XChaCha20-Poly1305 multi-chunk AEAD throughput clocked at 558.62 MiB/s',
   'ZeroizeOnDrop compiler fence scrubbed ephemeral RAM key buffer',
   'Snapshot DAG head advanced to CID sha256:4a9c1f20b8e...',
@@ -924,23 +929,30 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault CLI Help & Command Index:',
+    'CipherVault CLI Help & Command Index (v1.0.14):',
     '  init               - Initialize local vault & print emergency paper kit',
     '  track <paths...>   - Enroll confidential files into out-of-band ledger',
-    '  snapshot [-m msg]  - FastCDC chunk, AEAD encrypt, and replicate across quorum',
+    '  push [-m msg]      - FastCDC chunk, AEAD encrypt, and replicate across quorum',
+    '  pull               - Pull and decrypt latest secret snapshot from operators',
+    '  diff               - Compare working secrets against active snapshot head',
+    '  anchor [--head CID]- Anchor salted snapshot commitment to Arbitrum One L2',
+    '  verify-anchor      - Verify on-chain L2 receipt & first-seen block',
+    '  invite [cmd]       - K-of-N multi-sig operator admission ceremony (ADR-011)',
+    '  recover            - Clean-machine paper kit & Shamir rebuild (init_vault_at_epoch)',
+    '  status             - Probe live operator mesh health & public status API',
     '  run -- <cmd...>    - Decrypt secrets into volatile RAM and spawn process',
     '  bench              - Run multi-chunk AEAD and PoS throughput benchmarks',
     '  compare            - Print architectural matrix vs AWS/Vault/1Password',
-    '  recover            - Clean-machine paper kit & Shamir guardian restore',
     '  testnet            - Inspect live 3-node storage quorum endpoints',
     '  clear              - Clear terminal log drawer'
   ],
   init: [
     'ciphervault init',
     '🔐 Probing OS secure enclave (Windows DPAPI CryptProtectData)... [OK]',
-    '✓ Master secret R generated (256-bit high-entropy Blake2b KDF)',
+    '✓ Master secret R generated (256-bit high-entropy Argon2id/Blake2b KDF)',
     'ROOT SECRET: DEMO-DEAD-BEEF-CAFE-BABE-0123-4567-89AB [CRC32: TEST]', // ggignore
-    '✓ Local SQLite WAL vault initialized at .ciphervault/state.db'
+    '✓ Local SQLite WAL vault initialized at .ciphervault/vault.db (Epoch 1)',
+    '✓ Ready to track secrets: ciphervault track .env'
   ],
   track: [
     'ciphervault track .env config/credentials.json',
@@ -948,12 +960,77 @@ const REPL_RESPONSES = {
     '✓ Enrolled: config/credentials.json (8.2 KiB) -> Content ID: sha256:d81e04...',
     'Notice: Git working tree unmodified. No plaintext staged into Git.'
   ],
-  snapshot: [
-    'ciphervault snapshot -m "Update production secrets"',
+  push: [
+    'ciphervault push -m "Update production secrets"',
     '⚡ FastCDC Chunking: 26 total chunks evaluated',
     '✓ Chunks reused: 25 | Chunks modified: 1 (4 KiB)',
     '🎯 Deduplication: 96.15% bandwidth saved!',
+    '✓ Replicated to 3 independent storage operators [3/3 OK]',
+    '  op1.cipherv.online: 200 OK (voucher spend recorded)',
+    '  op2.cipherv.online: 200 OK (voucher spend recorded)',
+    '  op3.cipherv.online: 200 OK (voucher spend recorded)',
+    '✓ Active Head Snapshot CID: 0x8f2d...c3a9 (Epoch 2)'
+  ],
+  snapshot: [
+    'Notice: "snapshot" is aliased to "ciphervault push" in v1.0.14.',
+    'ciphervault push -m "Update production secrets"',
+    '⚡ FastCDC Chunking: 26 total chunks evaluated',
+    '✓ Chunks reused: 25 | Chunks modified: 1 (4 KiB) -> 96.15% saved',
     '✓ Replicated to 3 independent storage operators [3/3 OK]'
+  ],
+  pull: [
+    'ciphervault pull',
+    'Connecting to storage quorum (op1/op2/op3.cipherv.online)...',
+    '✓ Active Head fetched: 0x8f2d...c3a9',
+    '✓ Fetched 1 delta chunk (4 KiB), reused 25 cached chunks',
+    '✓ Verified HMAC-BLAKE2b content digest: MATCH',
+    '✓ Working tree secrets restored and verified against local manifest.'
+  ],
+  diff: [
+    'ciphervault diff',
+    'Comparing working tree against snapshot 0x8f2d...c3a9:',
+    '  M .env (1 line modified, +1 key added)',
+    '  - config/credentials.json (unchanged, identical CID)',
+    'FastCDC delta estimate: 1 chunk (4 KiB) to sync on next push.'
+  ],
+  anchor: [
+    'ciphervault anchor',
+    'Preparing Arbitrum Checkpoint Commitment...',
+    '  Head Record CID:   0x8f2dc3a9e102b487d903f56e1872a0c8413b567d98e7201cba643210fe987654',
+    '  Target Chain ID:   42161 (Arbitrum One L2)',
+    '  Contract Registry: 0x14809CipherVaultRegistry.sol',
+    '  Opaque Commitment: 0x3d7b901a54c8e23f9b0123456789abcdef0123456789abcdef0123456789abcd',
+    '  Publish Calldata:  0x6a05e2bb3d7b901a54c8e23f9b0123456789abcdef...',
+    'Submitting commitment to Arbitrum L2 relayer (gas-abstracted)...',
+    '✓ Automated L2 Relayer Sequencer Confirmation Received!',
+    '  Sequencer Tx Hash: 0xa8f190c37b2d5e4a819c0b2468135790abcdef1234567890abcdef1234567890',
+    '  Sequencer Block:   248901422',
+    '  Finality Status:   SequencerConfirmed (Live Arbitrum L2 Settlement)'
+  ],
+  verify_anchor: [
+    'ciphervault verify-anchor',
+    'Querying Arbitrum One L2 Registry (0x14809...) at RPC https://arb1.arbitrum.io/rpc...',
+    '✓ On-chain Commitment Verified: 0x3d7b901a54c8...',
+    '  First Seen Block: 248901422',
+    '  Current L2 Block: 248901460 (38 confirmations)',
+    '  Receipt Verified: Independent RPC transaction receipt matches exact commitment inclusion.',
+    '✓ State root timestamp is immutable and cryptographically bound.'
+  ],
+  invite: [
+    'ciphervault invite (ADR-011 K-of-N Quorum Ceremony):',
+    '  Step 1: ciphervault invite request --node <node-pk>    -> Mint unsigned InviteRequest',
+    '  Step 2: ciphervault invite approve request.json         -> Keyholder signs with offline seed',
+    '  Step 3: ciphervault invite combine app1.json app2.json -> Coordinator combines K approvals',
+    '  Step 4: ciphervault invite verify ticket.json          -> Verify multi-sig ticket offline',
+    '  Result: Admitted into probation with permanent record in join-admissions.json.'
+  ],
+  status: [
+    'ciphervault status (GET https://cipherv.online/api/status):',
+    '  Fleet Health    : OPTIMAL (3/3 nodes ready & storage_ready)',
+    '  Operator 1 (IA) : READY (Latency: 42ms, Version: 1.0.14, Quotas: Active)',
+    '  Operator 2 (IA) : READY (Latency: 45ms, Version: 1.0.14, Quotas: Active)',
+    '  Operator 3 (SC) : READY (Latency: 48ms, Version: 1.0.14, Quotas: Active)',
+    '  Probe Watcher   : 5-minute scheduled probe green (100% SLA)'
   ],
   run: [
     'ciphervault run -- npm start',
@@ -974,20 +1051,24 @@ const REPL_RESPONSES = {
     '  CipherVault vs Cloud Secrets : Zero-knowledge client encryption vs Custodial KMS',
     '  CipherVault vs HashiCorp     : 96.15% FastCDC deduplication vs Full-blob storage',
     '  CipherVault vs 1Password     : Zero-disk RAM execution vs Plaintext local .env',
-    '  CipherVault vs SOPS          : Quorum replication & PoS vs Git commit hash only'
+    '  CipherVault vs SOPS          : Quorum replication & L2 anchor vs Git commit hash only'
   ],
   recover: [
-    'Clean-Machine Disaster Recovery:',
-    '  Method A : Emergency Offline Paper Kit (Master Secret R + CRC32)',
-    '  Method B : M-of-N Shamir Threshold Guardians in GF(2^8) (e.g. 2-of-3 leads)',
-    '  Method C : Out-of-band cryptographic push approvals'
+    'Clean-Machine Disaster Recovery (Recover-then-Rebuild Engine):',
+    '  ciphervault recover --kit-key <MASTER-KEY>',
+    '  1. Fetches genesis from immutable locator record',
+    '  2. Rebuilds local SQLite vault.db at recovered epoch (init_vault_at_epoch)',
+    '  3. Mints recovery-signed device certificate at authority generation',
+    '  4. Pulls active head snapshot and decrypts files without manual config',
+    '  Alternative: M-of-N Shamir Threshold Guardians in GF(2^8) (e.g. 2-of-3 leads)'
   ],
   testnet: [
     'Live Testnet Quorum Endpoints:',
-    '  cv-operator-1 : https://vault.cipherv.online/op/1 (Council Bluffs, Iowa)',
-    '  cv-operator-2 : https://vault.cipherv.online/op/2 (Council Bluffs, Iowa)',
-    '  cv-operator-3 : https://vault.cipherv.online/op/3 (Moncks Corner, S. Carolina)',
-    'Live Explorer : https://vault.cipherv.online'
+    '  cv-operator-1 : https://op1.cipherv.online (Council Bluffs, Iowa) [v1.0.14]',
+    '  cv-operator-2 : https://op2.cipherv.online (Council Bluffs, Iowa) [v1.0.14]',
+    '  cv-operator-3 : https://op3.cipherv.online (Moncks Corner, S. Carolina) [v1.0.14]',
+    'Live Explorer   : https://vault.cipherv.online',
+    'Settlement      : Arbitrum One L2 (CipherVaultRegistry.sol)'
   ]
 };
 
@@ -1024,7 +1105,11 @@ function initInteractiveRepl() {
     commandHistory.push(raw);
     historyIdx = commandHistory.length;
 
-    const lower = raw.toLowerCase().split(' ')[0];
+    let clean = raw.toLowerCase().trim();
+    if (clean.startsWith('ciphervault ')) {
+      clean = clean.substring('ciphervault '.length).trim();
+    }
+    const lower = clean.split(' ')[0].replace(/-/g, '_');
 
     if (lower === 'clear') {
       drawerContent.innerHTML = '';
@@ -1038,6 +1123,14 @@ function initInteractiveRepl() {
       if (lower.startsWith('bench')) responseLines = REPL_RESPONSES['bench'];
       else if (lower.startsWith('comp')) responseLines = REPL_RESPONSES['compare'];
       else if (lower.startsWith('rec')) responseLines = REPL_RESPONSES['recover'];
+      else if (lower.startsWith('anch')) responseLines = REPL_RESPONSES['anchor'];
+      else if (lower.startsWith('ver')) responseLines = REPL_RESPONSES['verify_anchor'];
+      else if (lower.startsWith('inv')) responseLines = REPL_RESPONSES['invite'];
+      else if (lower.startsWith('stat')) responseLines = REPL_RESPONSES['status'];
+      else if (lower.startsWith('snap')) responseLines = REPL_RESPONSES['snapshot'];
+      else if (lower.startsWith('push')) responseLines = REPL_RESPONSES['push'];
+      else if (lower.startsWith('pull')) responseLines = REPL_RESPONSES['pull'];
+      else if (lower.startsWith('diff')) responseLines = REPL_RESPONSES['diff'];
       else responseLines = [`ciphervault: command not found: '${raw}'. Type 'help' for available commands.`];
     }
 

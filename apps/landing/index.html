@@ -581,8 +581,8 @@
                     <span class="node-pulse-dot"></span>
                   </div>
                   <div class="node-title">Arbitrum One L2</div>
-                  <div class="node-sub">EIP-712 Contract</div>
-                  <div class="node-tag badge-purple">State Root Sync</div>
+                  <div class="node-sub">CipherVaultRegistry.sol</div>
+                  <div class="node-tag badge-purple">Sequencer Confirmed</div>
                   <div class="node-inspect-hint">Inspect [06] ↵</div>
                 </div>
 
@@ -620,9 +620,9 @@
                     <span class="node-stage-badge">[04] QUORUM</span>
                     <span class="node-pulse-dot"></span>
                   </div>
-                  <div class="node-title">Federated Operators</div>
-                  <div class="node-sub">3-Node TLS 1.3 Mesh</div>
-                  <div class="node-tag badge-cyan">Opaque BLAKE2b CIDs</div>
+                  <div class="node-title">K-of-N Quorum</div>
+                  <div class="node-sub">Multi-Sig &amp; Quotas</div>
+                  <div class="node-tag badge-cyan">ADR-011 Admissions</div>
                   <div class="node-inspect-hint">Inspect [04] ↵</div>
                 </div>
 
@@ -1232,6 +1232,17 @@ pub fn enroll_secret_file(path: &Path) -> Result&lt;TrackedMetadata&gt; {
 
           </div>
 
+          <!-- Recover-then-Rebuild Architecture Highlight -->
+          <div class="tui-box recovery-rebuild-box" style="margin-top: 24px; border-left: 3px solid var(--term-gold);">
+            <div class="tui-box-title">
+              <span class="text-gold">SOVEREIGN ZERO-FRICTION REBUILD (init_vault_at_epoch)</span>
+              <span class="badge-gold">AUTO-RESUME</span>
+            </div>
+            <p class="pillar-desc" style="margin-top: 10px; margin-bottom: 8px;">
+              Disaster recovery does not merely dump loose files on disk. On a completely wiped machine, <code class="tui-code">ciphervault recover</code> resolves the immutable genesis locator, automatically initializes a new SQLite <code class="tui-code">vault.db</code> store at the recovered epoch (<code class="tui-code">init_vault_at_epoch</code>), mints a fresh recovery-signed device identity, and pulls all snapshot chunks. The clean device is instantly primed for immediate <code class="tui-code">push</code>, <code class="tui-code">diff</code>, and <code class="tui-code">pull</code> commands without manual re-configuration.
+            </p>
+          </div>
+
           <!-- Pane 5 Bottom Pager -->
           <div class="pane-pager-bar split">
             <button class="pane-pager-btn prev" data-target="pane-benchmarks">
@@ -1341,13 +1352,20 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
 
             <div class="step-card">
               <div class="step-idx">STEP 03</div>
-              <div class="step-card-title">Snapshot & Replicate</div>
-              <p class="step-card-desc">FastCDC slices changes into encrypted chunks and pushes them across the independent storage quorum.</p>
-              <div class="step-cmd">ciphervault snapshot && ciphervault push</div>
+              <div class="step-card-title">Push &amp; Replicate</div>
+              <p class="step-card-desc">FastCDC slices changes into encrypted chunks and pushes them across the independent storage quorum with voucher spend verification.</p>
+              <div class="step-cmd">ciphervault push -m "Initial secrets snapshot"</div>
             </div>
 
             <div class="step-card">
               <div class="step-idx">STEP 04</div>
+              <div class="step-card-title">Anchor to Arbitrum L2</div>
+              <p class="step-card-desc">Publish salted snapshot commitments to CipherVaultRegistry.sol on Arbitrum One L2 for permanent tamper-proof timestamp evidence.</p>
+              <div class="step-cmd">ciphervault anchor &amp;&amp; ciphervault verify-anchor</div>
+            </div>
+
+            <div class="step-card">
+              <div class="step-idx">STEP 05</div>
               <div class="step-card-title">Zero-Disk Run</div>
               <p class="step-card-desc">Inject decrypted environment variables directly into process memory without touching SSD storage.</p>
               <div class="step-cmd">ciphervault run -- npm start</div>
@@ -1359,10 +1377,10 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           <div class="tui-box operator-node-box">
             <div class="tui-box-title">RUN A STORAGE OPERATOR NODE (JOIN THE QUORUM)</div>
             <p class="node-box-desc">
-              Want to run an independent zero-knowledge storage operator node for your team or public testnet?
+              Run an independent zero-knowledge storage operator node for your team or public testnet with K-of-N multi-sig admission:
             </p>
             <div class="node-cmd-wrap">
-              <code>ciphervault node setup --port 8201 --data-dir /var/lib/ciphervault</code>
+              <code>ciphervault node setup --port 8201 --data-dir /var/lib/ciphervault &amp;&amp; ciphervault invite join ticket.json --node https://&lt;node-url&gt;</code>
             </div>
           </div>
 
@@ -1394,9 +1412,13 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           <button class="cmd-pill" data-cmd="help">help</button>
           <button class="cmd-pill" data-cmd="init">init</button>
           <button class="cmd-pill" data-cmd="track">track .env</button>
-          <button class="cmd-pill" data-cmd="snapshot">snapshot</button>
+          <button class="cmd-pill" data-cmd="push">push</button>
+          <button class="cmd-pill" data-cmd="anchor">anchor</button>
+          <button class="cmd-pill" data-cmd="verify-anchor">verify-anchor</button>
+          <button class="cmd-pill" data-cmd="invite">invite</button>
+          <button class="cmd-pill" data-cmd="status">status</button>
           <button class="cmd-pill" data-cmd="run">run -- npm start</button>
-          <button class="cmd-pill" data-cmd="benchmarks">bench</button>
+          <button class="cmd-pill" data-cmd="bench">bench</button>
           <button class="cmd-pill" data-cmd="compare">compare</button>
           <button class="cmd-pill" data-cmd="recover">recover</button>
           <button class="cmd-pill" data-cmd="clear">clear</button>
