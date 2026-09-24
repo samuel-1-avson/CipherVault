@@ -48,10 +48,10 @@ Install via [Windows Package Manager (`winget`)](https://learn.microsoft.com/en-
 
 ```powershell
 # Local testing:
-winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.14/
+winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.15/
 
 # Upstream publication:
-wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.14/
+wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.15/
 ```
 
 ---
@@ -92,7 +92,7 @@ The release workflow fills `InstallerSha256` (plus the scoop/brew hashes) automa
 If that job ever fails, fill manually from `SHA256SUMS.txt`:
 
 ```powershell
-$tag = 'v1.0.14'
+$tag = 'v1.0.15'
 $zip = "ciphervault-$tag-x86_64-pc-windows-msvc.zip"
 (Get-Content SHA256SUMS.txt | Select-String $zip).ToString().Split()[0]
 ```
