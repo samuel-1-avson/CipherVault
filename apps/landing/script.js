@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initInteractiveRepl();
   initInstallSnippets();
   initCrtToggle();
+  initCryptoDonations();
   initKeyboardShortcuts();
 });
 
@@ -940,6 +941,7 @@ const REPL_RESPONSES = {
     '  invite [cmd]       - K-of-N multi-sig operator admission ceremony (ADR-011)',
     '  recover            - Clean-machine paper kit & Shamir rebuild (init_vault_at_epoch)',
     '  status             - Probe live operator mesh health & public status API',
+    '  donate             - Community crypto donation addresses (Arbitrum & Ethereum)',
     '  run -- <cmd...>    - Decrypt secrets into volatile RAM and spawn process',
     '  bench              - Run multi-chunk AEAD and PoS throughput benchmarks',
     '  compare            - Print architectural matrix vs AWS/Vault/1Password',
@@ -1069,6 +1071,13 @@ const REPL_RESPONSES = {
     '  cv-operator-3 : https://op3.cipherv.online (Moncks Corner, S. Carolina) [v1.0.14]',
     'Live Explorer   : https://vault.cipherv.online',
     'Settlement      : Arbitrum One L2 (CipherVaultRegistry.sol)'
+  ],
+  donate: [
+    'Support CipherVault Open-Source Infrastructure:',
+    '  Accepted Chains : Arbitrum One L2 (Recommended, < $0.05 fee) & Ethereum Mainnet',
+    '  Accepted Assets : ETH, USDT, ARB',
+    '  Recipient Address: 0x35231538AcC971842813136654384bcf76aE1153',
+    '  Funds directly support storage operator nodes, L2 settlement gas, and CI runners.'
   ]
 };
 
@@ -1131,6 +1140,7 @@ function initInteractiveRepl() {
       else if (lower.startsWith('push')) responseLines = REPL_RESPONSES['push'];
       else if (lower.startsWith('pull')) responseLines = REPL_RESPONSES['pull'];
       else if (lower.startsWith('diff')) responseLines = REPL_RESPONSES['diff'];
+      else if (lower.startsWith('don') || lower.startsWith('supp')) responseLines = REPL_RESPONSES['donate'];
       else responseLines = [`ciphervault: command not found: '${raw}'. Type 'help' for available commands.`];
     }
 
@@ -1333,4 +1343,183 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+/* ==============================================================================
+   12. Cryptocurrency Community Donation Modal & Interactions
+   ============================================================================== */
+const CRYPTO_DONATION_CONFIG = {
+  // Multi-chain recipient EVM address (works for ETH, USDT, ARB on Arbitrum and Ethereum)
+  evmAddress: '0x35231538AcC971842813136654384bcf76aE1153',
+  networks: {
+    arbitrum: {
+      name: 'Arbitrum One L2 (Recommended)',
+      fee: 'LOW GAS < $0.05',
+      notice: 'Send <strong>ETH</strong>, <strong>USDT</strong>, or <strong>ARB</strong> on <strong>Arbitrum One L2</strong> to this address. Transactions on other networks may not arrive.'
+    },
+    ethereum: {
+      name: 'Ethereum Mainnet (L1)',
+      fee: 'STANDARD GAS',
+      notice: 'Send <strong>ETH</strong> or <strong>USDT (ERC-20)</strong> on <strong>Ethereum Mainnet</strong> to this address. Always double check your gas settings.'
+    }
+  }
+};
+
+function generateQrSvg(address) {
+  const size = 25;
+  const scale = 5;
+  const viewBox = `0 0 ${size * scale} ${size * scale}`;
+  const grid = Array(size).fill(null).map(() => Array(size).fill(0));
+
+  function drawFinder(startX, startY) {
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 7; c++) {
+        if (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)) {
+          grid[startY + r][startX + c] = 1;
+        }
+      }
+    }
+  }
+
+  drawFinder(0, 0);
+  drawFinder(size - 7, 0);
+  drawFinder(0, size - 7);
+
+  for (let i = 8; i < size - 8; i++) {
+    if (i % 2 === 0) {
+      grid[6][i] = 1;
+      grid[i][6] = 1;
+    }
+  }
+
+  const ax = size - 9, ay = size - 9;
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      if (r === 0 || r === 4 || c === 0 || c === 4 || (r === 2 && c === 2)) {
+        grid[ay + r][ax + c] = 1;
+      }
+    }
+  }
+
+  let charIdx = 0;
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if ((r < 8 && (c < 8 || c >= size - 8)) || (r >= size - 8 && c < 8)) continue;
+      if (r === 6 || c === 6) continue;
+      if (r >= ay && r < ay + 5 && c >= ax && c < ax + 5) continue;
+
+      const charCode = address.charCodeAt(charIdx % address.length);
+      charIdx++;
+      if ((charCode + r * 7 + c * 13) % 3 === 0) {
+        grid[r][c] = 1;
+      }
+    }
+  }
+
+  let rects = '';
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (grid[r][c] === 1) {
+        rects += `<rect x="${c * scale}" y="${r * scale}" width="${scale}" height="${scale}" fill="#07090e" />`;
+      }
+    }
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="EVM Donation Address QR Code">${rects}</svg>`;
+}
+
+function initCryptoDonations() {
+  const btnOpen = document.getElementById('btn-open-donate');
+  const btnTriggerCard = document.getElementById('btn-trigger-donate-card');
+  const overlay = document.getElementById('donation-modal-overlay');
+  const btnClose = document.getElementById('btn-close-donate-modal');
+  const btnDismiss = document.getElementById('btn-dismiss-donate');
+  const tabArb = document.getElementById('tab-net-arb');
+  const tabEth = document.getElementById('tab-net-eth');
+  const qrContainer = document.getElementById('donation-qr-container');
+  const addressText = document.getElementById('donation-address-text');
+  const btnCopy = document.getElementById('btn-copy-donation-address');
+  const feedback = document.getElementById('donation-copy-feedback');
+  const networkLabel = document.getElementById('donation-network-label');
+  const noticeText = document.getElementById('donation-notice-text');
+
+  if (!overlay) return;
+
+  const currentAddress = CRYPTO_DONATION_CONFIG.evmAddress;
+  if (addressText) addressText.textContent = currentAddress;
+  if (qrContainer) qrContainer.innerHTML = generateQrSvg(currentAddress);
+
+  const openModal = () => {
+    overlay.removeAttribute('hidden');
+    void overlay.offsetWidth;
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  };
+
+  const closeModal = () => {
+    overlay.classList.remove('active');
+    setTimeout(() => {
+      overlay.setAttribute('hidden', '');
+      document.body.style.overflow = '';
+    }, 200);
+  };
+
+  if (btnOpen) btnOpen.addEventListener('click', openModal);
+  if (btnTriggerCard) btnTriggerCard.addEventListener('click', openModal);
+  if (btnClose) btnClose.addEventListener('click', closeModal);
+  if (btnDismiss) btnDismiss.addEventListener('click', closeModal);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      closeModal();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && overlay.classList.contains('active')) {
+      closeModal();
+    }
+  });
+
+  const setNetwork = (netKey) => {
+    if (netKey === 'arbitrum') {
+      if (tabArb) {
+        tabArb.classList.add('active');
+        tabArb.setAttribute('aria-selected', 'true');
+      }
+      if (tabEth) {
+        tabEth.classList.remove('active');
+        tabEth.setAttribute('aria-selected', 'false');
+      }
+      if (networkLabel) networkLabel.textContent = 'ARBITRUM ONE (L2) EVM ADDRESS:';
+      if (noticeText) noticeText.innerHTML = CRYPTO_DONATION_CONFIG.networks.arbitrum.notice;
+    } else {
+      if (tabEth) {
+        tabEth.classList.add('active');
+        tabEth.setAttribute('aria-selected', 'true');
+      }
+      if (tabArb) {
+        tabArb.classList.remove('active');
+        tabArb.setAttribute('aria-selected', 'false');
+      }
+      if (networkLabel) networkLabel.textContent = 'ETHEREUM MAINNET (L1) EVM ADDRESS:';
+      if (noticeText) noticeText.innerHTML = CRYPTO_DONATION_CONFIG.networks.ethereum.notice;
+    }
+  };
+
+  if (tabArb) tabArb.addEventListener('click', () => setNetwork('arbitrum'));
+  if (tabEth) tabEth.addEventListener('click', () => setNetwork('ethereum'));
+
+  if (btnCopy) {
+    btnCopy.addEventListener('click', () => {
+      navigator.clipboard.writeText(currentAddress).then(() => {
+        btnCopy.textContent = '[ COPIED ✓ ]';
+        if (feedback) feedback.classList.add('show');
+        setTimeout(() => {
+          btnCopy.textContent = '[ 📋 COPY ADDRESS ]';
+          if (feedback) feedback.classList.remove('show');
+        }, 2200);
+      });
+    });
+  }
 }

@@ -408,6 +408,37 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   transition: all var(--t-fast);
 }
 
+.tui-donate-btn {
+  background: rgba(255, 176, 0, 0.08);
+  border: 1px solid rgba(255, 176, 0, 0.35);
+  color: var(--term-gold);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all var(--t-fast);
+}
+
+.tui-donate-btn:hover {
+  background: rgba(255, 176, 0, 0.18);
+  border-color: var(--term-gold);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 0 12px rgba(255, 176, 0, 0.25);
+}
+
+.tui-donate-btn .donate-heart {
+  color: #ff3366;
+  font-size: 0.85rem;
+}
+
 .tui-ext-btn:hover, .tui-git-btn:hover, .tui-crt-toggle:hover {
   background: var(--term-surface-card);
   color: var(--text-main);
@@ -3811,5 +3842,397 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   .install-bar-body {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+/* ==============================================================================
+   10. Cryptocurrency Community Donation Modal & Infrastructure Card
+   ============================================================================== */
+
+/* Pre-Footer Community Infrastructure Support Box */
+.support-infrastructure-box {
+  margin-top: 36px;
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  border-left: 3px solid var(--term-gold);
+}
+
+.support-infra-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.support-infra-desc {
+  font-size: 0.94rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.support-infra-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--term-border);
+}
+
+.support-network-badges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.net-badge {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--code-bg);
+  border: 1px solid var(--term-border);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Modal Overlay & Card */
+.donation-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 9, 14, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.donation-modal-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.donation-modal-card {
+  background: var(--term-surface-elev);
+  border: 1px solid var(--term-border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 176, 0, 0.15);
+  width: 100%;
+  max-width: 560px;
+  overflow: hidden;
+  transform: scale(0.96) translateY(8px);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.donation-modal-overlay.active .donation-modal-card {
+  transform: scale(1) translateY(0);
+}
+
+.donation-modal-card .modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px;
+  background: var(--term-surface);
+  border-bottom: 1px solid var(--term-border);
+}
+
+.modal-kicker {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--term-gold);
+  letter-spacing: 0.08em;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.modal-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.btn-close-modal {
+  background: var(--term-surface-elev);
+  border: 1px solid var(--term-border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+
+.btn-close-modal:hover {
+  color: var(--term-danger);
+  border-color: var(--term-danger);
+}
+
+.donation-modal-card .modal-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.modal-lead {
+  font-size: 0.92rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* Network Selector Tabs */
+.donation-net-tabs {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 8px;
+  background: var(--code-bg);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--term-border);
+}
+
+.net-tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all var(--t-fast);
+}
+
+.net-tab-btn:hover {
+  color: var(--text-main);
+}
+
+.net-tab-btn.active {
+  background: var(--term-surface-elev);
+  border-color: var(--term-border-bright);
+  color: var(--term-gold);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.net-fee-tag {
+  font-size: 0.65rem;
+  color: var(--term-mint);
+  background: rgba(0, 255, 157, 0.12);
+  border: 1px solid rgba(0, 255, 157, 0.3);
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+/* Modal Asset Pills */
+.modal-assets-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.assets-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.asset-pill {
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  color: var(--term-cyan);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+}
+
+/* QR Code & Address Deck */
+.modal-qr-address-deck {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 16px;
+  background: var(--code-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  align-items: center;
+}
+
+.qr-canvas-box {
+  background: #ffffff;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 140px;
+  height: 140px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.qr-canvas-box svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.address-details-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.address-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.address-hint-tag {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.address-sec-badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--term-mint);
+}
+
+.address-code-block {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--term-gold);
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+  line-height: 1.4;
+  user-select: all;
+}
+
+.btn-copy-address {
+  background: var(--term-surface-elev);
+  border: 1px solid var(--term-border-bright);
+  color: var(--term-cyan);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--t-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-copy-address:hover {
+  background: var(--term-cyan);
+  color: #07090e;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
+}
+
+.donation-copy-feedback {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--term-mint);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+  text-align: center;
+}
+
+.donation-copy-feedback.show {
+  opacity: 1;
+}
+
+/* Notice Box */
+.modal-notice-box {
+  background: rgba(255, 176, 0, 0.08);
+  border: 1px solid rgba(255, 176, 0, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.notice-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.notice-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.notice-text strong {
+  color: var(--text-main);
+}
+
+.donation-modal-card .modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: var(--term-surface);
+  border-top: 1px solid var(--term-border);
+  gap: 16px;
+}
+
+.modal-footer-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 600px) {
+  .modal-qr-address-deck {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+  
+  .address-details-box {
+    width: 100%;
+  }
+  
+  .donation-net-tabs {
+    grid-template-columns: 1fr;
   }
 }
