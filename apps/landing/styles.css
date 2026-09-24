@@ -258,7 +258,7 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   display: flex;
   align-items: center;
   gap: 16px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .tui-brand {
@@ -319,7 +319,8 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .theme-switcher-box {
@@ -387,7 +388,7 @@ html[data-theme="light"] .theme-pill-btn.active {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .tui-ext-btn, .tui-git-btn, .tui-crt-toggle {
@@ -480,6 +481,7 @@ html[data-theme="light"] .theme-pill-btn.active {
   align-items: center;
   gap: 8px;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   flex: 1;
 }
@@ -1937,6 +1939,7 @@ html[data-theme="light"] .theme-pill-btn.active {
   gap: 16px;
   position: relative;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .pipeline-row {
@@ -2394,14 +2397,20 @@ html[data-theme="light"] .theme-pill-btn.active {
 }
 
 /* Responsive Pipeline Layout */
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .pipeline-row {
     flex-direction: column;
     align-items: stretch;
+    gap: 0;
+  }
+  .pipeline-node {
+    min-width: 0;
+    width: 100%;
   }
   .pipeline-row-connector {
     justify-content: center;
     padding-right: 0;
+    margin: 6px 0;
   }
   .conn-horizontal {
     transform: rotate(90deg);
@@ -2409,7 +2418,7 @@ html[data-theme="light"] .theme-pill-btn.active {
     align-self: center;
   }
   .inspector-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 20px;
   }
 }
@@ -2701,6 +2710,10 @@ html[data-theme="light"] .theme-pill-btn.active {
 /* TUI Table */
 .tui-table-scroll {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .tui-table {
@@ -3815,23 +3828,45 @@ html[data-theme="light"] .theme-pill-btn.active {
 .text-white { color: var(--text-main); }
 
 /* ==============================================================================
-   Responsive Layout
+   Responsive Layout & Fluid Multi-Tier Viewports
    ============================================================================== */
-@media (max-width: 1024px) {
-  .tui-main-panel {
-    padding: 32px 24px 80px;
-  }
 
+/* Tier 1: Intermediate Desktop & Laptop Resizing (<= 1200px) */
+@media (max-width: 1200px) {
   .tui-topbar {
     padding: 8px 20px;
+    gap: 12px;
   }
-
+  .navdeck-shortcuts-hint {
+    display: none;
+  }
   .tui-navdeck {
     padding: 6px 20px;
   }
+}
 
-  .navdeck-shortcuts-hint {
-    display: none;
+/* Tier 2: Tablets, Split-Window & Netbooks (<= 1024px) */
+@media (max-width: 1024px) {
+  .tui-main-panel {
+    padding: 28px 20px 70px;
+  }
+
+  .tui-topbar {
+    flex-wrap: wrap;
+    padding: 10px 18px;
+    gap: 12px;
+  }
+
+  .topbar-left {
+    width: auto;
+  }
+
+  .topbar-right {
+    width: auto;
+  }
+
+  .tui-navdeck {
+    padding: 6px 18px;
   }
 
   .dilemma-tui-grid {
@@ -3846,57 +3881,522 @@ html[data-theme="light"] .theme-pill-btn.active {
 
   .engine-telemetry-grid {
     grid-template-columns: 1fr;
+    gap: 24px;
   }
 
   .tui-pillars-grid {
     grid-template-columns: 1fr;
+    gap: 18px;
   }
 
   .tui-grid-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
   }
 }
 
+/* Tier 3: Mobile Viewport & Small Tablets (<= 768px) */
 @media (max-width: 768px) {
+  html, body.tui-body {
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  .terminal-shell {
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .tui-main-panel {
+    padding: 18px 14px 60px;
+  }
+
+  .tui-box {
+    padding: 20px 16px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Topbar Mobile Organization */
   .tui-topbar {
     flex-direction: column;
     align-items: stretch;
-    padding: 10px 16px;
+    padding: 10px 14px;
     gap: 10px;
   }
 
   .topbar-left {
-    justify-content: space-between;
-    width: 100%;
-  }
-
-  .topbar-right {
+    display: flex;
+    align-items: center;
     justify-content: space-between;
     width: 100%;
     flex-wrap: wrap;
     gap: 8px;
   }
 
+  .tui-brand {
+    font-size: 0.98rem;
+  }
+
+  .tui-meta-badge {
+    font-size: 0.68rem;
+    padding: 2px 7px;
+  }
+
+  .topbar-right {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .theme-switcher-box {
+    display: flex;
+    width: 100%;
+    justify-content: space-between;
+    padding: 3px 6px;
+    box-sizing: border-box;
+  }
+
+  .theme-label-tag {
+    font-size: 0.65rem;
+  }
+
+  .theme-pill-btn {
+    flex: 1;
+    text-align: center;
+    padding: 4px 6px;
+    font-size: 0.72rem;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .tui-ext-btn, .tui-git-btn, .tui-donate-btn, .tui-crt-toggle {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+    padding: 6px 8px;
+    font-size: 0.74rem;
+    box-sizing: border-box;
+  }
+
+  /* Mobile Navdeck */
   .tui-navdeck {
-    padding: 6px 16px;
+    padding: 6px 12px;
+  }
+
+  .tui-tabs-bar {
+    gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
   }
 
   .tui-tab-btn {
     padding: 6px 12px;
-    font-size: 0.82rem;
+    font-size: 0.8rem;
+    min-height: 36px;
+    flex-shrink: 0;
   }
 
-  .dilemma-tui-grid {
-    grid-template-columns: 1fr;
+  /* Hero Section Mobile */
+  .hero-kicker-strip {
+    font-size: 0.72rem;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .shamir-guardians-grid {
-    grid-template-columns: 1fr;
+  .hero-title {
+    font-size: clamp(1.85rem, 6.5vw, 2.5rem);
+    margin-bottom: 12px;
+    line-height: 1.2;
+  }
+
+  .hero-lead-box {
+    font-size: 0.92rem;
+    line-height: 1.6;
+    margin-bottom: 24px;
+  }
+
+  .tui-quick-install {
+    padding: 16px 14px;
+    margin-bottom: 28px;
+  }
+
+  .install-bar-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .install-header-meta {
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   .install-bar-body {
     flex-direction: column;
     align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .install-cmd-code {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    font-size: 0.84rem;
+    max-width: 100%;
+    white-space: nowrap;
+  }
+
+  .tui-btn-copy {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+    padding: 8px 14px;
+    font-size: 0.8rem;
+  }
+
+  .hero-actions-trust-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .hero-cta-group {
+    flex-direction: column;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .tui-btn-action {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+    padding: 9px 16px;
+    font-size: 0.84rem;
+    box-sizing: border-box;
+  }
+
+  .hero-trust-badges {
+    justify-content: center;
+    gap: 8px;
+    font-size: 0.7rem;
+  }
+
+  /* FastCDC Slicer Simulator Mobile */
+  .engine-slicer-box {
+    margin-bottom: 28px;
+  }
+
+  .slicer-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .slicer-metrics-bar {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .chunk-visual-grid {
+    grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+    padding: 10px;
+    gap: 5px;
+  }
+
+  .chunk-cell {
+    height: 40px;
+  }
+
+  .inspector-details-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  /* Pipeline & Deep-Dive Inspector Mobile */
+  .pipeline-visual-canvas {
+    padding: 16px 12px;
+  }
+
+  .pipeline-node {
+    min-width: 0;
+    width: 100%;
+    padding: 14px 16px;
+  }
+
+  .pipeline-actions-bar {
+    flex-wrap: wrap;
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .pipeline-inspector-panel {
+    padding: 16px 14px;
+    gap: 14px;
+  }
+
+  .inspector-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .inspector-kicker {
+    font-size: 0.7rem;
+  }
+
+  .inspector-heading {
+    font-size: 1.15rem;
+  }
+
+  .btn-close-inspector {
+    width: 100%;
+    text-align: center;
+    padding: 7px 12px;
+  }
+
+  .insp-body {
+    font-size: 0.88rem;
+  }
+
+  .insp-stat-val {
+    font-size: 1.25rem;
+  }
+
+  .insp-code-block {
+    padding: 10px 12px;
+    font-size: 0.74rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .inspector-stage-pills {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    gap: 6px;
+  }
+
+  .stage-nav-pill {
+    padding: 4px 9px;
+    font-size: 0.72rem;
+  }
+
+  /* Telemetry Stream Mobile */
+  .engine-telemetry-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+    margin-top: 24px;
+  }
+
+  .sidebar-stream-box, .engine-stream-box {
+    min-height: auto;
+  }
+
+  .stream-terminal-wrap {
+    max-height: 280px;
+  }
+
+  /* Dilemma & Table Mobile */
+  .dilemma-tui-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .dilemma-tui-card {
+    padding: 22px 18px;
+  }
+
+  .tui-table-scroll {
+    margin-bottom: 24px;
+  }
+
+  .tui-table {
+    font-size: 0.82rem;
+    min-width: 480px;
+  }
+
+  .tui-table th, .tui-table td {
+    padding: 10px 12px;
+  }
+
+  /* Recovery Steps & Shamir Ceremony Mobile */
+  .tui-grid-steps {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .step-card {
+    padding: 18px 16px;
+  }
+
+  .recovery-split-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .shamir-guardians-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .shamir-inst-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  /* Benchmarks Mobile */
+  .bench-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .bench-filter-pills {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .bench-rerun-btn {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+  }
+
+  .gauge-row {
+    padding: 14px 16px;
+  }
+
+  .gauge-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  /* Install Pane Mobile */
+  .snippet-code-wrap {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .snippet-copy-btn {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+  }
+
+  /* Community Support & REPL Mobile */
+  .support-infra-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .support-network-badges {
+    justify-content: center;
+  }
+
+  .tui-bottom-repl {
+    padding: 8px 14px;
+  }
+
+  .tui-bottom-repl.collapsed {
+    padding: 6px 14px;
+  }
+
+  .repl-control-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .repl-shortcuts-bar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    width: 100%;
+    padding-bottom: 2px;
+  }
+
+  .repl-input-row {
+    padding: 8px 12px;
+  }
+
+  .repl-input {
+    font-size: 0.84rem;
+  }
+}
+
+/* Tier 4: Ultra-Compact Mobile Phones (<= 480px) */
+@media (max-width: 480px) {
+  .tui-topbar {
+    padding: 8px 10px;
+  }
+
+  .topbar-left {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .tui-brand {
+    font-size: 0.92rem;
+  }
+
+  .tui-meta-badge {
+    font-size: 0.64rem;
+    padding: 2px 6px;
+  }
+
+  .topbar-actions {
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+
+  .tui-ext-btn, .tui-git-btn, .tui-donate-btn, .tui-crt-toggle {
+    padding: 5px 6px;
+    font-size: 0.7rem;
+  }
+
+  .tui-main-panel {
+    padding: 14px 10px 50px;
+  }
+
+  .tui-box {
+    padding: 16px 12px;
+  }
+
+  .slicer-metrics-bar {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .pane-header {
+    margin-bottom: 18px;
+  }
+
+  .pane-title {
+    font-size: 1.35rem;
+  }
+
+  .pane-desc {
+    font-size: 0.88rem;
   }
 }
 
@@ -4469,17 +4969,58 @@ html[data-theme="light"] .theme-pill-btn.active {
 }
 
 @media (max-width: 600px) {
+  .donation-modal-overlay {
+    padding: 12px;
+  }
+
+  .donation-modal-card {
+    width: 100%;
+    margin: 0;
+    max-height: 90vh;
+    border-radius: 12px;
+  }
+
+  .donation-modal-card .modal-body {
+    padding: 16px 14px;
+    gap: 14px;
+  }
+
+  .donation-net-tabs {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
   .modal-qr-address-deck {
     grid-template-columns: 1fr;
     justify-items: center;
     text-align: center;
+    padding: 12px;
+    gap: 12px;
   }
   
   .address-details-box {
     width: 100%;
   }
-  
-  .donation-net-tabs {
+
+  .address-code-block {
+    width: 100%;
+    font-size: 0.72rem;
+    padding: 8px 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    box-sizing: border-box;
+  }
+
+  .address-actions-row {
     grid-template-columns: 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .btn-copy-address, .btn-view-explorer {
+    width: 100%;
+    justify-content: center;
+    padding: 8px 12px;
+    box-sizing: border-box;
   }
 }
