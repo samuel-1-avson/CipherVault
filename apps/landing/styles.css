@@ -466,6 +466,403 @@ html[data-theme="light"] .theme-pill-btn.active {
   flex-shrink: 0;
 }
 
+/* Mobile Topbar Navigation Controls (Hidden on Desktop) */
+.topbar-mobile-controls {
+  display: none;
+}
+
+.tui-mobile-donate-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(244, 63, 94, 0.12);
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  color: #f43f5e;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: 9999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--t-fast);
+}
+
+.tui-mobile-donate-pill:hover,
+.tui-mobile-donate-pill:active {
+  background: rgba(244, 63, 94, 0.22);
+  border-color: #f43f5e;
+  transform: scale(0.97);
+}
+
+.tui-mobile-hamburger {
+  background: var(--term-surface-elev);
+  border: 1px solid var(--term-border);
+  border-radius: var(--radius-sm);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+
+.tui-mobile-hamburger:hover {
+  background: var(--term-surface-card);
+  border-color: var(--term-border-bright);
+}
+
+.hamburger-box {
+  width: 18px;
+  height: 14px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.hamburger-inner,
+.hamburger-inner::before,
+.hamburger-inner::after {
+  width: 18px;
+  height: 2px;
+  background-color: var(--term-cyan);
+  border-radius: 1px;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+  position: absolute;
+}
+
+.hamburger-inner {
+  top: 6px;
+}
+
+.hamburger-inner::before {
+  content: '';
+  top: -6px;
+}
+
+.hamburger-inner::after {
+  content: '';
+  bottom: -6px;
+}
+
+/* Morph to X when active */
+.tui-mobile-hamburger.active .hamburger-inner {
+  background-color: transparent;
+}
+
+.tui-mobile-hamburger.active .hamburger-inner::before {
+  transform: translateY(6px) rotate(45deg);
+}
+
+.tui-mobile-hamburger.active .hamburger-inner::after {
+  transform: translateY(-6px) rotate(-45deg);
+}
+
+/* ==============================================================================
+   Mobile Navigation Drawer (Clean, Minimalist & Grouped)
+   ============================================================================== */
+.mobile-nav-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 9998;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.28s ease;
+}
+
+.mobile-nav-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mobile-nav-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(350px, 88vw);
+  background: var(--term-bg);
+  border-left: 1px solid var(--term-border-bright);
+  z-index: 9999;
+  transform: translateX(100%);
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+}
+
+.mobile-nav-drawer.open {
+  transform: translateX(0);
+}
+
+.drawer-scroller {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px 18px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--term-border);
+}
+
+.drawer-brand {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.btn-close-drawer {
+  background: var(--term-surface-elev);
+  border: 1px solid var(--term-border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+
+.btn-close-drawer:hover {
+  color: var(--term-danger);
+  border-color: var(--term-danger);
+}
+
+.drawer-status-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 255, 157, 0.08);
+  border: 1px solid rgba(0, 255, 157, 0.25);
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--term-mint);
+}
+
+.drawer-section-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--term-gold);
+  margin-bottom: 8px;
+}
+
+.drawer-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drawer-tab-btn {
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--t-fast);
+  width: 100%;
+}
+
+.drawer-tab-btn:hover {
+  background: var(--term-surface-elev);
+  border-color: var(--term-border-bright);
+}
+
+.drawer-tab-btn.active {
+  background: var(--term-surface-elev);
+  border-color: var(--term-cyan);
+  box-shadow: 0 0 12px var(--term-cyan-glow);
+}
+
+.d-tab-num {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--term-gold);
+}
+
+.drawer-tab-btn.active .d-tab-num {
+  color: var(--term-cyan);
+}
+
+.d-tab-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.d-tab-title {
+  font-family: var(--font-heading);
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.d-tab-desc {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.d-tab-arrow {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  transition: transform var(--t-fast);
+}
+
+.drawer-tab-btn.active .d-tab-arrow,
+.drawer-tab-btn:hover .d-tab-arrow {
+  color: var(--term-cyan);
+  transform: translateX(3px);
+}
+
+.drawer-themes-wrap {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+
+.drawer-theme-pill {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 6px 0;
+  text-align: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+
+.drawer-theme-pill.active {
+  background: var(--term-surface-elev);
+  border-color: var(--term-border-bright);
+  color: var(--term-cyan);
+  font-weight: 700;
+}
+
+.drawer-crt-btn {
+  width: 100%;
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--t-fast);
+}
+
+.drawer-crt-btn:hover {
+  color: var(--text-main);
+  border-color: var(--term-border-bright);
+}
+
+.drawer-actions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drawer-action-btn.primary-donate {
+  width: 100%;
+  background: rgba(244, 63, 94, 0.12);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: all var(--t-fast);
+}
+
+.drawer-action-btn.primary-donate:hover {
+  background: rgba(244, 63, 94, 0.22);
+  border-color: #f43f5e;
+}
+
+.drawer-links-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.drawer-link-btn {
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all var(--t-fast);
+}
+
+.drawer-link-btn:hover {
+  background: var(--term-surface-elev);
+  border-color: var(--term-border-bright);
+  color: var(--text-main);
+}
+
+.drawer-footer {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px dashed var(--term-border);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
 /* --- Tier 2: Primary Navigation Deck --- */
 .tui-navdeck {
   display: flex;
@@ -3921,78 +4318,49 @@ html[data-theme="light"] .theme-pill-btn.active {
     border-radius: var(--radius-sm);
   }
 
-  /* Topbar Mobile Organization */
+  /* Topbar Mobile Organization (Minimalist 52px Header) */
   .tui-topbar {
-    flex-direction: column;
-    align-items: stretch;
-    padding: 10px 14px;
-    gap: 10px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    height: 52px;
+    gap: 8px;
+    border-bottom: 1px solid var(--term-border);
   }
 
   .topbar-left {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    flex-wrap: wrap;
     gap: 8px;
+    flex-wrap: nowrap;
+    width: auto;
   }
 
   .tui-brand {
-    font-size: 0.98rem;
+    font-size: 0.96rem;
   }
 
-  .tui-meta-badge {
-    font-size: 0.68rem;
-    padding: 2px 7px;
+  .topbar-left .tui-meta-badge {
+    display: none; /* Moved into mobile drawer ribbon for pristine minimalism */
   }
 
   .topbar-right {
+    display: none !important; /* Housed cleanly inside the mobile drawer */
+  }
+
+  .topbar-mobile-controls {
     display: flex;
-    flex-direction: column;
-    width: 100%;
+    align-items: center;
     gap: 8px;
-    align-items: stretch;
   }
 
-  .theme-switcher-box {
-    display: flex;
-    width: 100%;
-    justify-content: space-between;
-    padding: 3px 6px;
-    box-sizing: border-box;
-  }
-
-  .theme-label-tag {
-    font-size: 0.65rem;
-  }
-
-  .theme-pill-btn {
-    flex: 1;
-    text-align: center;
-    padding: 4px 6px;
-    font-size: 0.72rem;
-  }
-
-  .topbar-actions {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 6px;
-    width: 100%;
-  }
-
-  .tui-ext-btn, .tui-git-btn, .tui-donate-btn, .tui-crt-toggle {
-    width: 100%;
-    text-align: center;
-    justify-content: center;
-    padding: 6px 8px;
-    font-size: 0.74rem;
-    box-sizing: border-box;
-  }
-
-  /* Mobile Navdeck */
+  /* Mobile Navdeck (Swipeable Category Pills) */
   .tui-navdeck {
     padding: 6px 12px;
+    background: var(--term-surface-elev);
+    border-bottom: 1px solid var(--term-border);
   }
 
   .tui-tabs-bar {
@@ -4000,14 +4368,15 @@ html[data-theme="light"] .theme-pill-btn.active {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    padding-bottom: 2px;
+    padding: 2px 0;
   }
 
   .tui-tab-btn {
-    padding: 6px 12px;
-    font-size: 0.8rem;
-    min-height: 36px;
+    padding: 6px 13px;
+    font-size: 0.78rem;
+    min-height: 34px;
     flex-shrink: 0;
+    border-radius: 9999px;
   }
 
   /* Hero Section Mobile */
@@ -4314,6 +4683,7 @@ html[data-theme="light"] .theme-pill-btn.active {
 
   .tui-bottom-repl {
     padding: 8px 14px;
+    z-index: 1000;
   }
 
   .tui-bottom-repl.collapsed {
@@ -4321,8 +4691,9 @@ html[data-theme="light"] .theme-pill-btn.active {
   }
 
   .repl-control-bar {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
     gap: 8px;
   }
 
@@ -4330,8 +4701,14 @@ html[data-theme="light"] .theme-pill-btn.active {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    width: 100%;
+    max-width: 60%;
     padding-bottom: 2px;
+  }
+
+  .repl-drawer-container {
+    max-height: 240px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .repl-input-row {
@@ -4346,32 +4723,26 @@ html[data-theme="light"] .theme-pill-btn.active {
 /* Tier 4: Ultra-Compact Mobile Phones (<= 480px) */
 @media (max-width: 480px) {
   .tui-topbar {
-    padding: 8px 10px;
-  }
-
-  .topbar-left {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
+    padding: 0 12px;
+    height: 50px;
   }
 
   .tui-brand {
     font-size: 0.92rem;
   }
 
-  .tui-meta-badge {
-    font-size: 0.64rem;
-    padding: 2px 6px;
+  .topbar-mobile-controls {
+    gap: 6px;
   }
 
-  .topbar-actions {
-    grid-template-columns: 1fr 1fr;
-    gap: 4px;
+  .tui-mobile-donate-pill {
+    font-size: 0.68rem;
+    padding: 4px 9px;
   }
 
-  .tui-ext-btn, .tui-git-btn, .tui-donate-btn, .tui-crt-toggle {
-    padding: 5px 6px;
-    font-size: 0.7rem;
+  .tui-mobile-hamburger {
+    width: 34px;
+    height: 34px;
   }
 
   .tui-main-panel {

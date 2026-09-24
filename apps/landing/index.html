@@ -91,6 +91,18 @@
             </button>
           </div>
         </div>
+
+        <!-- Mobile Navigation Controls (Compact & Minimalist) -->
+        <div class="topbar-mobile-controls">
+          <button class="tui-mobile-donate-pill" id="btn-mobile-donate" title="Support infrastructure with crypto">
+            <span class="donate-heart">❤</span> Donate
+          </button>
+          <button class="tui-mobile-hamburger" id="btn-mobile-hamburger" aria-label="Open Navigation Menu" aria-expanded="false" aria-controls="mobile-nav-drawer">
+            <span class="hamburger-box">
+              <span class="hamburger-inner"></span>
+            </span>
+          </button>
+        </div>
       </div>
 
       <!-- Tier 2: Primary Navigation Deck -->
@@ -130,6 +142,123 @@
       </div>
 
     </header>
+
+    <!-- Modern Minimalist Mobile Navigation Drawer & Backdrop -->
+    <div class="mobile-nav-backdrop" id="mobile-nav-backdrop" aria-hidden="true"></div>
+    <aside class="mobile-nav-drawer" id="mobile-nav-drawer" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Mobile Navigation Drawer">
+      <div class="drawer-scroller">
+        
+        <!-- Drawer Top Bar -->
+        <div class="drawer-header">
+          <div class="drawer-brand">
+            <span class="brand-bracket">[</span><span class="brand-highlight">CIPHER</span><span class="brand-title">VAULT</span><span class="brand-tag">v1.0.14</span><span class="brand-bracket">]</span>
+          </div>
+          <button class="btn-close-drawer" id="btn-close-mobile-drawer" aria-label="Close Navigation Menu">[✕ CLOSE]</button>
+        </div>
+
+        <!-- Live Quorum Status Ribbon -->
+        <div class="drawer-status-ribbon">
+          <span class="tui-pulse-dot"></span>
+          <span class="drawer-status-text">TESTNET: 3/3 NODES SYNCED (Arbitrum One L2)</span>
+        </div>
+
+        <!-- Section 1: Core Navigation Tabs -->
+        <div class="drawer-nav-group">
+          <div class="drawer-section-label">SYSTEM WORKSTATIONS</div>
+          <nav class="drawer-nav-list" role="tablist">
+            <button class="drawer-tab-btn active" data-target="pane-overview" role="tab">
+              <span class="d-tab-num">[1]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Overview</span>
+                <span class="d-tab-desc">Zero-knowledge secret backups &amp; recovery</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-dilemma" role="tab">
+              <span class="d-tab-num">[2]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">The Dilemma</span>
+                <span class="d-tab-desc">4 unsolved secrets vulnerabilities in Git</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-engine" role="tab">
+              <span class="d-tab-num">[3]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Cryptographic Engine</span>
+                <span class="d-tab-desc">FastCDC slicer &amp; 6-stage pipeline deep-dive</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-benchmarks" role="tab">
+              <span class="d-tab-num">[4]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Benchmarks</span>
+                <span class="d-tab-desc">558 MiB/s client AEAD &amp; 96% deduplication</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-recovery" role="tab">
+              <span class="d-tab-num">[5]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Clean-Machine Recovery</span>
+                <span class="d-tab-desc">Shamir 3-of-5 threshold ceremony &amp; paper kit</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-quickstart" role="tab">
+              <span class="d-tab-num">[6]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Installation &amp; Setup</span>
+                <span class="d-tab-desc">cURL binary installer &amp; Cargo package</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- Section 2: Appearance & Theme -->
+        <div class="drawer-settings-group">
+          <div class="drawer-section-label">APPEARANCE &amp; CRT EMULATOR</div>
+          <div class="drawer-themes-wrap">
+            <button class="drawer-theme-pill active" data-theme="cyber">Cyber</button>
+            <button class="drawer-theme-pill" data-theme="dark">Dark</button>
+            <button class="drawer-theme-pill" data-theme="light">Light</button>
+            <button class="drawer-theme-pill" data-theme="mono">Mono</button>
+          </div>
+          <button class="drawer-crt-btn" id="drawer-btn-crt">
+            [TOGGLE CRT SCANLINES]
+          </button>
+        </div>
+
+        <!-- Section 3: Community & External Links -->
+        <div class="drawer-actions-group">
+          <div class="drawer-section-label">INFRASTRUCTURE &amp; REPOSITORY</div>
+          <button class="drawer-action-btn primary-donate" id="drawer-btn-donate">
+            <span class="donate-heart">❤</span> Donate with Crypto
+          </button>
+          <div class="drawer-links-row">
+            <a href="https://vault.cipherv.online" target="_blank" rel="noopener noreferrer" class="drawer-link-btn">
+              <span class="ext-dot"></span> Explorer ↗
+            </a>
+            <a href="https://github.com/samuel-1-avson/CipherVault" target="_blank" rel="noopener noreferrer" class="drawer-link-btn">
+              ★ GitHub ↗
+            </a>
+          </div>
+        </div>
+
+        <!-- Drawer Footer -->
+        <div class="drawer-footer">
+          <span>CipherVault v1.0.14 &bull; Apache 2.0 / MIT Dual Licensed</span>
+        </div>
+
+      </div>
+    </aside>
 
     <!-- Main Workspace (Spacious, Minimal & Centered 1200px Canvas) -->
     <div class="tui-workspace-body">

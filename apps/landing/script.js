@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initInstallSnippets();
   initCrtToggle();
   initCryptoDonations();
+  initMobileNavigation();
   initKeyboardShortcuts();
 });
 
@@ -33,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
    ============================================================================== */
 function initThemeSystem() {
   const themeButtons = document.querySelectorAll('.theme-pill-btn');
+  const drawerThemePills = document.querySelectorAll('.drawer-theme-pill');
   const crtOverlay = document.getElementById('crt-scanlines');
   const crtBtn = document.getElementById('btn-toggle-crt');
 
@@ -41,6 +43,10 @@ function initThemeSystem() {
     localStorage.setItem('ciphervault-theme', themeName);
 
     themeButtons.forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === themeName);
+    });
+
+    drawerThemePills.forEach(btn => {
       btn.classList.toggle('active', btn.getAttribute('data-theme') === themeName);
     });
 
@@ -54,6 +60,13 @@ function initThemeSystem() {
   applyTheme(savedTheme);
 
   themeButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const theme = btn.getAttribute('data-theme');
+      applyTheme(theme);
+    });
+  });
+
+  drawerThemePills.forEach(btn => {
     btn.addEventListener('click', () => {
       const theme = btn.getAttribute('data-theme');
       applyTheme(theme);
@@ -175,6 +188,7 @@ function animateCounter(id, start, end, duration, decimals, prefix = '', suffix 
 
 function switchTab(targetPaneId) {
   const tabButtons = document.querySelectorAll('.tui-tab-btn');
+  const drawerTabs = document.querySelectorAll('.drawer-tab-btn');
   const panes = document.querySelectorAll('.tui-pane');
 
   tabButtons.forEach(btn => {
@@ -184,6 +198,12 @@ function switchTab(targetPaneId) {
     if (isTarget && btn.scrollIntoView) {
       btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
     }
+  });
+
+  drawerTabs.forEach(btn => {
+    const isTarget = btn.getAttribute('data-target') === targetPaneId;
+    btn.classList.toggle('active', isTarget);
+    btn.setAttribute('aria-selected', isTarget ? 'true' : 'false');
   });
 
   panes.forEach(pane => {
@@ -226,6 +246,104 @@ function initTabsNavigation() {
       const target = btn.getAttribute('data-target');
       if (target) {
         switchTab(target);
+      }
+    });
+  });
+}
+
+/* ==============================================================================
+   2b. Mobile Navigation Drawer Controller
+   ============================================================================== */
+function initMobileNavigation() {
+  const hamburgerBtn = document.getElementById('btn-mobile-hamburger');
+  const closeDrawerBtn = document.getElementById('btn-close-mobile-drawer');
+  const drawer = document.getElementById('mobile-nav-drawer');
+  const backdrop = document.getElementById('mobile-nav-backdrop');
+  const mobileDonateBtn = document.getElementById('btn-mobile-donate');
+  const drawerDonateBtn = document.getElementById('drawer-btn-donate');
+  const drawerCrtBtn = document.getElementById('drawer-btn-crt');
+  const drawerTabs = document.querySelectorAll('.drawer-tab-btn');
+
+  function openDrawer() {
+    if (!drawer) return;
+    drawer.classList.add('open');
+    if (backdrop) backdrop.classList.add('active');
+    if (hamburgerBtn) {
+      hamburgerBtn.classList.add('active');
+      hamburgerBtn.setAttribute('aria-expanded', 'true');
+    }
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeDrawer() {
+    if (!drawer) return;
+    drawer.classList.remove('open');
+    if (backdrop) backdrop.classList.remove('active');
+    if (hamburgerBtn) {
+      hamburgerBtn.classList.remove('active');
+      hamburgerBtn.setAttribute('aria-expanded', 'false');
+    }
+    document.body.style.overflow = '';
+  }
+
+  if (hamburgerBtn) {
+    hamburgerBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (drawer && drawer.classList.contains('open')) {
+        closeDrawer();
+      } else {
+        openDrawer();
+      }
+    });
+  }
+
+  if (closeDrawerBtn) {
+    closeDrawerBtn.addEventListener('click', closeDrawer);
+  }
+
+  if (backdrop) {
+    backdrop.addEventListener('click', closeDrawer);
+  }
+
+  // Close drawer on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && drawer && drawer.classList.contains('open')) {
+      closeDrawer();
+    }
+  });
+
+  // Mobile Donate pill in topbar
+  if (mobileDonateBtn) {
+    mobileDonateBtn.addEventListener('click', () => {
+      const openDonate = document.getElementById('btn-open-donate');
+      if (openDonate) openDonate.click();
+    });
+  }
+
+  // Drawer Donate button
+  if (drawerDonateBtn) {
+    drawerDonateBtn.addEventListener('click', () => {
+      closeDrawer();
+      const openDonate = document.getElementById('btn-open-donate');
+      if (openDonate) openDonate.click();
+    });
+  }
+
+  // Drawer CRT toggle
+  if (drawerCrtBtn) {
+    drawerCrtBtn.addEventListener('click', () => {
+      const crtBtn = document.getElementById('btn-toggle-crt');
+      if (crtBtn) crtBtn.click();
+    });
+  }
+
+  // Drawer tabs navigation
+  drawerTabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.getAttribute('data-target');
+      if (target) {
+        switchTab(target);
+        closeDrawer();
       }
     });
   });
