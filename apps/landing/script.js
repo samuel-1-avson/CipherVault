@@ -466,7 +466,10 @@ const PIPELINE_STAGES = {
     statVal: '< 1.2 ms',
     statDesc: 'Local metadata indexing & DPAPI hardware key binding',
     code: `// apps/cli/src/commands/track.rs & crates/local-store/src/db.rs
-pub fn enroll_secret_file(path: &Path, store: &LocalVaultStore) -> Result<TrackedMetadata> {
+pub fn enroll_secret_file(
+    path: &Path,
+    store: &LocalVaultStore
+) -> Result<TrackedMetadata> {
     let raw = std::fs::read(path)?;
     let digest = blake2b_256(&raw);
     store.track_file(path, &digest, raw.len() as u64)?;
@@ -500,15 +503,23 @@ pub fn slice_into_chunks(buffer: &[u8]) -> Vec<Chunk> {
     statVal: '558.62 MiB/s',
     statDesc: 'AES-NI / SIMD accelerated client encryption (Poly1305 MAC)',
     code: `// crates/crypto/src/cipher.rs
-use chacha20poly1305::{XChaCha20Poly1305, Key, XNonce, aead::{Aead, KeyInit}};
+use chacha20poly1305::{
+    XChaCha20Poly1305, Key, XNonce,
+    aead::{Aead, KeyInit}
+};
 use zeroize::ZeroizeOnDrop;
 
 #[derive(ZeroizeOnDrop)]
 pub struct SecretBuffer(pub Vec<u8>);
 
-pub fn encrypt_chunk(key: &Key, nonce: &XNonce, chunk: &SecretBuffer) -> Result<Vec<u8>> {
+pub fn encrypt_chunk(
+    key: &Key,
+    nonce: &XNonce,
+    chunk: &SecretBuffer
+) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(key);
-    cipher.encrypt(nonce, chunk.0.as_ref()).map_err(|_| CryptoError::EncryptionFailed)
+    cipher.encrypt(nonce, chunk.0.as_ref())
+        .map_err(|_| CryptoError::EncryptionFailed)
 }`
   },
   4: {
@@ -540,7 +551,11 @@ pub fn verify_quorum_admission(
     statVal: '99.956% Wire Savings',
     statDesc: '1 MiB raw chunk verified with only 461 bytes transmitted over wire',
     code: `// crates/storage/src/pos.rs
-pub fn verify_pos_proof(expected_cid: &ChunkId, challenge_nonce: &[u8; 32], proof: &PoSProof) -> bool {
+pub fn verify_pos_proof(
+    expected_cid: &ChunkId,
+    challenge_nonce: &[u8; 32],
+    proof: &PoSProof
+) -> bool {
     let computed_hash = hmac_blake2b(proof.chunk_sample(), challenge_nonce);
     computed_hash == proof.signature() && proof.wire_size() == 461
 }`
@@ -554,14 +569,24 @@ pub fn verify_pos_proof(expected_cid: &ChunkId, challenge_nonce: &[u8; 32], proo
     statDesc: 'Arbitrum One L2 sequencer finality + on-chain receipt verification',
     code: `// contracts/CipherVaultRegistry.sol (Arbitrum One L2)
 contract CipherVaultRegistry {
-    event CommitmentPublished(bytes32 indexed commitment, address indexed publisher, uint256 blockNumber, uint256 timestamp);
+    event CommitmentPublished(
+        bytes32 indexed commitment,
+        address indexed publisher,
+        uint256 blockNumber,
+        uint256 timestamp
+    );
     mapping(bytes32 => uint256) public firstSeenBlock;
 
     function publish(bytes32 commitment) external {
         require(commitment != bytes32(0), "Invalid commitment: zero digest");
         if (firstSeenBlock[commitment] == 0) {
             firstSeenBlock[commitment] = block.number;
-            emit CommitmentPublished(commitment, msg.sender, block.number, block.timestamp);
+            emit CommitmentPublished(
+                commitment,
+                msg.sender,
+                block.number,
+                block.timestamp
+            );
         }
     }
 }`

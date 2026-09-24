@@ -4,7 +4,7 @@
    ============================================================================== */
 
 /* --- Theme 1: Cyber (Default Terminal Cyberdeck) --- */
-:root, [data-theme="cyber"] {
+:root, html[data-theme="cyber"] {
   --term-bg: #06080d;
   --term-surface: #0b0e17;
   --term-surface-elev: #121824;
@@ -35,7 +35,7 @@
 }
 
 /* --- Theme 2: Clean Minimal Dark (Slate / Charcoal) --- */
-[data-theme="dark"] {
+html[data-theme="dark"] {
   --term-bg: #0c1017;
   --term-surface: #151b23;
   --term-surface-elev: #1f2631;
@@ -66,7 +66,7 @@
 }
 
 /* --- Theme 3: Crisp Paper Light (Minimal & Clean Deep Ink) --- */
-[data-theme="light"] {
+html[data-theme="light"] {
   --term-bg: #f8fafc;
   --term-surface: #ffffff;
   --term-surface-elev: #f1f5f9;
@@ -97,7 +97,7 @@
 }
 
 /* --- Theme 4: Monochrome (High-Contrast Pure Black & White) --- */
-[data-theme="mono"] {
+html[data-theme="mono"] {
   --term-bg: #000000;
   --term-surface: #0a0a0a;
   --term-surface-elev: #141414;
@@ -225,6 +225,7 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   border-right: 1px solid var(--term-border);
   background: var(--term-bg);
   position: relative;
+  box-sizing: border-box;
   transition: border-color var(--t-normal), background-color var(--t-normal);
 }
 
@@ -368,13 +369,13 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
 }
 
 /* Light theme overrides for Theme switcher so text is razor-sharp */
-[data-theme="light"] .theme-pill-btn {
+html[data-theme="light"] .theme-pill-btn {
   color: #334155;
 }
-[data-theme="light"] .theme-pill-btn:hover {
+html[data-theme="light"] .theme-pill-btn:hover {
   color: #020617;
 }
-[data-theme="light"] .theme-pill-btn.active {
+html[data-theme="light"] .theme-pill-btn.active {
   background: #ffffff;
   border-color: #94a3b8;
   color: #0284c7;
@@ -605,6 +606,8 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   border-radius: var(--radius-md);
   padding: 30px 32px;
   position: relative;
+  box-sizing: border-box;
+  max-width: 100%;
   transition: border-color var(--t-fast), background-color var(--t-normal), transform var(--t-fast), box-shadow var(--t-fast);
 }
 
@@ -2182,6 +2185,10 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   gap: 20px;
   animation: inspector-fade-in 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
   position: relative;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 @keyframes inspector-fade-in {
@@ -2196,6 +2203,14 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   gap: 16px;
   padding-bottom: 14px;
   border-bottom: 1px dashed var(--term-border);
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.inspector-title-wrap {
+  min-width: 0;
+  flex: 1;
 }
 
 .inspector-kicker {
@@ -2226,6 +2241,7 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   border-radius: var(--radius-sm);
   cursor: pointer;
   white-space: nowrap;
+  flex-shrink: 0;
   transition: all var(--t-fast);
 }
 
@@ -2237,20 +2253,33 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
 
 .inspector-grid {
   display: grid;
-  grid-template-columns: 1.15fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   gap: 28px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .inspector-col {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .insp-section {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .insp-label {
@@ -2265,6 +2294,7 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   color: var(--text-secondary);
   line-height: 1.68;
   margin: 0;
+  word-break: break-word;
 }
 
 .insp-stat-badge {
@@ -2275,6 +2305,8 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   display: flex;
   flex-direction: column;
   gap: 3px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .insp-stat-val {
@@ -2300,6 +2332,19 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   font-size: 0.82rem;
   line-height: 1.55;
   color: var(--term-cyan);
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+}
+
+.insp-code-block code {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre;
+  word-break: normal;
 }
 
 /* Quick Jump Stage Navigation Pills in Inspector */

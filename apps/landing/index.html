@@ -672,7 +672,9 @@
                   <div class="insp-section">
                     <div class="insp-label text-purple">RUST ENGINE IMPLEMENTATION:</div>
                     <pre class="insp-code-block"><code id="insp-code">// crates/vault-core/src/tracker.rs
-pub fn enroll_secret_file(path: &Path) -> Result&lt;TrackedMetadata&gt; {
+pub fn enroll_secret_file(
+    path: &Path
+) -> Result&lt;TrackedMetadata&gt; {
     let raw = std::fs::read(path)?;
     let cid = blake2b_256(&raw);
     let master_key = platform::get_dpapi_master_key()?;
