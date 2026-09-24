@@ -1,4 +1,5 @@
 # Fleet Watcher — off-GCP liveness + version probe (Unit 5).
+# Schedule re-registered 2026-09-24 (touch-commit: no functional change).
 #
 # Every 5 minutes, from GitHub-hosted runners (off the GCP fleet, so a
 # cloud-wide incident cannot silence the watcher), probe the public
