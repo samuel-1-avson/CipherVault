@@ -307,6 +307,12 @@ enum Commands {
             help = "Require out-of-band cryptographic approval receipt from team lead or guardian before restoring"
         )]
         require_approval: bool,
+
+        #[arg(
+            long,
+            help = "Rebuild the local store even when one already exists in the target directory"
+        )]
+        force: bool,
     },
 
     /// Emergency offline recovery commands
@@ -1200,7 +1206,8 @@ async fn run(cli: Cli) -> Result<()> {
             shares,
             to,
             require_approval,
-        } => cmd_recover(kit, shares, to, require_approval).await,
+            force,
+        } => cmd_recover(kit, shares, to, require_approval, force).await,
         Commands::Recovery { sub } => match sub {
             RecoverySubcommand::Export => cmd_recovery_export(),
             RecoverySubcommand::Split {

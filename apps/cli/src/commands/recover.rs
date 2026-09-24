@@ -1,24 +1,35 @@
 //! Recover and peer-discovery commands.
 
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use colored::Colorize;
 use ed25519_dalek::SigningKey;
+use rand::RngCore;
 use std::fs;
 use std::path::PathBuf;
 
-use ciphervault_format::{from_canonical_cbor, ChunkWireObject, SnapshotManifest, SnapshotRecord};
+use ciphervault_crypto::generate_signing_key;
+use ciphervault_format::{
+    from_canonical_cbor, ChunkWireObject, DeviceCertificate, GenesisRecord, SnapshotManifest,
+    SnapshotRecord, PROTOCOL_VERSION,
+};
+use ciphervault_local_store::LocalVaultStore;
 use ciphervault_recovery::OfflineRecoveryKit;
 use ciphervault_snapshot::restore_snapshot;
 use ciphervault_storage::invites::JoinInvite;
 use ciphervault_storage::{OperatorClient, StorageError};
 
-use crate::util::{configured_operator_pool, get_configured_operators, operator_service_request};
+use crate::util::{
+    configured_operator_pool, get_configured_operators, operator_service_request, DB_FILE,
+    OPERATORS_FILE, VAULT_DIR,
+};
 
 pub(crate) async fn cmd_recover(
     kit_opt: Option<PathBuf>,
     shares_opt: Option<Vec<PathBuf>>,
     to_dir: PathBuf,
     require_approval: bool,
+    force: bool,
 ) -> Result<()> {
     println!(
         "{}",
@@ -318,6 +329,135 @@ pub(crate) async fn cmd_recover(
         println!("  - {}", p.display().to_string().cyan());
     }
 
+    rebuild_store_after_recovery(
+        &kit,
+        &secret,
+        &raw_records,
+        &vault_id,
+        &locator,
+        &record,
+        &chosen_head,
+        &epoch_key,
+        &to_dir,
+        force,
+    )?;
+
+    Ok(())
+}
+
+/// Finds the vault's genesis record among the locator's recovery records.
+/// Every push uploads the genesis CBOR as a content-addressed object and
+/// appends it under the locator, so a wiped device can re-anchor trust:
+/// the candidate must carry this vault's ID, pin the kit-derived recovery
+/// key, and verify — a foreign or forged genesis never matches all three.
+fn find_genesis_record(
+    records: &[Vec<u8>],
+    vault_id: &[u8; 32],
+    recovery_pk: &[u8; 32],
+) -> Option<GenesisRecord> {
+    records
+        .iter()
+        .filter_map(|bytes| from_canonical_cbor::<GenesisRecord>(bytes).ok())
+        .find(|genesis| {
+            genesis.version == PROTOCOL_VERSION
+                && genesis.vault_id.as_slice() == vault_id
+                && genesis.recovery_signing_pk.as_slice() == recovery_pk
+                && genesis.verify().is_ok()
+        })
+}
+
+/// Rebuilds a working local store inside the restored directory so the
+/// wiped device can `pull`, `push`, and see an overview immediately —
+/// without it `recover` leaves files that no command can operate on.
+/// Trust roots entirely in the offline kit: the original genesis is
+/// re-fetched (never re-minted), the epoch key is the recovered one, and
+/// the fresh device certificate is signed by the kit's recovery key at
+/// the recovered authority generation so the next push authorizes.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_store_after_recovery(
+    kit: &OfflineRecoveryKit,
+    secret: &ciphervault_crypto::RecoverySecret,
+    raw_records: &[Vec<u8>],
+    vault_id: &[u8; 32],
+    locator: &[u8; 32],
+    record: &SnapshotRecord,
+    chosen_head: &ciphervault_format::HeadRecord,
+    epoch_key: &ciphervault_crypto::VaultEpochKey,
+    to_dir: &std::path::Path,
+    force: bool,
+) -> Result<()> {
+    let recovery_sk = secret.derive_recovery_signing_key()?;
+    let recovery_pk = recovery_sk.verifying_key().to_bytes();
+    let Some(genesis) = find_genesis_record(raw_records, vault_id, &recovery_pk) else {
+        bail!(
+            "No genesis record found under this locator: the vault was never pushed with \
+             recovery records, so no store can be rebuilt. Restore `.ciphervault` from a \
+             surviving device backup and `pull` instead (copy+pull)."
+        );
+    };
+
+    let store_dir = to_dir.join(VAULT_DIR);
+    if store_dir.exists() && !force {
+        bail!(
+            "A store already exists at '{}'. Use '--force' to rebuild it from recovery.",
+            store_dir.display()
+        );
+    }
+    fs::create_dir_all(&store_dir)?;
+    let db_path = store_dir.join(DB_FILE);
+    if db_path.exists() {
+        fs::remove_file(&db_path)?;
+    }
+
+    let mut device_id = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut device_id);
+    let mut certificate_id = vec![0u8; 32];
+    rand::thread_rng().fill_bytes(&mut certificate_id);
+    let device_sk = generate_signing_key();
+    let store = LocalVaultStore::open(&db_path)?;
+    store.init_vault_at_epoch(
+        vault_id,
+        &genesis,
+        &device_sk,
+        &device_id,
+        epoch_key,
+        locator,
+        record.epoch,
+    )?;
+
+    let mut cert = DeviceCertificate {
+        version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_vec(),
+        certificate_id,
+        device_signing_pk: device_sk.verifying_key().as_bytes().to_vec(),
+        permissions: 0xFFFFFFFF,
+        authority_generation: record.authority_generation,
+        issued_at_utc: Utc::now().timestamp() as u64,
+        signature: Vec::new(),
+    };
+    cert.sign(&recovery_sk)?;
+    store.save_device_certificate(&cert)?;
+    store.set_head(chosen_head)?;
+
+    let ops_json = serde_json::to_string_pretty(&kit.operator_endpoints)?;
+    fs::write(store_dir.join(OPERATORS_FILE), ops_json)?;
+
+    println!();
+    println!(
+        "{}",
+        "✓ Local store rebuilt — this directory is a working vault again."
+            .bold()
+            .green()
+    );
+    println!(
+        "  Vault:   {} (epoch {})",
+        hex::encode(vault_id).yellow(),
+        record.epoch
+    );
+    println!(
+        "  Next:    cd {} && ciphervault pull",
+        to_dir.display().to_string().cyan()
+    );
     Ok(())
 }
 
@@ -987,5 +1127,71 @@ mod invite_hint_tests {
         assert_eq!(ticket.node_pk_hex, node_pk);
         std::fs::remove_file(&seed_path).unwrap();
         std::fs::remove_file(&out_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod genesis_find_tests {
+    use super::*;
+    use ciphervault_crypto::RecoverySecret;
+    use ciphervault_format::to_canonical_cbor;
+
+    fn signed_genesis(vault_id: &[u8; 32], secret: &RecoverySecret) -> (GenesisRecord, [u8; 32]) {
+        let r_sk = secret.derive_recovery_signing_key().unwrap();
+        let (_, r_enc_pk) = secret.derive_recovery_encryption_keys().unwrap();
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: r_sk.verifying_key().as_bytes().to_vec(),
+            recovery_encryption_pk: r_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0u8; 32],
+            created_at_utc: 1000,
+            creation_nonce: vec![1u8; 32],
+            signature: Vec::new(),
+        };
+        genesis.sign(&r_sk).unwrap();
+        (genesis, r_sk.verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn finds_genesis_among_mixed_records() {
+        let vault_id = [0xAAu8; 32];
+        let secret = RecoverySecret::generate();
+        let (genesis, recovery_pk) = signed_genesis(&vault_id, &secret);
+        // Locator records mix generations and types: junk bytes, a foreign
+        // vault's genesis, then ours.
+        let other_secret = RecoverySecret::generate();
+        let (foreign, _) = signed_genesis(&[0xBBu8; 32], &other_secret);
+        let records = vec![
+            vec![0xde, 0xad, 0xbe, 0xef],
+            to_canonical_cbor(&foreign).unwrap(),
+            to_canonical_cbor(&genesis).unwrap(),
+        ];
+        let found = find_genesis_record(&records, &vault_id, &recovery_pk).unwrap();
+        assert_eq!(found.vault_id, vault_id.to_vec());
+        assert_eq!(found.creation_nonce, vec![1u8; 32]);
+    }
+
+    #[test]
+    fn rejects_wrong_key_bad_sig_and_absence() {
+        let vault_id = [0xAAu8; 32];
+        let secret = RecoverySecret::generate();
+        let (genesis, _) = signed_genesis(&vault_id, &secret);
+        let genesis_bytes = to_canonical_cbor(&genesis).unwrap();
+        // Wrong recovery key: a validly signed genesis for another root.
+        let wrong_pk = RecoverySecret::generate()
+            .derive_recovery_signing_key()
+            .unwrap()
+            .verifying_key()
+            .to_bytes();
+        assert!(find_genesis_record(&[genesis_bytes], &vault_id, &wrong_pk).is_none());
+        // Tampered signature fails closed.
+        let mut tampered = genesis.clone();
+        tampered.signature = vec![0u8; 64];
+        let tampered_bytes = to_canonical_cbor(&tampered).unwrap();
+        let (_, recovery_pk) = signed_genesis(&vault_id, &secret);
+        assert!(find_genesis_record(&[tampered_bytes], &vault_id, &recovery_pk).is_none());
+        // No genesis at all (vault never pushed recovery records).
+        assert!(find_genesis_record(&[vec![1, 2, 3]], &vault_id, &recovery_pk).is_none());
     }
 }

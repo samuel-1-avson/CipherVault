@@ -179,16 +179,20 @@ vault identities, files, and snapshots stay private by design.
 
 ### Recovery and safety nets
 
-- **New machine (files only):** install the binary, then
+- **New machine (clean room):** install the binary, then
   `ciphervault recover --kit printed_kit.txt --to ./restored/` — no
   account, no password, no coordinator needed. This restores file
-  contents only; it creates no vault store, so `pull`, `status`,
-  and the overview are unavailable there.
+  contents and rebuilds a working store in `./restored/.ciphervault`
+  (original genesis re-fetched, recovered epoch key, fresh device
+  certificate, operator list), so `pull`, `status`, and the overview
+  work immediately after. Lease/receipt history starts empty and
+  repopulates via overview-rebuild and new activity.
 - **Second device (full vault):** the canonical new-device flow is
   copying `.ciphervault/` from an existing device, then
   `ciphervault pull`. The store — snapshots, receipt log, overview —
   travels with the copy and syncs from the operator cluster
-  (walkthrough §3 and §9 verify this end to end).
+  (walkthrough §3 and §9 verify this end to end). Prefer this when a
+  surviving device exists; `recover` is for when none does.
 - **Rotation:** `ciphervault rekey` starts a new epoch; old chunks stay
   readable, new writes use the new key.
 - **Teams:** `auth` (account login), `device list|revoke`, and guardian
@@ -429,6 +433,9 @@ cd $env:TEMP\cv-walkB; & $cli pull
 ```powershell
 mkdir $env:TEMP\cv-recover; cd $env:TEMP\cv-recover
 & $cli recover --kit $env:TEMP\cv-walk\kit.txt --to .\restored
+# Expect: rebuilt-store summary ("Local store rebuilt") plus the recovery banner.
+Push-Location .\restored; & $cli pull --dry-run; Pop-Location
+# Expect: success — the recovered directory is a working vault.
 # Expect: "✓ CLEAN-MACHINE RECOVERY COMPLETED SUCCESSFULLY!", 1 file restored.
 (Get-FileHash $env:TEMP\cv-walk\.env).Hash -eq (Get-FileHash .\restored\.env).Hash
 # Expect: True.

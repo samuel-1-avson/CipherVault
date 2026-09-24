@@ -67,7 +67,7 @@ pub(crate) async fn cmd_recovery_test(kit_opt: Option<PathBuf>, target_dir: Path
         "Running offline clean-machine recovery test into '{}'...",
         target_dir.display()
     );
-    cmd_recover(Some(kit_path), None, target_dir, false).await
+    cmd_recover(Some(kit_path), None, target_dir, false, false).await
 }
 
 pub(crate) async fn cmd_recovery_split(

@@ -451,6 +451,35 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
     println!("  ✓ certs/server.key SHA-256 digest:      MATCH (100% bit-for-bit)");
     println!("  ✓ tokens/cloud_auth.json SHA-256 digest: MATCH (100% bit-for-bit)");
 
+    // =========================================================================
+    // 11b. REBUILD VERIFICATION: recover rebuilt a working store, so the
+    // virgin machine is a live vault (pull works) instead of loose files.
+    // =========================================================================
+    println!("\n>>> [STEP 11b] Verifying rebuilt store on the virgin machine...");
+    assert!(
+        virgin_laptop.join(".ciphervault").join("vault.db").exists(),
+        "recover must rebuild vault.db in the target directory"
+    );
+    assert!(
+        virgin_laptop
+            .join(".ciphervault")
+            .join("operators.json")
+            .exists(),
+        "recover must rebuild operators.json in the target directory"
+    );
+    let pull_check = Command::new(&bin)
+        .current_dir(&virgin_laptop)
+        .args(["pull", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        pull_check.status.success(),
+        "pull --dry-run must succeed on the rebuilt store:\nSTDOUT:\n{}\nSTDERR:\n{}",
+        String::from_utf8_lossy(&pull_check.stdout),
+        String::from_utf8_lossy(&pull_check.stderr)
+    );
+    println!("  ✓ Rebuilt store pulls cleanly against the live federation.");
+
     // Teardown operators
     op2_task.abort();
     op3_task.abort();

@@ -280,6 +280,39 @@ impl LocalVaultStore {
         initial_epoch_key: &VaultEpochKey,
         recovery_locator: &[u8; 32],
     ) -> Result<(), LocalStoreError> {
+        self.init_vault_at_epoch(
+            vault_id,
+            genesis,
+            device_sk,
+            device_id,
+            initial_epoch_key,
+            recovery_locator,
+            1,
+        )
+    }
+
+    /// Initializes vault metadata at an explicit epoch. Fresh `init` uses
+    /// epoch 1; post-recovery rebuilds resume at the recovered snapshot's
+    /// epoch so the next push mints `epoch + 1` instead of rewinding to 2.
+    /// The epoch must be nonzero — epoch 0 has no keys by construction.
+    /// Eight params mirror [`LocalVaultStore::init_vault`] plus the epoch;
+    /// a builder would churn every init call site for no safety gain.
+    #[allow(clippy::too_many_arguments)]
+    pub fn init_vault_at_epoch(
+        &self,
+        vault_id: &[u8; 32],
+        genesis: &GenesisRecord,
+        device_sk: &SigningKey,
+        device_id: &[u8; 32],
+        initial_epoch_key: &VaultEpochKey,
+        recovery_locator: &[u8; 32],
+        epoch: u64,
+    ) -> Result<(), LocalStoreError> {
+        if epoch == 0 {
+            return Err(LocalStoreError::CorruptedRecord(
+                "cannot init vault at epoch 0".into(),
+            ));
+        }
         let genesis_cbor = to_canonical_cbor(genesis)?;
         let device_sk_bytes = device_sk.to_bytes();
         let protected_device_sk = crate::keyring::protect_secret(&device_sk_bytes)?;
@@ -290,10 +323,11 @@ impl LocalVaultStore {
                 id, vault_id, current_epoch, device_id, device_counter,
                 authority_generation, device_signing_key, recovery_signing_pk,
                 recovery_encryption_pk, recovery_locator, genesis_cbor
-            ) VALUES (1, ?1, 1, ?2, 0, 1, ?3, ?4, ?5, ?6, ?7)
+            ) VALUES (1, ?1, ?2, ?3, 0, 1, ?4, ?5, ?6, ?7, ?8)
             "#,
             params![
                 vault_id.as_slice(),
+                epoch,
                 device_id.as_slice(),
                 protected_device_sk.as_slice(),
                 genesis.recovery_signing_pk.as_slice(),
@@ -303,7 +337,7 @@ impl LocalVaultStore {
             ],
         )?;
 
-        self.save_epoch_key(1, initial_epoch_key)?;
+        self.save_epoch_key(epoch, initial_epoch_key)?;
         Ok(())
     }
 
@@ -1435,6 +1469,53 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, PathBuf::from(".env"));
         assert_eq!(files[0].1, file_id);
+    }
+
+    #[test]
+    fn test_init_vault_at_epoch_resumes_recovered_epoch() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let r = RecoverySecret::generate();
+        let r_sk = r.derive_recovery_signing_key().unwrap();
+        let (_, r_enc_pk) = r.derive_recovery_encryption_keys().unwrap();
+
+        let vault_id = [0xAAu8; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: r_sk.verifying_key().as_bytes().to_vec(),
+            recovery_encryption_pk: r_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0u8; 32],
+            created_at_utc: 1000,
+            creation_nonce: vec![0u8; 32],
+            signature: Vec::new(),
+        };
+        genesis.sign(&r_sk).unwrap();
+
+        let dev_sk = generate_signing_key();
+        let dev_id = [0xBBu8; 32];
+        let epoch_key = VaultEpochKey::generate();
+        let locator = r.derive_recovery_locator().unwrap();
+
+        store
+            .init_vault_at_epoch(
+                &vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator, 7,
+            )
+            .unwrap();
+
+        // Device state resumes at epoch 7 with the recovered key; the next
+        // rotation mints 8 instead of rewinding to 2.
+        let (_, _, _, current_epoch) = store.get_device_state().unwrap();
+        assert_eq!(current_epoch, 7);
+        let fetched = store.get_epoch_key(7).unwrap();
+        assert_eq!(fetched.as_bytes(), epoch_key.as_bytes());
+        let (next, _) = store.rotate_epoch_key().unwrap();
+        assert_eq!(next, 8);
+
+        // Epoch 0 is rejected: it has no keys by construction.
+        let store2 = LocalVaultStore::open(":memory:").unwrap();
+        assert!(store2
+            .init_vault_at_epoch(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator, 0)
+            .is_err());
     }
 
     #[test]
