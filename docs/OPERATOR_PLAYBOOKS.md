@@ -297,3 +297,27 @@ only its own sidecars); 400 = bad `limit` or missing vault header;
 `handlers::tests::lease_list_is_session_scoped_per_vault` (two vaults
 plus anonymous) and
 `state::tests::lease_listing_is_vault_scoped_and_skips_legacy`.
+
+## 12. Abuse-response ladder (ADR-010)
+
+Escalate T0 → T1 → T2 → T3 → T4; T5 is incident-only, never routine.
+Tiers marked MISSING are re-entry conditions, not runnable steps.
+
+- T0 Observe (EXISTS): triage via §9 — byte/repair/429 metrics,
+  voucher-spend hints, lease-listing kill-switch (§11) for that
+  endpoint specifically.
+- T1 Throttle one peer/holder (MISSING): no per-key limiter exists;
+  today the only lever is the global HTTP limit
+  (`CIPHERVAULT_HTTP_RATE_LIMIT_PER_MIN`, default 600) or voucher
+  quotas (accept-until-quota, TTL-bounded, no revocation list).
+- T2 Probation re-entry (MISSING): graduation is one-way; there is no
+  demote path. Withhold-repair-with-liveness is the design gap.
+- T3 Quarantine (EXISTS): `block_peer` / `unblock_peer`, §4. Verify
+  drops in `ciphervault_swarm_repair_bytes_total`, not connection
+  state alone.
+- T4 Eject (EXISTS): remove from `CIPHERVAULT_TRUSTED_PEER_KEYS`,
+  rotate the node key (§7), re-mesh (§2); old-key leases/vouchers
+  untrusted until re-issued. See §9 compromised-node path.
+- T5 Fleet-key rotation (MISSING procedure): new offline seed, re-pin
+  every node (join fails closed when unset), old tickets die. No
+  rotation drill has been run — practice before federating.

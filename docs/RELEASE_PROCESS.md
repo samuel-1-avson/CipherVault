@@ -48,3 +48,20 @@ Caveat: edge images share the base version string, so the live version assertion
    `fill-manifest-hashes` job commits the winget/scoop/brew hashes to
    `main` automatically — verify that commit landed before announcing.
 4. Promote to the cloud per `docs/DEPLOYMENT_RUNBOOK.md` §10/R4.
+4b. Within 24 h of the tag, promote that tag's dashboard+account
+    digests to the web VM (`scripts/gcp/promote-immutable-web.ps1`
+    with `-ExpectedBuildVersion X.Y.Z`, rollback images set to the
+    currently live digests), or record an exception below with an
+    owner and a new deadline. Rationale: releases that never reach
+    the web UI strand users on stale builds (1.0.9 served while
+    1.0.14 was current, Sep 2026).
+5. Staleness check: `GET https://vault.cipherv.online/api/context`
+   `build_version` MUST equal the just-cut tag before announcing.
+   If it does not, either run step 4b now or record the exception;
+   never announce a release the web UI does not serve.
+
+## Release exceptions (rule 4b log)
+
+| Tag | Exception | Owner | Deadline | Status |
+|-----|-----------|-------|----------|--------|
+| v1.0.14 | Web still serves 1.0.9; promote deferred to DON production-push Unit 4 | fleet ops | Unit 4 execution | closed 2026-09-24 (`/api/context` = 1.0.14, digests verified) |

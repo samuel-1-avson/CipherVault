@@ -678,6 +678,53 @@ pub(crate) async fn api_public_operators_jobs_handler() -> impl axum::response::
     )
 }
 
+/// Manual incident log for the public status surface. Operators maintain a
+/// JSON array file; an unset, unreadable, or invalid file reads as an empty
+/// log (fail-open display, never a 500).
+///
+/// Entry shape (free-form beyond these keys):
+/// `{"id": "...", "started_at_utc": "...", "severity": "degraded|outage|maintenance",
+///   "summary": "...", "resolved_at_utc": null|"..."}`.
+pub(crate) fn status_incidents() -> Vec<serde_json::Value> {
+    let path = std::env::var("CIPHERVAULT_STATUS_INCIDENTS_FILE")
+        .ok()
+        .filter(|path| !path.trim().is_empty());
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str::<Vec<serde_json::Value>>(&contents).unwrap_or_default()
+}
+
+pub(crate) async fn api_public_status_handler() -> impl axum::response::IntoResponse {
+    let telemetry = public_operator_telemetry().await;
+    let observed_at = telemetry.observed_at.to_rfc3339();
+    let operators = telemetry.operators;
+    let verdict = if operators.is_empty() {
+        "unknown"
+    } else if operators
+        .iter()
+        .all(|operator| operator["status"] == "reachable")
+    {
+        "ok"
+    } else {
+        "degraded"
+    };
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=30")],
+        axum::Json(serde_json::json!({
+            "observed_at": observed_at,
+            "verdict": verdict,
+            "dashboard_build_version": env!("CARGO_PKG_VERSION"),
+            "operators": operators,
+            "incidents": status_incidents(),
+        })),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -775,5 +822,40 @@ mod tests {
             .as_deref()
             .is_some_and(|message| message.contains("restarted")));
         assert_eq!(jobs[1].status, "succeeded");
+    }
+
+    #[test]
+    fn status_incidents_fail_open_and_parse_array() {
+        // Single test, sequential cases: the env var is process-global.
+        std::env::remove_var("CIPHERVAULT_STATUS_INCIDENTS_FILE");
+        assert!(status_incidents().is_empty());
+
+        std::env::set_var(
+            "CIPHERVAULT_STATUS_INCIDENTS_FILE",
+            "definitely-not-a-real-file-0099.json",
+        );
+        assert!(status_incidents().is_empty());
+
+        let dir = std::env::temp_dir().join("ciphervault-status-test");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let bad = dir.join("bad.json");
+        fs::write(&bad, "not json").expect("write bad");
+        std::env::set_var("CIPHERVAULT_STATUS_INCIDENTS_FILE", &bad);
+        assert!(status_incidents().is_empty());
+
+        let good = dir.join("good.json");
+        fs::write(
+            &good,
+            r#"[{"id":"1","severity":"maintenance","summary":"drill",
+                "started_at_utc":"2026-09-24T00:00:00Z","resolved_at_utc":null}]"#,
+        )
+        .expect("write good");
+        std::env::set_var("CIPHERVAULT_STATUS_INCIDENTS_FILE", &good);
+        let incidents = status_incidents();
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0]["severity"], "maintenance");
+
+        std::env::remove_var("CIPHERVAULT_STATUS_INCIDENTS_FILE");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

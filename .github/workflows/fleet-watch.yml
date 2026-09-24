@@ -1,0 +1,170 @@
+# Fleet Watcher — off-GCP liveness + version probe (Unit 5).
+#
+# Every 5 minutes, from GitHub-hosted runners (off the GCP fleet, so a
+# cloud-wide incident cannot silence the watcher), probe the public
+# endpoints and write a status JSON artifact:
+#   - op1/op2/op3 /healthz: HTTP 200 + {"status": "ready"} + operator_id match
+#   - web /api/context: reachable + build_version == latest release tag
+# A non-ok verdict fails the job: the failure itself is the visible signal
+# (workflow badge / run list), backed by the status.json artifact.
+#
+# Alert target beyond the failed run is TBD (plan: "alert target confirmed
+# at build"). When confirmed, add a notify step here — do not invent one.
+#
+# Simulated-degraded test (validation: flips within one probe interval):
+# dispatch manually with simulate_target=op2 (or op1/op3/web) to point one
+# probe at an invalid URL; the run must then PASS only if the verdict is
+# degraded, proving the detector trips. Normal scheduled runs must have an
+# ok verdict to pass.
+
+name: Fleet Watcher
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      simulate_target:
+        description: "Point one probe at an invalid URL to prove degraded trips (op1/op2/op3/web, empty = none)"
+        required: false
+        default: ""
+      expected_version:
+        description: "Override the expected web build_version (default: latest release tag)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe public endpoints
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve expected web version
+        id: expected
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.expected_version }}" ]; then
+            echo "version=${{ inputs.expected_version }}" >> "$GITHUB_OUTPUT"
+          else
+            tag="$(gh release view --repo "${{ github.repository }}" --json tagName --jq .tagName)"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Probe endpoints and write status.json
+        id: probe
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.expected.outputs.version }}
+          SIMULATE: ${{ inputs.simulate_target }}
+        run: |
+          set -euo pipefail
+
+          probe() { # name url want_operator_id
+            local name="$1" url="$2" want_id="$3"
+            local body code ms start end
+            if [ "$SIMULATE" = "$name" ]; then
+              url="https://invalid.invalid/healthz"
+            fi
+            start="$(date +%s%3N)"
+            if body="$(curl -fsSL --max-time 20 "$url" 2>/dev/null)"; then
+              code=0
+            else
+              code=1
+            fi
+            end="$(date +%s%3N)"
+            ms=$((end - start))
+            python3 - "$name" "$url" "$want_id" "$code" "$ms" "$body" <<'EOF'
+          import json, sys
+          name, url, want_id, code, ms, body = sys.argv[1:7]
+          rec = {"target": name, "url": url, "reachable": code == "0",
+                 "latency_ms": int(ms), "status": None, "operator_id": None, "ok": False}
+          if rec["reachable"]:
+              try:
+                  doc = json.loads(body)
+              except Exception:
+                  doc = None
+              if isinstance(doc, dict):
+                  rec["status"] = doc.get("status")
+                  rec["operator_id"] = doc.get("operator_id")
+                  rec["ok"] = doc.get("status") == "ready" and (not want_id or doc.get("operator_id") == want_id)
+          print(json.dumps(rec))
+          EOF
+          }
+
+          op1="$(probe op1 https://op1.cipherv.online/healthz cv-operator-1)"
+          op2="$(probe op2 https://op2.cipherv.online/healthz cv-operator-2)"
+          op3="$(probe op3 https://op3.cipherv.online/healthz cv-operator-3)"
+
+          web_url="https://vault.cipherv.online/api/context"
+          if [ "$SIMULATE" = "web" ]; then
+            web_url="https://invalid.invalid/api/context"
+          fi
+          web_start="$(date +%s%3N)"
+          if web_body="$(curl -fsSL --max-time 20 "$web_url" 2>/dev/null)"; then
+            web_code=0
+          else
+            web_code=1
+          fi
+          web_ms=$(($(date +%s%3N) - web_start))
+          web="$(EXPECTED="$EXPECTED_VERSION" python3 - "$web_code" "$web_ms" "$web_body" <<'EOF'
+          import json, os, sys
+          code, ms, body = sys.argv[1:4]
+          rec = {"target": "web", "url": "https://vault.cipherv.online/api/context",
+                 "reachable": code == "0", "latency_ms": int(ms),
+                 "build_version": None, "expected_version": os.environ["EXPECTED"], "ok": False}
+          if rec["reachable"]:
+              try:
+                  doc = json.loads(body)
+              except Exception:
+                  doc = None
+              if isinstance(doc, dict):
+                  rec["build_version"] = doc.get("build_version")
+                  rec["ok"] = doc.get("build_version") == os.environ["EXPECTED"]
+          print(json.dumps(rec))
+          EOF
+          )"
+
+          verdict="$(python3 - "$op1" "$op2" "$op3" "$web" <<'EOF'
+          import json, sys
+          recs = [json.loads(a) for a in sys.argv[1:5]]
+          print("ok" if all(r["ok"] for r in recs) else "degraded")
+          EOF
+          )"
+
+          python3 - "$op1" "$op2" "$op3" "$web" "$verdict" > status.json <<'EOF'
+          import datetime, json, sys
+          recs = [json.loads(a) for a in sys.argv[1:5]]
+          print(json.dumps({"checked_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            "verdict": sys.argv[5], "targets": recs}, indent=2))
+          EOF
+
+          cat status.json
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+      - name: Upload status.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-status
+          path: status.json
+          retention-days: 7
+
+      - name: Assert verdict
+        shell: bash
+        env:
+          VERDICT: ${{ steps.probe.outputs.verdict }}
+          SIMULATE: ${{ inputs.simulate_target }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SIMULATE" ]; then
+            test "$VERDICT" = "degraded" || { echo "simulation did NOT trip degraded"; exit 1; }
+            echo "simulation correctly tripped degraded"
+          else
+            test "$VERDICT" = "ok" || { echo "fleet verdict: $VERDICT"; exit 1; }
+            echo "fleet ok"
+          fi

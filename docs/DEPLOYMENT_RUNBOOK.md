@@ -538,3 +538,71 @@ DPAPI on Windows and a 0600 file-backed keystore elsewhere. The full support
 matrix, parity requirements, and the VS Code/git integration spec (gutter data
 contract over `ciphervault status --json`) live in
 `docs/PLATFORM_SUPPORT.md`.
+
+## 17. P2P Mesh Operations (dual-mode fleet)
+
+Live since the DON production push (Units 1–3, 2026-09-24). Every operator
+runs HTTP + libp2p dual-mode: HTTP stays the serving path, the mesh carries
+heartbeats, repair pushes, and GetInfo RPC. Mesh trouble never takes HTTP
+down by itself — except a bad mesh *config*, which fails the daemon before
+HTTP serves (see rollback).
+
+- Ports: TCP 9101 (swarm) + UDP 9102 (QUIC), opened fleet-wide by the
+  `ciphervault-allow-p2p` firewall rule (target tag `ciphervault-operator`,
+  INGRESS 1000). Daemon defaults match (`--p2p-tcp-port 9101`,
+  `--p2p-quic-port 9102`); containers use host networking, so no compose
+  port mappings are needed.
+- Identity: each node mints a persistent `swarm.key` on first dual-mode
+  boot; the PeerId is reported by `GET /v1/peers/p2p` (with listen and
+  external addrs). Advertise addrs are explicit
+  (`--p2p-advertise-addr /ip4/<external>/tcp/9101` + `.../udp/9102/quic-v1`).
+- Rendezvous/relay seed: op1 (`--p2p-rendezvous-server`). Every node is a
+  rendezvous client; only op1 serves.
+- Routing mesh is separate from the P2P mesh: after any restart, re-run
+  the playbook §2 mesh or heartbeats drop as `unknown_sender` and repair
+  cannot push. Service tokens are per-node — announce target-local (each
+  node POSTs to its own `/v1/peers/announce` with its own token).
+
+Bootstrap rotation (IP/PeerId change): re-collect external IPs from
+`gcloud compute instances list` and PeerIds from each node's
+`/v1/peers/p2p`, rewrite the `--p2p-bootstrap` multiaddrs
+(`/ip4/<ip>/tcp/9101/p2p/<peer>`), restart one node at a time with
+`/healthz` gates. Parse-validate every multiaddr before applying — a
+typo'd value fails the whole daemon at boot. Long-term fix is
+DNS-based bootstrap (follow-up, not yet built).
+
+Full-mesh bootstrap is mandatory: every node lists both others.
+Bootstrap dials happen once at boot and never re-fire, so a node
+missing a peer from its list depends on Kademlia-learned addresses
+for that peer — and identify advertises docker-bridge listen addrs
+(`172.17.0.1`) that route back to the dialer itself (`WrongPeerId`
+self-dial, repair pushes fail). Observed 2026-09-24: op1→op3 pushes
+failed until op3 joined op1's bootstrap set. Follow-up: stop
+advertising non-public listen addresses.
+
+Rendezvous failover (op1 down): move `--p2p-rendezvous-server` to op2
+(compose edit + restart, `/healthz`-gated). Discovery degrades to
+configured bootstrap only until the server moves; established meshes
+keep heartbeating over direct connections.
+
+Metric alerts (all `ciphervault_swarm_*` on `/metrics`):
+
+- `peers_live` < expected (2 on a 3-node fleet) for > 5 min: mesh
+  partition or dead peer. (Note: `swarm_peers_connected` is a reserved
+  name that never renders — alert on `peers_live`, not on it.)
+- `heartbeats_dropped_unknown_sender_total` increasing: routing mesh
+  stale — re-run the §2 mesh.
+- `repair_jobs_failed_total` increasing or `repair_budget_exhausted_total`
+  climbing: repair distress; check `repair_bytes_total` against the
+  8 MiB/s budget before touching anything.
+- Known gap (2026-09-24): DHT provider records never publish
+  (`provide_chunk` has no callers), so every repair assessment counts
+  only self and pushes to all live peers. Idempotent and budgeted, but
+  steady duplication churn per object per 60 s cooldown. Follow-up: wire
+  provide-on-PUT or periodic reprovide.
+
+Rollback (per node, one command each): restore the compose backup
+(`docker-compose.yml.pre-p2p`), `up -d`, confirm `/healthz` ready. Full
+fleet rollback is the R5 re-promote of pinned HTTP-only digests. To
+fully darken the mesh, delete the firewall rule
+(`gcloud compute firewall-rules delete ciphervault-allow-p2p`).

@@ -123,9 +123,9 @@ Reshape the parent spec's five phases into seven gated engineering phases below.
 ## Open Questions
 
 1. ~~D3 economics model~~ — decided 2026-09-18: barter/permissioned fleet first (see `docs/DON_ECONOMICS_DECISION.md`).
-2. If staking is chosen: staking asset and confirmation that Arbitrum One remains the settlement chain?
+2. If staking is chosen: staking asset and confirmation that Arbitrum One remains the settlement chain? — carried 2026-09-24 (ADR-009: stake-gating conditional on this; owner: product).
 3. What operator scale must the first public testnet support (drives chaos-test sizing and bootstrap capacity)?
-4. Has legal reviewed community operators storing third-party ciphertext in target jurisdictions?
+4. Has legal reviewed community operators storing third-party ciphertext in target jurisdictions? — carried 2026-09-24 (ADR-009: permissioned growth continues pending review; owner: legal).
 
 ## Sources
 
