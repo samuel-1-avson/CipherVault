@@ -334,11 +334,32 @@ live `vault.cipherv.online` cutover. Perform in order; stop on the first red che
    (mismatch rolls back automatically). Independently confirm the explorer
    loads and `docker inspect` on the VM reports the promoted digests.
 
+### R5: storage-operator GHCR rolling promotion
+Replaces the per-node source rebuild (~90 min x 3) with pulls of the
+signed release image (minutes). The fleet compose keeps pointing at the
+local `ciphervault-operator:gcp` tag; the script retags the verified
+digest onto it, so no compose edits are needed.
+1. Tag a release; confirm `release.yml` published + signed
+   `ghcr.io/<owner>/ciphervault-operator`.
+2. Dry-run (default, changes nothing): `scripts/gcp/promote-operators-ghcr.ps1
+   -Version <x.y.z>` — resolves the tag to a digest, verifies the
+   keyless cosign signature against the release-workflow identity, prints the plan.
+3. Promote: add `-Apply`. Nodes roll one at a time: pre-health gate,
+   previous image snapshotted to `:gcp-prev`, pull-by-digest, retag,
+   recreate, then `/healthz` ready + `--version` assertion. A failed
+   node rolls back automatically and aborts the roll; fix it and re-run
+   (healthy nodes are left alone only if you trim `-Nodes` — otherwise
+   they re-pull the same digest, which is a no-op swap).
+4. Verify live: all three `/healthz` endpoints `ready`, and
+   `docker exec ciphervault-operator ciphervault-operator --version`
+   reports the new version on each node.
+
 ### Phase 1 exit criteria
 - R1: dashboard env pins all 3 operator identities; cards show Verified; rotation drilled.
 - R2: publisher deployed + key pinned; RPC finality live; canary ok; alarm tested (stale).
 - R3: live TOTP key served from Secret Manager mount; legacy value rotated away.
 - R4: live VM runs CI-built signed digests; rollback path tested.
+- R5: fleet operators promote via pulled signed GHCR digests; per-node rollback tested.
 
 ## 11. Multi-Replica Account Service & Abuse Alerts
 
