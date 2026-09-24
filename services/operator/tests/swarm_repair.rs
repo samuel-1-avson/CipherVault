@@ -205,6 +205,13 @@ fn test_repair_config(target: usize) -> RepairConfig {
     RepairConfig {
         target,
         cooldown: Duration::from_secs(60),
+        // The periodic scanner is out of scope here: these tests assert
+        // exact single-round `trigger_repair` semantics, and a scan tick
+        // landing after recipients hold the object — but before any
+        // provider announcement propagates — elects a second pusher and
+        // breaks the exact counts. Disarm it (first tick at boot holds
+        // nothing, so it stays a no-op).
+        interval: Duration::from_secs(3600),
         ..RepairConfig::default()
     }
 }
