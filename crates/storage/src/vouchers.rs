@@ -9,7 +9,7 @@
 //! identically.
 //!
 //! HTTP mapping: invalid/expired/forged vouchers are 403; quota exhaustion
-//! is 429.
+//! (per-voucher or per-user) is 429.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -174,30 +174,47 @@ impl WriteVoucher {
 
 /// Spend terms pinned on first use: quota confusion via nonce reuse (same
 /// nonce, bigger quota) is rejected even though both vouchers verify.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The pinned holder key links the charge to its per-user total; ledgers
+/// written before the holder link decode with an empty holder (serde
+/// default) and simply contribute nothing to any user's total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VoucherCharge {
     quota_bytes: u64,
     expires_utc: u64,
     spent_bytes: u64,
+    #[serde(default)]
+    holder_pk_hex: String,
 }
 
 /// Per-operator spend ledger, keyed by voucher nonce. Callers hold the
 /// lock across verify→charge, so concurrent writes on one voucher cannot
 /// overspend; call [`VoucherLedger::release`] when persistence fails or
 /// the write turns out to be a no-op (idempotent re-PUT).
+///
+/// On top of per-voucher quotas the ledger enforces a uniform per-user
+/// (holder-key) lifetime cap: spend is aggregated across every voucher
+/// the holder ever presents, so a second voucher cannot top up past the
+/// cap. Holder keys are canonical by construction (pinned only after
+/// [`WriteVoucher::verify`], which rejects non-canonical hex), so one
+/// holder cannot shard spend across key spellings. Zero means unlimited.
 #[derive(Debug, Default)]
 pub struct VoucherLedger {
     max_quota_bytes: u64,
+    user_quota_bytes: u64,
     spent: HashMap<String, VoucherCharge>,
+    holder_spent: HashMap<String, u64>,
 }
 
 impl VoucherLedger {
     /// `max_quota_bytes` caps the largest single grant this operator
     /// honors (operator policy; vouchers above it are refused outright).
+    /// The per-user cap starts unlimited; see [`VoucherLedger::set_user_quota_bytes`].
     pub fn new(max_quota_bytes: u64) -> Self {
         Self {
             max_quota_bytes,
+            user_quota_bytes: 0,
             spent: HashMap::new(),
+            holder_spent: HashMap::new(),
         }
     }
 
@@ -207,9 +224,18 @@ impl VoucherLedger {
         self.max_quota_bytes = max_quota_bytes;
     }
 
+    /// Sets the uniform per-user lifetime cap in bytes (0 = unlimited).
+    /// Applies to spend from here on; already-pinned spend counts toward
+    /// it, so enabling mid-life never grants a fresh full quota on top of
+    /// recorded spend.
+    pub fn set_user_quota_bytes(&mut self, user_quota_bytes: u64) {
+        self.user_quota_bytes = user_quota_bytes;
+    }
+
     /// Verifies the voucher, checks quota for `bytes`, and charges them,
     /// atomically. Expired entries are pruned first so the ledger cannot
-    /// grow without bound.
+    /// grow without bound. All checks pass before either counter moves,
+    /// so a rejection leaves voucher and holder totals untouched.
     pub fn try_consume(
         &mut self,
         voucher: &WriteVoucher,
@@ -222,6 +248,39 @@ impl VoucherLedger {
         if voucher.quota_bytes > self.max_quota_bytes {
             return Err(forbidden("voucher quota exceeds operator maximum"));
         }
+        // Read-only probe first: every rejection below must leave both
+        // counters untouched, and the holder check needs the pinned terms.
+        let (pinned_quota, pinned_expiry, pinned_spent) = match self.spent.get(&voucher.nonce_hex) {
+            Some(entry) => (entry.quota_bytes, entry.expires_utc, entry.spent_bytes),
+            None => (voucher.quota_bytes, voucher.expires_utc, 0),
+        };
+        if pinned_quota != voucher.quota_bytes || pinned_expiry != voucher.expires_utc {
+            return Err(forbidden("voucher terms changed for nonce"));
+        }
+        if pinned_spent.saturating_add(bytes) > pinned_quota {
+            return Err(StorageError::ServerError {
+                status: 429,
+                message: "voucher quota exhausted".to_string(),
+            });
+        }
+        // Holder totals accrue even while the cap is unlimited, so
+        // enabling the cap mid-life counts recorded spend instead of
+        // granting a fresh full quota on top of it.
+        let holder_total = self
+            .holder_spent
+            .get(&voucher.holder_pk_hex)
+            .copied()
+            .unwrap_or(0);
+        if self.user_quota_bytes > 0 && holder_total.saturating_add(bytes) > self.user_quota_bytes {
+            return Err(StorageError::ServerError {
+                status: 429,
+                message: "user quota exhausted".to_string(),
+            });
+        }
+        self.holder_spent.insert(
+            voucher.holder_pk_hex.clone(),
+            holder_total.saturating_add(bytes),
+        );
         let entry = self
             .spent
             .entry(voucher.nonce_hex.clone())
@@ -229,37 +288,48 @@ impl VoucherLedger {
                 quota_bytes: voucher.quota_bytes,
                 expires_utc: voucher.expires_utc,
                 spent_bytes: 0,
+                holder_pk_hex: voucher.holder_pk_hex.clone(),
             });
-        if entry.quota_bytes != voucher.quota_bytes || entry.expires_utc != voucher.expires_utc {
-            return Err(forbidden("voucher terms changed for nonce"));
-        }
-        if entry.spent_bytes.saturating_add(bytes) > entry.quota_bytes {
-            return Err(StorageError::ServerError {
-                status: 429,
-                message: "voucher quota exhausted".to_string(),
-            });
-        }
         entry.spent_bytes = entry.spent_bytes.saturating_add(bytes);
         Ok(())
     }
 
-    /// Returns `bytes` to the voucher's quota (persistence failed or the
-    /// write stored no new bytes). Unknown nonces are a no-op.
+    /// Returns `bytes` to the voucher's quota and the holder's user-quota
+    /// total (persistence failed or the write stored no new bytes).
+    /// Unknown nonces are a no-op.
     pub fn release(&mut self, nonce_hex: &str, bytes: u64) {
-        if let Some(entry) = self.spent.get_mut(nonce_hex) {
-            entry.spent_bytes = entry.spent_bytes.saturating_sub(bytes);
+        let holder = match self.spent.get_mut(nonce_hex) {
+            Some(entry) => {
+                entry.spent_bytes = entry.spent_bytes.saturating_sub(bytes);
+                entry.holder_pk_hex.clone()
+            }
+            None => return,
+        };
+        if holder.is_empty() {
+            return;
+        }
+        if let Some(total) = self.holder_spent.get_mut(&holder) {
+            *total = total.saturating_sub(bytes);
+            if *total == 0 {
+                self.holder_spent.remove(&holder);
+            }
         }
     }
 
     /// Drops entries whose vouchers have expired. Called on every
-    /// [`VoucherLedger::try_consume`]; also callable directly.
+    /// [`VoucherLedger::try_consume`]; also callable directly. Holder
+    /// totals are deliberately kept: the user quota is a lifetime cap
+    /// over bytes that stay on disk, so voucher expiry frees the entry
+    /// but never refunds the holder.
     pub fn prune_expired(&mut self, now_utc: u64) {
         self.spent.retain(|_, charge| charge.expires_utc >= now_utc);
     }
 
     /// Serializes the spend map for crash-safe persistence. Operator
-    /// policy (`max_quota_bytes`) is deliberately excluded: it comes from
-    /// current configuration at startup, never from last boot's file.
+    /// policy (`max_quota_bytes`, `user_quota_bytes`) is deliberately
+    /// excluded: it comes from current configuration at startup, never
+    /// from last boot's file. Holder totals ride along inside each pinned
+    /// charge and are re-derived on decode.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec(&self.spent).map_err(|error| error.to_string())
     }
@@ -269,7 +339,10 @@ impl VoucherLedger {
     /// (`spent_bytes > quota_bytes`) are skipped: a hand-edited or
     /// half-written entry must not wedge the whole ledger, and skipping
     /// only ever resets that voucher toward unspent (still bounded by its
-    /// own quota and expiry, re-verified on next use).
+    /// own quota and expiry, re-verified on next use). Holder totals are
+    /// rebuilt by summing the surviving charges, so pre-holder-link files
+    /// (empty holder on every charge) restore voucher spend exactly and
+    /// user totals as zero — a documented one-way upgrade.
     pub fn decode_into(&mut self, bytes: &[u8]) -> Result<(), String> {
         let spent: HashMap<String, VoucherCharge> =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
@@ -279,6 +352,21 @@ impl VoucherLedger {
                 valid_nonce_key(nonce) && charge.spent_bytes <= charge.quota_bytes
             })
             .collect();
+        self.holder_spent.clear();
+        for charge in self.spent.values() {
+            if charge.holder_pk_hex.is_empty() {
+                continue;
+            }
+            let total = self
+                .holder_spent
+                .get(&charge.holder_pk_hex)
+                .copied()
+                .unwrap_or(0);
+            self.holder_spent.insert(
+                charge.holder_pk_hex.clone(),
+                total.saturating_add(charge.spent_bytes),
+            );
+        }
         Ok(())
     }
 
@@ -519,6 +607,156 @@ mod tests {
             .decode_into(&serde_json::to_vec(&mixed).unwrap())
             .expect("decode");
         assert_eq!(filtered.len(), 1);
+    }
+
+    fn status_of(err: StorageError) -> u16 {
+        match err {
+            StorageError::ServerError { status, .. } => status,
+            other => panic!("expected server error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_quota_spans_vouchers_same_holder() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let first = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        let second = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger.set_user_quota_bytes(1_200);
+        assert!(ledger.try_consume(&first, &pk, now, 1_000).is_ok());
+        // Same holder, fresh voucher, but only 200 of the user cap remains.
+        assert!(ledger.try_consume(&second, &pk, now, 200).is_ok());
+        let err = ledger.try_consume(&second, &pk, now, 1).unwrap_err();
+        assert_eq!(status_of(err), 429);
+        // A different holder is unaffected by the first holder's spend.
+        let other = WriteVoucher::issue(&key, holder_pk(), 1_000, 3600).expect("issue");
+        assert!(ledger.try_consume(&other, &pk, now, 1_000).is_ok());
+    }
+
+    #[test]
+    fn user_quota_zero_is_unlimited() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        assert_eq!(ledger.user_quota_bytes, 0);
+        for _ in 0..3 {
+            let voucher =
+                WriteVoucher::issue(&key, holder.clone(), 1_000_000, 3600).expect("issue");
+            assert!(ledger.try_consume(&voucher, &pk, now, 1_000_000).is_ok());
+        }
+    }
+
+    #[test]
+    fn user_quota_rejection_leaves_counters_untouched() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let first = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        let second = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger.set_user_quota_bytes(1_000);
+        assert!(ledger.try_consume(&first, &pk, now, 900).is_ok());
+        // Over the user cap: rejected, and the second voucher keeps its
+        // full quota (no partial charge leaked).
+        let err = ledger.try_consume(&second, &pk, now, 200).unwrap_err();
+        assert_eq!(status_of(err), 429);
+        assert!(ledger.try_consume(&second, &pk, now, 100).is_ok());
+        assert!(ledger.try_consume(&second, &pk, now, 1).is_err());
+    }
+
+    #[test]
+    fn user_quota_release_refunds_holder() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let voucher = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger.set_user_quota_bytes(500);
+        assert!(ledger.try_consume(&voucher, &pk, now, 500).is_ok());
+        assert!(ledger.try_consume(&voucher, &pk, now, 1).is_err());
+        // Persistence turned out to be a no-op: the refund reopens both
+        // the voucher quota and the holder total.
+        ledger.release(&voucher.nonce_hex, 500);
+        assert!(ledger.try_consume(&voucher, &pk, now, 500).is_ok());
+    }
+
+    #[test]
+    fn user_quota_survives_encode_decode() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let first = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger.set_user_quota_bytes(600);
+        assert!(ledger.try_consume(&first, &pk, now, 500).is_ok());
+        let encoded = ledger.encode().expect("encode");
+        // Policy comes from configuration: the restored ledger enforces
+        // whatever cap the operator sets now against restored spend.
+        let mut restored = VoucherLedger::new(u64::MAX);
+        restored.decode_into(&encoded).expect("decode");
+        restored.set_user_quota_bytes(600);
+        let second = WriteVoucher::issue(&key, holder.clone(), 1_000, 3600).expect("issue");
+        assert!(restored.try_consume(&second, &pk, now, 100).is_ok());
+        let err = restored.try_consume(&second, &pk, now, 1).unwrap_err();
+        assert_eq!(status_of(err), 429);
+    }
+
+    #[test]
+    fn legacy_ledger_without_holder_link_decodes() {
+        let (voucher, key) = valid_voucher();
+        let pk = issuer_pk(&key);
+        let now = now_unix_secs();
+        // Pre-holder-link shape: no holder key on the charge.
+        let legacy = serde_json::json!({
+            voucher.nonce_hex.clone(): {
+                "quota_bytes": voucher.quota_bytes,
+                "expires_utc": voucher.expires_utc,
+                "spent_bytes": 400_000u64,
+            }
+        });
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger
+            .decode_into(&serde_json::to_vec(&legacy).unwrap())
+            .expect("decode");
+        // Voucher spend restored exactly: only 600k of the 1M remains.
+        assert!(ledger.try_consume(&voucher, &pk, now, 600_000).is_ok());
+        assert!(ledger.try_consume(&voucher, &pk, now, 1).is_err());
+        // ...but the restored 400k never touched any holder total: with a
+        // 1M user cap, the same holder still has 400k of headroom (only
+        // the 600k charged above counts).
+        ledger.set_user_quota_bytes(1_000_000);
+        let fresh = WriteVoucher::issue(&key, voucher.holder_pk_hex.clone(), 1_000_000, 3600)
+            .expect("issue");
+        assert!(ledger.try_consume(&fresh, &pk, now, 400_000).is_ok());
+        let err = ledger.try_consume(&fresh, &pk, now, 1).unwrap_err();
+        assert_eq!(status_of(err), 429);
+    }
+
+    #[test]
+    fn prune_keeps_holder_totals() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let short = WriteVoucher::issue(&key, holder.clone(), 500, 60).expect("issue");
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger.set_user_quota_bytes(500);
+        assert!(ledger.try_consume(&short, &pk, now, 500).is_ok());
+        // The voucher expires and its entry is pruned, but the bytes stay
+        // on disk — the holder's lifetime total is not refunded.
+        ledger.prune_expired(short.expires_utc + 1);
+        assert_eq!(ledger.len(), 0);
+        let fresh = WriteVoucher::issue(&key, holder.clone(), 500, 3600).expect("issue");
+        let err = ledger.try_consume(&fresh, &pk, now, 1).unwrap_err();
+        assert_eq!(status_of(err), 429);
     }
 
     /// Dumb-fuzz battery: 512 seeded byte-level mutations of a valid

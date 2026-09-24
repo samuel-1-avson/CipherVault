@@ -1315,6 +1315,16 @@ impl OperatorState {
         lock_or_recover(&self.voucher_ledger, "voucher_ledger").set_max_quota(max_quota_bytes);
     }
 
+    /// Sets the uniform per-user (holder-key) lifetime write cap in bytes
+    /// (0 = unlimited). Without it a holder can chain vouchers into
+    /// unbounded disk growth; with it, spend aggregates across every
+    /// voucher the holder presents. Voucher-mode only: anonymous writes
+    /// carry no holder identity to charge.
+    pub fn set_user_quota_bytes(&self, user_quota_bytes: u64) {
+        lock_or_recover(&self.voucher_ledger, "voucher_ledger")
+            .set_user_quota_bytes(user_quota_bytes);
+    }
+
     /// Self-issues a voucher (D3 barter model): this operator's key signs a
     /// grant the operator itself will honor. Served over HTTP with service-
     /// token auth; never over P2P (no operator-admin surface there).

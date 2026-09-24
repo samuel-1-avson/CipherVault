@@ -47,6 +47,14 @@ Output is the signed JSON voucher; hand it to the holder out of band.
 Vouchers are Bearer [REDACTED] (ADR-002): possession authorizes up to the
 quota until expiry.
 
+Per-user cap: a holder with many vouchers could otherwise chain grants
+into unbounded disk. `--user-quota-bytes <n>` sets a uniform lifetime
+cap per holder key (0 = unlimited, the default); spend aggregates
+across all of a holder's vouchers and over-quota writes get 429, same
+as voucher exhaustion. Holder totals persist in `voucher-ledger.json`
+and survive restarts; voucher expiry frees the voucher entry but never
+refunds the holder (the bytes stay on disk).
+
 ## 4. Quarantine a misbehaving peer
 
 1. Add its PeerId to `blocked_peers` (boot config) and restart, or call

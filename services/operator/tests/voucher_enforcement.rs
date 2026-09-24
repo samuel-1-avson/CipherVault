@@ -456,6 +456,68 @@ async fn disk_fill_drill_attacker_blocked_holder_bounded() {
 }
 
 #[tokio::test]
+async fn http_user_quota_spans_vouchers_per_holder() {
+    // Per-user cap: one holder's spend aggregates across vouchers, so a
+    // second grant cannot top up past the cap — while a different holder
+    // on the same node is unaffected.
+    let node = boot_http("voucher-user-quota", true, 1024 * 1024).await;
+    node.state.set_user_quota_bytes(6144);
+
+    let holder = OperatorClient::new(node.base_url.clone());
+    let holder_vault: [u8; 32] = rand::random();
+    let holder_key = generate_signing_key();
+    let holder_token = holder
+        .authenticate(&holder_vault, &holder_key)
+        .await
+        .expect("holder authenticates");
+    let holder_pk = fresh_holder_pk();
+    let first = node
+        .state
+        .issue_voucher(holder_pk.clone(), 4096, 3600)
+        .expect("issue works");
+    holder.set_write_voucher(Some(first));
+    let (cid, bytes) = random_object(4096);
+    holder
+        .put_object(&holder_token, &cid, bytes)
+        .await
+        .expect("first voucher fits the user cap");
+    // Fresh voucher, same holder: only 2 KiB of the 6 KiB cap remains.
+    let second = node
+        .state
+        .issue_voucher(holder_pk, 4096, 3600)
+        .expect("issue works");
+    holder.set_write_voucher(Some(second));
+    let (cid2, bytes2) = random_object(4096);
+    let err = holder
+        .put_object(&holder_token, &cid2, bytes2)
+        .await
+        .expect_err("second voucher cannot exceed the user cap");
+    assert_eq!(server_status(&err), Some(429));
+
+    let other = OperatorClient::new(node.base_url.clone());
+    let other_vault: [u8; 32] = rand::random();
+    let other_key = generate_signing_key();
+    let other_token = other
+        .authenticate(&other_vault, &other_key)
+        .await
+        .expect("other holder authenticates");
+    let other_voucher = node
+        .state
+        .issue_voucher(fresh_holder_pk(), 4096, 3600)
+        .expect("issue works");
+    other.set_write_voucher(Some(other_voucher));
+    let (cid3, bytes3) = random_object(4096);
+    other
+        .put_object(&other_token, &cid3, bytes3)
+        .await
+        .expect("independent holder gets a fresh cap");
+    assert!(
+        dir_bytes(&node.dir.join("objects")) <= 8192,
+        "disk bounded by per-user caps"
+    );
+}
+
+#[tokio::test]
 async fn leases_authorize_without_charging_quota() {
     let node = boot_http("voucher-lease", true, u64::MAX).await;
     let client = OperatorClient::new(node.base_url.clone());

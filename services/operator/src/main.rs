@@ -138,6 +138,13 @@ struct Args {
     )]
     require_write_vouchers: bool,
 
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Uniform per-user (voucher holder key) lifetime write cap in bytes; 0 = unlimited. Aggregates spend across all of a holder's vouchers so chained grants cannot fill disk."
+    )]
+    user_quota_bytes: u64,
+
     #[command(subcommand)]
     command: Option<OperatorCommand>,
 }
@@ -304,6 +311,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.require_write_vouchers {
         state.set_vouchers_required(true);
         println!("  Write vouchers: required (D4)");
+    }
+    if args.user_quota_bytes > 0 {
+        state.set_user_quota_bytes(args.user_quota_bytes);
+        println!(
+            "  User quota: {} bytes lifetime per holder",
+            args.user_quota_bytes
+        );
     }
     let app = create_router(state.clone());
 
