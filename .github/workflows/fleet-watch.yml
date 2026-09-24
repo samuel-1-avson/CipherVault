@@ -160,13 +160,14 @@ jobs:
           retention-days: 7
 
       - name: Notify chat webhook on degraded verdict
-        if: steps.probe.outputs.verdict != 'ok' && inputs.simulate_target == '' && secrets.FLEET_WATCH_WEBHOOK != ''
+        if: steps.probe.outputs.verdict != 'ok' && inputs.simulate_target == ''
         shell: bash
         env:
           WEBHOOK: ${{ secrets.FLEET_WATCH_WEBHOOK }}
           VERDICT: ${{ steps.probe.outputs.verdict }}
         run: |
           set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then echo "no webhook configured, skipping"; exit 0; fi
           summary="$(python3 -c 'import json; d=json.load(open("status.json")); print("; ".join(f"{t[\"target\"]}:{\"ok\" if t[\"ok\"] else \"FAIL\"}({t[\"latency_ms\"]}ms)" for t in d["targets"]))')"
           msg="CipherVault fleet watcher: verdict=$VERDICT ($summary) run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [[ "$WEBHOOK" == https://discord.com/api/webhooks/* ]]; then
