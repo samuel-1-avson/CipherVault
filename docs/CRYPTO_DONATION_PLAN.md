@@ -58,43 +58,58 @@ Placed right below Pane 6 (Installation & Quickstart) and before the collapsible
 3. **Donation Modal Dialog**: Accessible modal (`role="dialog"`, `aria-modal="true"`) with backdrop blur, QR code container, network badges (`Arbitrum One`, `Ethereum`), asset tags (`ETH`, `USDT`, `ARB`), address display, and copy button.
 
 ### 4.2. Logic & Interactions ([`apps/landing/script.js`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/apps/landing/script.js))
-1. **Configurable Address Constant**:
+1. **Configured Recipient EVM Address**:
    ```javascript
-   const CRYPTO_DONATION_CONFIG = {
-     evmAddress: '0x0000000000000000000000000000000000000000', // Configurable wallet address
-     supportedAssets: ['Arbitrum (ETH / ARB)', 'Ethereum (ETH)', 'Tether USD (USDT)'],
-     networks: ['Arbitrum One L2 (Recommended)', 'Ethereum Mainnet (L1)']
-   };
+   const CRYPTO_DONATION_CONFIG = Object.freeze({
+     evmAddress: '0x5f424b4ec88073fd461eb194833681a31adfa311',
+     networks: Object.freeze({
+       arbitrum: Object.freeze({
+         name: 'Arbitrum One L2 (Recommended)',
+         label: 'ARBITRUM ONE (L2) EVM ADDRESS:',
+         fee: 'LOW GAS < $0.05',
+         explorerUrl: 'https://arbiscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311',
+         notice: 'Send ETH, USDT, or ARB on Arbitrum One L2 to this address.'
+       }),
+       ethereum: Object.freeze({
+         name: 'Ethereum Mainnet (L1)',
+         label: 'ETHEREUM MAINNET (L1) EVM ADDRESS:',
+         fee: 'STANDARD GAS',
+         explorerUrl: 'https://etherscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311',
+         notice: 'Send ETH or USDT (ERC-20) on Ethereum Mainnet to this address.'
+       }),
+       sepolia: Object.freeze({
+         name: 'Sepolia Testnet (Dev/Test)',
+         label: 'SEPOLIA TESTNET EVM ADDRESS:',
+         fee: 'TESTNET FAUCET',
+         explorerUrl: 'https://sepolia.etherscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311',
+         notice: 'Send Sepolia ETH or Sepolia Testnet Assets to this address.'
+       })
+     })
+   });
    ```
 2. **Modal Handlers**: Open on topbar/card click, close on `Esc` key or backdrop click.
-3. **Copy-to-Clipboard**: Uses `navigator.clipboard.writeText` with visual feedback (`✓ Copied to clipboard!`).
+3. **Copy-to-Clipboard**: Uses `navigator.clipboard.writeText` with visual feedback (`✓ ADDRESS COPIED TO CLIPBOARD`).
 4. **Clean Pure-SVG QR Code**: Inline SVG vector QR code rendering for crisp display at all zoom levels without loading external image services.
-5. **REPL Integration**: Add `donate` or `support` command to REPL responses so developers can type `ciphervault donate` in the terminal to view addresses.
-
-### 4.3. Styling & Micro-Interactions ([`apps/landing/styles.css`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/apps/landing/styles.css))
-* Non-intrusive gold/cyan accents matching the active theme.
-* Smooth modal fade/scale CSS transitions (`0.2s cubic-bezier(0.16, 1, 0.3, 1)`).
-* Responsive stack layout for mobile viewports.
+5. **Direct Explorer Verification**: Direct links to Arbiscan, Etherscan, and Sepolia Etherscan so donors can verify the address on-chain before sending.
+6. **REPL Integration**: Interactive `donate` and `support` terminal command.
 
 ---
 
-## 5. Wallet Address Recommendation & Verification
+## 5. Security & Protection Guidelines
 
-> [!IMPORTANT]
-> **What wallet address should be used?**
-> You can provide any standard Ethereum / EVM address that you control. Recommended options:
-> 1. **Hardware Wallet Address** (Ledger, Trezor, Keystone): The safest option for personal/team management.
-> 2. **Gnosis Safe Multi-Sig**: Ideal if multiple project contributors co-manage funds.
-> 3. **Dedicated Hot Wallet Address** (MetaMask, Rabby, Coinbase Wallet): Easiest to set up immediately.
-> 
-> *Because Arbitrum One and Ethereum share the exact same private key / address derivation, one address receives ETH, USDT, and ARB on both networks seamlessly.*
+> [!CAUTION]
+> **Critical Treasury Security Rules:**
+> 1. **Public Address is Read-Only**: `0x5f424b4ec88073fd461eb194833681a31adfa311` is your **public key identifier**. It can ONLY be used to deposit funds. It can NEVER be used to withdraw funds or sign transactions on its own.
+> 2. **Never Commit Private Keys**: The corresponding private key or 12/24-word seed phrase must **NEVER** be committed to Git, placed in `.env` files on public servers, or stored on online cloud notes.
+> 3. **Hardware Wallet / Multi-Sig**: To protect incoming donations from device compromise, consider holding this address on a hardware device (Ledger, Trezor) or migrating the treasury to a **Safe{Wallet} (Gnosis Safe)** multi-sig on Arbitrum One as treasury balances grow.
+> 4. **Runtime Immutability**: The address in `script.js` is wrapped in `Object.freeze()` to prevent rogue browser extensions or runtime tampering from changing the destination address in client memory.
+> 5. **Public Explorer Verification**: Donors can inspect the address on [Arbiscan](https://arbiscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311) and [Etherscan](https://etherscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311) directly from the modal.
 
 ---
 
-## 6. Execution Steps Upon Approval
+## 6. Verification Status
 
-1. **Step 1**: Add the CSS styling rules for `.tui-donate-btn`, `.donation-modal`, `.network-pills`, and `.address-copy-deck` into [`apps/landing/styles.css`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/apps/landing/styles.css).
-2. **Step 2**: Add the Topbar Support button, Pre-Footer Support Card, and accessible Modal structure into [`apps/landing/index.html`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/apps/landing/index.html).
-3. **Step 3**: Implement modal open/close, single-click copy, QR display, and REPL `donate` command in [`apps/landing/script.js`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/apps/landing/script.js).
-4. **Step 4**: Verify DOM IDs and asset integrity with `node scripts/verify_landing.cjs`.
-5. **Step 5**: Test responsiveness across desktop and mobile.
+* **Static DOM Verification**: Passed (`node scripts/verify_landing.cjs` - 67 IDs verified).
+* **Network Coverage**: Arbitrum One L2, Ethereum Mainnet (L1), Sepolia Testnet.
+* **Accepted Assets**: ETH, USDT, ARB, Sepolia ETH.
+

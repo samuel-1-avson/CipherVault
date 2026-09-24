@@ -1074,9 +1074,9 @@ const REPL_RESPONSES = {
   ],
   donate: [
     'Support CipherVault Open-Source Infrastructure:',
-    '  Accepted Chains : Arbitrum One L2 (Recommended, < $0.05 fee) & Ethereum Mainnet',
-    '  Accepted Assets : ETH, USDT, ARB',
-    '  Recipient Address: 0x35231538AcC971842813136654384bcf76aE1153',
+    '  Accepted Chains : Arbitrum One L2 (Recommended, < $0.05 fee) | Ethereum Mainnet | Sepolia Testnet',
+    '  Accepted Assets : ETH, USDT, ARB, Sepolia ETH',
+    '  Recipient Address: 0x5f424b4ec88073fd461eb194833681a31adfa311',
     '  Funds directly support storage operator nodes, L2 settlement gas, and CI runners.'
   ]
 };
@@ -1348,22 +1348,33 @@ function escapeHtml(str) {
 /* ==============================================================================
    12. Cryptocurrency Community Donation Modal & Interactions
    ============================================================================== */
-const CRYPTO_DONATION_CONFIG = {
-  // Multi-chain recipient EVM address (works for ETH, USDT, ARB on Arbitrum and Ethereum)
-  evmAddress: '0x35231538AcC971842813136654384bcf76aE1153',
-  networks: {
-    arbitrum: {
+const CRYPTO_DONATION_CONFIG = Object.freeze({
+  // Multi-chain recipient EVM address (works for ETH, USDT, ARB on Arbitrum and Ethereum, and Sepolia)
+  evmAddress: '0x5f424b4ec88073fd461eb194833681a31adfa311',
+  networks: Object.freeze({
+    arbitrum: Object.freeze({
       name: 'Arbitrum One L2 (Recommended)',
+      label: 'ARBITRUM ONE (L2) EVM ADDRESS:',
       fee: 'LOW GAS < $0.05',
-      notice: 'Send <strong>ETH</strong>, <strong>USDT</strong>, or <strong>ARB</strong> on <strong>Arbitrum One L2</strong> to this address. Transactions on other networks may not arrive.'
-    },
-    ethereum: {
+      explorerUrl: 'https://arbiscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311',
+      notice: 'Send <strong>ETH</strong>, <strong>USDT</strong>, or <strong>ARB</strong> on <strong>Arbitrum One L2</strong> to this address. Transactions on unsupported networks may result in lost funds.'
+    }),
+    ethereum: Object.freeze({
       name: 'Ethereum Mainnet (L1)',
+      label: 'ETHEREUM MAINNET (L1) EVM ADDRESS:',
       fee: 'STANDARD GAS',
+      explorerUrl: 'https://etherscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311',
       notice: 'Send <strong>ETH</strong> or <strong>USDT (ERC-20)</strong> on <strong>Ethereum Mainnet</strong> to this address. Always double check your gas settings.'
-    }
-  }
-};
+    }),
+    sepolia: Object.freeze({
+      name: 'Sepolia Testnet (Dev/Test)',
+      label: 'SEPOLIA TESTNET EVM ADDRESS:',
+      fee: 'TESTNET FAUCET',
+      explorerUrl: 'https://sepolia.etherscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311',
+      notice: 'Send <strong>Sepolia ETH</strong> or <strong>Sepolia Testnet Assets</strong> to this address for testing CipherVault smart contracts.'
+    })
+  })
+});
 
 function generateQrSvg(address) {
   const size = 25;
@@ -1436,12 +1447,14 @@ function initCryptoDonations() {
   const btnDismiss = document.getElementById('btn-dismiss-donate');
   const tabArb = document.getElementById('tab-net-arb');
   const tabEth = document.getElementById('tab-net-eth');
+  const tabSep = document.getElementById('tab-net-sep');
   const qrContainer = document.getElementById('donation-qr-container');
   const addressText = document.getElementById('donation-address-text');
   const btnCopy = document.getElementById('btn-copy-donation-address');
   const feedback = document.getElementById('donation-copy-feedback');
   const networkLabel = document.getElementById('donation-network-label');
   const noticeText = document.getElementById('donation-notice-text');
+  const linkExplorer = document.getElementById('link-view-explorer');
 
   if (!overlay) return;
 
@@ -1482,33 +1495,38 @@ function initCryptoDonations() {
   });
 
   const setNetwork = (netKey) => {
-    if (netKey === 'arbitrum') {
-      if (tabArb) {
-        tabArb.classList.add('active');
-        tabArb.setAttribute('aria-selected', 'true');
+    const netConfig = CRYPTO_DONATION_CONFIG.networks[netKey];
+    if (!netConfig) return;
+
+    const tabs = [
+      { key: 'arbitrum', el: tabArb },
+      { key: 'ethereum', el: tabEth },
+      { key: 'sepolia', el: tabSep }
+    ];
+
+    tabs.forEach(t => {
+      if (t.el) {
+        if (t.key === netKey) {
+          t.el.classList.add('active');
+          t.el.setAttribute('aria-selected', 'true');
+        } else {
+          t.el.classList.remove('active');
+          t.el.setAttribute('aria-selected', 'false');
+        }
       }
-      if (tabEth) {
-        tabEth.classList.remove('active');
-        tabEth.setAttribute('aria-selected', 'false');
-      }
-      if (networkLabel) networkLabel.textContent = 'ARBITRUM ONE (L2) EVM ADDRESS:';
-      if (noticeText) noticeText.innerHTML = CRYPTO_DONATION_CONFIG.networks.arbitrum.notice;
-    } else {
-      if (tabEth) {
-        tabEth.classList.add('active');
-        tabEth.setAttribute('aria-selected', 'true');
-      }
-      if (tabArb) {
-        tabArb.classList.remove('active');
-        tabArb.setAttribute('aria-selected', 'false');
-      }
-      if (networkLabel) networkLabel.textContent = 'ETHEREUM MAINNET (L1) EVM ADDRESS:';
-      if (noticeText) noticeText.innerHTML = CRYPTO_DONATION_CONFIG.networks.ethereum.notice;
+    });
+
+    if (networkLabel) networkLabel.textContent = netConfig.label;
+    if (noticeText) noticeText.innerHTML = netConfig.notice;
+    if (linkExplorer) {
+      linkExplorer.href = netConfig.explorerUrl;
+      linkExplorer.title = `Verify on-chain on ${netConfig.name}`;
     }
   };
 
   if (tabArb) tabArb.addEventListener('click', () => setNetwork('arbitrum'));
   if (tabEth) tabEth.addEventListener('click', () => setNetwork('ethereum'));
+  if (tabSep) tabSep.addEventListener('click', () => setNetwork('sepolia'));
 
   if (btnCopy) {
     btnCopy.addEventListener('click', () => {

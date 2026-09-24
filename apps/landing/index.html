@@ -1405,6 +1405,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
                   <span class="net-badge"><span class="badge-dot cyan">●</span> Arbitrum One L2</span>
                   <span class="net-badge"><span class="badge-dot purple">●</span> Ethereum Mainnet</span>
                   <span class="net-badge"><span class="badge-dot green">●</span> USDT (ERC-20)</span>
+                  <span class="net-badge"><span class="badge-dot yellow">●</span> Sepolia Testnet</span>
                 </div>
               </div>
             </div>
@@ -1487,13 +1488,16 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           Help fund independent storage operators, Arbitrum L2 settlement gas, and continuous zero-knowledge security research.
         </p>
 
-        <!-- Network Tabs (Arbitrum One vs Ethereum) -->
+        <!-- Network Tabs (Arbitrum One vs Ethereum vs Sepolia) -->
         <div class="donation-net-tabs" role="tablist" aria-label="Donation Network">
           <button class="net-tab-btn active" id="tab-net-arb" data-net="arbitrum" role="tab" aria-selected="true">
-            <span class="tab-net-icon">⚡</span> Arbitrum One (L2) <span class="net-fee-tag">LOW GAS &lt; $0.05</span>
+            <span class="tab-net-icon">⚡</span> Arbitrum One <span class="net-fee-tag">&lt; $0.05</span>
           </button>
           <button class="net-tab-btn" id="tab-net-eth" data-net="ethereum" role="tab" aria-selected="false">
-            <span class="tab-net-icon">Ξ</span> Ethereum (L1)
+            <span class="tab-net-icon">Ξ</span> Ethereum L1
+          </button>
+          <button class="net-tab-btn" id="tab-net-sep" data-net="sepolia" role="tab" aria-selected="false">
+            <span class="tab-net-icon">🧪</span> Sepolia Testnet
           </button>
         </div>
 
@@ -1503,6 +1507,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           <span class="asset-pill" id="pill-asset-eth">ETH</span>
           <span class="asset-pill" id="pill-asset-usdt">USDT</span>
           <span class="asset-pill" id="pill-asset-arb">ARB</span>
+          <span class="asset-pill" id="pill-asset-sep">Sepolia ETH</span>
         </div>
 
         <!-- QR Code & Address Display Canvas -->
@@ -1512,15 +1517,20 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           </div>
           <div class="address-details-box">
             <div class="address-label-row">
-              <span class="address-hint-tag" id="donation-network-label">ARBITRUM ONE / ETHEREUM EVM ADDRESS:</span>
+              <span class="address-hint-tag" id="donation-network-label">ARBITRUM ONE (L2) EVM ADDRESS:</span>
               <span class="address-sec-badge">100% NON-CUSTODIAL</span>
             </div>
             <div class="address-code-block" id="donation-address-text">
-              0x0000000000000000000000000000000000000000
+              0x5f424b4ec88073fd461eb194833681a31adfa311
             </div>
-            <button class="btn-copy-address" id="btn-copy-donation-address">
-              [ 📋 COPY ADDRESS ]
-            </button>
+            <div class="address-actions-row">
+              <button class="btn-copy-address" id="btn-copy-donation-address">
+                [ 📋 COPY ADDRESS ]
+              </button>
+              <a href="https://arbiscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311" target="_blank" rel="noopener noreferrer" class="btn-view-explorer" id="link-view-explorer" title="Verify on-chain in public block explorer">
+                [ ↗ EXPLORER ]
+              </a>
+            </div>
             <div class="donation-copy-feedback" id="donation-copy-feedback">✓ ADDRESS COPIED TO CLIPBOARD</div>
           </div>
         </div>
@@ -1535,7 +1545,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
       </div>
 
       <div class="modal-footer">
-        <span class="modal-footer-meta">A single EVM address receives funds across both Arbitrum One and Ethereum.</span>
+        <span class="modal-footer-meta">A single EVM address receives funds across Arbitrum One, Ethereum Mainnet, and Sepolia Testnet.</span>
         <button class="tui-btn-action secondary" id="btn-dismiss-donate">[DONE / CLOSE]</button>
       </div>
     </div>

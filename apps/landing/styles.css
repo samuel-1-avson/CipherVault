@@ -4001,8 +4001,8 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
 /* Network Selector Tabs */
 .donation-net-tabs {
   display: grid;
-  grid-template-columns: 1.2fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
   background: var(--code-bg);
   padding: 4px;
   border-radius: var(--radius-sm);
@@ -4014,16 +4014,17 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   border: 1px solid transparent;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
-  padding: 8px 12px;
+  padding: 8px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   transition: all var(--t-fast);
+  white-space: nowrap;
 }
 
 .net-tab-btn:hover {
@@ -4142,6 +4143,12 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   user-select: all;
 }
 
+.address-actions-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
 .btn-copy-address {
   background: var(--term-surface-elev);
   border: 1px solid var(--term-border-bright);
@@ -4162,6 +4169,31 @@ code, pre, .tui-code, .tui-prompt, .install-cmd-code, .spec-val, .key-shortcut, 
   background: var(--term-cyan);
   color: #07090e;
   box-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
+}
+
+.btn-view-explorer {
+  background: var(--term-surface);
+  border: 1px solid var(--term-border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all var(--t-fast);
+  white-space: nowrap;
+}
+
+.btn-view-explorer:hover {
+  color: var(--term-gold);
+  border-color: var(--term-gold);
+  background: var(--term-surface-elev);
+  box-shadow: 0 0 10px rgba(255, 176, 0, 0.25);
 }
 
 .donation-copy-feedback {
