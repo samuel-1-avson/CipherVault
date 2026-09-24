@@ -10,7 +10,11 @@
 # (workflow badge / run list), backed by the status.json artifact.
 #
 # Alert target beyond the failed run is TBD (plan: "alert target confirmed
-# at build"). When confirmed, add a notify step here — do not invent one.
+# at build"). Alert target confirmed 2026-09-24: chat webhook (Discord or
+# Slack, auto-detected from the URL). Setup: repo Settings -> Secrets and
+# variables -> Actions -> New repository secret named FLEET_WATCH_WEBHOOK
+# containing the webhook URL. The notify step posts only on real
+# (non-simulated) degraded verdicts and is skipped when the secret is absent.
 #
 # Simulated-degraded test (validation: flips within one probe interval):
 # dispatch manually with simulate_target=op2 (or op1/op3/web) to point one
@@ -154,6 +158,24 @@ jobs:
           name: fleet-status
           path: status.json
           retention-days: 7
+
+      - name: Notify chat webhook on degraded verdict
+        if: steps.probe.outputs.verdict != 'ok' && inputs.simulate_target == '' && secrets.FLEET_WATCH_WEBHOOK != ''
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.FLEET_WATCH_WEBHOOK }}
+          VERDICT: ${{ steps.probe.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          summary="$(python3 -c 'import json; d=json.load(open("status.json")); print("; ".join(f"{t[\"target\"]}:{\"ok\" if t[\"ok\"] else \"FAIL\"}({t[\"latency_ms\"]}ms)" for t in d["targets"]))')"
+          msg="CipherVault fleet watcher: verdict=$VERDICT ($summary) run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [[ "$WEBHOOK" == https://discord.com/api/webhooks/* ]]; then
+            payload="$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")"
+          else
+            payload="$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$msg")"
+          fi
+          curl -fsSL --max-time 20 -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK" -o /dev/null
+          echo "alert posted"
 
       - name: Assert verdict
         shell: bash
