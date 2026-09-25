@@ -7,20 +7,20 @@ class Ciphervault < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.15/ciphervault-v1.0.15-aarch64-apple-darwin.tar.gz"
-      sha256 "6efbf5e7f9e1ebcb57474c1214ea954649976021601b538d90cee3dedb8ca483"
+      sha256 "1051e2c470b0bd7b86fb4cb6f48dd282480471e87bff0dcc519c71246928fbac"
     else
       url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.15/ciphervault-v1.0.15-x86_64-apple-darwin.tar.gz"
-      sha256 "0f0d55ee4a070a97a41d2ab81ff4b695ffb25cfe353c8b61745a9cdeb453f380"
+      sha256 "73b97e20d80b9c22f8b720d1517d88f30f782d1c99236170152ee4318809aaae"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.15/ciphervault-v1.0.15-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "29220505d12ca54248c9ddebcce719a477f1a0da67932a8b288b897d52e44242"
+      sha256 "509624552ed3f00eeee28018fe5f7a5be0c99338a10eb466c6bc6880d69f35f2"
     else
       url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.15/ciphervault-v1.0.15-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "2b9557dee7388f613addb4f8521960bbe120b451d46598b9afa6e170b56e1577"
+      sha256 "3cccb5915913631fb775aa635920a411b93b8eab865e3358aefa747f8caedd64"
     end
   end
 
