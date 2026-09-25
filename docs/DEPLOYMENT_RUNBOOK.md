@@ -679,6 +679,62 @@ rolls back routing, membership, and spend, and the ticket stays
 redeemable. Read it (service token) or watch the counter:
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" https://op1.cipherv.online/v1/peers/admissions
+curl -H "X-CipherVault-Service-Token: $TOKEN" https://op1.cipherv.online/v1/peers/admissions
 # `ciphervault_swarm_peer_quorum_joins_total` on /metrics
 ```
+
+## 19. Arbitrum Anchor Operations (Sepolia)
+
+Anchoring publishes a salted snapshot-head commitment to the
+`CipherVaultRegistry` contract (`publish(bytes32)`). Broadcasts are
+manual and payer-held: the CLI prepares the calldata, a human sends it
+with `cast` (never paste a private key into chat or a ticket).
+
+Live registry (Arbitrum Sepolia, chain 421614):
+`0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5` (Sourcify-verified).
+Public RPC: `https://sepolia-rollup.arbitrum.io/rpc`.
+
+### Anchor ceremony
+
+```sh
+# 1. Prepare the commitment (dry-run, no broadcast):
+ciphervault anchor -r https://sepolia-rollup.arbitrum.io/rpc \
+  -c 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 --chain-id 421614
+# Prints the cast send line with the exact publish(bytes32) calldata.
+
+# 2. Broadcast with the funded payer key (key holder only):
+cast send 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 "publish(bytes32)" \
+  0x<commitment> --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --private-key $PRIVATE_KEY
+
+# 3. Record the receipt (same -r/-c/--chain-id flags required):
+ciphervault anchor -r https://sepolia-rollup.arbitrum.io/rpc \
+  -c 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 --chain-id 421614 \
+  --tx-hash 0x<tx-hash>
+
+# 4. Verify inclusion and finality stage:
+ciphervault verify-anchor -r https://sepolia-rollup.arbitrum.io/rpc
+```
+
+Omitting the flags on step 3 checks mainnet defaults and reports
+"receipt is null" — always repeat `-r/-c/--chain-id` with `--tx-hash`.
+
+### Verification semantics (read before debugging)
+
+On Arbitrum, receipts and `eth_blockNumber` are L2-domain, but
+`block.number` inside the registry is L1-derived. The verifier therefore
+requires receipt success plus registry inclusion and counts
+confirmations L2-vs-L2; it never equates the two block numbers. First
+live proof: L1 11770313 vs L2 312389514 for tx
+`0x7cf854b6…76b27` (Sep 2026). Finality stages: SequencerConfirmed,
+then ParentDataFinalized at 64+ L2 confirmations, then
+AssertionSettled at 50400+.
+
+### Registry redeploy (new chain or contract)
+
+1. Fund a fresh deployer, `forge script script/DeployRegistry.s.sol`
+   with `--broadcast`, verify on Sourcify.
+2. Rewire fleet env (`CIPHERVAULT_ARBITRUM_RPC_URL`,
+   `ARBITRUM_CONTRACT_ADDRESS`) and dashboard collectors, promote,
+   confirm each node reports the new chain id.
+3. Run one anchor ceremony end-to-end before announcing.
