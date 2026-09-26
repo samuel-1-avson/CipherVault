@@ -140,13 +140,18 @@ fn platform_binary_name(stem: &str) -> String {
 }
 
 /// Locates one binary by file name anywhere under an extracted release tree
-/// (archives nest binaries under `<pkg>/bin/`).
+/// Nesting is `<pkg>/bin/`; returns `None` unless exactly one matches.
 fn find_binary_in(dir: &Path, name: &str) -> Option<PathBuf> {
-    walkdir::WalkDir::new(dir)
+    let mut matches = walkdir::WalkDir::new(dir)
         .into_iter()
         .filter_map(Result::ok)
-        .find(|entry| entry.file_type().is_file() && entry.file_name() == name)
-        .map(|entry| entry.into_path())
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == name)
+        .map(walkdir::DirEntry::into_path);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 /// Builds the post-exit swap script: the CLI move waits unbounded (this
@@ -181,6 +186,26 @@ fn windows_update_script(
     }
     script.push_str("del \"%~f0\"\r\n");
     script
+}
+
+/// True when the extracted tree holds only plain files and dirs (no
+/// symlinks): release archives never legitimately contain them, and a
+/// symlink inside the tree could redirect reads outside it.
+fn extracted_tree_has_no_symlinks(dir: &Path) -> bool {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .all(|entry| !entry.file_type().is_symlink())
+}
+
+/// True when a tar listing contains only paths confined under the
+/// destination: no absolute paths, no parent traversal.
+#[cfg_attr(windows, allow(dead_code))] // non-Windows extract path; tests call it everywhere
+fn tar_listing_is_confined(listing: &str) -> bool {
+    !listing.lines().any(|entry| {
+        let entry = entry.trim();
+        entry.starts_with('/') || entry.split('/').any(|component| component == "..")
+    })
 }
 
 /// Looks up one file's digest in `sha256sum` output (`<hex>  <name>`).
@@ -391,6 +416,19 @@ pub(crate) async fn apply_update(
     }
     #[cfg(not(windows))]
     {
+        // Reject archives with absolute paths or parent traversal before
+        // extracting: a tampered release must not write outside `extract_dir`.
+        let listing = std::process::Command::new("tar")
+            .arg("-tzf")
+            .arg(&archive_path)
+            .output()
+            .context("listing the release archive")?;
+        if !listing.status.success() {
+            bail!("release archive listing failed");
+        }
+        if !tar_listing_is_confined(&String::from_utf8_lossy(&listing.stdout)) {
+            bail!("release archive contains absolute or parent-relative paths");
+        }
         let status = std::process::Command::new("tar")
             .args([
                 "-xzf",
@@ -404,9 +442,12 @@ pub(crate) async fn apply_update(
             bail!("release archive extraction failed");
         }
     }
+    if !extracted_tree_has_no_symlinks(&extract_dir) {
+        bail!("release archive contains symlinks");
+    }
     let cli_name = platform_binary_name("ciphervault");
     let extracted_cli = find_binary_in(&extract_dir, &cli_name)
-        .context("release archive did not contain the CipherVault CLI")?;
+        .context("release archive must contain exactly one CipherVault CLI")?;
     let mut companions: Vec<(String, PathBuf)> = Vec::new();
     for stem in COMPANION_BINARY_STEMS {
         let name = platform_binary_name(stem);
@@ -569,6 +610,52 @@ mod update_version_tests {
             Some(("aarch64-apple-darwin", "tar.gz"))
         );
         assert_eq!(release_target_for("freebsd", "x86_64", false), None);
+    }
+
+    #[test]
+    fn extracted_tree_accepts_plain_files() {
+        let root = std::env::temp_dir().join(format!("cv_nosym_plain_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("real"), b"x").unwrap();
+        assert!(extracted_tree_has_no_symlinks(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn extracted_tree_rejects_symlinks() {
+        let root = std::env::temp_dir().join(format!("cv_nosym_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("real"), b"x").unwrap();
+        assert!(extracted_tree_has_no_symlinks(&root));
+        std::os::unix::fs::symlink("real", root.join("link")).unwrap();
+        assert!(!extracted_tree_has_no_symlinks(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tar_listing_rejects_escape_paths() {
+        assert!(tar_listing_is_confined("pkg/bin/ciphervault\npkg/bin/op\n"));
+        assert!(tar_listing_is_confined("a..b\n...\n"));
+        assert!(!tar_listing_is_confined("pkg/../../evil\n"));
+        assert!(!tar_listing_is_confined("/abs/path\n"));
+        assert!(!tar_listing_is_confined("a/b/../../../x\n"));
+    }
+
+    #[test]
+    fn find_binary_in_resolves_only_unique_matches() {
+        let root = std::env::temp_dir().join(format!("cv_findbin_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pkg/bin")).unwrap();
+        std::fs::write(root.join("pkg/bin/ciphervault"), b"x").unwrap();
+        assert!(find_binary_in(&root, "ciphervault").is_some());
+        assert!(find_binary_in(&root, "missing").is_none());
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        std::fs::write(root.join("other/ciphervault"), b"y").unwrap();
+        assert!(find_binary_in(&root, "ciphervault").is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
