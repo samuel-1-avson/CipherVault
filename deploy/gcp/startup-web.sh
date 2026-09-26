@@ -96,6 +96,8 @@ readonly WEBAUTHN_ORIGIN="$(metadata_value webauthn-origin "https://$WEB_DOMAIN"
 readonly ACCOUNT_ALLOWED_ORIGINS="$(metadata_value account-allowed-origins "$WEBAUTHN_ORIGIN")"
 readonly TOTP_SECRET_NAME="$(metadata_value account-totp-secret ciphervault-account-totp-key)"
 readonly PROJECT_ID="$(metadata_value project-id)"
+readonly FINALITY_CONFIRMATIONS="$(metadata_value finality-confirmations)"
+readonly OPERATOR_REGIONS="$(metadata_value operator-regions)"
 
 require_digest_image CIPHERVAULT_DASHBOARD_IMAGE "$DASHBOARD_IMAGE"
 require_digest_image CIPHERVAULT_ACCOUNT_IMAGE "$ACCOUNT_IMAGE"
@@ -125,6 +127,8 @@ CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=$ACCOUNT_ALLOWED_ORIGINS
 CIPHERVAULT_ACCOUNT_COOKIE_SECURE=true
 CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=$TOTP_KEY_FILE
 CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=true
+CIPHERVAULT_FINALITY_CONFIRMATIONS=$FINALITY_CONFIRMATIONS
+CIPHERVAULT_OPERATOR_REGIONS=$OPERATOR_REGIONS
 EOF
 chmod 0600 "$ENV_FILE"
 

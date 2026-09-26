@@ -90,6 +90,17 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(getElementById('table-checkpoints-body').innerHTML.includes('123,456'));
   assert(getElementById('table-checkpoints-body').innerHTML.includes('arbiscan.io'));
 
+  // Regression: the explorer anchors strip never renders a dead href="#.
+  vm.runInContext(`state.anchors = [
+    { tx_hash_hex: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', chain_id: 421614, reported_block_number: 312389514, finality_status: 'confirmed' },
+    { tx_hash_hex: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', chain_id: 999999, reported_block_number: 1, finality_status: 'confirmed' }
+  ]`, context);
+  vm.runInContext('renderExplorerAnchors()', context);
+  const stripHtml = getElementById('explorer-anchors-strip').innerHTML;
+  assert(stripHtml.includes('https://sepolia.arbiscan.io/tx/0xaaaa'));
+  assert(!stripHtml.includes('href="#'));
+  assert(stripHtml.includes('<span title="0xbbbb'));
+
   // Regression tests for Maintenance Fleet
   vm.runInContext(`renderFleet({
     fleet_summary: { total_tracked_vaults: 2, active_operators: 3, total_operators: 3, avg_latency_ms: 14, audits_completed: 7 },

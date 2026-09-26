@@ -328,6 +328,9 @@ live `vault.cipherv.online` cutover. Perform in order; stop on the first red che
 4. Promote: `scripts/gcp/promote-immutable-web.ps1 -DashboardImage ... -AccountImage ...
    -RollbackDashboardImage ... -RollbackAccountImage ... -OperatorEndpoints ...
    -RuntimeServiceAccount ... -ExpectedBuildVersion <cli-crate-version> -Apply`
+   Optional env plumbing: `-FinalityConfirmations <n>` (default 12),
+   `-OperatorRegions '<region=ep ...;region=ep ...>'` (spaces, never
+   commas, between endpoints). Unset values keep dashboard defaults.
    (omit `-Apply` for a plan-only run).
 5. Verify live: the script already asserts the live `/api/context`
    `build_version` plus `/api/operators` and `/api/explorer/overview`

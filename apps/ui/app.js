@@ -2430,7 +2430,8 @@ function renderExplorerAnchors() {
     const block = Number(entry.reported_block_number ?? entry.block_number);
     const display = checkpointDisplayState(entry, tx);
     const url = checkpointExplorerUrl(entry, tx);
-    return `<tr><td>${usable ? `<a href="${escapeHtml(url || '#')}" target="_blank" rel="noopener" title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</a>` : '--'}</td>`
+    const receipt = !usable ? '--' : (url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</a>` : `<span title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</span>`);
+    return `<tr><td>${receipt}</td>`
       + `<td>${usable && Number.isFinite(block) && block > 0 ? `#${block.toLocaleString()}` : '--'}</td>`
       + `<td>${escapeHtml(chainLabel(entry.chain_id))}</td>`
       + `<td>${escapeHtml(display.label)}</td></tr>`;

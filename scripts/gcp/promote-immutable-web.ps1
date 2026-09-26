@@ -28,6 +28,10 @@ param(
     [string]$AcmeEmail = "admin@example.com",
     [string]$AccountTotpSecret = "ciphervault-account-totp-key",
     [string]$HealthCheckIp = "",
+
+    [string]$FinalityConfirmations = "",
+
+    [string]$OperatorRegions = "",
     [string]$CosignCertificateIdentityRegex = "https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*",
     [switch]$Apply
 )
@@ -241,6 +245,13 @@ foreach ($path in @($compose, $caddy, $startup)) {
     }
 }
 
+if ($FinalityConfirmations.Trim() -ne "" -and $FinalityConfirmations.Trim() -notmatch '^[1-9][0-9]*$') {
+    throw "FinalityConfirmations must be a positive integer"
+}
+if ($OperatorRegions.Contains(',')) {
+    throw "OperatorRegions must use spaces (not commas) between endpoints: commas corrupt the instance metadata join"
+}
+
 $caddyImage = Get-StagedCaddyImage -ComposePath $compose
 
 $stageId = $DashboardImage.Substring($DashboardImage.Length - 12)
@@ -285,7 +296,10 @@ try {
         "account-allowed-origins=https://$DomainName",
         "account-totp-secret=$AccountTotpSecret",
         "project-id=$ProjectId"
-    ) -join ','
+    )
+    if ($FinalityConfirmations.Trim() -ne "") { $metadata += "finality-confirmations=$($FinalityConfirmations.Trim())" }
+    if ($OperatorRegions.Trim() -ne "") { $metadata += "operator-regions=$($OperatorRegions.Trim())" }
+    $metadata = $metadata -join ','
 
     Write-Host "Switching the VM to the least-privilege runtime identity and cloud-platform scope..." -ForegroundColor Cyan
     Invoke-Gcloud compute instances stop $InstanceName --project $ProjectId --zone $Zone --quiet
