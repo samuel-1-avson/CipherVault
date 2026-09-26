@@ -18,18 +18,31 @@
       <div class="header-left">
         <div class="brand-section">
           <div class="brand-icon" aria-hidden="true">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
           </div>
           <div>
             <div class="brand-title-wrap">
-              <h1 class="brand-title">CipherVault</h1>
-              <span class="brand-badge">Zero-Knowledge</span>
+              <span class="repo-owner">ciphervault</span>
+              <span class="repo-divider">/</span>
+              <h1 class="brand-title">explorer</h1>
+              <span class="repo-badge-public">Public</span>
+              <span class="network-badge"><span class="network-dot"></span> Arbitrum L2</span>
             </div>
-            <p class="brand-subtitle">Decentralized Secret Backup & Disaster Recovery Inspector</p>
+            <p class="brand-subtitle">Decentralized Secret Backup &amp; Disaster Recovery Ledger</p>
           </div>
+        </div>
+
+        <!-- Blockchain Explorer Omni-Search Input -->
+        <div class="header-omni-search" id="header-omni-search">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="input-omni-search" placeholder="Search by Snapshot CID, Txn Hash (0x...), Operator..." autocomplete="off" spellcheck="false" aria-label="Explorer Search or Command Palette">
+          <kbd class="kbd-badge">/</kbd>
         </div>
 
         <div class="vault-identity-pill" id="vault-identity-pill" title="Click to copy full Vault ID">
@@ -44,7 +57,7 @@
         </div>
 
         <!-- Multi-Vault Workspace Explorer Switcher -->
-        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap" data-private-surface>
+        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap">
           <button class="workspace-switcher-btn" id="btn-workspace-switcher" aria-haspopup="true" aria-expanded="false" title="Switch active local vault workspace">
             <span class="workspace-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -174,7 +187,7 @@
     <section class="metrics-ribbon" aria-label="Vault Overview Metrics">
       
       <!-- Metric 1: Cluster Durability -->
-      <article class="metric-card" id="card-metric-durability" data-private-surface>
+      <article class="metric-card" id="card-metric-durability">
         <div class="metric-header-row">
           <div class="metric-label">Cluster Durability</div>
           <span class="badge-status-subtle" id="badge-durability-state">Unverified</span>
@@ -221,7 +234,7 @@
       </article>
 
       <!-- Metric 4: Secret Inventory -->
-      <article class="metric-card" id="card-metric-inventory" data-private-surface>
+      <article class="metric-card" id="card-metric-inventory">
         <div class="metric-header-row">
           <div class="metric-label">Protected Secrets</div>
           <span class="badge-status-subtle">Encrypted</span>
@@ -282,7 +295,7 @@
         <span class="tab-badge" id="badge-tab-explorer">Search</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="18" cy="18" r="3"></circle>
           <circle cx="6" cy="6" r="3"></circle>
@@ -293,7 +306,7 @@
         <span class="tab-badge" id="badge-tab-snapshots">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="20" x2="18" y2="10"></line>
           <line x1="12" y1="20" x2="12" y2="4"></line>
@@ -306,7 +319,7 @@
         <span class="tab-badge" id="badge-tab-diff">Compare</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-files" data-target="tab-files" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-files" data-target="tab-files" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
           <polyline points="14 2 14 8 20 8"></polyline>
@@ -315,7 +328,7 @@
         <span class="tab-badge" id="badge-tab-files">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" data-category="security" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" data-category="security" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
           <circle cx="12" cy="11" r="3"></circle>
@@ -333,7 +346,7 @@
         Arbitrum Relayer
       </button>
 
-      <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"></circle>
           <line x1="2" y1="12" x2="22" y2="12"></line>
@@ -343,14 +356,14 @@
         <span class="tab-badge" id="badge-tab-fleet">--</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery" data-category="security" role="tab" aria-selected="false" aria-controls="tab-recovery" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery" data-category="security" role="tab" aria-selected="false" aria-controls="tab-recovery" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
         </svg>
         Recovery Readiness
       </button>
 
-      <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
           <line x1="8" y1="21" x2="16" y2="21"></line>
@@ -363,7 +376,7 @@
         <span class="tab-badge" id="badge-tab-fastcdc">Live</span>
       </button>
 
-      <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" data-category="security" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1" data-private-surface>
+      <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" data-category="security" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
         </svg>
@@ -542,7 +555,7 @@
     </section>
 
     <!-- Tab 2: Snapshot DAG Explorer -->
-    <section class="tab-content" id="tab-dag" role="tabpanel" aria-labelledby="tab-btn-dag" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-dag" role="tabpanel" aria-labelledby="tab-btn-dag" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Snapshot DAG & History Timeline</h2>
@@ -566,7 +579,7 @@
     </section>
 
     <!-- Tab: Secret Revision Diff Engine -->
-    <section class="tab-content" id="tab-diff" role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-diff" role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Secret Revision Diff Engine</h2>
@@ -645,7 +658,7 @@
     </section>
 
     <!-- Tab 3: Tracked Secrets Explorer -->
-    <section class="tab-content" id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Protected Confidential Inventory</h2>
@@ -768,7 +781,7 @@
               <span class="op-meta-label">Finality Status</span>
               <span class="op-meta-val" id="anchor-finality-status" style="color: var(--ash); font-weight: 600;">Not submitted</span>
             </div>
-            <div class="op-meta-row" data-private-surface>
+            <div class="op-meta-row">
               <span class="op-meta-label">Salt Preimage (Hex)</span>
               <span class="op-meta-val" id="anchor-salt-preimage">--</span>
             </div>
@@ -796,7 +809,7 @@
         </div>
 
         <!-- Interactive Cryptographic Verifier Box -->
-        <div class="math-verifier-box" id="math-verifier-box" data-private-surface>
+        <div class="math-verifier-box" id="math-verifier-box">
           <div class="math-verifier-header">
             <h4>Live Cryptographic Proof Verifier</h4>
             <button class="btn-action secondary small" id="btn-run-math-verify">Run Browser SHA-256 Proof</button>
@@ -834,7 +847,7 @@
     </section>
 
     <!-- Tab 5: Threshold Guardian Recovery (M-of-N Shamir) -->
-    <section class="tab-content" id="tab-guardians" role="tabpanel" aria-labelledby="tab-btn-guardians" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-guardians" role="tabpanel" aria-labelledby="tab-btn-guardians" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Guardian Recovery Readiness</h2>
@@ -881,7 +894,7 @@
     </section>
 
     <!-- Tab 6: Maintenance Fleet Daemon -->
-    <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tab-btn-fleet" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tab-btn-fleet" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Maintenance Fleet & Self-Repair Monitor</h2>
@@ -976,7 +989,7 @@
 
     <!-- Tab 7: Offline Emergency Recovery Kit -->
     <!-- Tab: Recovery Readiness -->
-    <section class="tab-content" id="tab-recovery" role="tabpanel" aria-labelledby="tab-btn-recovery" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-recovery" role="tabpanel" aria-labelledby="tab-btn-recovery" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">Recovery Readiness & Public Bootstrap Descriptors</h2>
@@ -1091,7 +1104,7 @@
     </section>
 
     <!-- Tab 8: FastCDC Inspector -->
-    <section class="tab-content" id="tab-fastcdc" role="tabpanel" aria-labelledby="tab-btn-fastcdc" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-fastcdc" role="tabpanel" aria-labelledby="tab-btn-fastcdc" tabindex="0">
       <div class="tab-header-row">
         <div>
           <h2 class="section-heading">FastCDC Content-Defined Chunking & Deduplication Inspector</h2>
@@ -1277,10 +1290,10 @@
     </section>
 
     <!-- Tab: Durable Activity Log -->
-    <section class="tab-content" id="tab-activity" role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0" data-private-surface>
+    <section class="tab-content" id="tab-activity" role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0">
       <div class="tab-header-row">
         <div>
-          <h2 class="section-heading">Durable Vault Activity & Provenance Journal</h2>
+          <h2 class="section-heading">Durable Vault Activity &amp; Provenance Journal</h2>
           <p class="section-subheading">Cryptographically recorded local SQLite activity stream for snapshot creations, restores, Arbitrum anchors, and automated audits.</p>
         </div>
         <button class="btn-action secondary" id="btn-refresh-activity">
@@ -1307,7 +1320,7 @@
   <div class="modal-backdrop" id="modal-create-snapshot" role="dialog" aria-modal="true" aria-labelledby="modal-snapshot-title" data-private-surface>
     <div class="modal-card">
       <div class="modal-header">
-        <h3 id="modal-snapshot-title" class="modal-title">Capture & Replicate Snapshot</h3>
+        <h3 id="modal-snapshot-title" class="modal-title">Capture &amp; Replicate Snapshot</h3>
         <button class="btn-modal-close" id="btn-close-modal-snapshot" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
@@ -1328,7 +1341,7 @@
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-cancel-modal-snapshot">Cancel</button>
         <button class="btn-action primary" id="btn-submit-snapshot">
-          <span id="btn-submit-text">Capture & Push</span>
+          <span id="btn-submit-text">Capture &amp; Push</span>
           <span id="btn-submit-spinner" class="spinner" style="display: none;"></span>
         </button>
       </div>
@@ -1336,7 +1349,7 @@
   </div>
 
   <!-- Modal: Snapshot Inspector Details -->
-  <div class="modal-backdrop" id="modal-snapshot-inspector" role="dialog" aria-modal="true" aria-labelledby="modal-inspector-title" data-private-surface>
+  <div class="modal-backdrop" id="modal-snapshot-inspector" role="dialog" aria-modal="true" aria-labelledby="modal-inspector-title">
     <div class="modal-card">
       <div class="modal-header">
         <h3 id="modal-inspector-title" class="modal-title">Snapshot Node Details</h3>
@@ -1353,7 +1366,7 @@
   </div>
 
   <!-- Modal: Guardian Sheet Inspector -->
-  <div class="modal-backdrop" id="modal-guardian-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-guardian-title" data-private-surface>
+  <div class="modal-backdrop" id="modal-guardian-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-guardian-title">
     <div class="modal-card" style="max-width: 680px;">
       <div class="modal-header">
         <h3 id="modal-guardian-title" class="modal-title">Guardian Descriptor Sheet</h3>
@@ -1370,8 +1383,8 @@
   </div>
 
   <!-- Slide-out Snapshot Deep Inspector Drawer -->
-  <div class="drawer-backdrop" id="snapshot-drawer-backdrop" aria-hidden="true" data-private-surface></div>
-  <aside class="drawer" id="snapshot-drawer" aria-labelledby="drawer-title" role="dialog" aria-modal="true" aria-hidden="true" inert data-private-surface>
+  <div class="drawer-backdrop" id="snapshot-drawer-backdrop" aria-hidden="true"></div>
+  <aside class="drawer" id="snapshot-drawer" aria-labelledby="drawer-title" role="dialog" aria-modal="true" aria-hidden="true" inert>
     <div class="drawer-header">
       <div>
         <span class="drawer-tag">Snapshot Deep Inspector</span>
@@ -1385,7 +1398,7 @@
   </aside>
 
   <!-- Collapsible Cyberpunk Live Terminal Console -->
-  <div class="terminal-bar" id="terminal-bar" data-private-surface>
+  <div class="terminal-bar" id="terminal-bar">
     <div class="terminal-bar-header" id="terminal-toggle-btn">
       <div class="terminal-bar-left">
         <span class="terminal-icon">❯_</span>

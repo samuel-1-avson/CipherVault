@@ -201,16 +201,15 @@ header.app-header {
   flex-wrap: wrap;
 }
 
-.brand-block {
+.brand-section {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-right: auto;
+  gap: 12px;
 }
 
 .brand-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--edge);
   background: var(--signal);
   display: flex;
@@ -223,39 +222,121 @@ header.app-header {
   stroke: var(--signal-contrast, #ffffff);
 }
 
+.brand-title-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.repo-owner {
+  font-family: var(--font-sans);
+  font-size: 1.15rem;
+  font-weight: 500;
+  color: var(--signal);
+}
+.repo-divider {
+  font-family: var(--font-sans);
+  font-size: 1.15rem;
+  color: var(--ash);
+  margin: 0 2px;
+}
 .brand-title {
-  font-family: var(--font-mono);
-  font-size: 1.2rem;
+  font-family: var(--font-sans);
+  font-size: 1.15rem;
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0;
   color: var(--bone);
-  background: none;
-  -webkit-background-clip: unset;
-  background-clip: unset;
-  -webkit-text-fill-color: unset;
+  display: inline-block;
+}
+
+.repo-badge-public {
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--fog);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 1px 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.network-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--chain);
+  background: var(--chain-faint);
+  border: 1px solid var(--chain-dim);
+  border-radius: 20px;
+  padding: 2px 9px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.network-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  display: inline-block;
+  box-shadow: 0 0 6px var(--ok-dim);
 }
 
 .brand-subtitle {
-  margin: 0;
+  margin: 2px 0 0;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: var(--ash);
   letter-spacing: 0.02em;
 }
 
-.brand-badge {
+/* --- Header Omni-Search (Blockchain Explorer style) --- */
+.header-omni-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg2);
+  border: var(--edge-line);
+  border-radius: var(--edge-lg);
+  padding: 6px 12px;
+  width: 320px;
+  max-width: 420px;
+  transition: all 0.15s ease;
+}
+.header-omni-search:focus-within {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 2px var(--signal-dim);
+  background: var(--bg1);
+}
+.header-omni-search .search-icon {
+  color: var(--ash);
+  flex-shrink: 0;
+}
+.header-omni-search input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--bone);
+  font-size: 0.82rem;
+  width: 100%;
+  font-family: var(--font-sans);
+}
+.header-omni-search input::placeholder {
+  color: var(--ash);
+}
+.header-omni-search .kbd-badge {
   font-family: var(--font-mono);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--signal);
-  background: var(--signal-faint);
-  border: 1px solid var(--signal-dim);
-  border-radius: var(--edge);
-  padding: 4px 10px;
-  white-space: nowrap;
+  font-size: 0.68rem;
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  color: var(--ash);
 }
 
 /* --- Vault identity tag --- */
@@ -679,59 +760,72 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
   transition: width 0.4s ease;
 }
 
-/* --- Tabs --- */
+/* --- GitHub Repository Style Tabs --- */
 .tabs-nav {
   display: flex;
   gap: 4px;
-  border-bottom: var(--edge-line);
-  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
   overflow-x: auto;
   scrollbar-width: thin;
+  padding: 0 4px;
 }
 
 .tab-btn {
   background: transparent;
   border: none;
-  border-radius: var(--edge) var(--edge) 0 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
   color: var(--fog);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 11px 16px;
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  padding: 9px 14px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
-  transition: color 0.12s ease, background 0.12s ease;
+  margin-bottom: -1px;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
 .tab-btn:hover {
   color: var(--bone);
   background: var(--bg2);
 }
 .tab-btn.active {
-  color: var(--signal);
-  background: var(--signal-faint);
-  box-shadow: inset 0 -2px 0 var(--signal);
+  color: var(--bone);
+  font-weight: 600;
+  background: transparent;
+  border-bottom: 2px solid var(--signal);
+  box-shadow: none;
 }
 .tab-btn svg {
   flex-shrink: 0;
+  color: var(--fog);
+  transition: color 0.12s ease;
+}
+.tab-btn:hover svg {
+  color: var(--bone);
+}
+.tab-btn.active svg {
+  color: var(--signal);
 }
 
 .tab-badge {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  font-weight: 700;
+  font-size: 0.72rem;
+  font-weight: 600;
   background: var(--bg2);
   border: 1px solid var(--line);
   color: var(--fog);
   padding: 1px 7px;
-  border-radius: var(--edge);
+  border-radius: 20px;
 }
 .tab-btn.active .tab-badge {
-  background: transparent;
+  background: var(--signal-faint);
   border-color: var(--signal-dim);
   color: var(--signal);
 }
@@ -4927,28 +5021,30 @@ select.form-input option,
   overflow-x: auto;
 }
 .filter-pill {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 5px 12px;
-  border-radius: var(--edge);
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--ash);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  color: var(--fog);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.12s ease;
   white-space: nowrap;
 }
 .filter-pill:hover {
   color: var(--bone);
   background: var(--bg1);
+  border-color: var(--ash);
 }
 .filter-pill.active {
-  color: var(--signal);
-  background: var(--signal-faint);
-  border-color: var(--signal-dim);
+  color: #ffffff;
+  background: var(--signal);
+  border-color: var(--signal);
+  font-weight: 600;
 }
 
 /* --- Secret Health & Hygiene Card --- */
