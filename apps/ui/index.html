@@ -1613,7 +1613,7 @@
   </div>
 
   <!-- Modal: Global Spotlight Command Palette (Cmd+K / Ctrl+K) -->
-  <div class="modal-backdrop command-palette-backdrop" id="modal-command-palette" role="dialog" aria-modal="true" aria-labelledby="palette-search-label" hidden>
+  <div class="modal-backdrop command-palette-backdrop" id="modal-command-palette" role="dialog" aria-modal="true" aria-labelledby="palette-search-label" hidden style="display: none;">
     <div class="command-palette-card">
       <div class="palette-input-wrap">
         <svg class="palette-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -1622,7 +1622,7 @@
         </svg>
         <label for="input-command-palette" id="palette-search-label" class="sr-only">Type a command, file name, snapshot, or action...</label>
         <input type="text" id="input-command-palette" class="palette-input" placeholder="Type a command, file name, or action (e.g. 'push', '.env', 'diff')..." autocomplete="off" spellcheck="false">
-        <kbd class="palette-esc-kbd">ESC</kbd>
+        <button type="button" class="palette-esc-kbd" id="btn-close-command-palette" title="Close (ESC)" aria-label="Close Command Palette">ESC</button>
       </div>
       <div class="palette-results-container" id="command-palette-results" role="listbox" aria-label="Command Suggestions">
         <!-- Dynamically populated results -->

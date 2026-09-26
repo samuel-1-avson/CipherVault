@@ -4310,7 +4310,8 @@ function initKeyboardShortcuts() {
     if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       const palette = document.getElementById('modal-command-palette');
-      if (palette && !palette.hidden) {
+      const isPaletteOpen = palette && (palette.classList.contains('active') || palette.classList.contains('open') || !palette.hidden || palette.style.display === 'flex');
+      if (isPaletteOpen) {
         closeCommandPalette();
       } else {
         openCommandPalette();
@@ -4323,7 +4324,8 @@ function initKeyboardShortcuts() {
 
     if (e.key === 'Escape') {
       const palette = document.getElementById('modal-command-palette');
-      if (palette && !palette.hidden) {
+      const isPaletteOpen = palette && (palette.classList.contains('active') || palette.classList.contains('open') || !palette.hidden || palette.style.display === 'flex');
+      if (isPaletteOpen) {
         closeCommandPalette();
         return;
       }
@@ -4551,14 +4553,28 @@ function initCommandPalette() {
   const btnTrigger = document.getElementById('btn-open-command-palette');
   const modal = document.getElementById('modal-command-palette');
   const input = document.getElementById('input-command-palette');
+  const btnCloseEsc = document.getElementById('btn-close-command-palette') || (modal ? modal.querySelector('.palette-esc-kbd') : null);
 
   if (btnTrigger) {
-    btnTrigger.addEventListener('click', () => openCommandPalette());
+    btnTrigger.addEventListener('click', (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      openCommandPalette();
+    });
+  }
+
+  if (btnCloseEsc) {
+    btnCloseEsc.addEventListener('click', (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      closeCommandPalette();
+    });
   }
 
   if (modal) {
     modal.addEventListener('click', (e) => {
-      if (e.target === modal) closeCommandPalette();
+      if (e.target === modal || (e.target.classList && e.target.classList.contains('command-palette-backdrop'))) {
+        closeCommandPalette();
+      }
     });
   }
 
@@ -4568,32 +4584,49 @@ function initCommandPalette() {
       renderPaletteResults();
     });
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
+      if (e.key === 'Escape') {
+        if (e.preventDefault) e.preventDefault();
+        if (e.stopPropagation) e.stopPropagation();
+        closeCommandPalette();
+      } else if (e.key === 'ArrowDown') {
+        if (e.preventDefault) e.preventDefault();
         if (state.paletteItems && state.paletteItems.length > 0) {
           state.paletteSelectedIndex = (state.paletteSelectedIndex + 1) % state.paletteItems.length;
           renderPaletteResults();
         }
       } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
+        if (e.preventDefault) e.preventDefault();
         if (state.paletteItems && state.paletteItems.length > 0) {
           state.paletteSelectedIndex = (state.paletteSelectedIndex - 1 + state.paletteItems.length) % state.paletteItems.length;
           renderPaletteResults();
         }
       } else if (e.key === 'Enter') {
-        e.preventDefault();
+        if (e.preventDefault) e.preventDefault();
         executePaletteItem(state.paletteSelectedIndex);
       }
     });
   }
+
+  // Ensure it is completely hidden on initial load
+  closeCommandPalette();
 }
 
 function openCommandPalette() {
   const modal = document.getElementById('modal-command-palette');
   const input = document.getElementById('input-command-palette');
   if (!modal) return;
-  modal.hidden = false;
-  modal.classList.add('active');
+  modal.removeAttribute('hidden');
+  if (modal.style) {
+    if (typeof modal.style.setProperty === 'function') {
+      modal.style.setProperty('display', 'flex', 'important');
+    } else {
+      modal.style.display = 'flex';
+    }
+  }
+  if (modal.classList) {
+    modal.classList.add('active');
+    modal.classList.add('open');
+  }
   if (input) {
     input.value = '';
     state.paletteSelectedIndex = 0;
@@ -4608,8 +4641,22 @@ function openCommandPalette() {
 function closeCommandPalette() {
   const modal = document.getElementById('modal-command-palette');
   if (!modal) return;
-  modal.hidden = true;
-  modal.classList.remove('active');
+  modal.setAttribute('hidden', '');
+  if (modal.style) {
+    if (typeof modal.style.setProperty === 'function') {
+      modal.style.setProperty('display', 'none', 'important');
+    } else {
+      modal.style.display = 'none';
+    }
+  }
+  if (modal.classList) {
+    modal.classList.remove('active');
+    modal.classList.remove('open');
+  }
+  const input = document.getElementById('input-command-palette');
+  if (input && typeof input.blur === 'function') {
+    input.blur();
+  }
 }
 
 function buildPaletteItems(query) {

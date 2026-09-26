@@ -5128,15 +5128,22 @@ select.form-input option,
 
 /* --- Command Palette Modal --- */
 .command-palette-backdrop {
+  display: none !important;
   position: fixed;
   inset: 0;
-  background: rgba(11, 10, 8, 0.78);
+  background: rgba(0, 0, 0, 0.72);
   backdrop-filter: blur(4px);
-  display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 14vh;
   z-index: 1000;
+}
+.command-palette-backdrop.active,
+.command-palette-backdrop.open {
+  display: flex !important;
+}
+.command-palette-backdrop[hidden] {
+  display: none !important;
 }
 .command-palette-card {
   width: 100%;
@@ -5180,11 +5187,20 @@ select.form-input option,
   font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 700;
-  padding: 2px 6px;
+  padding: 3px 8px;
   border-radius: var(--edge);
   background: var(--bg1);
   border: 1px solid var(--line);
   color: var(--ash);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.12s ease;
+  line-height: normal;
+}
+.palette-esc-kbd:hover {
+  color: var(--bone);
+  border-color: var(--signal);
+  background: var(--bg0);
 }
 .palette-results-container {
   max-height: 380px;
