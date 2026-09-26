@@ -32,6 +32,11 @@ is a real gap: practice it before federating or promoting to mainnet.
 then remove the old fingerprint. A retired key that reappears shows
 `Unverified`.
 
+Rehearsal record (2026-09-26, local): mint identity A, `--rotate-key`
+to identity B (A != B), timestamped `operator.key.previous-*` backup
+kept, reprint stable at B. Tooling path PASS; live-fleet repinning
+remains a human step per the runbook.
+
 ### Fleet-key rotation (MISSING procedure + drill)
 
 No rotation drill has ever been run (playbook T5). First exercise, on
