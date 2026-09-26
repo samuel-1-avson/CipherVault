@@ -469,6 +469,23 @@ impl ArbitrumAnchorClient {
     }
 }
 
+/// Returns true when `receipt` is bound to an anchor of `commitment` in
+/// `registry`: the transaction was addressed to the registry and emitted
+/// `CommitmentPublished` from the registry with the commitment as first
+/// indexed topic.
+pub fn receipt_binds_commitment(
+    receipt: &TransactionReceipt,
+    registry_address: &[u8; 20],
+    commitment: &[u8; 32],
+) -> bool {
+    receipt.to == *registry_address
+        && receipt.logs.iter().any(|log| {
+            log.address == *registry_address
+                && log.topics.first() == Some(&COMMITMENT_PUBLISHED_TOPIC)
+                && log.topics.get(1) == Some(commitment)
+        })
+}
+
 /// Pure evaluation of anchor confirmation from chain observations.
 ///
 /// `contract_block` is the registry first-seen block for the commitment and
@@ -496,12 +513,8 @@ pub fn evaluate_anchor_confirmation(
 ) -> (bool, bool, AnchorFinalityStage) {
     let receipt_ok = matches!(receipt, Some(receipt) if receipt.status);
     let receipt_bound = matches!(receipt, Some(receipt)
-    if receipt.to == *registry_address
-        && receipt.logs.iter().any(|log| {
-            log.address == *registry_address
-                && log.topics.first() == Some(&COMMITMENT_PUBLISHED_TOPIC)
-                && log.topics.get(1) == Some(commitment)
-        }));
+    if receipt_binds_commitment(receipt, registry_address, commitment));
+
     let receipt_verified =
         tx_hash_present && receipt_ok && receipt_bound && contract_block.is_some();
     let on_chain_confirmed = contract_block.is_some() && receipt_verified;
@@ -883,6 +896,35 @@ mod tests {
         );
         assert!(verified);
         assert!(confirmed);
+    }
+
+    #[test]
+    fn test_receipt_binds_commitment_cases() {
+        let bound = receipt_at(100);
+        assert!(receipt_binds_commitment(
+            &bound,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT
+        ));
+        let mut wrong_to = bound.clone();
+        wrong_to.to = [0x99u8; 20];
+        assert!(!receipt_binds_commitment(
+            &wrong_to,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT
+        ));
+        let mut no_logs = bound.clone();
+        no_logs.logs.clear();
+        assert!(!receipt_binds_commitment(
+            &no_logs,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT
+        ));
+        assert!(!receipt_binds_commitment(
+            &bound,
+            &TEST_REGISTRY,
+            &[0x55u8; 32]
+        ));
     }
 
     #[test]

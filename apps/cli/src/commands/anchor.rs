@@ -139,7 +139,27 @@ pub(crate) async fn cmd_anchor(
         let rcpt = client
             .wait_for_receipt(&th, Duration::from_secs(30), Duration::from_millis(500))
             .await
-            .context("Timed out waiting for L2 sequencer transaction receipt")?;
+            .context("Timed out waiting for L2 sequencer transaction receipt")
+            .and_then(|rcpt| {
+                // Bind successful receipts to this anchor (same bar as --tx-hash).
+                if rcpt.status
+                    && contract_bytes != [0u8; 20]
+                    && !ciphervault_storage::chain::receipt_binds_commitment(
+                        &rcpt,
+                        &contract_bytes,
+                        &commitment,
+                    )
+                {
+                    Err(anyhow::anyhow!(
+                        "Transaction 0x{} succeeded, but it did not publish commitment 0x{} to registry 0x{} (no matching CommitmentPublished log).",
+                        hex::encode(th),
+                        hex::encode(commitment),
+                        hex::encode(contract_bytes)
+                    ))
+                } else {
+                    Ok(rcpt)
+                }
+            })?;
 
         if !rcpt.status {
             bail!(
@@ -178,7 +198,7 @@ pub(crate) async fn cmd_anchor(
         (
             rcpt.block_number,
             th,
-            "SequencerConfirmed (Live Arbitrum L2 Settlement)",
+            "SequencerConfirmed (Live Arbitrum L2 Receipt)",
         )
     } else if auto_relay || relayer_url_opt.is_some() {
         let relayer_endpoint = relayer_url_opt
@@ -213,14 +233,23 @@ pub(crate) async fn cmd_anchor(
             th.copy_from_slice(&tx_bytes);
         }
 
-        // Never trust the relayer's word alone: a claimed sequencer
-        // confirmation is accepted only with an independently fetched
-        // successful receipt, exactly like the manual --tx-hash path.
+        // Never trust the relayer's word alone: a claimed confirmation is
+        // accepted only with a bound receipt plus registry inclusion.
+        let included = contract_bytes == [0u8; 20]
+            || matches!(
+                client.query_first_seen_block(&commitment).await,
+                Ok(Some(_))
+            );
         let relay_confirmed = receipt.status == "SequencerConfirmed"
             && tx_bytes.len() == 32
             && matches!(
                 client.get_transaction_receipt(&th).await,
                 Ok(Some(rcpt)) if rcpt.status
+                    && (contract_bytes == [0u8; 20]
+                        || ciphervault_storage::chain::receipt_binds_commitment(
+                            &rcpt, &contract_bytes, &commitment
+                        ))
+                    && included
             );
         let (block_number, finality_msg) = if relay_confirmed {
             println!(
@@ -240,7 +269,7 @@ pub(crate) async fn cmd_anchor(
             if receipt.status == "SequencerConfirmed" {
                 println!(
                     "{}",
-                    "⚠ Relayer claimed SequencerConfirmed but no successful on-chain receipt was found; treating as queued."
+                    "⚠ Relayer claimed SequencerConfirmed but the on-chain receipt is missing, unbound, or unpublished; treating as queued."
                         .red()
                         .bold()
                 );
@@ -292,6 +321,25 @@ pub(crate) async fn cmd_anchor(
                 );
             }
         };
+
+        // Bind the receipt to this anchor: the transaction must have called
+        // the registry and emitted its publication event for this commitment.
+        // A successful but unrelated transaction (plus an older registry
+        // entry) proves nothing about this anchor.
+        if contract_bytes != [0u8; 20]
+            && !ciphervault_storage::chain::receipt_binds_commitment(
+                &rcpt,
+                &contract_bytes,
+                &commitment,
+            )
+        {
+            bail!(
+                "Transaction 0x{} succeeded, but it did not publish commitment 0x{} to registry 0x{} (no matching CommitmentPublished log).",
+                hex::encode(th),
+                hex::encode(commitment),
+                hex::encode(contract_bytes)
+            );
+        }
 
         // Strict verification: Verify that this EXACT commitment was actually registered in the registry contract
         if contract_bytes != [0u8; 20] {
@@ -387,6 +435,164 @@ pub(crate) async fn cmd_anchor(
     println!("Off-chain salt and cryptographic evidence persisted in vault database.");
 
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "record-path binding tests live beside cmd_anchor; cmd_verify_anchor follows"
+)]
+mod tests {
+    use super::*;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use ciphervault_format::CheckpointEvidence;
+    use ciphervault_local_store::LocalVaultStore;
+    use ciphervault_storage::chain::COMMITMENT_PUBLISHED_TOPIC;
+    use serde_json::{json, Value};
+    use tokio::net::TcpListener;
+
+    /// Fixed fixtures shared by both tests so the global vault-path override
+    /// cannot skew results if tests interleave: only the mock receipt differs.
+    const SALT: [u8; 32] = [0x11u8; 32];
+    const HEAD: [u8; 32] = [0x22u8; 32];
+    const REGISTRY: [u8; 20] = [0x55u8; 20];
+    const TX_HASH_HEX: &str = "0x9876543210987654321098765432109876543210987654321098765432109876";
+
+    /// Serializes vault-path override tests: `set_active_vault_path` is
+    /// process-global, so interleaved tests would otherwise write into
+    /// each other's temp vaults.
+    static VAULT_PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct Fixture {
+        dir: std::path::PathBuf,
+        rpc_url: String,
+    }
+
+    /// Seeds a temp vault with known salt/head (so `cmd_anchor` reuses the
+    /// commitment) and spins a mock JSON-RPC endpoint. When `bound`, the
+    /// receipt is addressed to the registry with a matching publication
+    /// log; otherwise it is a successful but unrelated receipt.
+    async fn setup(bound: bool) -> Fixture {
+        let dir = std::env::temp_dir().join(format!(
+            "cv_anchor_bind_{}_{}",
+            std::process::id(),
+            if bound { "bound" } else { "unbound" }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("vault.db");
+        let store = LocalVaultStore::open(&db_path).unwrap();
+        let seed = CheckpointEvidence::new(SALT, HEAD, 42161, REGISTRY, [0u8; 32], 0, 0);
+        store.save_checkpoint_evidence(&seed).unwrap();
+        crate::util::set_active_vault_path(Some(db_path));
+
+        let commitment = CheckpointEvidence::compute_commitment(&SALT, &HEAD);
+        let commitment_topic = format!("0x{}", hex::encode(commitment));
+        let registry_hex = format!("0x{}", hex::encode(REGISTRY));
+        let topic0_hex = format!("0x{}", hex::encode(COMMITMENT_PUBLISHED_TOPIC));
+
+        let rpc_app = Router::new().route(
+            "/",
+            post(move |Json(payload): Json<Value>| {
+                let registry_hex = registry_hex.clone();
+                let topic0_hex = topic0_hex.clone();
+                let commitment_topic = commitment_topic.clone();
+                async move {
+                    let method = payload["method"].as_str().unwrap_or("");
+                    let id = payload["id"].clone();
+                    match method {
+                        "eth_getTransactionReceipt" => {
+                            let mut result = json!({
+                                "transactionHash": TX_HASH_HEX,
+                                "blockNumber": "0x12345",
+                                "status": "0x1",
+                            });
+                            if bound {
+                                let to = registry_hex.clone();
+                                result["to"] = json!(to.clone());
+                                result["logs"] = json!([{
+                                    "address": to,
+                                    "topics": [
+                                        topic0_hex,
+                                        commitment_topic,
+                                        "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                    ]
+                                }]);
+                            }
+                            Json(json!({"jsonrpc": "2.0", "result": result, "id": id}))
+                        }
+                        "eth_call" => Json(json!({
+                            "jsonrpc": "2.0",
+                            "result": "0x0000000000000000000000000000000000000000000000000000000000012345",
+                            "id": id
+                        })),
+                        "eth_blockNumber" => Json(json!({
+                            "jsonrpc": "2.0",
+                            "result": "0x12350",
+                            "id": id
+                        })),
+                        _ => Json(json!({
+                            "jsonrpc": "2.0",
+                            "error": { "code": -32601, "message": "Method not found" },
+                            "id": id
+                        })),
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, rpc_app).await.unwrap();
+        });
+
+        Fixture {
+            dir,
+            rpc_url: format!("http://{}", addr),
+        }
+    }
+
+    async fn invoke(fixture: &Fixture) -> Result<()> {
+        cmd_anchor(
+            Some(hex::encode(HEAD)),
+            Some(fixture.rpc_url.clone()),
+            Some(hex::encode(REGISTRY)),
+            Some(42161),
+            Some(TX_HASH_HEX.to_string()),
+            None,
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_anchor_tx_hash_records_bound_receipt() {
+        let _guard = VAULT_PATH_LOCK.lock().await;
+        let fixture = setup(true).await;
+        invoke(&fixture).await.unwrap();
+        let store = LocalVaultStore::open(fixture.dir.join("vault.db")).unwrap();
+        let saved = store.get_checkpoint_evidence(&HEAD).unwrap().unwrap();
+        assert_eq!(
+            saved.tx_hash,
+            hex::decode(TX_HASH_HEX.trim_start_matches("0x")).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&fixture.dir);
+    }
+
+    #[tokio::test]
+    async fn test_anchor_tx_hash_rejects_unbound_receipt() {
+        let _guard = VAULT_PATH_LOCK.lock().await;
+        let fixture = setup(false).await;
+        let err = invoke(&fixture).await.unwrap_err();
+        assert!(
+            err.to_string().contains("did not publish"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&fixture.dir);
+    }
 }
 
 pub(crate) async fn cmd_verify_anchor(
