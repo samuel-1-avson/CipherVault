@@ -79,6 +79,33 @@ Membership churn reassigns minimally (rendezvous property). A failed
 push excludes that recipient and recomputes next round; a per-CID
 cooldown suppresses re-triggers while the mesh converges.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OpA as Surviving Node A (Lowest Score Pusher)
+    participant OpB as Surviving Node B (Higher Score)
+    participant Mesh as Kademlia DHT & Heartbeat Gossip
+    participant OpNew as Replacement Node C (Recipient)
+
+    Note over OpA,OpB: 1. Under-Replication Detection & Rendezvous Agreement
+    OpA->>Mesh: Query CID provider records & evaluate live heartbeats
+    OpB->>Mesh: Query CID provider records & evaluate live heartbeats
+    Note over OpA,OpB: Score = Blake2b(NodeID || CID)<br/>OpA has lowest score -> Single designated pusher<br/>OpB suppresses push (Eliminates repair storms)
+
+    Note over OpA,OpNew: 2. Paced Backfill Execution
+    OpA->>OpA: TokenBucket check (paced rate limit)
+    OpA->>OpNew: P2P RPC: RepairPush (Signed, Digest, Ciphertext)
+    OpNew->>OpNew: Verify Ed25519 operator signature & SHA-256 digest
+    alt Receiver Budget Available
+        OpNew->>OpNew: Persist replica (Authorized by mesh membership)
+        OpNew-->>OpA: 200 OK (Replica confirmed)
+        OpNew->>Mesh: Announce provider record for CID
+    else Budget Exceeded
+        OpNew-->>OpA: 429 Too Many Requests
+        OpA->>OpA: Exponential backoff with jitter + per-CID cooldown
+    end
+```
+
 Convergence assumption (documented; chaos proof pending slice 4):
 assignment inputs (live set, provider records) converge across nodes
 because heartbeats and DHT records converge. Divergent inputs can only

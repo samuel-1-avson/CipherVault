@@ -44,7 +44,7 @@ ciphervault voucher issue <64-hex holder pk> <quota-bytes> --ttl 3600 \
 ```
 
 Output is the signed JSON voucher; hand it to the holder out of band.
-Vouchers are Bearer [REDACTED] (ADR-002): possession authorizes up to the
+Vouchers are bearer capabilities (ADR-002): possession authorizes up to the
 quota until expiry.
 
 Per-user cap: a holder with many vouchers could otherwise chain grants
@@ -167,7 +167,7 @@ the restore proceeds once accepted.
   repair budget tripping (backfill/storm). Check
   `ciphervault_swarm_repair_bytes_total` against the 8 MiB/s budget
   before touching quotas; do not raise limits mid-backfill.
-- Suspected voucher leak: vouchers are Bearer [REDACTED] expiry with no
+- Suspected voucher leak: vouchers are bearer capabilities valid until expiry with no
   revocation list — keep TTLs short (default 3600 s). A leaked voucher
   authorizes up to its quota until expiry; let it expire, then
   re-issue tighter. Restart does NOT clear spend (the ledger is

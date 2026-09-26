@@ -63,6 +63,42 @@ The current ceremony is deliberately explicit:
 5. `POST /v1/accounts/:account_id/devices/:device_id_hex/revoke` revokes the
    device, its sessions, and configured operator bindings.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User / Browser
+    participant Dashboard as Web Dashboard / Explorer
+    participant Acct as ciphervault-account (:8300)
+    participant Auth as WebAuthn Authenticator (Passkey / Touch ID)
+    participant Ops as Storage Operators
+
+    Note over User,Acct: Step 1: Device Enrollment Ceremony
+    User->>Dashboard: Enroll Device (Public Key PK_dev)
+    Dashboard->>Acct: POST /v1/accounts/:account_id/devices/challenge
+    Acct-->>Dashboard: Return 5-minute single-use challenge nonce
+    Dashboard->>Dashboard: Account Key signs challenge (account_device_enrollment)
+    Dashboard->>Acct: POST /v1/accounts/:account_id/devices
+    Acct->>Acct: Verify signature & persist device record
+    Acct-->>Dashboard: Device enrolled successfully
+
+    Note over User,Auth: Step 2: WebAuthn Passkey Registration
+    Dashboard->>Acct: POST /v1/accounts/:account_id/webauthn/registration/options
+    Acct-->>Dashboard: PublicKeyCredentialCreationOptions (challenge, RP ID)
+    Dashboard->>Auth: navigator.credentials.create()
+    Auth-->>Dashboard: Attestation payload (clientDataJSON, attestationObject)
+    Dashboard->>Acct: POST /v1/accounts/:account_id/webauthn/registration/verify
+    Acct->>Acct: Verify origin, RP ID & public key (Ed25519 / ES256)
+    Acct-->>Dashboard: Passkey registered (device-bound)
+
+    Note over User,Ops: Step 3: Revocation Propagation
+    User->>Dashboard: Revoke Compromised Device
+    Dashboard->>Acct: POST /v1/accounts/:account_id/devices/:device_id/revoke
+    Acct->>Acct: Mark device revoked & purge active bearer sessions
+    Acct->>Ops: Propagate revocation to operator cluster (service token)
+    Ops-->>Acct: Revocation ACK
+    Acct-->>Dashboard: Device and all associated sessions revoked
+```
+
 For passkeys, an authenticated bootstrap session calls
 `POST /v1/accounts/:account_id/webauthn/registration/options`, then submits the
 browser's `clientDataJSON` and `attestationObject` to

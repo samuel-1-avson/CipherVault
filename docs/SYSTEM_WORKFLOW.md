@@ -1,6 +1,6 @@
 # CipherVault: Comprehensive System Architecture & Operational Workflows
 
-**Version:** `v1.0.0`  
+**Version:** `v1.0.17`  
 **Classification:** Technical Architecture & Workflow Specification  
 **Status:** Hardened Production Ready  
 
@@ -50,18 +50,15 @@ Unlike traditional cloud SaaS tools where developers must register centralized a
 
 ### System Architecture Map
 
-![CipherVault System Architecture](./diagrams/01_system_architecture.svg)
-
-<details>
-<summary><b>View Mermaid Source Code</b></summary>
+[![CipherVault System Architecture](./diagrams/01_system_architecture.svg)](./diagrams/01_system_architecture.svg)
 
 ```mermaid
 flowchart TB
     subgraph Client ["Client Workstation (CLI / TUI / Agent / Dashboard)"]
         FS[("Target Files\n.env, certs, keys")]
-        CDC["FastCDC Dual-Mask\nChunk Chunker"]
-        KDF["Cryptographic Engine\nArgon2id + HKDF + BLAKE2b"]
-        DB[("Local SQLite WAL\n(DPAPI Encrypted)")]
+        CDC["FastCDC Dual-Mask\nChunk Slicing (4-64 KiB)"]
+        KDF["Cryptographic Engine\nBlake2b KDF + XChaCha20-Poly1305"]
+        DB[("Local SQLite WAL\n(DPAPI / OS Keyring)")]
         HSM["Hardware Token / YubiKey\n(PIV Slot 9C/9D)"]
         UI["TUI & Web Dashboard\n(ratatui / 127.0.0.1:8080)"]
     end
@@ -89,7 +86,6 @@ flowchart TB
     Client -.->|Anchor Commitment| ARB
     DB <--> UI
 ```
-</details>
 
 ---
 
@@ -110,12 +106,9 @@ flowchart TB
 
 ## 3. Cryptographic Key Hierarchy
 
-The CipherVault security model branches from a single 256-bit high-entropy Master Recovery Secret ($R$). All operational keys are derived deterministically via domain-separated HKDF-BLAKE2b trees:
+The CipherVault security model branches from a single 256-bit high-entropy Master Recovery Secret ($R$). All operational keys are derived deterministically via domain-separated Blake2b-KDF trees:
 
-![Cryptographic Key Derivation Hierarchy](./diagrams/02_key_hierarchy.svg)
-
-<details>
-<summary><b>View Mermaid Source Code</b></summary>
+[![Cryptographic Key Derivation Hierarchy](./diagrams/02_key_hierarchy.svg)](./diagrams/02_key_hierarchy.svg)
 
 ```mermaid
 graph TD
@@ -126,14 +119,14 @@ graph TD
         R_PK["Recovery Signing Public Key\n(Registered in Certificates)"]
         E_SK["Recovery Encryption Private Key\nX25519"]
         E_PK["Recovery Encryption Public Key\n(Target for Envelopes)"]
-        LOC["Public Recovery Locator (L)\nBLAKE2b(R, 'locator')"]
+        LOC["Public Recovery Locator (L)\nBlake2b-KDF(R, 'CV_RLOCA')"]
     end
 
     subgraph EpochKeys ["Epoch Key Hierarchy"]
         EPOCH["Vault Epoch Key (EpochKey_v1)\nXChaCha20-Poly1305 [32 Bytes]"]
         ENV["Epoch Key Recovery Envelope\nX25519 Box Sealed with E_PK"]
-        FVK["File Version Key\nHKDF(EpochKey, VaultID, ContentDigest)"]
-        NONCE["Deterministic Chunk Nonce\nHKDF(FVK, ChunkIdx, Plaintext)"]
+        FVK["File Version Key\nBlake2b-KDF(EpochKey, VaultID, ContentDigest)"]
+        NONCE["Deterministic Chunk Nonce\nBlake2b-KDF(FVK, ChunkIdx, Plaintext)"]
     end
 
     subgraph DeviceIdentity ["Local Workstation Device Identity"]
@@ -141,18 +134,15 @@ graph TD
         DEV_PK["Device Public Key\n(Certified by R_SK in DeviceCertificate)"]
     end
 
-    R -->|HKDF b'sign'| R_SK --> R_PK
-    R -->|HKDF b'encrypt'| E_SK --> E_PK
-    R -->|BLAKE2b b'locator'| LOC
-    R -->|HKDF b'epoch_1'| EPOCH
+    R -->|Blake2b-KDF b'CV_RSIGN'| R_SK --> R_PK
+    R -->|Blake2b-KDF b'CV_RENCR'| E_SK --> E_PK
+    R -->|Blake2b-KDF b'CV_RLOCA'| LOC
+    R -->|Blake2b-KDF b'CV_MANIF'| EPOCH
     EPOCH --> ENV
     EPOCH --> FVK --> NONCE
     R_SK ==>|Signs Certificate| DEV_PK
     DEV_SK -.-> DEV_PK
 ```
-</details>
-
----
 
 ## 4. End-to-End Operational Workflows
 

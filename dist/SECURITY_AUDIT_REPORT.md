@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-This security report details the formal adversarial evaluation and boundary audit performed for the **CipherVault v0.1.0 Beta Gate**, as required by [03 — Security and recovery](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/docs/03-security-and-recovery.md) and [07 — Delivery and review gates](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/docs/07-delivery-and-review-gates.md).
+This security report details the formal adversarial evaluation and boundary audit performed for the **CipherVault v0.1.0 Beta Gate**, as required by [03 — Security and recovery](../docs/archive/03-security-and-recovery.md) and [07 — Delivery and review gates](../docs/archive/07-delivery-and-review-gates.md).
 
 All automated adversarial test suites passed 100%:
 * `test_canary_leak_defense_across_operators_and_db`: **PASSED** (0 bytes of plaintext canaries leaked to operator disks, logs, or SQLite databases).

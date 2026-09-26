@@ -7,7 +7,7 @@ read/write throughput at 1M objects, build time, binary size, license
 fit. No commitment until measurements exist — this report is those
 measurements.
 
-Harness: [`spikes/d6-objstore/`](../spikes/d6-objstore/) (standalone
+Harness: [`spikes/d6-objstore/`](../../spikes/d6-objstore/) (standalone
 crate, reproducible via its README). Workload: 32-byte keys (8-byte
 big-endian index + deterministic filler), 1024-byte deterministic values
 (verifiable without stored expectations). Puts are sequential 0..N;

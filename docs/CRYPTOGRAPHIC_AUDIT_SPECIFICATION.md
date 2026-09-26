@@ -31,24 +31,28 @@
 
 All key derivations use the domain-separated custom KDF (Blake2b-512 over the `CipherVault-KDF-v1` prefix, an 8-byte context, the subkey material, and the master key) or plain SHA-256/Blake2b hashes, with explicit context strings:
 
-```
-                          Master Recovery Secret R (32 bytes)
-                                        |
-                 +----------------------+----------------------+
-                 | (HKDF: "CipherVault-RecoverySigningKey-v1") | (HKDF: "CipherVault-RecoveryEncryptionKey-v1")
-                 v                                             v
-       Recovery Signing Key (Ed25519)              Recovery Encryption Key (X25519)
-                 |
-                 | (Derives Epoch Keys via Sealed Box Envelope)
-                 v
-         Vault Epoch Key (32 bytes)
-                 |
-        +--------+--------+----------------------------+
-        |                 |                            |
-        | ("ManifestKey") | ("FileVersionKey")         | ("ChunkNonce")
-        v                 v                            v
-  Manifest Key       File Version Key              Chunk Nonce
-  (Epoch Bound)      (Vault & File Bound)          (Offset & Digest Bound)
+```mermaid
+graph TD
+    R["Master Recovery Secret R\n(32 bytes cryptographically secure)"]
+    
+    R -->|Blake2b-KDF b'CV_RSIGN'| RSK["Recovery Signing Key (Ed25519)"]
+    R -->|Blake2b-KDF b'CV_RENCR'| REK["Recovery Encryption Key (X25519)"]
+    R -->|Blake2b-KDF b'CV_RLOCA'| LOC["Public Recovery Locator L"]
+    
+    REK -->|Sealed Box Envelope| ENV["Epoch Key Recovery Envelope"]
+    ENV --> VEK["Vault Epoch Key (32 bytes)"]
+    
+    VEK -->|Blake2b-KDF b'CV_MANIF'| MK["Manifest Key (Epoch-bound)"]
+    VEK -->|Blake2b-KDF b'CV_FVERS'| FVK["File Version Key (Vault & Plaintext bound)"]
+    FVK -->|Blake2b-KDF b'CV_CNONC'| NONCE["Chunk Nonce (24 bytes deterministic)"]
+
+    classDef root fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef key fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+    classDef derived fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+
+    class R root;
+    class RSK,REK,LOC,ENV,VEK key;
+    class MK,FVK,NONCE derived;
 ```
 
 ### Domain Separation Registry

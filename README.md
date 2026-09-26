@@ -2,13 +2,13 @@
 
 <div align="center">
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Version: v1.0.17](https://img.shields.io/badge/Version-v1.0.17-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Deduplication: FastCDC 96.15%](https://img.shields.io/badge/FastCDC%20Deduplication-96.15%25-brightgreen.svg)](#-performance-benchmarks)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens--yubikey-piv)
 [![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(63%20Suites)-success.svg)](#-verification--quality-gates)
-[![Status: Beta](https://img.shields.io/badge/Status-Beta-yellow.svg)](dist/RELEASE_NOTES.md)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 
 **Decentralized, zero-knowledge secret backup, version control, and clean-machine disaster recovery for confidential development files.**
 
@@ -60,7 +60,7 @@ Think of CipherVault as a **sovereign, decentralized safety deposit box and time
 
 1. **Military-Grade Local Encryption**: Before any file leaves your computer, CipherVault encrypts it using state-of-the-art cryptography (`XChaCha20-Poly1305`). Your encryption keys never leave your device.
 2. **Smart Puzzle Slicing (FastCDC)**: Instead of re-uploading entire files when you change a single line, CipherVault chops files into content-defined chunks. Changing one API key only touches a tiny 4 KiB slice, achieving a **96.15% deduplication ratio**.
-3. **Untrusted Storage Operators**: Encrypted chunks are replicated across a federated network of independent storage nodes. The nodes only see opaque random-looking ciphertext addressed by cryptographic hashes (BLAKE2b). They cannot read your file names, folder structures, or secrets.
+3. **Untrusted Storage Operators**: Encrypted chunks are replicated across a federated network of independent storage nodes. The nodes only see opaque random-looking ciphertext addressed by cryptographic content hashes (SHA-256). They cannot read your file names, folder structures, or secrets.
 4. **Sovereign Clean-Machine Disaster Recovery**: If your computer is destroyed tomorrow, you can reconstruct every single secret file onto a virgin machine using **only an offline paper recovery kit** or **$M$-of-$N$ team guardian shares** (e.g., any 2 of 3 team leads). No cloud logins, no blockchain wallets, and zero external trust required.
 5. **Zero-Disk Execution**: You never need to keep plaintext `.env` files sitting on your disk. CipherVault can decrypt secrets directly into the memory of your running application (`npm start`, `python main.py`, `docker compose up`) and immediately zeroize them when finished.
 
@@ -68,41 +68,72 @@ Think of CipherVault as a **sovereign, decentralized safety deposit box and time
 
 ## 🏛 System Architecture & Trust Boundaries
 
-```text
-===================================================================================================
-                                     CIPHERVAULT ARCHITECTURE
-===================================================================================================
+[![CipherVault System Architecture](docs/diagrams/01_system_architecture.svg)](docs/diagrams/01_system_architecture.svg)
 
-  [ Physical Hardware Token ]
-      │  (Optional YubiKey 5 PIV via native PC/SC — Zero C FFI)
-      ├── Slot 9C: Digital Signature (Ed25519) + Capacitive Touch Presence (--touch)
-      └── Slot 9D: Key Management (X25519 ECDH Key Agreement for Epoch Unwrapping)
-      │
-  [ Developer Workstation / CI/CD Runner ]
-      │
-      ├── Local Confidential Files (.env, certs/server.key, config/credentials.json)
-      │     │
-      │     ├── 1. FastCDC Chunking (Gear Rolling Hash [4 KiB min, 16 KiB avg, 64 KiB max])
-      │     ├── 2. Client-Side AEAD Encryption (XChaCha20-Poly1305 + SHA-256 Addressing)
-      │     └── 3. Local SQLite WAL Store (Keyring-Protected via Windows DPAPI / OS Keyring)
-      │
-      ├── Federated Storage Replication (3+ Independent Storage Operators)
-      │     │
-      │     ├── Ed25519 Operator-Signed Boundary Verification & Dynamic P2P Peer Gossip
-      │     ├── Proof-of-Storage (PoS) Nonce Challenge-Response (461-byte wire readback)
-      │     └── Self-Healing Maintenance Daemon (fleet.db scheduler & degraded chunk repair)
-      │
-      ├── Clean-Machine Sovereign Disaster Recovery
-      │     │
-      │     ├── Method A: Emergency Offline Paper Recovery Kit (Master Secret R + CRC32)
-      │     ├── Method B: M-of-N Shamir Threshold Guardians (GF(2^8) Lagrange Interpolation)
-      │     └── Method C: Out-of-Band Cryptographic Multi-Party Push Approvals
-      │
-      └── Public Asynchronous State Anchoring (Optional)
-            │
-            ├── Salted EIP-712 State Commitments submitted to Arbitrum One Rollup (L2)
-            └── Sequencer Confirmation Proofs & Local Receipt Persistence
-===================================================================================================
+```mermaid
+flowchart TB
+    subgraph Workstation ["Developer Workstation / CI/CD Runner"]
+        direction TB
+        Files["Local Confidential Files\n(.env, certs/server.key, config/credentials.json)"]
+        FastCDC["FastCDC Slicing Engine\n(4 KiB min / 16 KiB avg / 64 KiB max)"]
+        Crypto["Crypto Core Engine\n(XChaCha20-Poly1305 AEAD + Blake2b KDF)"]
+        Keyring[("OS Keyring & Local Store\nWindows DPAPI / Machine AEAD (vault.db)")]
+        ZeroDisk["In-Memory Process Execution\n(ciphervault run -- npm start)"]
+        
+        Files --> FastCDC --> Crypto
+        Crypto <--> Keyring
+        Crypto --> ZeroDisk
+    end
+
+    subgraph Hardware ["Hardware Security Token"]
+        YubiKey["YubiKey 5 Series PIV (PC/SC)\nSlot 9C: Ed25519 Touch Signing\nSlot 9D: X25519 Key Management"]
+    end
+
+    subgraph Operators ["Untrusted Storage Operator Federation"]
+        direction TB
+        OP1["Storage Node 1\n(cv-operator-1 :8201)"]
+        OP2["Storage Node 2\n(cv-operator-2 :8202)"]
+        OP3["Storage Node 3\n(cv-operator-3 :8203)"]
+        P2P["P2P Mesh Swarm\n(libp2p / Kademlia DHT / DCUtR)"]
+        
+        OP1 <--> P2P
+        OP2 <--> P2P
+        OP3 <--> P2P
+    end
+
+    subgraph Maintenance ["Durability & Health Engine"]
+        MaintDaemon["ciphervault-maintenance\n(PoS Challenge Audits & Autonomous Self-Repair)"]
+    end
+
+    subgraph Settlement ["Immutable Settlement & Anchoring"]
+        Arbitrum["Arbitrum One (L2 Rollup)\nCipherVaultRegistry.sol (EIP-712 Checkpoints)"]
+    end
+
+    subgraph Recovery ["Sovereign Clean-Machine Recovery"]
+        PaperKit["Method A: Offline Paper Recovery Kit (Master Secret R)"]
+        Shamir["Method B: M-of-N Shamir Threshold Guardians (GF(2^8))"]
+        Approval["Method C: Out-of-Band Multi-Party Signoff"]
+    end
+
+    Crypto -.->|Capacitive Touch Presence| YubiKey
+    Crypto ==>|Encrypted Chunks & PoS Challenges| Operators
+    MaintDaemon -.->|Durability Audits & Re-replication| Operators
+    Crypto -.->|State Commitments| Arbitrum
+    Recovery ==>|Bit-for-Bit Clean Reconstruction| Workstation
+
+    classDef client fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef hsm fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+    classDef ops fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef maint fill:#701a75,stroke:#f472b6,stroke-width:2px,color:#f8fafc;
+    classDef l2 fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#f8fafc;
+    classDef rec fill:#4c1d95,stroke:#a78bfa,stroke-width:2px,color:#f8fafc;
+
+    class Workstation,Files,FastCDC,Crypto,Keyring,ZeroDisk client;
+    class Hardware,YubiKey hsm;
+    class Operators,OP1,OP2,OP3,P2P ops;
+    class Maintenance,MaintDaemon maint;
+    class Settlement,Arbitrum l2;
+    class Recovery,PaperKit,Shamir,Approval rec;
 ```
 
 ### Core Security Invariants

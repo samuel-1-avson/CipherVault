@@ -4,7 +4,7 @@ Standalone harness comparing embedded-KV candidates for CipherVault's
 future `ObjectStore` trait. Deliberately NOT a workspace member (it has
 its own `[workspace]`), so the main gates never build its deps. Full
 results and the recommendation live in
-[`docs/D6_OBJECT_STORE_SPIKE.md`](../../docs/D6_OBJECT_STORE_SPIKE.md).
+[`docs/archive/D6_OBJECT_STORE_SPIKE.md`](../../docs/archive/D6_OBJECT_STORE_SPIKE.md).
 
 ## Backends
 

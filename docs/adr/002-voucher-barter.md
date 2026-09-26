@@ -18,7 +18,7 @@ idempotent re-PUTs bill zero. No staking, no chain settlement.
 ## Consequences
 
 - Disk-fill drill holds: voucherless writes 403 with zero bytes stored.
-- Vouchers are Bearer [REDACTED] by design (possession = authority);
+- Vouchers are bearer capabilities by design (possession = authority);
   sender-constrained binding is future work.
 - Ledger is memory-only: restart resets spend (≤1 quota per boot).
   See `docs/OPERATOR_PLAYBOOKS.md` (restart playbook).

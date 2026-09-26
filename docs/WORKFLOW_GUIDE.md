@@ -1,4 +1,4 @@
-# CipherVault System Workflow (v1.0.7+)
+# CipherVault System Workflow (v1.0.17)
 
 Practical guide to how the whole system runs: the decentralized operator
 network, the day-to-day user flow, and how to run a node and contribute.
@@ -12,25 +12,55 @@ For the cryptographic architecture spec, see
 
 ### The big picture
 
-```text
-Your machine                              Operator network (untrusted storage)
-────────────────────────────              ─────────────────────────────────────
-CLI / TUI / dashboard
-  │ encrypt (client-side)                 ┌────────────┐  ┌────────────┐  ┌────────────┐
-  │ FastCDC chunk +                       │ Operator 1 │  │ Operator 2 │  │ Operator 3 │
-  │ XChaCha20-Poly1305                    │ :8201      │  │ :8202      │  │ :8203      │
-  ▼                                       └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
-opaque ciphertext                             │  PoS readback  │             │
-chunks (by content                            │  quorum 3/3    │             │
-hash, CID) ───────────────────────────────────┴────────────────┴─────────────┘
-                                                        ▲
-Maintenance daemon ── heartbeats, quorum audits, ───────┘
-                        PoS re-checks, self-repair
+```mermaid
+flowchart LR
+    subgraph Client ["Client Machine (Zero-Knowledge)"]
+        direction TB
+        CLI["CLI / TUI / Dashboard"]
+        FastCDC["FastCDC Slicing (4-64 KiB)"]
+        AEAD["XChaCha20-Poly1305 AEAD"]
+        CLI --> FastCDC --> AEAD
+    end
 
-Control plane (hosted): dashboard + account service ── passkeys, devices,
-  revocation propagation. Never sees vault plaintext or private keys.
+    subgraph Mesh ["Untrusted Storage Operators"]
+        direction TB
+        OP1["Operator 1 (:8201)"]
+        OP2["Operator 2 (:8202)"]
+        OP3["Operator 3 (:8203)"]
+        Quorum{"3/3 Quorum &\nPoS Readback"}
+        OP1 --- Quorum
+        OP2 --- Quorum
+        OP3 --- Quorum
+    end
 
-Optional settlement: Arbitrum L2 head-state anchors (tamper-evident history).
+    subgraph Maint ["Durability Engine"]
+        MaintDaemon["Maintenance Daemon\nHeartbeats, Quorum Audits,\nAutonomous Self-Repair"]
+    end
+
+    subgraph Control ["Control Plane (Optional)"]
+        Dashboard["Hosted Dashboard & Explorer\nPasskeys, Device Revocation"]
+    end
+
+    subgraph L2 ["Settlement Layer"]
+        Arbitrum["Arbitrum One L2\nImmutable State Commitments"]
+    end
+
+    AEAD ==>|Opaque Ciphertext Chunks by SHA-256 CID| Quorum
+    MaintDaemon -.->|Durability & Self-Repair| Mesh
+    Client -.->|Device Certs & Passkeys| Control
+    Client -.->|State Anchors| L2
+
+    classDef c fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef o fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef m fill:#701a75,stroke:#f472b6,stroke-width:2px,color:#f8fafc;
+    classDef cp fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+    classDef l fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#f8fafc;
+
+    class Client,CLI,FastCDC,AEAD c;
+    class Mesh,OP1,OP2,OP3,Quorum o;
+    class Maint,MaintDaemon m;
+    class Control,Dashboard cp;
+    class L2,Arbitrum l;
 ```
 
 ### What each piece does
@@ -346,7 +376,8 @@ ciphervault invite join ticket.json --node http://127.0.0.1:8101 \
 - Resource profile: idle nodes are tiny (HTTP + SQLite-scale state);
   budget disk for the ciphertext you volunteer and bandwidth for PoS +
   repair traffic. Mesh economics (vouchers/leases) are defined in
-  [DON_ECONOMICS_DECISION.md](./DON_ECONOMICS_DECISION.md).
+  [ADR-002: Write vouchers, barter model](./adr/002-voucher-barter.md) and
+  [DON_ECONOMICS_DECISION.md](./archive/DON_ECONOMICS_DECISION.md).
 
 ### Contributing beyond storage
 

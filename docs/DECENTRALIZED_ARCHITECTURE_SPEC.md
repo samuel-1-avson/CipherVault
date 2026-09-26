@@ -43,41 +43,51 @@ The existing static federated mode (`ciphervault init --operators http://...`, l
 
 ## 2. Macro System Architecture
 
-```text
-===================================================================================================
-                                GLOBAL DECENTRALIZED TOPOLOGY
-===================================================================================================
+```mermaid
+flowchart TB
+    subgraph ClientPlane ["1. Client Execution Plane (Local Workstation)"]
+        Workstation["Developer CLI / CI Runner"]
+        Keyring[("OS Keyring / DPAPI\nMaster Secret R, Device Keys")]
+        FastCDC["FastCDC Slicing (Gear Hash)\nContent IDs (SHA-256)"]
+        Workstation --> Keyring
+        Workstation --> FastCDC
+    end
 
-  [ Developer Workstation / CI Runner ]
-      │
-      ├── Local Keyring: Master Secret R, Epoch Envelopes, Device Keys (OS Keyring / DPAPI)
-      ├── Snapshot Engine: FastCDC Slicing (Gear Hash) -> Content IDs (BLAKE2b-512)
-      │
-      ▼ (P2P Stream over libp2p)
-  ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-  │                         KADEMLIA DISTRIBUTED HASH TABLE (DHT)                               │
-  │                                                                                             │
-  │     [Node 01 (US-East)] ─────────── [Node 02 (Frankfurt)] ─────────── [Node 03 (Tokyo)]     │
-  │            │                                │                                │              │
-  │       (P2P Gossip)                     (P2P Gossip)                     (P2P Gossip)        │
-  │            │                                │                                │              │
-  │     [Node 04 (São Paulo)] ───────── [Node 05 (London)] ────────────── [Node 06 (Sydney)]    │
-  │                                                                                             │
-  │  • Nodes discover peers via Kademlia XOR routing & local mDNS.                              │
-  │  • Chunks map to the k=3 closest physical nodes on the 256-bit keyspace.                    │
-  │  • Neighbor nodes continuously ping each other and autonomously heal missing replicas.     │
-  └──────────────────────────────────────┬──────────────────────────────────────────────────────┘
-                                         │
-                                         ▼ (Periodic Trustless Settlement)
-  ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-  │                         ARBITRUM ONE (ETHEREUM L2 ROLLUP)                                   │
-  │                                                                                             │
-  │   1. CipherVaultRegistry.sol:                                                               │
-  │      • Operator Registry & Collateral Staking (Sybil prevention & reputation score).        │
-  │      • Batched Merkle Roots (Aggregates 100k snapshot commitments in 1 hourly tx).          │
-  │      • Micro-Lease Escrow (Streams micropayments to operators providing valid PoS).         │
-  └─────────────────────────────────────────────────────────────────────────────────────────────┘
-===================================================================================================
+    subgraph SwarmPlane ["2. Storage Swarm Plane (Kademlia DHT & libp2p Mesh)"]
+        direction TB
+        subgraph KadMesh ["libp2p Swarm & Kademlia DHT Keyspace"]
+            Node1["Node 01\n(US-East)"]
+            Node2["Node 02\n(Frankfurt)"]
+            Node3["Node 03\n(Tokyo)"]
+            Node4["Node 04\n(São Paulo)"]
+            Node5["Node 05\n(London)"]
+            Node6["Node 06\n(Sydney)"]
+            
+            Node1 <-->|P2P Gossip & Repair| Node2
+            Node2 <-->|P2P Gossip & Repair| Node3
+            Node3 <-->|P2P Gossip & Repair| Node6
+            Node4 <-->|P2P Gossip & Repair| Node5
+            Node5 <-->|P2P Gossip & Repair| Node1
+            Node4 <-->|P2P Gossip & Repair| Node6
+        end
+        Features["• Kademlia XOR routing & provider records\n• Signed heartbeat liveness & rendezvous repair\n• DCUtR NAT holepunching & relay circuits"]
+    end
+
+    subgraph SettlementPlane ["3. Settlement & Identity Plane (Arbitrum One L2)"]
+        direction TB
+        Registry["CipherVaultRegistry.sol\n• Operator Staking & Registry\n• Batched Merkle Roots\n• Proof-of-Storage Micro-Leases"]
+    end
+
+    FastCDC ==>|P2P Stream / CBOR RPC| KadMesh
+    KadMesh -.->|Hourly Merkle Batch Settlement| Registry
+
+    classDef cp fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef sp fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef set fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#f8fafc;
+
+    class ClientPlane,Workstation,Keyring,FastCDC cp;
+    class SwarmPlane,KadMesh,Node1,Node2,Node3,Node4,Node5,Node6,Features sp;
+    class SettlementPlane,Registry set;
 ```
 
 ### 2.1 The Three Core Planes
@@ -89,7 +99,7 @@ The existing static federated mode (`ciphervault init --operators http://...`, l
    * Emergency recovery kit generation ($R$ zeroized from RAM).
 
 2. **Storage Swarm Plane (Independent Operator Mesh)**:
-   * Content-addressed chunk storage (addressed strictly by BLAKE2b hash; zero metadata).
+   * Content-addressed chunk storage (addressed strictly by SHA-256 hash; zero metadata).
    * Kademlia DHT routing table (`libp2p-kad`) organizing nodes by Node ID distance.
    * Proof-of-Storage (PoS) nonce challenge responder (461-byte mathematical proofs).
    * Peer Gossip & Neighbor Repair Worker (auto-replicates when peers go dark).

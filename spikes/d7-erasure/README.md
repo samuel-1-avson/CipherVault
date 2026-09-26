@@ -4,7 +4,7 @@ Standalone harness measuring Reed-Solomon (`reed-solomon-simd` 3.1.0) for
 CipherVault's large-blob durability question. Deliberately NOT a workspace
 member (it has its own `[workspace]`), so the main gates never build its
 deps. Full results and the recommendation live in
-[`docs/D7_ERASURE_SPIKE.md`](../../docs/D7_ERASURE_SPIKE.md).
+[`docs/archive/D7_ERASURE_SPIKE.md`](../../docs/archive/D7_ERASURE_SPIKE.md).
 
 ## Commands
 

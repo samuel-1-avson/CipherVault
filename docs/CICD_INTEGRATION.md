@@ -18,30 +18,41 @@ rm .env # Too late: block allocation, swap file, and container overlays retain s
 2. **Container Layer Leaks**: Files placed into the workspace during `docker build` can be accidentally committed into intermediate layers.
 3. **Log Exposure**: Misconfigured build scripts dump environment variables into public CI build logs.
 
-### The CipherVault Zero-Disk Solution
+2. ### The CipherVault Zero-Disk Solution
 With `ciphervault run -- <command>`, secrets are:
-1. **Decrypted in RAM only**: The AES-256-GCM / XChaCha20-Poly1305 ciphertext is decrypted strictly in volatile process heap memory.
+1. **Decrypted in RAM only**: The XChaCha20-Poly1305 ciphertext is decrypted strictly in volatile process heap memory.
 2. **Injected Ephemerally**: Secrets are passed directly to the spawned child process via its inherited operating system process environment block (`CreateProcessW` on Windows, `execve` on Linux/macOS).
 3. **Zero Secrets on Disk**: Not a single byte of plaintext is ever written to any temporary file, disk buffer, or pipe.
 4. **Scrubbed on Exit**: As soon as the command completes, memory buffers are explicitly overwritten with zeroes using cryptographic zeroization (`zeroize::Zeroize`).
 
-```
-+-----------------------------------------------------------------------+
-| CI/CD Runner Volatile Memory                                          |
-|                                                                       |
-|  +--------------------+        +-----------------------------------+  |
-|  | CipherVault CLI    |        | Child Process (e.g. npm test)    |  |
-|  | - In-memory decrypt| =====> | - In-memory environment block    |  |
-|  | - Scrub on exit    |        | - Zero disk access to credentials|  |
-|  +--------------------+        +-----------------------------------+  |
-|           |                                                           |
-+-----------|-----------------------------------------------------------+
-            |
-            X  <-- [ZERO DISK WRITE ENFORCEMENT]
-            |
-+-----------------------------------------------------------------------+
-| Runner Filesystem / Disk (No Plaintext Secrets Ever Written)         |
-+-----------------------------------------------------------------------+
+```mermaid
+flowchart TB
+    subgraph RAM ["CI/CD Runner Volatile Process Memory"]
+        direction LR
+        subgraph CLI ["CipherVault CLI Engine"]
+            Dec["In-Memory Decryption (RAM Only)\nZeroize on Drop"]
+        end
+        
+        subgraph Child ["Target Child Process (npm test / cargo build / deploy)"]
+            Env["Injected Environment Block (RAM)\nSecrets available via process.env"]
+        end
+        
+        Dec ==>|Inherited OS Environment Block\n(Zero Disk Writing)| Env
+    end
+
+    subgraph Disk ["Ephemeral / Persistent Runner Disk"]
+        Plaintext["⚠️ ZERO PLAINTEXT TOUCHES DISK\nNo .env files, no temporary buffers, no swap residue"]
+    end
+
+    CLI -.->|BLOCKED / NO DISK ACCESS| Disk
+
+    classDef ram fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef blocked fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#f8fafc;
+    classDef comp fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+
+    class RAM ram;
+    class Disk,Plaintext blocked;
+    class CLI,Child,Dec,Env comp;
 ```
 
 ---

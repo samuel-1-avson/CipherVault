@@ -12,6 +12,32 @@ binaries, and docs are separated on purpose.
 
 `ciphervault --help` lists every command under these same headings.
 
+```mermaid
+flowchart TD
+    Start(["Install CipherVault (One-Liner / Package Manager)"]) --> Choice{"Select Your Role"}
+    
+    Choice -->|Developer Track| DevPath["Path A: Developer (Protect Application Secrets)"]
+    Choice -->|Node Runner Track| NodePath["Path B: Node Runner (Provide Storage)"]
+    
+    DevPath --> DevInit["1. ciphervault init (Save offline paper recovery kit)"]
+    DevInit --> DevTrack["2. ciphervault track .env (Auto-syncs .gitignore)"]
+    DevTrack --> DevPush["3. ciphervault push -m 'Backup' (Replicate to quorum)"]
+    DevPush --> DevRun["4. ciphervault run -- npm start (Zero-disk in-memory secrets)"]
+    
+    NodePath --> NodeSetup["1. ciphervault node setup (3-question wizard)"]
+    NodeSetup --> NodeStatus["2. ciphervault node status (Health verification)"]
+    NodeStatus --> NodeInvite["3. ciphervault invite join ticket.json (Enter probation)"]
+    NodeInvite --> NodeGrad["4. Continuous uptime -> Full verified network operator"]
+
+    classDef dev fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef node fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef choice fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+
+    class DevPath,DevInit,DevTrack,DevPush,DevRun dev;
+    class NodePath,NodeSetup,NodeStatus,NodeInvite,NodeGrad node;
+    class Start,Choice choice;
+```
+
 ---
 
 ## Installing (both roles)

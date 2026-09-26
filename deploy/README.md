@@ -6,17 +6,43 @@ This directory contains the production-grade containerization and orchestration 
 
 ## 1. Architecture
 
-```text
-Host Network (127.0.0.1)
-  │
-  ├── 8201 ──> [ciphervault-operator-1] (Volume: op1_data)
-  ├── 8202 ──> [ciphervault-operator-2] (Volume: op2_data)
-  └── 8203 ──> [ciphervault-operator-3] (Volume: op3_data)
-                    ▲           ▲           ▲
-                    │           │           │
-             [ciphervault-maintenance] (Autonomous Self-Repair)
-                 (Internal Bridge Network: ciphervault-net)
-             [ciphervault-account] (Durable control-plane identity service)
+```mermaid
+flowchart TB
+    subgraph Host ["Host Network (127.0.0.1)"]
+        direction LR
+        Port8201["Port 8201"]
+        Port8202["Port 8202"]
+        Port8203["Port 8203"]
+    end
+
+    subgraph Cluster ["Isolated Bridge Network (ciphervault-net)"]
+        direction TB
+        Op1["ciphervault-operator-1\n(Volume: op1_data)"]
+        Op2["ciphervault-operator-2\n(Volume: op2_data)"]
+        Op3["ciphervault-operator-3\n(Volume: op3_data)"]
+        
+        Maint["ciphervault-maintenance\n(Autonomous Self-Repair)"]
+        Acct["ciphervault-account\n(Durable Control Plane Identity)"]
+        
+        Maint -.->|Durability & Health Probes| Op1
+        Maint -.->|Durability & Health Probes| Op2
+        Maint -.->|Durability & Health Probes| Op3
+        Acct -.->|Revocation Propagation| Op1
+        Acct -.->|Revocation Propagation| Op2
+        Acct -.->|Revocation Propagation| Op3
+    end
+
+    Port8201 --> Op1
+    Port8202 --> Op2
+    Port8203 --> Op3
+
+    classDef host fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef op fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef svc fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+
+    class Host,Port8201,Port8202,Port8203 host;
+    class Op1,Op2,Op3 op;
+    class Maint,Acct svc;
 ```
 
 ### Security & Invariants

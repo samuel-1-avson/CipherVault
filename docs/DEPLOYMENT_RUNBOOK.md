@@ -20,24 +20,55 @@ CipherVault supports two primary production deployment models:
 
 To guarantee continuous availability, zero single points of failure, and partition resilience, storage operators are deployed across **multiple independent availability zones and regions**:
 
-```text
-                           DEVELOPER CLIENTS / CI/CD
-                           
-             ┌─────────────────────────┬────────────────────────┐
-             │                         │                        │
-             ▼ HTTP/HTTPS              ▼ HTTP/HTTPS             ▼ HTTP/HTTPS
-    ┌──────────────────┐      ┌──────────────────┐     ┌──────────────────┐
-    │   cv-operator-1  │      │   cv-operator-2  │     │   cv-operator-3  │
-    │  Region:         │      │  Region:         │     │  Region:         │
-    │  us-central1-a   │      │  us-central1-b   │     │  us-east1-b      │
-    │  (Iowa, USA)     │      │  (Iowa, USA)     │     │  (S. Carolina)   │
-    ├──────────────────┤      ├──────────────────┤     ├──────────────────┤
-    │ Caddy (TLS 443)  │      │ Caddy (TLS 443)  │     │ Caddy (TLS 443)  │
-    │ Operator (:8201) │      │ Operator (:8201) │     │ Operator (:8201) │
-    │ 20GB Persistent  │      │ 20GB Persistent  │     │ 20GB Persistent  │
-    └────────┬─────────┘      └────────┬─────────┘     └────────┬─────────┘
-             │                         │                        │
-             └─────────── P2P Gossip / Quorum Consensus ────────┘
+```mermaid
+flowchart TB
+    Clients["Developer Workstations / CI/CD Runners"]
+    
+    subgraph Quorum ["Multi-Region Sovereign Quorum (GCP e2-micro)"]
+        direction LR
+        
+        subgraph Node1 ["Node 1: cv-operator-1"]
+            direction TB
+            Caddy1["Caddy TLS (:443)\nop1.cipherv.online"]
+            Op1["ciphervault-operator (:8201)\nRegion: us-central1-a (Iowa)"]
+            Disk1[("20 GB Persistent SSD\n/opt/ciphervault/data")]
+            Caddy1 --> Op1 --> Disk1
+        end
+
+        subgraph Node2 ["Node 2: cv-operator-2"]
+            direction TB
+            Caddy2["Caddy TLS (:443)\nop2.cipherv.online"]
+            Op2["ciphervault-operator (:8201)\nRegion: us-central1-b (Iowa)"]
+            Disk2[("20 GB Persistent SSD\n/opt/ciphervault/data")]
+            Caddy2 --> Op2 --> Disk2
+        end
+
+        subgraph Node3 ["Node 3: cv-operator-3"]
+            direction TB
+            Caddy3["Caddy TLS (:443)\nop3.cipherv.online"]
+            Op3["ciphervault-operator (:8201)\nRegion: us-east1-b (S. Carolina)"]
+            Disk3[("20 GB Persistent SSD\n/opt/ciphervault/data")]
+            Caddy3 --> Op3 --> Disk3
+        end
+        
+        Op1 <==>|P2P Mesh Gossip & Quorum Replication| Op2
+        Op2 <==>|P2P Mesh Gossip & Quorum Replication| Op3
+        Op1 <==>|P2P Mesh Gossip & Quorum Replication| Op3
+    end
+
+    Clients ==>|HTTPS / TLS Shielded| Caddy1
+    Clients ==>|HTTPS / TLS Shielded| Caddy2
+    Clients ==>|HTTPS / TLS Shielded| Caddy3
+
+    classDef client fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef node fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef proxy fill:#312e81,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+    classDef storage fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#f8fafc;
+
+    class Clients client;
+    class Node1,Node2,Node3,Op1,Op2,Op3 node;
+    class Caddy1,Caddy2,Caddy3 proxy;
+    class Disk1,Disk2,Disk3 storage;
 ```
 
 ### High Availability Invariants
