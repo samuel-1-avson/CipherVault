@@ -395,6 +395,81 @@ pub(crate) fn load_public_checkpoint_feed() -> Result<Option<Vec<serde_json::Val
     verify_public_checkpoint_feed(&feed).map(Some)
 }
 
+/// Maximum fetched feed body: 1,000 small records never approach this.
+const MAX_PUBLIC_FEED_FETCH_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Returns true when `value` may be fetched as a remote feed URL: https
+/// anywhere (the feed signature, not TLS, is the trust root), http only
+/// for loopback (tests and local tooling).
+pub(crate) fn public_feed_url_allowed(value: &str) -> bool {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix("https://") {
+        return !rest.is_empty();
+    }
+    let Some(rest) = value.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("").to_ascii_lowercase();
+    authority == "localhost"
+        || authority == "127.0.0.1"
+        || authority == "[::1]"
+        || authority.starts_with("localhost:")
+        || authority.starts_with("127.0.0.1:")
+        || authority.starts_with("[::1]:")
+}
+
+/// Fetches a feed body with a bounded size. Content is still verified by
+/// `verify_public_checkpoint_feed` before use.
+async fn fetch_public_checkpoint_feed(url: &str) -> Result<String, String> {
+    let response = checkpoint_rpc_http_client()
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| "Configured public checkpoint feed URL could not be fetched".to_string())?;
+    if !response.status().is_success() {
+        return Err("Configured public checkpoint feed URL returned an error status".to_string());
+    }
+    if let Some(len) = response.content_length() {
+        if len > MAX_PUBLIC_FEED_FETCH_BYTES {
+            return Err("Configured public checkpoint feed exceeds the size limit".to_string());
+        }
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "Configured public checkpoint feed body could not be read".to_string())?;
+    if bytes.len() as u64 > MAX_PUBLIC_FEED_FETCH_BYTES {
+        return Err("Configured public checkpoint feed exceeds the size limit".to_string());
+    }
+    String::from_utf8(bytes.into())
+        .map_err(|_| "Configured public checkpoint feed is not valid UTF-8".to_string())
+}
+
+/// Async loader: accepts a remote feed URL or a local file path, so the
+/// dashboard no longer depends on a host-staged feed file. File paths keep
+/// the synchronous loader below.
+pub(crate) async fn load_public_checkpoint_feed_async(
+) -> Result<Option<Vec<serde_json::Value>>, String> {
+    let value = match std::env::var("CIPHERVAULT_PUBLIC_CHECKPOINT_FEED") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return Ok(None),
+    };
+    let trimmed = value.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return load_public_checkpoint_feed();
+    }
+    if !public_feed_url_allowed(trimmed) {
+        return Err(
+            "Configured public checkpoint feed URL is not allowed (https, or http loopback only)"
+                .to_string(),
+        );
+    }
+    let contents = fetch_public_checkpoint_feed(trimmed).await?;
+    let feed: PublicCheckpointFeedEnvelope = serde_json::from_str(&contents)
+        .map_err(|_| "Configured public checkpoint feed is not valid JSON".to_string())?;
+    verify_public_checkpoint_feed(&feed).map(Some)
+}
+
 pub(crate) const CHECKPOINT_FINALITY_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(crate) const DEFAULT_FINALITY_CONFIRMATIONS: u64 = 12;
 pub(crate) const DEFAULT_CHECKPOINT_CANARY_MAX_AGE_SECS: u64 = 24 * 60 * 60;
@@ -638,7 +713,7 @@ pub(crate) struct FinalityCacheEntry {
 /// Results are cached briefly; without an RPC URL this is the plain feed.
 pub(crate) async fn load_public_feed_with_finality(
 ) -> Result<Option<Vec<serde_json::Value>>, String> {
-    let checkpoints = match load_public_checkpoint_feed()? {
+    let checkpoints = match load_public_checkpoint_feed_async().await? {
         Some(checkpoints) => checkpoints,
         None => return Ok(None),
     };
@@ -1036,6 +1111,72 @@ mod tests {
         )
         .unwrap();
         assert!(feed.checkpoints[0].tx_hash_hex.is_none());
+    }
+
+    #[test]
+    fn public_feed_url_policy_allows_https_and_loopback_http_only() {
+        assert!(public_feed_url_allowed("https://example.com/feed.json"));
+        assert!(public_feed_url_allowed("https://example.com:8443/a/b?c=d"));
+        assert!(public_feed_url_allowed("http://localhost:8080/feed.json"));
+        assert!(public_feed_url_allowed("http://127.0.0.1/feed.json"));
+        assert!(public_feed_url_allowed("http://[::1]:8080/feed.json"));
+        assert!(!public_feed_url_allowed("http://example.com/feed.json"));
+        assert!(!public_feed_url_allowed("http://10.0.0.1/feed.json"));
+        assert!(!public_feed_url_allowed(
+            "http://localhost.evil.com/feed.json"
+        ));
+        assert!(!public_feed_url_allowed("http://127.0.0.1.evil/feed.json"));
+        assert!(!public_feed_url_allowed("ftp://example.com/feed.json"));
+        assert!(!public_feed_url_allowed("/release/feed.json"));
+        assert!(!public_feed_url_allowed("https://"));
+        assert!(!public_feed_url_allowed(""));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_feed_loads_from_remote_url() {
+        use axum::{routing::get, Router};
+        use ciphervault_format::CheckpointEvidence;
+
+        let now = Utc::now().timestamp().max(0) as u64;
+        let signing_key = ciphervault_crypto::generate_signing_key();
+        let evidence = CheckpointEvidence::new(
+            [0x11u8; 32],
+            [0x22u8; 32],
+            421614,
+            [0x33u8; 20],
+            [0x44u8; 32],
+            123,
+            now,
+        );
+        let feed = build_public_checkpoint_feed(
+            vec![evidence],
+            "Arbitrum Sepolia".to_string(),
+            &signing_key,
+            now,
+        )
+        .unwrap();
+        let body = serde_json::to_string(&feed).unwrap();
+        let app = Router::new().route(
+            "/feed.json",
+            get(move || {
+                let body = body.clone();
+                async move { body }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        std::env::set_var(
+            "CIPHERVAULT_PUBLIC_CHECKPOINT_FEED",
+            format!("http://{addr}/feed.json"),
+        );
+        let loaded = load_public_checkpoint_feed_async().await.unwrap().unwrap();
+        std::env::remove_var("CIPHERVAULT_PUBLIC_CHECKPOINT_FEED");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0]["verification_status"], "publisher_signed");
     }
 
     #[test]
