@@ -262,8 +262,11 @@ async fn bench_push_sequential_vs_concurrent() {
     for iter in 0..soak_iters {
         // Stride by object count: bench_objects mixes seed+index, so a
         // stride of 1 would re-push the same CIDs every iteration.
-        let (objects, total_bytes) =
-            bench_objects(0x5eed_1000 + iter as u64 * object_count as u64, object_count, object_size);
+        let (objects, total_bytes) = bench_objects(
+            0x5eed_1000 + iter as u64 * object_count as u64,
+            object_count,
+            object_size,
+        );
         let receipts = pool
             .replicate_and_verify(
                 &vault_id,
