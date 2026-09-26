@@ -1,0 +1,77 @@
+name: "📐 Architecture RFC / Major Proposal"
+description: "Propose a significant architectural change, cryptographic enhancement, or protocol revision."
+title: "rfc: "
+labels: ["kind/rfc", "status/in-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The **Request for Comments (RFC)** process is designed to provide a consistent and open path for major architectural changes, wire-protocol revisions, or cryptographic enhancements to CipherVault.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 1. Executive Summary
+      description: Provide a one-paragraph explanation of the proposed change and what problem it solves.
+      placeholder: "This RFC proposes transitioning the P2P wire protocol message framing to domain-separated CBOR with explicit version headers..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: 2. Motivation & Goals
+      description: Why should we do this? What use cases does this unlock, and what are the expected outcomes?
+      placeholder: "Explain the shortcomings of the current approach and the benefits of the proposed architecture."
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: 3. Detailed Architectural Specification
+      description: Explain the design in sufficient detail so that an engineer familiar with the codebase can understand and evaluate it.
+      placeholder: |
+        - Data structures & schemas
+        - State machine transitions
+        - API / CLI interface changes
+        - Network message sequencing (Mermaid diagrams welcome)
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: 4. Cryptographic & Security Invariants
+      description: How does this change affect system trust boundaries, key hierarchies, zero-knowledge guarantees, or attack surfaces?
+      placeholder: "Analyze potential threat vectors, side-channel risks, replay attacks, or impact on master secret R."
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 5. Backward Compatibility & Migration
+      description: Does this introduce breaking changes to existing vaults, wire protocol schemas, or operator storage formats?
+      placeholder: "Will existing operators need to wipe data or run a migration script? How are older clients handled?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: unresolved
+    attributes:
+      label: 6. Unresolved Questions & Trade-offs
+      description: What parts of the design remain open for community debate or future work?
+      placeholder: "1. Should timeout defaults be 5s or 10s under high network latency? 2. ..."
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: RFC Author Agreement
+      options:
+        - label: "I am prepared to iterate on this RFC based on maintainer and community review."
+          required: true
+        - label: "I agree that this proposal will be licensed under CipherVault's dual Apache 2.0 / MIT licenses."
+          required: true
+        - label: "I have read and agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md)."
+          required: true

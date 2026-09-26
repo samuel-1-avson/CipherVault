@@ -1,0 +1,56 @@
+name: "✨ Feature Request"
+description: "Suggest an idea or new capability for the CipherVault ecosystem."
+title: "feat: "
+labels: ["kind/feature", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea to make CipherVault better, faster, or more versatile? We'd love to hear it!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: Is your feature request related to a problem or limitation you encountered?
+      placeholder: "A clear and concise description of what the problem is. e.g., 'Currently when running on headless servers, I cannot...'"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution & User Experience
+      description: Describe the solution you'd like to see, including hypothetical CLI commands or API design.
+      placeholder: "e.g., Add a `--json` output flag to `ciphervault status` so scripts can parse operator health..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions, workarounds, or trade-offs?
+      placeholder: "e.g., Using grep/awk on the plaintext table output, but it is brittle across terminal widths."
+
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Willingness to Contribute
+      description: Are you interested in implementing this feature or writing tests for it?
+      options:
+        - "Yes, I would like to submit a Pull Request to implement this!"
+        - "I can help test and review if someone else implements it."
+        - "No, I am only proposing the idea."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Community Checklist
+      options:
+        - label: "I have checked existing issues and discussions to confirm this feature hasn't already been suggested."
+          required: true
+        - label: "I have read and agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md)."
+          required: true

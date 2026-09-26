@@ -1,0 +1,44 @@
+name: "📖 Documentation Improvement"
+description: "Suggest a fix, enhancement, or missing guide in the CipherVault documentation hub."
+title: "docs: "
+labels: ["kind/documentation", "good first issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        High-quality, accurate documentation is vital for CipherVault's open-source developer experience. Thank you for reporting a documentation gap or typo!
+
+  - type: input
+    id: location
+    attributes:
+      label: Page or File Path
+      description: Which document contains the issue or needs expansion?
+      placeholder: "e.g., docs/SETUP_GUIDE.md or README.md (line 120)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue_desc
+    attributes:
+      label: Description of the Problem
+      description: What is inaccurate, outdated, confusing, or missing?
+      placeholder: "The command in Section 3 references an older flag that has been deprecated..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: How should the documentation be updated? (Feel free to write the updated paragraph or snippet).
+      placeholder: "Update the command to: `ciphervault operator run --port 8080`"
+
+  - type: dropdown
+    id: willing_to_pr
+    attributes:
+      label: Would you like to submit a Pull Request for this?
+      options:
+        - "Yes, I will submit a PR to fix this!"
+        - "No, please have someone else update it."
+    validations:
+      required: true

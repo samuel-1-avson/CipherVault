@@ -1,0 +1,94 @@
+name: "🐛 Bug Report"
+description: "Report an issue, bug, or unexpected behavior in CipherVault."
+title: "fix: "
+labels: ["kind/bug", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve CipherVault! 
+        
+        > [!IMPORTANT]
+        > If this report concerns a **security vulnerability or cryptographic weakness**, please **DO NOT** submit this public form. Report it confidentially through [GitHub Security Advisories](https://github.com/samuel-1-avson/CipherVault/security/advisories/new) pursuant to our [Security Policy](SECURITY.md).
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      description: Which part of the CipherVault ecosystem is experiencing the issue?
+      options:
+        - "apps/cli (CipherVault Command Line Interface)"
+        - "apps/tui (Terminal User Interface)"
+        - "services/account (Account & Operator Service)"
+        - "crates/crypto (AEAD, KDF, Threshold Keys, ZK)"
+        - "crates/protocol (P2P Mesh & Wire Protocol)"
+        - "contracts/ (Solidity L2 Settlement Registry)"
+        - "apps/ui (Web Dashboard & Explorer)"
+        - "Docker / Local Cluster Deployment"
+        - "CI/CD & Automation"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: CipherVault Version
+      description: What version of CipherVault or commit hash are you running? (Run `ciphervault --version` or check `git rev-parse HEAD`)
+      placeholder: "e.g., v1.0.17 or commit 5f7f984"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System / Platform
+      description: What OS are you running on?
+      options:
+        - "Windows 11 / Windows 10"
+        - "Ubuntu / Debian Linux"
+        - "Arch Linux / Fedora / RHEL"
+        - "macOS (Apple Silicon M-series)"
+        - "macOS (Intel x86_64)"
+        - "Docker Container"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can the maintainers reproduce this issue? Please list step-by-step instructions.
+      placeholder: |
+        1. Run `ciphervault init`
+        2. Execute `ciphervault push .env`
+        3. Encounter error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. Actual Behavior
+      description: What did you expect to happen, and what actually occurred?
+      placeholder: "Expected chunk push to succeed with quorum ack; instead received timeout error."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Terminal Output
+      description: Paste any relevant terminal logs, stack traces, or debug output (run with `RUST_LOG=debug`).
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Verification Checklist
+      options:
+        - label: "I have searched open and closed issues to ensure this is not a duplicate."
+          required: true
+        - label: "This issue contains NO sensitive plaintext secrets, private keys, or passwords."
+          required: true
+        - label: "I have read and agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md)."
+          required: true

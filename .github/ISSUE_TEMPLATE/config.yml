@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "🚨 Security Vulnerability Disclosure"
+    url: "https://github.com/samuel-1-avson/CipherVault/security/advisories/new"
+    about: "Report a potential security or cryptographic vulnerability privately (DO NOT open a public issue)."
+  - name: "💬 Community Q&A & General Inquiries"
+    url: "https://github.com/samuel-1-avson/CipherVault/discussions"
+    about: "Ask usage questions, discuss configurations, or chat with the CipherVault community."
