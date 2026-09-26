@@ -6,6 +6,9 @@
 # endpoints and write a status JSON artifact:
 #   - op1/op2/op3 /healthz: HTTP 200 + {"status": "ready"} + operator_id match
 #   - web /api/context: reachable + build_version == latest release tag
+#   - feed /api/relayer/checkpoints: reachable + canary ok/stale (a feed
+#     older than 7 days 503s and no feed serves canary=missing; either
+#     trips degraded so expiry pages before users notice red endpoints)
 # A non-ok verdict fails the job: the failure itself is the visible signal
 # (workflow badge / run list), backed by the status.json artifact.
 #
@@ -135,18 +138,49 @@ jobs:
           EOF
           )"
 
-          verdict="$(python3 - "$op1" "$op2" "$op3" "$web" <<'EOF'
+          feed_url="https://vault.cipherv.online/api/relayer/checkpoints"
+          feed_start="$(date +%s%3N)"
+          if feed_body="$(curl -fsSL --max-time 20 "$feed_url" 2>/dev/null)"; then
+            feed_code=0
+          else
+            feed_code=1
+          fi
+          feed_ms=$(($(date +%s%3N) - feed_start))
+          feed="$(python3 - "$feed_code" "$feed_ms" "$feed_body" <<'EOF'
           import json, sys
-          recs = [json.loads(a) for a in sys.argv[1:5]]
+          code, ms, body = sys.argv[1:4]
+          rec = {"target": "feed", "url": "https://vault.cipherv.online/api/relayer/checkpoints",
+                 "reachable": code == "0", "latency_ms": int(ms),
+                 "canary_status": None, "checkpoint_count": None, "ok": False}
+          if rec["reachable"]:
+              try:
+                  doc = json.loads(body)
+              except Exception:
+                  doc = None
+              if isinstance(doc, dict):
+                  rs = doc.get("relayer_status") or {}
+                  rec["canary_status"] = rs.get("canary_status")
+                  rec["checkpoint_count"] = doc.get("count")
+                  # Missing/unreachable feed is degraded (a >7-day-old feed 503s;
+                  # no feed serves canary=missing). 'stale' stays ok: with
+                  # infrequent anchors the 24h checkpoint canary is routinely amber.
+                  rec["ok"] = rec["canary_status"] in ("ok", "stale")
+          print(json.dumps(rec))
+          EOF
+          )"
+
+          verdict="$(python3 - "$op1" "$op2" "$op3" "$web" "$feed" <<'EOF'
+          import json, sys
+          recs = [json.loads(a) for a in sys.argv[1:6]]
           print("ok" if all(r["ok"] for r in recs) else "degraded")
           EOF
           )"
 
-          python3 - "$op1" "$op2" "$op3" "$web" "$verdict" > status.json <<'EOF'
+          python3 - "$op1" "$op2" "$op3" "$web" "$feed" "$verdict" > status.json <<'EOF'
           import datetime, json, sys
-          recs = [json.loads(a) for a in sys.argv[1:5]]
+          recs = [json.loads(a) for a in sys.argv[1:6]]
           print(json.dumps({"checked_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                            "verdict": sys.argv[5], "targets": recs}, indent=2))
+                            "verdict": sys.argv[6], "targets": recs}, indent=2))
           EOF
 
           cat status.json
@@ -167,7 +201,7 @@ jobs:
           VERDICT: ${{ steps.probe.outputs.verdict }}
         run: |
           set -euo pipefail
-          if [ -z "$WEBHOOK" ]; then echo "no webhook configured, skipping"; exit 0; fi
+          if [ -z "$WEBHOOK" ]; then echo "::warning::FLEET_WATCH_WEBHOOK secret is not set: degraded verdicts will not page anyone"; echo "no webhook configured, skipping"; exit 0; fi
           summary="$(python3 -c 'import json; d=json.load(open("status.json")); print("; ".join(f"{t[\"target\"]}:{\"ok\" if t[\"ok\"] else \"FAIL\"}({t[\"latency_ms\"]}ms)" for t in d["targets"]))')"
           msg="CipherVault fleet watcher: verdict=$VERDICT ($summary) run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [[ "$WEBHOOK" == https://discord.com/api/webhooks/* ]]; then
