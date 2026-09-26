@@ -1073,7 +1073,7 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault CLI Help & Command Index (v1.0.14):',
+    'CipherVault CLI Help & Command Index (v1.0.17):',
     '  init               - Initialize local vault & print emergency paper kit',
     '  track <paths...>   - Enroll confidential files into out-of-band ledger',
     '  push [-m msg]      - FastCDC chunk, AEAD encrypt, and replicate across quorum',
@@ -1172,9 +1172,9 @@ const REPL_RESPONSES = {
   status: [
     'ciphervault status (GET https://cipherv.online/api/status):',
     '  Fleet Health    : OPTIMAL (3/3 nodes ready & storage_ready)',
-    '  Operator 1 (IA) : READY (Latency: 42ms, Version: 1.0.14, Quotas: Active)',
-    '  Operator 2 (IA) : READY (Latency: 45ms, Version: 1.0.14, Quotas: Active)',
-    '  Operator 3 (SC) : READY (Latency: 48ms, Version: 1.0.14, Quotas: Active)',
+    '  Operator 1 (IA) : READY (Latency: 42ms, Version: 1.0.17, Quotas: Active)',
+    '  Operator 2 (IA) : READY (Latency: 45ms, Version: 1.0.17, Quotas: Active)',
+    '  Operator 3 (SC) : READY (Latency: 48ms, Version: 1.0.17, Quotas: Active)',
     '  Probe Watcher   : 5-minute scheduled probe green (100% SLA)'
   ],
   run: [
@@ -1209,9 +1209,9 @@ const REPL_RESPONSES = {
   ],
   testnet: [
     'Live Testnet Quorum Endpoints:',
-    '  cv-operator-1 : https://op1.cipherv.online (Council Bluffs, Iowa) [v1.0.14]',
-    '  cv-operator-2 : https://op2.cipherv.online (Council Bluffs, Iowa) [v1.0.14]',
-    '  cv-operator-3 : https://op3.cipherv.online (Moncks Corner, S. Carolina) [v1.0.14]',
+    '  cv-operator-1 : https://op1.cipherv.online (Council Bluffs, Iowa) [v1.0.17]',
+    '  cv-operator-2 : https://op2.cipherv.online (Council Bluffs, Iowa) [v1.0.17]',
+    '  cv-operator-3 : https://op3.cipherv.online (Moncks Corner, S. Carolina) [v1.0.17]',
     'Live Explorer   : https://vault.cipherv.online',
     'Settlement      : Arbitrum One L2 (CipherVaultRegistry.sol)'
   ],
@@ -1366,10 +1366,10 @@ function closeReplDrawer() {
    10. Install Snippet Tabs & One-Click Copy
    ============================================================================== */
 const INSTALL_SNIPPETS = {
-  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.14)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.14)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
-  cargo: `# Build and install standalone CLI directly from Git source (v1.0.14)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
-  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.14)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
+  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.17)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.17)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  cargo: `# Build and install standalone CLI directly from Git source (v1.0.17)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.17)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
 function initInstallSnippets() {
