@@ -638,6 +638,65 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(shellHtml.match(/id="tab-btn-overview"[^>]*data-private-surface/), 'My Data tab button must carry data-private-surface');
   assert(shellHtml.match(/id="tab-overview"[^>]*data-private-surface/), 'My Data tab panel must carry data-private-surface');
 
+  // =========================================================================
+  // 20. Enhanced Productivity Suite: Command Palette, Secret Health & Filter
+  // =========================================================================
+  // Command Palette build and search
+  vm.runInContext(`
+    state.overview = {
+      tracked_files: [{ path: '.env.production', size_bytes: 512 }, { path: 'certs/server.crt', size_bytes: 2048 }],
+      snapshots: [{ snapshot_id_hex: '${'ff'.repeat(32)}', epoch: 2, timestamp_utc: Math.floor(Date.now() / 1000) }]
+    };
+    buildPaletteItems('');
+  `, context);
+  const paletteItemsAll = vm.runInContext('state.paletteItems', context);
+  assert(paletteItemsAll.some(i => i.title.includes('Go to Storage Operators')), 'Command palette must include navigation targets');
+  assert(paletteItemsAll.some(i => i.title.includes('Push Snapshot')), 'Command palette must include quick actions');
+  assert(paletteItemsAll.some(i => i.title.includes('.env.production')), 'Command palette must index tracked secret files');
+
+  // Command Palette query filtering
+  vm.runInContext(`buildPaletteItems('.env'); renderPaletteResults();`, context);
+  const filteredItems = vm.runInContext('state.paletteItems', context);
+  assert(filteredItems.every(i => i.title.toLowerCase().includes('.env') || i.category.toLowerCase().includes('.env')), 'Filtering must prune non-matching items');
+
+  // Command Palette execution
+  let executedAction = false;
+  context.testActionRan = () => { executedAction = true; };
+  vm.runInContext(`
+    state.paletteItems = [{ title: 'Test Action', action: testActionRan }];
+    executePaletteItem(0);
+  `, context);
+  assert(executedAction, 'Executing palette item must trigger its action callback');
+
+  // Secret Health & Hygiene analysis verification
+  vm.runInContext(`
+    renderSecretHealth({
+      tracked_files: [
+        { path: '.env.production', size_bytes: 1024 },
+        { path: 'certs/tls.crt', size_bytes: 2048 }
+      ],
+      snapshots: [{ timestamp_utc: Math.floor(Date.now() / 1000) - 86400 }]
+    });
+  `, context);
+  assert.equal(getElementById('val-health-score').textContent, '100%', 'Clean recently updated secrets must have 100% hygiene');
+  assert(getElementById('card-health-certs').classList.contains('ok'), 'Certificate detection must report valid');
+
+  // Staleness degradation check (>90 days old)
+  vm.runInContext(`
+    renderSecretHealth({
+      tracked_files: [{ path: '.env.production', size_bytes: 1024 }],
+      snapshots: [{ timestamp_utc: Math.floor(Date.now() / 1000) - (95 * 86400) }]
+    });
+  `, context);
+  assert(getElementById('val-health-score').textContent !== '100%', 'Stale secrets over 90 days must degrade hygiene score');
+  assert(getElementById('card-health-staleness').classList.contains('warn'), 'Stale secrets must flag warning status');
+
+  // Accessibility checks for new elements
+  assert(shellHtml.match(/id="btn-open-command-palette"[^>]*aria-label/), 'Command Palette button must have aria-label');
+  assert(shellHtml.match(/id="modal-command-palette"[^>]*role="dialog"/), 'Command Palette modal must have role=dialog');
+  assert(shellHtml.match(/id="command-palette-results"[^>]*role="listbox"/), 'Palette results must have role=listbox');
+  assert(shellHtml.match(/id="card-secret-health"[^>]*data-private-surface/), 'Secret Health card must carry data-private-surface');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

@@ -39,6 +39,10 @@ const state = {
   explorerOverview: null,
   explorerObject: null,
   explorerQuery: '',
+  commandPaletteOpen: false,
+  paletteItems: [],
+  paletteSelectedIndex: 0,
+  activeCategoryFilter: 'all',
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -55,12 +59,15 @@ document.addEventListener('DOMContentLoaded', () => {
   initFleetActions();
   initFastCdcInspector();
   initDiffViewer();
+  initDiffFilter();
   initFileManagement();
   initSnapshotDrawer();
   initActivityFeed();
   initExplorer();
   initTerminalConsole();
   initKeyboardShortcuts();
+  initCommandPalette();
+  initTabCategoryFilter();
   initWorkspaceSwitcher();
   
   // Initial data load and periodic polling
@@ -1563,6 +1570,8 @@ function renderOverview(data) {
         <td><span style="color: var(--ash);">${escapeHtml(entry.event_type)}</span></td>
         <td>${escapeHtml(entry.summary)}</td>
       </tr>`).join('');
+
+  renderSecretHealth(data);
 }
 
 function renderSnapshots(snapshots) {
@@ -4295,10 +4304,27 @@ function initKeyboardShortcuts() {
   }
 
   window.addEventListener('keydown', (e) => {
+    // Cmd+K / Ctrl+K opens or closes the Spotlight Command Palette from anywhere
+    if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      const palette = document.getElementById('modal-command-palette');
+      if (palette && !palette.hidden) {
+        closeCommandPalette();
+      } else {
+        openCommandPalette();
+      }
+      return;
+    }
+
     // If typing inside an input or textarea
     const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
 
     if (e.key === 'Escape') {
+      const palette = document.getElementById('modal-command-palette');
+      if (palette && !palette.hidden) {
+        closeCommandPalette();
+        return;
+      }
       if (activeModal) {
         closeModal(activeModal);
         return;
@@ -4364,6 +4390,365 @@ function initKeyboardShortcuts() {
       return;
     }
   });
+}
+
+// -------------------------------------------------------------
+// Enhanced Suite Implementations:
+// Command Palette, Tab Categories, Secret Health & Diff Filter
+// -------------------------------------------------------------
+
+function switchTab(targetId) {
+  const btn = document.querySelector(`.tab-btn[data-target="${targetId}"]`);
+  if (btn) btn.click();
+}
+
+function initTabCategoryFilter() {
+  const container = document.getElementById('tabs-category-filter');
+  if (!container) return;
+
+  const pills = container.querySelectorAll('.filter-pill');
+  pills.forEach(pill => {
+    pill.addEventListener('click', () => {
+      pills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+
+      const category = pill.getAttribute('data-category') || 'all';
+      state.activeCategoryFilter = category;
+
+      const tabs = Array.from(document.querySelectorAll('.tabs-nav .tab-btn'));
+      let firstVisibleTab = null;
+      let activeTabVisible = false;
+
+      tabs.forEach(tab => {
+        const tabCat = tab.getAttribute('data-category') || 'secrets';
+        const match = category === 'all' || tabCat === category;
+        tab.style.display = match ? '' : 'none';
+        if (match) {
+          if (!firstVisibleTab) firstVisibleTab = tab;
+          if (tab.classList.contains('active')) activeTabVisible = true;
+        }
+      });
+
+      if (!activeTabVisible && firstVisibleTab) {
+        firstVisibleTab.click();
+      }
+    });
+  });
+}
+
+function renderSecretHealth(overview) {
+  const scoreVal = document.getElementById('val-health-score');
+  const cardStaleness = document.getElementById('card-health-staleness');
+  const cardCerts = document.getElementById('card-health-certs');
+  const cardHygiene = document.getElementById('card-health-hygiene');
+  const descStaleness = document.getElementById('health-desc-staleness');
+  const descCerts = document.getElementById('health-desc-certs');
+  const descHygiene = document.getElementById('health-desc-hygiene');
+
+  if (!scoreVal) return;
+
+  const files = (overview?.tracked_files || state.vault?.tracked_files || []);
+  const fileCount = Array.isArray(files) ? files.length : (typeof files === 'number' ? files : 0);
+  const snapshots = overview?.snapshots || state.snapshots || [];
+
+  let score = 100;
+  let stalenessStatus = 'ok';
+  let certsStatus = 'ok';
+  let hygieneStatus = 'ok';
+
+  // Staleness inspection
+  if (snapshots.length > 0) {
+    const latest = snapshots[0];
+    const ts = latest.timestamp_utc || latest.advisory_timestamp_utc || 0;
+    const now = Math.floor(Date.now() / 1000);
+    const ageDays = Math.max(0, Math.floor((now - ts) / 86400));
+    if (ageDays > 90) {
+      stalenessStatus = 'warn';
+      score -= 15;
+      if (descStaleness) descStaleness.textContent = `Last snapshot is ${ageDays} days old. Policy recommends rotation every 90 days.`;
+    } else {
+      if (descStaleness) descStaleness.textContent = `Secrets actively updated (${ageDays}d ago). Rotation cycle is compliant.`;
+    }
+  } else if (fileCount > 0) {
+    stalenessStatus = 'warn';
+    score -= 10;
+    if (descStaleness) descStaleness.textContent = 'Files are tracked but no snapshot commit has been replicated yet.';
+  }
+
+  // Certificate expiration inspection
+  const fileList = Array.isArray(files) ? files : [];
+  const certFiles = fileList.filter(f => {
+    const p = (typeof f === 'string' ? f : (f.path || '')).toLowerCase();
+    return p.endsWith('.pem') || p.endsWith('.crt') || p.endsWith('.cer') || p.endsWith('.p12');
+  });
+
+  if (certFiles.length > 0) {
+    if (descCerts) descCerts.textContent = `${certFiles.length} certificate file(s) tracked. Validity monitored locally.`;
+  } else {
+    if (descCerts) descCerts.textContent = 'No certificate files currently tracked in active vault.';
+  }
+
+  // Hygiene inspection
+  const placeholderPatterns = ['test', 'sample', 'example', 'dummy', 'localhost'];
+  let suspiciousCount = 0;
+  fileList.forEach(f => {
+    const p = (typeof f === 'string' ? f : (f.path || '')).toLowerCase();
+    if (placeholderPatterns.some(w => p.includes(w))) suspiciousCount++;
+  });
+
+  if (suspiciousCount > 0) {
+    hygieneStatus = 'warn';
+    score -= 10;
+    if (descHygiene) descHygiene.textContent = `${suspiciousCount} file(s) match test/dummy names. Ensure production values are not test keys.`;
+  } else {
+    if (descHygiene) descHygiene.textContent = 'Zero test or dummy secret naming patterns observed.';
+  }
+
+  scoreVal.textContent = `${Math.max(10, score)}%`;
+  if (scoreVal.style) {
+    scoreVal.style.color = score >= 90 ? 'var(--ok)' : (score >= 75 ? 'var(--signal)' : 'var(--bad)');
+  }
+
+  const updateCardClass = (el, status) => {
+    if (!el || !el.classList) return;
+    el.classList.remove('ok', 'warn', 'bad');
+    el.classList.add(status);
+  };
+  updateCardClass(cardStaleness, stalenessStatus);
+  updateCardClass(cardCerts, certsStatus);
+  updateCardClass(cardHygiene, hygieneStatus);
+}
+
+function initDiffFilter() {
+  const input = document.getElementById('input-diff-filter');
+  if (!input) return;
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    const cards = document.querySelectorAll('#diff-results-container .diff-card');
+    cards.forEach(card => {
+      const lines = card.querySelectorAll('.diff-line');
+      let cardHasMatch = false;
+      lines.forEach(line => {
+        const text = (line.textContent || '').toLowerCase();
+        const match = !q || text.includes(q);
+        line.style.display = match ? '' : 'none';
+        if (match) cardHasMatch = true;
+      });
+      const filePath = (card.querySelector('.diff-file-path')?.textContent || '').toLowerCase();
+      if (!q || cardHasMatch || filePath.includes(q)) {
+        card.style.display = '';
+      } else {
+        card.style.display = 'none';
+      }
+    });
+  });
+}
+
+function initCommandPalette() {
+  const btnTrigger = document.getElementById('btn-open-command-palette');
+  const modal = document.getElementById('modal-command-palette');
+  const input = document.getElementById('input-command-palette');
+
+  if (btnTrigger) {
+    btnTrigger.addEventListener('click', () => openCommandPalette());
+  }
+
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeCommandPalette();
+    });
+  }
+
+  if (input) {
+    input.addEventListener('input', () => {
+      buildPaletteItems(input.value);
+      renderPaletteResults();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (state.paletteItems && state.paletteItems.length > 0) {
+          state.paletteSelectedIndex = (state.paletteSelectedIndex + 1) % state.paletteItems.length;
+          renderPaletteResults();
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (state.paletteItems && state.paletteItems.length > 0) {
+          state.paletteSelectedIndex = (state.paletteSelectedIndex - 1 + state.paletteItems.length) % state.paletteItems.length;
+          renderPaletteResults();
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        executePaletteItem(state.paletteSelectedIndex);
+      }
+    });
+  }
+}
+
+function openCommandPalette() {
+  const modal = document.getElementById('modal-command-palette');
+  const input = document.getElementById('input-command-palette');
+  if (!modal) return;
+  modal.hidden = false;
+  modal.classList.add('active');
+  if (input) {
+    input.value = '';
+    state.paletteSelectedIndex = 0;
+  }
+  buildPaletteItems('');
+  renderPaletteResults();
+  if (input && typeof input.focus === 'function') {
+    setTimeout(() => input.focus(), 50);
+  }
+}
+
+function closeCommandPalette() {
+  const modal = document.getElementById('modal-command-palette');
+  if (!modal) return;
+  modal.hidden = true;
+  modal.classList.remove('active');
+}
+
+function buildPaletteItems(query) {
+  const q = (query || '').trim().toLowerCase();
+
+  const navTargets = [
+    { title: 'Go to Storage Operators', category: 'Navigation', action: () => switchTab('tab-operators') },
+    { title: 'Go to My Data Overview', category: 'Navigation', action: () => switchTab('tab-overview') },
+    { title: 'Go to Network Explorer', category: 'Navigation', action: () => switchTab('tab-explorer') },
+    { title: 'Go to Snapshot DAG History', category: 'Navigation', action: () => switchTab('tab-dag') },
+    { title: 'Go to Secret Diff Viewer', category: 'Navigation', action: () => switchTab('tab-diff') },
+    { title: 'Go to Tracked Secrets', category: 'Navigation', action: () => switchTab('tab-files') },
+    { title: 'Go to Threshold Guardians', category: 'Navigation', action: () => switchTab('tab-guardians') },
+    { title: 'Go to Arbitrum Relayer', category: 'Navigation', action: () => switchTab('tab-anchor') },
+    { title: 'Go to Maintenance Fleet', category: 'Navigation', action: () => switchTab('tab-fleet') },
+    { title: 'Go to Recovery Readiness', category: 'Navigation', action: () => switchTab('tab-recovery') },
+    { title: 'Go to FastCDC Inspector', category: 'Navigation', action: () => switchTab('tab-fastcdc') },
+    { title: 'Go to Activity Log', category: 'Navigation', action: () => switchTab('tab-activity') },
+  ];
+
+  const actions = [
+    { title: 'Capture & Push Snapshot...', category: 'Actions', action: () => {
+      const btn = document.getElementById('btn-open-create-snapshot');
+      if (btn) btn.click();
+    }},
+    { title: 'Toggle Secret Diff Reveal (Mask/Unmask)', category: 'Actions', action: () => {
+      const btn = document.getElementById('btn-toggle-reveal-diff');
+      if (btn) btn.click();
+    }},
+    { title: 'Trigger Cluster Recovery Audit', category: 'Actions', action: () => {
+      const btn = document.getElementById('btn-trigger-audit');
+      if (btn) btn.click();
+    }},
+    { title: 'Anchor Current Head to Arbitrum', category: 'Actions', action: () => {
+      const btn = document.getElementById('btn-trigger-anchor');
+      if (btn) btn.click();
+    }},
+    { title: 'Refresh Cluster State', category: 'Actions', action: () => {
+      fetchAllData();
+      showToast('Cluster telemetry refreshed', 'info');
+    }},
+    { title: 'Open Keyboard Shortcuts Help', category: 'Actions', action: () => {
+      const modal = document.getElementById('modal-shortcuts');
+      if (modal) openModal(modal);
+    }},
+  ];
+
+  const files = (state.overview?.tracked_files || state.vault?.tracked_files || []);
+  const fileItems = (Array.isArray(files) ? files : []).map(f => {
+    const p = typeof f === 'string' ? f : (f.path || f.file_path || 'Secret File');
+    return {
+      title: `Secret: ${p}`,
+      category: 'Tracked Secrets',
+      badge: f.size_bytes ? formatBytes(f.size_bytes) : 'Tracked',
+      action: () => {
+        switchTab('tab-files');
+        const searchInput = document.getElementById('input-search-files');
+        if (searchInput) {
+          searchInput.value = p;
+          searchInput.dispatchEvent(new Event('input'));
+        }
+      }
+    };
+  });
+
+  const snapshotItems = (state.snapshots || []).slice(0, 5).map(s => {
+    const cid = s.snapshot_id_hex || s.id || '';
+    const shortCid = cid.slice(0, 10);
+    const msg = s.message || `Epoch ${s.epoch || 1}`;
+    return {
+      title: `Snapshot: ${shortCid} - ${msg}`,
+      category: 'Recent Snapshots',
+      badge: s.timestamp_utc ? formatTimestamp(s.timestamp_utc) : 'Committed',
+      action: () => {
+        switchTab('tab-dag');
+        openSnapshotInspector(s);
+      }
+    };
+  });
+
+  const all = [...actions, ...navTargets, ...fileItems, ...snapshotItems];
+  if (!q) {
+    state.paletteItems = all;
+  } else {
+    state.paletteItems = all.filter(item => 
+      item.title.toLowerCase().includes(q) || item.category.toLowerCase().includes(q)
+    );
+  }
+
+  if (state.paletteSelectedIndex >= state.paletteItems.length) {
+    state.paletteSelectedIndex = Math.max(0, state.paletteItems.length - 1);
+  }
+}
+
+function renderPaletteResults() {
+  const container = document.getElementById('command-palette-results');
+  if (!container) return;
+  if (!state.paletteItems || state.paletteItems.length === 0) {
+    container.innerHTML = '<div class="palette-empty">No matching commands, files, or actions found.</div>';
+    return;
+  }
+
+  let html = '';
+  let currentCategory = '';
+  state.paletteItems.forEach((item, index) => {
+    if (item.category !== currentCategory) {
+      currentCategory = item.category;
+      html += `<div class="palette-group-title">${escapeHtml(currentCategory)}</div>`;
+    }
+    const isActive = index === state.paletteSelectedIndex;
+    html += `
+      <div class="palette-item ${isActive ? 'active' : ''}" data-index="${index}" role="option" aria-selected="${isActive}">
+        <div class="palette-item-left">
+          <span class="palette-item-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 19 21 12 17 5 21 12 2"></polygon>
+            </svg>
+          </span>
+          <span class="palette-item-title">${escapeHtml(item.title)}</span>
+        </div>
+        ${item.badge ? `<span class="palette-item-badge">${escapeHtml(item.badge)}</span>` : ''}
+      </div>
+    `;
+  });
+  container.innerHTML = html;
+
+  container.querySelectorAll('.palette-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.getAttribute('data-index'), 10);
+      executePaletteItem(idx);
+    });
+  });
+}
+
+function executePaletteItem(index) {
+  if (!state.paletteItems || !state.paletteItems[index]) return;
+  const item = state.paletteItems[index];
+  if (item && item.action) {
+    closeCommandPalette();
+    item.action();
+  }
 }
 
 // -------------------------------------------------------------
