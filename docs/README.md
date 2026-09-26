@@ -54,6 +54,9 @@ These supersede the parent spec where they disagree (decisions are dated inline)
 | [`TESTNET.md`](./TESTNET.md) | Public testnet: fleet endpoints, join flow, P2P status, reset path, known issues. |
 | [`EXTERNAL_REHEARSAL_PROOF_2026-09-20.md`](../report/EXTERNAL_REHEARSAL_PROOF_2026-09-20.md) | Live-fire evidence: fleet seed rotation + 3/3 probation join rehearsal (2026-09-20). |
 | [`adr/`](./adr/) | Architecture decision records (KDF, vouchers, repair lane, redb, erasure, recovery reads). |
+| [`LOAD_SOAK_VALIDATION.md`](./LOAD_SOAK_VALIDATION.md) | Track 3: push-bench soak harness, local 12-iter evidence, approval-gated live procedure. |
+| [`KEY_CEREMONIES_AND_BACKUPS.md`](./KEY_CEREMONIES_AND_BACKUPS.md) | Track 4: key inventory, custody, rotation ceremonies, backup rules, open gaps. |
+| [`MAINNET_ANCHOR_PROMOTION.md`](./MAINNET_ANCHOR_PROMOTION.md) | Track 6: Sepolia-to-mainnet anchor promotion gates, steps, rollback. |
 
 ---
 
