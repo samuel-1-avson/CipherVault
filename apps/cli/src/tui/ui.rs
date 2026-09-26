@@ -942,7 +942,7 @@ fn explorer_tx_snippet(tx_hash_hex: Option<&str>) -> String {
 
 fn explorer_finality_color(status: &str) -> Color {
     match status {
-        "finalized" | "publisher_signed" => Color::Green,
+        "deeply_confirmed" | "publisher_signed" => Color::Green,
         "unverified" => Color::Yellow,
         "reorg_suspected" | "invalid" | "not_submitted" => Color::Red,
         _ => Color::Gray,
@@ -1691,7 +1691,7 @@ mod tests {
             network: "arbitrum-one".into(),
             commitment_hex: "ab12".into(),
             tx_hash_hex: Some("0x99".into()),
-            finality_status: "finalized".into(),
+            finality_status: "deeply_confirmed".into(),
             confirmations: Some(20),
             published_at_utc: 1_757_000_000,
         }];
@@ -1723,7 +1723,7 @@ mod tests {
             "1/2 reachable",
             "Anchor Feed Head",
             "arbitrum-one",
-            "finalized",
+            "deeply_confirmed",
             "Object Quorum Lookup",
             "SATISFIED",
             "2/3 present",

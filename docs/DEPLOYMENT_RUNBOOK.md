@@ -281,8 +281,9 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
 ### Independent finality (optional but recommended)
 - Set `CIPHERVAULT_ARBITRUM_RPC_URL` to a trusted Arbitrum RPC endpoint. The dashboard then
   queries `eth_getTransactionReceipt` per checkpoint transaction plus `eth_blockNumber`,
-  and reports `finality_status`: `finalized` (>= `CIPHERVAULT_FINALITY_CONFIRMATIONS`,
+  and reports `finality_status`: `deeply_confirmed` (>= `CIPHERVAULT_FINALITY_CONFIRMATIONS`,
   default 12), `confirmed`, `pending`, `failed` (reverted receipt), or `unknown` (RPC error).
+  `deeply_confirmed` counts L2 confirmations only — L1 settlement is NOT verified.
 - Receipts are fetched in bounded batches and cached for 60 s; without an RPC URL the feed
   keeps the legacy `unverified` finality and nothing else changes.
 
@@ -294,8 +295,8 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
 - Tune the max age to roughly 3x the anchor daemon interval (default daemon: 3600 s).
 
 ### Reorg alarm
-- The dashboard remembers finalized receipts across refreshes. A checkpoint whose
-  finalized receipt vanishes or re-mines at another block flips to
+- The dashboard remembers deeply-confirmed receipts across refreshes. A checkpoint whose
+  deeply-confirmed receipt vanishes or re-mines at another block flips to
   `finality_status: reorg_suspected`, the feed reports `reorg_suspected: true`
   with the suspect tx hashes, and the dashboard host logs a stderr alarm line.
 - The alarm is sticky until the receipt re-finalizes; checkpoints removed from
@@ -737,8 +738,8 @@ requires receipt success plus registry inclusion and counts
 confirmations L2-vs-L2; it never equates the two block numbers. First
 live proof: L1 11770313 vs L2 312389514 for tx
 `0x7cf854b6…76b27` (Sep 2026). Finality stages: SequencerConfirmed,
-then ParentDataFinalized at 64+ L2 confirmations, then
-AssertionSettled at 50400+.
+then L2Confirmed at 64+ L2 confirmations, then
+DeeplyConfirmed at 50400+. Neither stage verifies L1 settlement.
 
 ### Registry redeploy (new chain or contract)
 

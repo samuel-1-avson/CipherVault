@@ -213,18 +213,38 @@ pub(crate) async fn cmd_anchor(
             th.copy_from_slice(&tx_bytes);
         }
 
-        let finality_msg = if receipt.status == "SequencerConfirmed" {
+        // Never trust the relayer's word alone: a claimed sequencer
+        // confirmation is accepted only with an independently fetched
+        // successful receipt, exactly like the manual --tx-hash path.
+        let relay_confirmed = receipt.status == "SequencerConfirmed"
+            && tx_bytes.len() == 32
+            && matches!(
+                client.get_transaction_receipt(&th).await,
+                Ok(Some(rcpt)) if rcpt.status
+            );
+        let (block_number, finality_msg) = if relay_confirmed {
             println!(
                 "{}",
-                "✓ Automated L2 Relayer Sequencer Confirmation Received!"
+                "✓ Automated L2 Relayer Sequencer Confirmation Received (independently verified)!"
                     .green()
                     .bold()
             );
             println!("  Relayer Sequencer Tx: 0x{}", receipt.tx_hash_hex.cyan());
             println!("  Sequencer Block:      {}", receipt.block_number);
             println!("  Finality Status:      {}", receipt.status.green());
-            "SequencerConfirmed (Automated L2 Relayer)"
+            (
+                receipt.block_number,
+                "SequencerConfirmed (Automated L2 Relayer, receipt independently verified)",
+            )
         } else {
+            if receipt.status == "SequencerConfirmed" {
+                println!(
+                    "{}",
+                    "⚠ Relayer claimed SequencerConfirmed but no successful on-chain receipt was found; treating as queued."
+                        .red()
+                        .bold()
+                );
+            }
             println!(
                 "{}",
                 "✓ Checkpoint queued with automated L2 relayer (pending on-chain sequencer mining)!"
@@ -232,10 +252,10 @@ pub(crate) async fn cmd_anchor(
                     .bold()
             );
             println!("  Relayer Status:       {}", receipt.status.yellow());
-            "QueuedForRelay (Pending L2 Submission)"
+            (0, "QueuedForRelay (Pending L2 Submission)")
         };
 
-        (receipt.block_number, th, finality_msg)
+        (block_number, th, finality_msg)
     } else if let Some(tx_hex) = tx_hash_opt {
         let tx_clean = tx_hex.trim().trim_start_matches("0x");
         let tx_bytes = hex::decode(tx_clean)?;
@@ -454,14 +474,14 @@ pub(crate) async fn cmd_verify_anchor(
         ciphervault_storage::AnchorFinalityStage::SequencerConfirmed { block_number } => {
             format!("Sequencer Confirmed (L2 block {})", block_number).green()
         }
-        ciphervault_storage::AnchorFinalityStage::ParentDataFinalized { block_number } => format!(
-            "Parent Data Finalized on Ethereum L1 (L2 block {})",
+        ciphervault_storage::AnchorFinalityStage::L2Confirmed { block_number } => format!(
+            "L2 Confirmed (L2 block {} — L1 settlement not verified)",
             block_number
         )
         .green()
         .bold(),
-        ciphervault_storage::AnchorFinalityStage::AssertionSettled { block_number } => format!(
-            "Assertion Settled (L2 block {}, 7-day challenge period passed)",
+        ciphervault_storage::AnchorFinalityStage::DeeplyConfirmed { block_number } => format!(
+            "Deeply Confirmed on L2 (L2 block {} — L1 settlement not verified)",
             block_number
         )
         .green()

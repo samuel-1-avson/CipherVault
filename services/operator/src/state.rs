@@ -784,6 +784,9 @@ impl OperatorState {
                     receipt.status.as_str(),
                     "QueuedForRelay"
                         | "SequencerConfirmed"
+                        // Legacy aliases: pre-relabel stage names retained so
+                        // old persisted receipts still load. Nothing writes
+                        // these anymore (renamed to L2Confirmed/DeeplyConfirmed).
                         | "ParentDataFinalized"
                         | "AssertionSettled"
                 )

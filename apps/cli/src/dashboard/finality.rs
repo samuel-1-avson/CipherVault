@@ -485,9 +485,14 @@ pub(crate) fn checkpoint_finality(
             block_number,
         } => {
             let confirmations = tip_block.map(|tip| tip.saturating_sub(block_number));
-            let finalized = confirmations.is_some_and(|count| count >= required_confirmations);
+            let deeply_confirmed =
+                confirmations.is_some_and(|count| count >= required_confirmations);
             (
-                if finalized { "finalized" } else { "confirmed" },
+                if deeply_confirmed {
+                    "deeply_confirmed"
+                } else {
+                    "confirmed"
+                },
                 Some(block_number),
                 confirmations,
             )
@@ -495,16 +500,16 @@ pub(crate) fn checkpoint_finality(
     }
 }
 
-/// Detects reorg suspects among previously-finalized receipts: a suspect is a
-/// feed checkpoint whose finalized receipt is now missing or mined at a
+/// Detects reorg suspects among previously deeply-confirmed receipts: a suspect
+/// is a feed checkpoint whose deeply-confirmed receipt is now missing or mined at a
 /// different block. `current` carries (tx hash, finality status, receipt block).
 /// Checkpoints that left the feed are ignored (feed edits are not reorgs), and
-/// a re-finalized receipt clears even at a new block (the chain moved on).
+/// a re-confirmed receipt clears even at a new block (the chain moved on).
 pub(crate) fn detect_reorg_suspects(
-    previously_finalized: &[(String, u64)],
+    previously_deep: &[(String, u64)],
     current: &[(String, String, Option<u64>)],
 ) -> Vec<String> {
-    previously_finalized
+    previously_deep
         .iter()
         .filter(|(tx, block)| {
             let Some((_, status, observed)) =
@@ -512,7 +517,7 @@ pub(crate) fn detect_reorg_suspects(
             else {
                 return false;
             };
-            if status == "finalized" {
+            if status == "deeply_confirmed" {
                 return false;
             }
             match observed {
@@ -624,8 +629,8 @@ pub(crate) static CHECKPOINT_FINALITY_CACHE: OnceLock<
 pub(crate) struct FinalityCacheEntry {
     cached_at: Instant,
     checkpoints: Vec<serde_json::Value>,
-    /// Previously-finalized receipts as (tx hash, block): reorg memory.
-    finalized: Vec<(String, u64)>,
+    /// Previously deeply-confirmed receipts as (tx hash, block): reorg memory.
+    deeply_confirmed: Vec<(String, u64)>,
 }
 
 /// Loads the verified feed and, when `CIPHERVAULT_ARBITRUM_RPC_URL` is set,
@@ -646,11 +651,11 @@ pub(crate) async fn load_public_feed_with_finality(
     };
 
     let cache = CHECKPOINT_FINALITY_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
-    let previous_finalized = match cache.lock().await.clone() {
+    let previous_deep = match cache.lock().await.clone() {
         Some(entry) if entry.cached_at.elapsed() < CHECKPOINT_FINALITY_CACHE_TTL => {
             return Ok(Some(entry.checkpoints));
         }
-        Some(entry) => entry.finalized,
+        Some(entry) => entry.deeply_confirmed,
         None => Vec::new(),
     };
 
@@ -712,7 +717,7 @@ pub(crate) async fn load_public_feed_with_finality(
             Some((tx.to_string(), status.to_string(), block))
         })
         .collect();
-    let suspects = detect_reorg_suspects(&previous_finalized, &current);
+    let suspects = detect_reorg_suspects(&previous_deep, &current);
     for record in enriched.iter_mut() {
         let tx = record
             .get("tx_hash_hex")
@@ -728,30 +733,32 @@ pub(crate) async fn load_public_feed_with_finality(
         }
     }
     for tx in &suspects {
-        eprintln!("checkpoint reorg suspected: finalized receipt for {tx} missing or re-mined");
+        eprintln!(
+            "checkpoint reorg suspected: deeply-confirmed receipt for {tx} missing or re-mined"
+        );
     }
-    let mut next_finalized: Vec<(String, u64)> = Vec::new();
+    let mut next_deep: Vec<(String, u64)> = Vec::new();
     for (tx, status, block) in &current {
-        if status == "finalized" {
+        if status == "deeply_confirmed" {
             if let Some(number) = block {
-                next_finalized.push((tx.clone(), *number));
+                next_deep.push((tx.clone(), *number));
             }
         }
     }
-    // Suspects stay in memory so the alarm persists until re-finalized; feed
+    // Suspects stay in memory so the alarm persists until re-confirmed; feed
     // removals drop out (feed edits are not reorgs).
-    for (tx, block) in &previous_finalized {
+    for (tx, block) in &previous_deep {
         if current.iter().any(|(current_tx, _, _)| current_tx == tx)
-            && !next_finalized.iter().any(|(known, _)| known == tx)
+            && !next_deep.iter().any(|(known, _)| known == tx)
         {
-            next_finalized.push((tx.clone(), *block));
+            next_deep.push((tx.clone(), *block));
         }
     }
 
     let entry = FinalityCacheEntry {
         cached_at: Instant::now(),
         checkpoints: enriched.clone(),
-        finalized: next_finalized,
+        deeply_confirmed: next_deep,
     };
     *cache.lock().await = Some(entry);
     Ok(Some(enriched))
@@ -1077,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn reorg_alarm_fires_on_finalized_receipt_regression() {
+    fn reorg_alarm_fires_on_deeply_confirmed_receipt_regression() {
         let previous = vec![("0xaaa".to_string(), 100u64), ("0xbbb".to_string(), 120u64)];
         // Vanished receipt + re-mined receipt alarm; steady ones stay quiet.
         let current = vec![
@@ -1088,14 +1095,22 @@ mod tests {
             detect_reorg_suspects(&previous, &current),
             vec!["0xaaa".to_string(), "0xbbb".to_string()]
         );
-        // Still finalized, or confirmed at the same block: no alarm.
+        // Still deeply confirmed, or confirmed at the same block: no alarm.
         let current = vec![
-            ("0xaaa".to_string(), "finalized".to_string(), Some(100u64)),
+            (
+                "0xaaa".to_string(),
+                "deeply_confirmed".to_string(),
+                Some(100u64),
+            ),
             ("0xbbb".to_string(), "confirmed".to_string(), Some(120u64)),
         ];
         assert!(detect_reorg_suspects(&previous, &current).is_empty());
-        // Re-finalized at a new block clears; feed removals never alarm.
-        let current = vec![("0xaaa".to_string(), "finalized".to_string(), Some(140u64))];
+        // Re-confirmed at a new block clears; feed removals never alarm.
+        let current = vec![(
+            "0xaaa".to_string(),
+            "deeply_confirmed".to_string(),
+            Some(140u64),
+        )];
         assert!(detect_reorg_suspects(&previous, &current).is_empty());
     }
 
@@ -1162,7 +1177,10 @@ mod tests {
             status_ok: true,
             block_number: 100,
         };
-        assert_eq!(checkpoint_finality(obs, Some(200), 12).0, "finalized");
+        assert_eq!(
+            checkpoint_finality(obs, Some(200), 12).0,
+            "deeply_confirmed"
+        );
         assert_eq!(checkpoint_finality(obs, Some(105), 12).0, "confirmed");
         assert_eq!(checkpoint_finality(obs, None, 12).0, "confirmed");
         let reverted = ReceiptFetch::Observed {

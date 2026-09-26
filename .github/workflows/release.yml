@@ -111,9 +111,14 @@ jobs:
         run: |
           set -euo pipefail
           CROSS_VERSION="v0.2.5"
+          # cross-rs publishes no checksum file, so this recorded hash is the
+          # trust anchor: it fails the build on tag moves or asset tampering.
+          # Re-record deliberately (never from a failed build) when bumping.
+          CROSS_SHA256="642375d1bcf3bd88272c32ba90e999f3d983050adf45e66bd2d3887e8e838bad"
           curl --fail --silent --show-error --location \
             "https://github.com/cross-rs/cross/releases/download/${CROSS_VERSION}/cross-x86_64-unknown-linux-gnu.tar.gz" \
             -o /tmp/cross.tar.gz
+          echo "${CROSS_SHA256}  /tmp/cross.tar.gz" | sha256sum --check --status
           rm -rf /tmp/cross-bin && mkdir -p /tmp/cross-bin
           tar -xzf /tmp/cross.tar.gz -C /tmp/cross-bin
           CROSS_BIN="$(find /tmp/cross-bin -maxdepth 2 -name cross -type f | head -n 1)"

@@ -1722,7 +1722,7 @@ function checkpointDisplayState(record, transactionHash) {
     return { label: 'Not submitted', tone: 'var(--ash)', confirmed: false };
   }
   if (record && record.finality_status === 'reorg_suspected') {
-    return { label: 'Reorg suspected — finalized receipt regressed', tone: 'var(--bad)', confirmed: false };
+    return { label: 'Reorg suspected — deeply-confirmed receipt regressed', tone: 'var(--bad)', confirmed: false };
   }
 
   const verificationStatus = record && typeof record.verification_status === 'string'

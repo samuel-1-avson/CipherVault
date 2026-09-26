@@ -1012,7 +1012,7 @@ mod tests {
             "network": "arbitrum-one",
             "commitment_hex": "ab12",
             "tx_hash_hex": "0x99",
-            "finality_status": "finalized",
+            "finality_status": "deeply_confirmed",
             "confirmations": 20,
             "published_at_utc": 1_700_000_000u64,
         })]);

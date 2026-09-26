@@ -14,10 +14,28 @@ pub enum AnchorFinalityStage {
     Pending,
     /// Included in Arbitrum L2 block (Sequencer confirmation).
     SequencerConfirmed { block_number: u64 },
-    /// Posted to Ethereum L1 parent chain data availability batch.
-    ParentDataFinalized { block_number: u64 },
-    /// Challenge period expired; rollup assertion settled.
-    AssertionSettled { block_number: u64 },
+    /// Observed with 64+ L2 confirmations. This is NOT L1 finality: no
+    /// parent-chain batch posting is verified at this stage.
+    L2Confirmed { block_number: u64 },
+    /// Observed with 50400+ L2 confirmations. This is NOT assertion
+    /// settlement: no fraud-challenge window is verified.
+    DeeplyConfirmed { block_number: u64 },
+}
+
+/// Topic-0 of `CommitmentPublished(bytes32,address,uint256,uint256)` from
+/// `contracts/CipherVaultRegistry.sol`: `keccak256` of the canonical event
+/// signature. A receipt only backs an anchor when it carries this event,
+/// emitted by the registry, with the commitment as first indexed topic.
+pub const COMMITMENT_PUBLISHED_TOPIC: [u8; 32] = [
+    0x41, 0x1d, 0x96, 0x20, 0xa5, 0x5d, 0xe9, 0xc9, 0xaf, 0x8c, 0x06, 0x20, 0x74, 0x43, 0x8b, 0xac,
+    0x6f, 0x30, 0xb3, 0xec, 0xb3, 0xef, 0xaa, 0xac, 0x8a, 0xd1, 0x2b, 0xa2, 0xce, 0xe0, 0x2d, 0xaa,
+];
+
+/// Minimal log entry from `eth_getTransactionReceipt`: emitter plus topics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptLog {
+    pub address: [u8; 20],
+    pub topics: Vec<[u8; 32]>,
 }
 
 /// Verified on-chain transaction receipt from Ethereum/Arbitrum RPC.
@@ -26,6 +44,15 @@ pub struct TransactionReceipt {
     pub transaction_hash: [u8; 32],
     pub block_number: u64,
     pub status: bool,
+    /// `to` address of the transaction; zero when the RPC omits it (e.g.
+    /// contract creation). Verification requires this to equal the registry.
+    #[serde(default)]
+    pub to: [u8; 20],
+    /// Logs emitted by the transaction; empty when the RPC omits them.
+    /// Verification requires a registry `CommitmentPublished` log for the
+    /// anchored commitment.
+    #[serde(default)]
+    pub logs: Vec<ReceiptLog>,
 }
 
 /// Verification report for an on-chain checkpoint.
@@ -39,15 +66,29 @@ pub struct AnchorVerificationReport {
     pub current_chain_block: u64,
     pub finality_stage: AnchorFinalityStage,
     pub on_chain_confirmed: bool,
-    /// True only when an independent RPC receipt exists, succeeded, and the
-    /// commitment is present in the registry contract. The receipt block and
-    /// the registry first-seen block are NOT compared: on Arbitrum the former
-    /// is an L2 block number while `block.number` in-contract is L1-derived.
+    /// True only when an independent RPC receipt exists, succeeded, is bound
+    /// to this anchor (addressed to the registry and carrying its
+    /// `CommitmentPublished` log for this commitment), and the commitment is
+    /// present in the registry contract. The receipt block and the registry
+    /// first-seen block are NOT compared: on Arbitrum the former is an L2
+    /// block number while `block.number` in-contract is L1-derived.
     #[serde(default)]
     pub receipt_verified: bool,
     #[serde(default)]
     pub receipt_block_number: Option<u64>,
     pub tx_hash_hex: String,
+}
+
+/// Decodes a `0x`-prefixed hex string into exactly `N` bytes.
+fn decode_hex_fixed<const N: usize>(value: &str) -> Option<[u8; N]> {
+    let clean = value.trim_start_matches("0x");
+    if clean.len() != N * 2 {
+        return None;
+    }
+    let bytes = hex::decode(clean).ok()?;
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes);
+    Some(out)
 }
 
 /// Client for interacting with the Arbitrum CipherVaultRegistry contract.
@@ -225,10 +266,36 @@ impl ArbitrumAnchorClient {
         let status_hex = result["status"].as_str().unwrap_or("0x0");
         let status = status_hex == "0x1" || status_hex == "0x01" || status_hex == "1";
 
+        let to = result["to"]
+            .as_str()
+            .and_then(decode_hex_fixed::<20>)
+            .unwrap_or([0u8; 20]);
+
+        let mut logs = Vec::new();
+        if let Some(entries) = result["logs"].as_array() {
+            for entry in entries {
+                let address: Option<[u8; 20]> =
+                    entry["address"].as_str().and_then(decode_hex_fixed);
+                if let Some(address) = address {
+                    let mut topics = Vec::new();
+                    if let Some(raw) = entry["topics"].as_array() {
+                        for topic in raw.iter().filter_map(|t| t.as_str()) {
+                            if let Some(decoded) = decode_hex_fixed::<32>(topic) {
+                                topics.push(decoded);
+                            }
+                        }
+                    }
+                    logs.push(ReceiptLog { address, topics });
+                }
+            }
+        }
+
         Ok(Some(TransactionReceipt {
             transaction_hash: *tx_hash,
             block_number,
             status,
+            to,
+            logs,
         }))
     }
 
@@ -362,8 +429,9 @@ impl ArbitrumAnchorClient {
 
         // A relayer-supplied block/tx pair is not evidence by itself. When a
         // transaction hash is present, independently query the chain receipt
-        // and require a successful receipt plus registry inclusion of this
-        // exact commitment. Pre-submission evidence (all-zero tx hash) can
+        // and require a successful receipt bound to this anchor (addressed to
+        // the registry with its publication log) plus registry inclusion of
+        // this exact commitment. Pre-submission evidence (all-zero tx hash) can
         // still be observed in the registry, but it is not receipt-backed.
         let tx_hash_present =
             evidence.tx_hash.len() == 32 && evidence.tx_hash.iter().any(|byte| *byte != 0);
@@ -380,6 +448,8 @@ impl ArbitrumAnchorClient {
             receipt.as_ref(),
             contract_block,
             current_block,
+            &self.contract_address,
+            &commitment_arr,
         );
         let receipt_block_number = receipt.as_ref().map(|receipt| receipt.block_number);
 
@@ -408,15 +478,32 @@ impl ArbitrumAnchorClient {
 /// subtracted across domains. Confirmation counting therefore uses the
 /// receipt's L2 block against the L2 head; the registry value is an
 /// inclusion-only signal.
+///
+/// Binding: the receipt must belong to this anchor — its transaction must be
+/// addressed to the registry (`to`) and must emit `CommitmentPublished` from
+/// the registry with the commitment as first indexed topic. A successful
+/// receipt for any other transaction, or a re-publish that emits no event
+/// because the commitment was already registered, leaves the anchor
+/// unconfirmed.
 pub fn evaluate_anchor_confirmation(
     preimage_valid: bool,
     tx_hash_present: bool,
     receipt: Option<&TransactionReceipt>,
     contract_block: Option<u64>,
     current_block: u64,
+    registry_address: &[u8; 20],
+    commitment: &[u8; 32],
 ) -> (bool, bool, AnchorFinalityStage) {
     let receipt_ok = matches!(receipt, Some(receipt) if receipt.status);
-    let receipt_verified = tx_hash_present && receipt_ok && contract_block.is_some();
+    let receipt_bound = matches!(receipt, Some(receipt)
+    if receipt.to == *registry_address
+        && receipt.logs.iter().any(|log| {
+            log.address == *registry_address
+                && log.topics.first() == Some(&COMMITMENT_PUBLISHED_TOPIC)
+                && log.topics.get(1) == Some(commitment)
+        }));
+    let receipt_verified =
+        tx_hash_present && receipt_ok && receipt_bound && contract_block.is_some();
     let on_chain_confirmed = contract_block.is_some() && receipt_verified;
     if !preimage_valid || !on_chain_confirmed {
         return (
@@ -430,11 +517,11 @@ pub fn evaluate_anchor_confirmation(
         .unwrap_or(current_block);
     let confirmations = current_block.saturating_sub(effective_block);
     let finality_stage = if confirmations >= 50400 {
-        AnchorFinalityStage::AssertionSettled {
+        AnchorFinalityStage::DeeplyConfirmed {
             block_number: effective_block,
         }
     } else if confirmations >= 64 {
-        AnchorFinalityStage::ParentDataFinalized {
+        AnchorFinalityStage::L2Confirmed {
             block_number: effective_block,
         }
     } else {
@@ -577,11 +664,27 @@ mod tests {
         assert!(!tampered.verify_commitment());
     }
 
+    const TEST_REGISTRY: [u8; 20] = [0x33u8; 20];
+    const TEST_COMMITMENT: [u8; 32] = [0x77u8; 32];
+
+    fn publication_log(commitment: [u8; 32]) -> ReceiptLog {
+        ReceiptLog {
+            address: TEST_REGISTRY,
+            topics: vec![
+                COMMITMENT_PUBLISHED_TOPIC,
+                commitment,
+                [0x01u8; 32], // publisher topic is opaque to verification
+            ],
+        }
+    }
+
     fn receipt_at(block_number: u64) -> TransactionReceipt {
         TransactionReceipt {
             transaction_hash: [0x44u8; 32],
             block_number,
             status: true,
+            to: TEST_REGISTRY,
+            logs: vec![publication_log(TEST_COMMITMENT)],
         }
     }
 
@@ -590,8 +693,15 @@ mod tests {
         // Live Arbitrum Sepolia case: registry `block.number` is L1-derived
         // (11770313) while the receipt and head are L2 (312389514/312389711).
         let receipt = receipt_at(312_389_514);
-        let (verified, confirmed, stage) =
-            evaluate_anchor_confirmation(true, true, Some(&receipt), Some(11_770_313), 312_389_550);
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(11_770_313),
+            312_389_550,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert!(verified);
         assert!(confirmed);
         assert_eq!(
@@ -605,8 +715,15 @@ mod tests {
     #[test]
     fn test_pending_without_registry_inclusion() {
         let receipt = receipt_at(100);
-        let (verified, confirmed, stage) =
-            evaluate_anchor_confirmation(true, true, Some(&receipt), None, 150);
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            None,
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert!(!verified);
         assert!(!confirmed);
         assert_eq!(stage, AnchorFinalityStage::Pending);
@@ -618,9 +735,18 @@ mod tests {
             transaction_hash: [0x44u8; 32],
             block_number: 100,
             status: false,
+            to: TEST_REGISTRY,
+            logs: vec![publication_log(TEST_COMMITMENT)],
         };
-        let (verified, confirmed, stage) =
-            evaluate_anchor_confirmation(true, true, Some(&receipt), Some(90), 150);
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert!(!verified);
         assert!(!confirmed);
         assert_eq!(stage, AnchorFinalityStage::Pending);
@@ -628,8 +754,15 @@ mod tests {
 
     #[test]
     fn test_pending_for_presubmission_evidence() {
-        let (verified, confirmed, stage) =
-            evaluate_anchor_confirmation(true, false, None, Some(90), 150);
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            false,
+            None,
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert!(!verified);
         assert!(!confirmed);
         assert_eq!(stage, AnchorFinalityStage::Pending);
@@ -638,30 +771,144 @@ mod tests {
     #[test]
     fn test_advances_finality_with_l2_confirmations() {
         let receipt = receipt_at(1000);
-        let (_, _, stage) =
-            evaluate_anchor_confirmation(true, true, Some(&receipt), Some(50), 1064);
+        let (_, _, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(50),
+            1064,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert_eq!(
             stage,
-            AnchorFinalityStage::ParentDataFinalized { block_number: 1000 }
+            AnchorFinalityStage::L2Confirmed { block_number: 1000 }
         );
-        let (_, _, stage) =
-            evaluate_anchor_confirmation(true, true, Some(&receipt), Some(50), 51400);
+        let (_, _, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(50),
+            51400,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert_eq!(
             stage,
-            AnchorFinalityStage::AssertionSettled { block_number: 1000 }
+            AnchorFinalityStage::DeeplyConfirmed { block_number: 1000 }
         );
+    }
+
+    #[test]
+    fn test_commitment_published_topic_matches_registry_event() {
+        use sha3::Digest;
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(b"CommitmentPublished(bytes32,address,uint256,uint256)");
+        let hash: [u8; 32] = hasher.finalize().into();
+        assert_eq!(COMMITMENT_PUBLISHED_TOPIC, hash);
+    }
+
+    #[test]
+    fn test_rejects_receipt_not_addressed_to_registry() {
+        let mut receipt = receipt_at(100);
+        receipt.to = [0x99u8; 20];
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
+        assert!(!verified);
+        assert!(!confirmed);
+        assert_eq!(stage, AnchorFinalityStage::Pending);
+    }
+
+    #[test]
+    fn test_rejects_receipt_without_publication_log() {
+        let mut receipt = receipt_at(100);
+        receipt.logs.clear();
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
+        assert!(!verified);
+        assert!(!confirmed);
+        assert_eq!(stage, AnchorFinalityStage::Pending);
+    }
+
+    #[test]
+    fn test_rejects_publication_log_for_other_commitment() {
+        let mut receipt = receipt_at(100);
+        receipt.logs = vec![publication_log([0x55u8; 32])];
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
+        assert!(!verified);
+        assert!(!confirmed);
+        assert_eq!(stage, AnchorFinalityStage::Pending);
+    }
+
+    #[test]
+    fn test_accepts_bound_receipt_among_unrelated_logs() {
+        let mut receipt = receipt_at(100);
+        receipt.logs.insert(
+            0,
+            ReceiptLog {
+                address: [0x09u8; 20],
+                topics: vec![[0x08u8; 32]],
+            },
+        );
+        let (verified, confirmed, _) = evaluate_anchor_confirmation(
+            true,
+            true,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
+        assert!(verified);
+        assert!(confirmed);
     }
 
     #[test]
     fn test_pending_on_bad_preimage_despite_chain_proof() {
         let receipt = receipt_at(100);
-        let (verified, confirmed, stage) =
-            evaluate_anchor_confirmation(true, false, Some(&receipt), Some(90), 150);
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            true,
+            false,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert!(!verified);
         assert!(!confirmed);
         assert_eq!(stage, AnchorFinalityStage::Pending);
-        let (verified, confirmed, stage) =
-            evaluate_anchor_confirmation(false, true, Some(&receipt), Some(90), 150);
+        let (verified, confirmed, stage) = evaluate_anchor_confirmation(
+            false,
+            true,
+            Some(&receipt),
+            Some(90),
+            150,
+            &TEST_REGISTRY,
+            &TEST_COMMITMENT,
+        );
         assert!(verified);
         assert!(confirmed);
         assert_eq!(stage, AnchorFinalityStage::Pending);

@@ -1,6 +1,6 @@
 use ciphervault_format::CheckpointEvidence;
 use ciphervault_local_store::LocalVaultStore;
-use ciphervault_storage::chain::ArbitrumAnchorClient;
+use ciphervault_storage::chain::{ArbitrumAnchorClient, COMMITMENT_PUBLISHED_TOPIC};
 use std::fs;
 
 #[tokio::test]
@@ -180,11 +180,25 @@ async fn test_live_arbitrum_rpc_send_raw_transaction_and_receipt() {
     use tokio::net::TcpListener;
 
     let dummy_tx_hash = "0x9876543210987654321098765432109876543210987654321098765432109876";
+    // Mock receipt binds to the same registry ([0x55; 20]) and commitment
+    // inputs ([0x11; 32] / [0x22; 32]) the evidence below uses; the
+    // `receipt_verified` assertion fails on any drift between them.
+    let registry_hex = format!("0x{}", hex::encode([0x55u8; 20]));
+    let topic0_hex = format!("0x{}", hex::encode(COMMITMENT_PUBLISHED_TOPIC));
+    let mock_commitment = CheckpointEvidence::compute_commitment(&[0x11u8; 32], &[0x22u8; 32]);
+    let commitment_topic = format!("0x{}", hex::encode(mock_commitment));
+    let publisher_topic =
+        "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
     // Mock Ethereum / Arbitrum JSON-RPC Server
     let rpc_app = Router::new().route(
         "/",
-        post(move |Json(payload): Json<Value>| async move {
+        post(move |Json(payload): Json<Value>| {
+            let to_hex = registry_hex.clone();
+            let topic0 = topic0_hex.clone();
+            let commitment_topic = commitment_topic.clone();
+            let publisher_topic = publisher_topic.clone();
+            async move {
             let method = payload["method"].as_str().unwrap_or("");
             let id = payload["id"].clone();
 
@@ -199,7 +213,12 @@ async fn test_live_arbitrum_rpc_send_raw_transaction_and_receipt() {
                     "result": {
                         "transactionHash": dummy_tx_hash,
                         "blockNumber": "0x12345",
-                        "status": "0x1"
+                        "status": "0x1",
+                        "to": to_hex.clone(),
+                        "logs": [{
+                            "address": to_hex,
+                            "topics": [topic0, commitment_topic, publisher_topic]
+                        }]
                     },
                     "id": id
                 })),
@@ -219,7 +238,8 @@ async fn test_live_arbitrum_rpc_send_raw_transaction_and_receipt() {
                     "id": id
                 })),
             }
-        }),
+            }
+        })
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

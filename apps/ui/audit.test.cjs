@@ -547,7 +547,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
     `checkpointDisplayState({ finality_status: 'reorg_suspected' }, '0x${'ab'.repeat(32)}')`,
     context
   );
-  assert.equal(reorgState.label, 'Reorg suspected — finalized receipt regressed');
+  assert.equal(reorgState.label, 'Reorg suspected — deeply-confirmed receipt regressed');
   assert.equal(reorgState.confirmed, false);
 
   vm.runInContext(`renderRelayerCheckpoints({
