@@ -183,6 +183,19 @@ Early design RFCs (Phase 01 through Phase 10), completed research spikes, and hi
 
 ---
 
+## 🤝 9. Community Governance, Security & Licensing
+
+CipherVault adheres to rigorous open-source governance and intellectual property standards:
+
+* [**`CONTRIBUTING.md`**](../CONTRIBUTING.md) — Contributor onboarding, quality gates, and commit conventions.
+* [**`DCO (Developer Certificate of Origin)`**](../CONTRIBUTING.md#developer-certificate-of-origin-dco) — Mandatory `git commit -s` sign-off to certify original authorship.
+* [**`SECURITY.md`**](../SECURITY.md) — Responsible vulnerability reporting, Safe Harbor terms, and SLA targets.
+* [**`CODE_OF_CONDUCT.md`**](../CODE_OF_CONDUCT.md) — Contributor Covenant v2.1 code of conduct.
+* [**`TRADEMARK.md`**](../TRADEMARK.md) — Brand guidelines and rebranding requirements for downstream forks.
+* [**`LICENSE`**](../LICENSE) — Dual-licensing terms ([Apache 2.0](../LICENSE-APACHE) or [MIT](../LICENSE-MIT)).
+
+---
+
 ## 🛡️ Non-Negotiable Architectural Invariants
 
 1. **Zero Plaintext at Rest**: Decryption keys and device credentials are stored exclusively in OS credential vaults (Windows DPAPI or machine-entropy AEAD keyrings).

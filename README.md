@@ -9,12 +9,14 @@
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens--yubikey-piv)
 [![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(63%20Suites)-success.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
+[![Contributing: DCO](https://img.shields.io/badge/Contributions-DCO%20Signed--off-blueviolet.svg)](CONTRIBUTING.md)
 
 **Decentralized, zero-knowledge secret backup, version control, and clean-machine disaster recovery for confidential development files.**
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
-[The Problem It Solves](#-the-problem-ciphervault-solves) • [Architecture](#-system-architecture--trust-boundaries) • [Key Features](#-important-features) • [Installation](#-installation-guide) • [Setup Guide](docs/SETUP_GUIDE.md) • [Quickstart Guide](#-quickstart-guide) • [CLI Reference](#-complete-cli-command-reference) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Docker Deployment](#-docker-compose--self-hosting) • [Docs Hub](docs/README.md)
+[The Problem It Solves](#-the-problem-ciphervault-solves) • [Architecture](#-system-architecture--trust-boundaries) • [Key Features](#-important-features) • [Installation](#-installation-guide) • [Setup Guide](docs/SETUP_GUIDE.md) • [Quickstart Guide](#-quickstart-guide) • [CLI Reference](#-complete-cli-command-reference) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Docker Deployment](#-docker-compose--self-hosting) • [Docs Hub](docs/README.md) • [Contributing](CONTRIBUTING.md) • [Trademark](TRADEMARK.md)
 
 </div>
 
@@ -662,11 +664,26 @@ For deep technical specifications, audit reports, and deployment guides, explore
 
 ---
 
-## 📄 License
+## 🤝 Community, Governance & Contributing
 
-Dual-licensed under either of:
+CipherVault is an open-source, community-driven cryptographic project. We welcome developers, security researchers, cryptographers, and node operators to collaborate and contribute.
 
-* **Apache License, Version 2.0** ([LICENSE](LICENSE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
-* **MIT License** ([LICENSE](LICENSE) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+* **[Contributing Guidelines](CONTRIBUTING.md)** — Pull request workflow, local development setup, code quality gates, and commit signing conventions.
+* **[Developer Certificate of Origin (DCO)](CONTRIBUTING.md#developer-certificate-of-origin-dco)** — How to sign off on commits (`git commit -s`) to certify code provenance and defend against intellectual property theft.
+* **[Security Policy & Vulnerability Disclosure](SECURITY.md)** — Coordinated vulnerability reporting guidelines, Safe Harbor policy, and disclosure SLAs.
+* **[Code of Conduct](CODE_OF_CONDUCT.md)** — Community standards and harassment-free pledge.
+* **[Trademark & Brand Policy](TRADEMARK.md)** — Guidelines on using the CipherVault name and logo, rebranding requirements for forks, and protecting the project's identity.
+
+---
+
+## 📄 License & Trademark Notice
+
+CipherVault is dual-licensed under either of:
+
+* **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
+* **MIT License** ([`LICENSE-MIT`](LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
 
 at your option.
+
+> [!NOTE]
+> **Trademark Notice:** Open source licenses grant rights to source code only. The name **CipherVault**, official logos, and project marks are protected brand assets. Any fork or modified distribution must be rebranded with an original name and distinct logo pursuant to our [Trademark Policy](TRADEMARK.md).
