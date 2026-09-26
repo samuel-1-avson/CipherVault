@@ -561,6 +561,18 @@ pub(crate) fn newest_checkpoint_published_at(checkpoints: &[serde_json::Value]) 
         .max()
 }
 
+/// Normalizes a transaction hash for JSON-RPC `DATA` params. Nodes reject
+/// bare hex (`cannot unmarshal hex string without 0x prefix`), while older
+/// feed files predate the publisher's `0x` prefix — accept both, emit `0x`.
+pub(crate) fn normalize_rpc_tx_hash(hash: &str) -> String {
+    let trimmed = hash.trim();
+    if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        trimmed.to_string()
+    } else {
+        format!("0x{trimmed}")
+    }
+}
+
 pub(crate) async fn fetch_receipt_observation(
     client: &HttpClient,
     rpc_url: &str,
@@ -570,7 +582,7 @@ pub(crate) async fn fetch_receipt_observation(
         "jsonrpc": "2.0",
         "id": 1,
         "method": "eth_getTransactionReceipt",
-        "params": [tx_hash_hex],
+        "params": [normalize_rpc_tx_hash(&tx_hash_hex)],
     });
     let response = match client.post(rpc_url).json(&body).send().await {
         Ok(response) => response,
@@ -954,6 +966,69 @@ mod tests {
         assert!(parse_explorer_cid("  ab12  ").is_none());
         assert!(parse_explorer_cid(&"ab".repeat(31)).is_none());
         assert!(parse_explorer_cid(&"zz".repeat(32)).is_none());
+    }
+
+    #[test]
+    fn rpc_tx_hash_normalizer_emits_0x_prefix() {
+        assert_eq!(
+            normalize_rpc_tx_hash(
+                "7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
+            ),
+            "0x7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
+        );
+        assert_eq!(
+            normalize_rpc_tx_hash(
+                "0x7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
+            ),
+            "0x7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
+        );
+        assert_eq!(normalize_rpc_tx_hash("  0xabc123  "), "0xabc123");
+    }
+
+    #[test]
+    fn published_feed_prefixes_transaction_hashes_for_rpc() {
+        // Nodes reject bare-hex DATA params, so the publisher must emit
+        // 0x-prefixed hashes (the verifier already accepts both forms).
+        let now = Utc::now().timestamp().max(0) as u64;
+        let signing_key = ciphervault_crypto::generate_signing_key();
+        let evidence = ciphervault_format::CheckpointEvidence::new(
+            [0x11u8; 32],
+            [0x22u8; 32],
+            421614,
+            [0x33u8; 20],
+            [0x44u8; 32],
+            312825597,
+            now,
+        );
+        let feed = build_public_checkpoint_feed(
+            vec![evidence],
+            "Arbitrum Sepolia".to_string(),
+            &signing_key,
+            now,
+        )
+        .unwrap();
+        assert_eq!(feed.checkpoints.len(), 1);
+        assert_eq!(
+            feed.checkpoints[0].tx_hash_hex.as_deref().unwrap(),
+            format!("0x{}", "44".repeat(32))
+        );
+        let queued = ciphervault_format::CheckpointEvidence::new(
+            [0x11u8; 32],
+            [0x22u8; 32],
+            421614,
+            [0x33u8; 20],
+            [0u8; 32],
+            0,
+            now,
+        );
+        let feed = build_public_checkpoint_feed(
+            vec![queued],
+            "Arbitrum Sepolia".to_string(),
+            &signing_key,
+            now,
+        )
+        .unwrap();
+        assert!(feed.checkpoints[0].tx_hash_hex.is_none());
     }
 
     #[test]

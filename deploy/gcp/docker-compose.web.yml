@@ -14,9 +14,15 @@ services:
       - CIPHERVAULT_OPERATOR_REGIONS=${CIPHERVAULT_OPERATOR_REGIONS:-}
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
       - CIPHERVAULT_ACCOUNT_ENDPOINT=${CIPHERVAULT_ACCOUNT_ENDPOINT:-http://account:8300}
+      - CIPHERVAULT_ARBITRUM_RPC_URL=${CIPHERVAULT_ARBITRUM_RPC_URL:-}
       - RUST_LOG=info
     volumes:
       - vault_data:/var/lib/ciphervault-ui
+      # Read-only release view so the dashboard can load the staged
+      # checkpoint feed (CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=/release/feed.json).
+      # Directory (not file) mount: the feed is optional, and a missing
+      # file bind would fail container creation on feed-less deploys.
+      - /opt/ciphervault-ui/release:/release:ro
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:8080/api/vault"]
       interval: 15s

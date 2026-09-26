@@ -32,6 +32,12 @@ param(
     [string]$FinalityConfirmations = "",
 
     [string]$OperatorRegions = "",
+
+    [string]$CheckpointFeedPath = "",
+
+    [string]$CheckpointPublisherKey = "",
+
+    [string]$ArbitrumRpcUrl = "",
     [string]$CosignCertificateIdentityRegex = "https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*",
     [switch]$Apply
 )
@@ -251,6 +257,23 @@ if ($FinalityConfirmations.Trim() -ne "" -and $FinalityConfirmations.Trim() -not
 if ($OperatorRegions.Contains(',')) {
     throw "OperatorRegions must use spaces (not commas) between endpoints: commas corrupt the instance metadata join"
 }
+if ($CheckpointFeedPath.Trim() -ne "") {
+    if (-not (Test-Path -LiteralPath $CheckpointFeedPath.Trim() -PathType Leaf)) {
+        throw "CheckpointFeedPath not found: $CheckpointFeedPath"
+    }
+    try { $feed = Get-Content -LiteralPath $CheckpointFeedPath.Trim() -Raw | ConvertFrom-Json } catch {
+        throw "CheckpointFeedPath is not valid JSON: $CheckpointFeedPath"
+    }
+    if ($feed.version -ne 1 -or [string]::IsNullOrWhiteSpace($feed.signature_hex)) {
+        throw "CheckpointFeedPath is not a v1 signed checkpoint feed"
+    }
+}
+if ($CheckpointPublisherKey.Trim() -ne "" -and $CheckpointPublisherKey.Trim() -notmatch '^(0x)?[0-9a-fA-F]{64}$') {
+    throw "CheckpointPublisherKey must be 32 bytes of hex (0x prefix optional)"
+}
+if ($ArbitrumRpcUrl.Trim() -ne "" -and $ArbitrumRpcUrl.Trim() -notmatch '^https://') {
+    throw "ArbitrumRpcUrl must be an https URL"
+}
 
 $caddyImage = Get-StagedCaddyImage -ComposePath $compose
 
@@ -280,6 +303,13 @@ try {
     Invoke-Gcloud compute scp $caddy "${InstanceName}:$remoteStage/Caddyfile" --project $ProjectId --zone $Zone
     Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; sudo install -d -m 0755 /opt/ciphervault-ui/release/last-good; for f in docker-compose.yml Caddyfile; do if [ -f /opt/ciphervault-ui/release/`$f ]; then sudo install -m 0644 /opt/ciphervault-ui/release/`$f /opt/ciphervault-ui/release/last-good/`$f; fi; done; sudo install -m 0644 '$remoteStage/docker-compose.yml' /opt/ciphervault-ui/release/docker-compose.yml; sudo install -m 0644 '$remoteStage/Caddyfile' /opt/ciphervault-ui/release/Caddyfile; rm -rf '$remoteStage'"
 
+    if ($CheckpointFeedPath.Trim() -ne "") {
+        Write-Host "Staging checkpoint feed..." -ForegroundColor Cyan
+        Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; mkdir -p '$remoteStage'"
+        Invoke-Gcloud compute scp $CheckpointFeedPath.Trim() "${InstanceName}:$remoteStage/feed.json" --project $ProjectId --zone $Zone
+        Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "set -eu; if [ -f /opt/ciphervault-ui/release/feed.json ]; then sudo install -m 0644 /opt/ciphervault-ui/release/feed.json /opt/ciphervault-ui/release/last-good/feed.json; fi; sudo install -m 0644 '$remoteStage/feed.json' /opt/ciphervault-ui/release/feed.json; rm -rf '$remoteStage'"
+    }
+
     # Mandatory gate on exactly what was staged: a broken edge config
     # aborts here, before the VM stops, leaving the live deployment untouched.
     Invoke-RemoteCaddyValidate -InstanceName $InstanceName -ProjectId $ProjectId -Zone $Zone -RemoteCaddyfile "/opt/ciphervault-ui/release/Caddyfile" -CaddyImage $caddyImage
@@ -299,6 +329,8 @@ try {
     )
     if ($FinalityConfirmations.Trim() -ne "") { $metadata += "finality-confirmations=$($FinalityConfirmations.Trim())" }
     if ($OperatorRegions.Trim() -ne "") { $metadata += "operator-regions=$($OperatorRegions.Trim())" }
+    if ($CheckpointPublisherKey.Trim() -ne "") { $metadata += "checkpoint-publisher-key=$($CheckpointPublisherKey.Trim())" }
+    if ($ArbitrumRpcUrl.Trim() -ne "") { $metadata += "arbitrum-rpc-url=$($ArbitrumRpcUrl.Trim())" }
     $metadata = $metadata -join ','
 
     Write-Host "Switching the VM to the least-privilege runtime identity and cloud-platform scope..." -ForegroundColor Cyan

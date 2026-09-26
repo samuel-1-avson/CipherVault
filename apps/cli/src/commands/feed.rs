@@ -98,7 +98,7 @@ pub(crate) fn build_public_checkpoint_feed(
                 contract_address_hex: hex::encode(record.contract_address),
                 commitment_hex: hex::encode(record.commitment),
                 head_record_cid_hex: hex::encode(record.head_record_cid),
-                tx_hash_hex: tx_present.then(|| hex::encode(record.tx_hash)),
+                tx_hash_hex: tx_present.then(|| format!("0x{}", hex::encode(record.tx_hash))),
                 block_number: (record.block_number > 0).then_some(record.block_number),
                 published_at_utc: record.timestamp_utc,
             })

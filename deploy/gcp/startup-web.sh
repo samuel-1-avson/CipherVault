@@ -98,6 +98,8 @@ readonly TOTP_SECRET_NAME="$(metadata_value account-totp-secret ciphervault-acco
 readonly PROJECT_ID="$(metadata_value project-id)"
 readonly FINALITY_CONFIRMATIONS="$(metadata_value finality-confirmations)"
 readonly OPERATOR_REGIONS="$(metadata_value operator-regions)"
+readonly CHECKPOINT_PUBLISHER_KEY="$(metadata_value checkpoint-publisher-key)"
+readonly ARBITRUM_RPC_URL="$(metadata_value arbitrum-rpc-url)"
 
 require_digest_image CIPHERVAULT_DASHBOARD_IMAGE "$DASHBOARD_IMAGE"
 require_digest_image CIPHERVAULT_ACCOUNT_IMAGE "$ACCOUNT_IMAGE"
@@ -129,7 +131,15 @@ CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=$TOTP_KEY_FILE
 CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=true
 CIPHERVAULT_FINALITY_CONFIRMATIONS=$FINALITY_CONFIRMATIONS
 CIPHERVAULT_OPERATOR_REGIONS=$OPERATOR_REGIONS
+CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY=$CHECKPOINT_PUBLISHER_KEY
+CIPHERVAULT_ARBITRUM_RPC_URL=$ARBITRUM_RPC_URL
 EOF
+# The feed path is set only when a feed file was staged: env-set-but-missing
+# would 503 the anchors endpoints instead of serving an empty feed. The path
+# is the in-container view (/release) of the staged release directory.
+if [[ -f "$RELEASE_DIR/feed.json" ]]; then
+    printf 'CIPHERVAULT_PUBLIC_CHECKPOINT_FEED=%s\n' "/release/feed.json" >> "$ENV_FILE"
+fi
 chmod 0600 "$ENV_FILE"
 
 cat > /etc/systemd/system/ciphervault-ui.service <<'EOF'

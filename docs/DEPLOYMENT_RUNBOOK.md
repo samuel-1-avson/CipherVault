@@ -331,6 +331,13 @@ live `vault.cipherv.online` cutover. Perform in order; stop on the first red che
    Optional env plumbing: `-FinalityConfirmations <n>` (default 12),
    `-OperatorRegions '<region=ep ...;region=ep ...>'` (spaces, never
    commas, between endpoints). Unset values keep dashboard defaults.
+   Checkpoint feed: `-CheckpointFeedPath <local-json>` stages the file
+   to `/opt/ciphervault-ui/release/feed.json` (last-good backup kept),
+   `-CheckpointPublisherKey <hex>` pins the publisher,
+   `-ArbitrumRpcUrl <https>` enables receipt enrichment. Refresh cadence:
+   feeds older than 7 days 503 the anchors endpoints — re-run
+   `publish-public-feed` and scp the JSON to the release path (no
+   restart needed; the dashboard re-reads within 60 s).
    (omit `-Apply` for a plan-only run).
 5. Verify live: the script already asserts the live `/api/context`
    `build_version` plus `/api/operators` and `/api/explorer/overview`
