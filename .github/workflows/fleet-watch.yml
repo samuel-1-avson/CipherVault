@@ -193,6 +193,15 @@ jobs:
           path: status.json
           retention-days: 7
 
+      - name: Check alert configuration
+        if: always()
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.FLEET_WATCH_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then echo "::warning::FLEET_WATCH_WEBHOOK secret is not set: degraded verdicts will not page anyone"; else echo "alert webhook configured"; fi
+
       - name: Notify chat webhook on degraded verdict
         if: steps.probe.outputs.verdict != 'ok' && inputs.simulate_target == ''
         shell: bash
