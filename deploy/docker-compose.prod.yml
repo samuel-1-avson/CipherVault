@@ -12,12 +12,14 @@ services:
       - OPERATOR_DOMAIN_2=${OPERATOR_DOMAIN_2:-op2.ciphervault.internal}
       - OPERATOR_DOMAIN_3=${OPERATOR_DOMAIN_3:-op3.ciphervault.internal}
       - DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN:-dashboard.ciphervault.internal}
+      - LANDING_DOMAIN=${LANDING_DOMAIN:-cipherv.online}
       - OPERATOR_UPSTREAM_1=operator-1:8201
       - OPERATOR_UPSTREAM_2=operator-2:8202
       - OPERATOR_UPSTREAM_3=operator-3:8203
       - DASHBOARD_UPSTREAM=dashboard:8080
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../apps/landing:/var/www/landing:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

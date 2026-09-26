@@ -9,6 +9,9 @@ services:
       - CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT=${CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT:-true}
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
       - CIPHERVAULT_FLEET_KEY=${CIPHERVAULT_FLEET_KEY:-}
+      - ARBITRUM_RPC_URL=${ARBITRUM_RPC_URL:-}
+      - ARBITRUM_CHAIN_ID=${ARBITRUM_CHAIN_ID:-}
+      - CIPHERVAULT_REGISTRY_CONTRACT=${CIPHERVAULT_REGISTRY_CONTRACT:-}
     command: ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "${OPERATOR_ID:-operator-gcp}"]
     volumes:
       - /opt/ciphervault/data:/var/lib/ciphervault

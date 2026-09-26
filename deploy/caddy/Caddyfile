@@ -1,113 +1,117 @@
 # ==============================================================================
-# CipherVault Production Caddy Ingress Configuration
+# CipherVault Production Caddy Configuration
+# Domains:
+#   - https://cipherv.online (Static Developer Landing & Technical Spec)
+#   - https://www.cipherv.online (Redirects to apex)
+#   - https://vault.cipherv.online (Interactive Web Dashboard & Operator Gateway)
 # ==============================================================================
-# Enterprise-grade reverse proxy with automatic ACME TLS (Let's Encrypt / ZeroSSL),
-# strict security headers, body size enforcement, and connection pooling.
 
 {
     admin off
-    email {$ACME_EMAIL:admin@example.com}
-    servers {
-        max_header_size 64KB
-        timeouts {
-            read_body 30s
-            read_header 10s
-            write 60s
-            idle 120s
-        }
-    }
+    email {$ACME_EMAIL:admin@cipherv.online}
 }
 
-# Reusable Security & Proxy Snippet
-(operator_security) {
-    tls {$TLS_MODE:internal}
-
-    # Strict HTTP Security Headers
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        X-XSS-Protection "1; mode=block"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        Server "CipherVault-Gateway"
-        -Server
-    }
-
-    # Restrict Maximum Request Body (4 MiB object payload + protocol envelope)
-    request_body {
-        max_size 5MB
-    }
-}
-
-# Operator 1 Public Ingress
-{$OPERATOR_DOMAIN_1:op1.ciphervault.internal} {
-    import operator_security
-
-    reverse_proxy {$OPERATOR_UPSTREAM_1:operator-1:8201} {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-
-        transport http {
-            keepalive 30s
-            keepalive_idle_conns 100
-            response_header_timeout 30s
-        }
-    }
-}
-
-# Operator 2 Public Ingress
-{$OPERATOR_DOMAIN_2:op2.ciphervault.internal} {
-    import operator_security
-
-    reverse_proxy {$OPERATOR_UPSTREAM_2:operator-2:8202} {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-
-        transport http {
-            keepalive 30s
-            keepalive_idle_conns 100
-            response_header_timeout 30s
-        }
-    }
-}
-
-# Operator 3 Public Ingress
-{$OPERATOR_DOMAIN_3:op3.ciphervault.internal} {
-    import operator_security
-
-    reverse_proxy {$OPERATOR_UPSTREAM_3:operator-3:8203} {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-
-        transport http {
-            keepalive 30s
-            keepalive_idle_conns 100
-            response_header_timeout 30s
-        }
-    }
-}
-
-# Management Dashboard Ingress (Internal / VPN Only)
-{$DASHBOARD_DOMAIN:dashboard.ciphervault.internal} {
-    tls {$TLS_MODE:internal}
-
+# Reusable Enterprise Security Headers Snippet
+(security_headers) {
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"
+        X-XSS-Protection "1; mode=block"
         Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https: wss:; base-uri 'self'; form-action 'self'; frame-ancestors 'self';"
+        -Server
+    }
+}
+
+# --- 1. WWW to Apex Canonical Redirection ---
+www.cipherv.online {
+    import security_headers
+    redir https://cipherv.online{uri} permanent
+}
+
+# --- 2. Production Static Landing Page (https://cipherv.online) ---
+cipherv.online {
+    import security_headers
+    encode zstd gzip
+
+    # Root directory where apps/landing assets are deployed
+    root * {$LANDING_DIR:/var/www/ciphervault-landing}
+
+    # Cache optimization: immutable assets vs real-time HTML
+    @static {
+        path *.css *.js *.svg *.png *.jpg *.jpeg *.ico *.woff2
+    }
+    header @static Cache-Control "public, max-age=31536000, immutable"
+
+    @html {
+        path / *.html
+    }
+    header @html Cache-Control "public, max-age=0, must-revalidate"
+
+    # Clean file serving with single-page fallback
+    try_files {path} {path}/ /index.html
+    file_server {
+        precompressed zstd gzip
     }
 
-    reverse_proxy {$DASHBOARD_UPSTREAM:dashboard:8080} {
+    # Handle errors gracefully
+    handle_errors {
+        respond "{http.error.status_code} - CipherVault Sovereign Gateway Error"
+    }
+}
+
+# --- 3. Production Web Dashboard & Node Fleet (https://vault.cipherv.online) ---
+{$WEB_DOMAIN:vault.cipherv.online} {
+    import security_headers
+    encode zstd gzip
+
+    # Restrict request bodies: 4 MiB object payload + protocol envelope.
+    request_body {
+        max_size 5MB
+    }
+
+    # Operator Quorum Gateways: route private VPC tunnels
+    handle_path /op/1/* {
+        reverse_proxy {$OPERATOR_GATEWAY_UPSTREAM_1:10.128.0.39:80} {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
+
+    handle_path /op/2/* {
+        reverse_proxy {$OPERATOR_GATEWAY_UPSTREAM_2:10.128.0.40:80} {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
+
+    handle_path /op/3/* {
+        reverse_proxy {$OPERATOR_GATEWAY_UPSTREAM_3:10.142.0.2:80} {
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                keepalive 60s
+            }
+        }
+    }
+
+    # Core Dashboard Container Gateway
+    reverse_proxy 127.0.0.1:8080 {
         header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote}
+        header_up X-Forwarded-For {remote}
         header_up X-Forwarded-Proto {scheme}
+
+        # Crucial: disable response buffering for real-time SSE telemetry
+        flush_interval -1
+
+        transport http {
+            keepalive 60s
+        }
     }
 }
