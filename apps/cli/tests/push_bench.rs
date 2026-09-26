@@ -100,6 +100,11 @@ async fn bench_push_sequential_vs_concurrent() {
     ));
     fs::create_dir_all(&test_dir).unwrap();
 
+    // Soak operators run with a raised HTTP rate limit: one loopback client
+    // firing ~150 requests per batch per operator would otherwise trip the
+    // default 600/min limiter (readback challenges fail closed on 429).
+    std::env::set_var("CIPHERVAULT_HTTP_RATE_LIMIT_PER_MIN", "120000");
+
     // 1. Spawn 3 operator instances.
     let op1_dir = test_dir.join("op1");
     let op2_dir = test_dir.join("op2");
@@ -255,8 +260,10 @@ async fn bench_push_sequential_vs_concurrent() {
     // 5. Soak: repeated concurrent quorums must all succeed (catches
     // busy-timeout and flake regressions under sustained load).
     for iter in 0..soak_iters {
+        // Stride by object count: bench_objects mixes seed+index, so a
+        // stride of 1 would re-push the same CIDs every iteration.
         let (objects, total_bytes) =
-            bench_objects(0x5eed_1000 + iter as u64, object_count, object_size);
+            bench_objects(0x5eed_1000 + iter as u64 * object_count as u64, object_count, object_size);
         let receipts = pool
             .replicate_and_verify(
                 &vault_id,
