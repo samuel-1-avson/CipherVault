@@ -310,6 +310,13 @@ enum Commands {
 
         #[arg(
             long,
+            num_args = 1..,
+            help = "Authorized approver public keys (hex, 0x prefix optional; repeatable). Required with --require-approval: only receipts signed by a pinned key are accepted"
+        )]
+        approver_key: Vec<String>,
+
+        #[arg(
+            long,
             help = "Rebuild the local store even when one already exists in the target directory"
         )]
         force: bool,
@@ -1273,8 +1280,9 @@ async fn run(cli: Cli) -> Result<()> {
             shares,
             to,
             require_approval,
+            approver_key,
             force,
-        } => cmd_recover(kit, shares, to, require_approval, force).await,
+        } => cmd_recover(kit, shares, to, require_approval, approver_key, force).await,
         Commands::Recovery { sub } => match sub {
             RecoverySubcommand::Export => cmd_recovery_export(),
             RecoverySubcommand::Split {

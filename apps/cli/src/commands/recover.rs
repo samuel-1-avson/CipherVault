@@ -5,6 +5,7 @@ use chrono::Utc;
 use colored::Colorize;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -14,7 +15,7 @@ use ciphervault_format::{
     SnapshotRecord, PROTOCOL_VERSION,
 };
 use ciphervault_local_store::LocalVaultStore;
-use ciphervault_recovery::OfflineRecoveryKit;
+use ciphervault_recovery::{ApprovalChallenge, OfflineRecoveryKit, SignedApprovalReceipt};
 use ciphervault_snapshot::restore_snapshot;
 use ciphervault_storage::invites::{InviteApproval, InviteRequest, JoinInvite};
 use ciphervault_storage::{OperatorClient, StorageError};
@@ -24,11 +25,65 @@ use crate::util::{
     OPERATORS_FILE, VAULT_DIR,
 };
 
+/// Normalizes one `--approver-key` pin: `0x` prefix optional, case-insensitive.
+fn normalize_approver_pin(raw: &str) -> Result<String> {
+    let hex_part = raw.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if hex_part.len() != 64 || !hex_part.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!(
+            "Invalid --approver-key '{raw}': expected 32 bytes of hex (64 chars, 0x prefix optional)."
+        );
+    }
+    Ok(hex_part.to_ascii_lowercase())
+}
+
+fn parse_approver_pins(raw: &[String]) -> Result<HashSet<String>> {
+    raw.iter().map(|key| normalize_approver_pin(key)).collect()
+}
+
+/// Returns the first receipt that (a) deserializes, (b) verifies against the
+/// locally created challenge (signature, challenge binding, expiry), and
+/// (c) is signed by a pinned approver key — plus per-receipt rejection reasons.
+fn find_valid_approval(
+    challenge: &ApprovalChallenge,
+    receipts: &[serde_json::Value],
+    pins: &HashSet<String>,
+) -> (Option<(String, String)>, Vec<String>) {
+    let mut rejected = Vec::new();
+    for value in receipts {
+        let receipt: SignedApprovalReceipt = match serde_json::from_value(value.clone()) {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                rejected.push(format!("malformed receipt: {err}"));
+                continue;
+            }
+        };
+        if let Err(err) = receipt.verify(challenge) {
+            rejected.push(format!(
+                "invalid receipt from '{}': {err}",
+                receipt.approver_name
+            ));
+            continue;
+        }
+        // verify() already checked the key is 32 bytes of hex; normalize for pin compare.
+        let pk = receipt.approver_pk_hex.to_ascii_lowercase();
+        if !pins.contains(&pk) {
+            rejected.push(format!(
+                "unpinned approver key: {}...",
+                pk.chars().take(12).collect::<String>()
+            ));
+            continue;
+        }
+        return (Some((receipt.approver_name, pk)), rejected);
+    }
+    (None, rejected)
+}
+
 pub(crate) async fn cmd_recover(
     kit_opt: Option<PathBuf>,
     shares_opt: Option<Vec<PathBuf>>,
     to_dir: PathBuf,
     require_approval: bool,
+    approver_keys: Vec<String>,
     force: bool,
 ) -> Result<()> {
     println!(
@@ -200,7 +255,19 @@ pub(crate) async fn cmd_recover(
             format!("ciphervault approve sign {}", challenge_id).yellow()
         );
 
+        if approver_keys.is_empty() {
+            bail!(
+                "--require-approval needs at least one --approver-key <hex>: only receipts signed by a pinned approver key are accepted."
+            );
+        }
+        let pins = parse_approver_pins(&approver_keys)?;
+        println!(
+            "  Pinned approvers:   {} key(s) (unpinned receipts are rejected)",
+            pins.len()
+        );
+
         let mut approved = false;
+        let mut rejected_total = 0usize;
         let start_time = std::time::Instant::now();
         while start_time.elapsed().as_secs() < 300 {
             for op in &kit.operator_endpoints {
@@ -209,26 +276,29 @@ pub(crate) async fn cmd_recover(
                     op.trim_end_matches('/'),
                     challenge_id
                 );
+                // The operator's `approved` flag is informational only and is
+                // never trusted: every receipt is verified here against the
+                // locally created challenge (signature, challenge binding,
+                // expiry) and the pinned approver keys.
                 if let Ok(resp) = operator_service_request(http.get(&url)).send().await {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if json["approved"].as_bool().unwrap_or(false) {
-                            if let Some(receipts) = json["receipts"].as_array() {
-                                if let Some(first) = receipts.first() {
-                                    let name = first["approver_name"]
-                                        .as_str()
-                                        .unwrap_or("Authorized Approver");
-                                    println!(
-                                        "{}",
-                                        format!(
-                                            "✓ Cryptographic approval receipt verified from '{}'!",
-                                            name
-                                        )
-                                        .green()
-                                        .bold()
-                                    );
-                                    approved = true;
-                                    break;
-                                }
+                        if let Some(receipts) = json["receipts"].as_array() {
+                            let (valid, rejected) =
+                                find_valid_approval(&challenge, receipts, &pins);
+                            rejected_total += rejected.len();
+                            if let Some((name, pk)) = valid {
+                                println!(
+                                    "{}",
+                                    format!(
+                                        "✓ Cryptographic approval receipt verified from '{}' (Key: {}...)!",
+                                        name,
+                                        pk.chars().take(12).collect::<String>()
+                                    )
+                                    .green()
+                                    .bold()
+                                );
+                                approved = true;
+                                break;
                             }
                         }
                     }
@@ -242,7 +312,8 @@ pub(crate) async fn cmd_recover(
 
         if !approved {
             bail!(
-                "Emergency recovery aborted: Timed out waiting for out-of-band approval receipt."
+                "Emergency recovery aborted: Timed out waiting for out-of-band approval receipt ({} receipt(s) rejected: invalid signature, unpinned key, or expired challenge).",
+                rejected_total
             );
         }
     }
@@ -1399,5 +1470,98 @@ mod genesis_find_tests {
         assert!(find_genesis_record(&[tampered_bytes], &vault_id, &recovery_pk).is_none());
         // No genesis at all (vault never pushed recovery records).
         assert!(find_genesis_record(&[vec![1, 2, 3]], &vault_id, &recovery_pk).is_none());
+    }
+
+    fn approval_test_challenge() -> ApprovalChallenge {
+        ApprovalChallenge::new(
+            &[0x11u8; 32],
+            ciphervault_recovery::ApprovalAction::EmergencyRecovery,
+            &[0x22u8; 32],
+            "test recovery".into(),
+            600,
+        )
+    }
+
+    #[test]
+    fn approval_pins_normalize_and_validate() {
+        let key = "ab".repeat(32);
+        let pins = parse_approver_pins(&[
+            format!("0x{}", key.to_ascii_uppercase()),
+            format!("  {}  ", key),
+        ])
+        .unwrap();
+        assert_eq!(pins.len(), 1);
+        assert!(pins.contains(&key));
+        assert!(parse_approver_pins(&["0x1234".to_string()]).is_err());
+        assert!(parse_approver_pins(&["zz".repeat(32)]).is_err());
+        assert!(parse_approver_pins(&["".to_string()]).is_err());
+    }
+
+    #[test]
+    fn find_valid_approval_accepts_pinned_verified_receipt() {
+        let approver = ciphervault_crypto::generate_signing_key();
+        let pk_hex = hex::encode(approver.verifying_key().to_bytes());
+        let pins = parse_approver_pins(std::slice::from_ref(&pk_hex)).unwrap();
+        let challenge = approval_test_challenge();
+        let receipt = SignedApprovalReceipt::sign(&challenge, "Lead".into(), &approver);
+        let values = vec![serde_json::to_value(&receipt).unwrap()];
+        let (valid, rejected) = find_valid_approval(&challenge, &values, &pins);
+        assert!(rejected.is_empty());
+        let (name, pk) = valid.expect("pinned verified receipt must be accepted");
+        assert_eq!(name, "Lead");
+        assert_eq!(pk, pk_hex);
+    }
+
+    #[test]
+    fn find_valid_approval_rejects_forgery_and_unpinned() {
+        let approver = ciphervault_crypto::generate_signing_key();
+        let pk_hex = hex::encode(approver.verifying_key().to_bytes());
+        let challenge = approval_test_challenge();
+
+        // Valid signature but unpinned key.
+        let other_pins = parse_approver_pins(&["cd".repeat(32)]).unwrap();
+        let receipt = SignedApprovalReceipt::sign(&challenge, "Lead".into(), &approver);
+        let values = vec![serde_json::to_value(&receipt).unwrap()];
+        let (valid, rejected) = find_valid_approval(&challenge, &values, &other_pins);
+        assert!(valid.is_none());
+        assert!(rejected.iter().any(|r| r.contains("unpinned")));
+
+        // Pinned key but tampered signature.
+        let pins = parse_approver_pins(&[pk_hex]).unwrap();
+        let mut forged = receipt.clone();
+        forged.signature_hex = "00".repeat(64);
+        let values = vec![serde_json::to_value(&forged).unwrap()];
+        let (valid, rejected) = find_valid_approval(&challenge, &values, &pins);
+        assert!(valid.is_none());
+        assert!(rejected.iter().any(|r| r.contains("invalid receipt")));
+
+        // Pinned key, valid signature, wrong challenge.
+        let other_challenge = ApprovalChallenge::new(
+            &[0x99u8; 32],
+            ciphervault_recovery::ApprovalAction::EmergencyRecovery,
+            &[0x22u8; 32],
+            "other".into(),
+            600,
+        );
+        let values = vec![serde_json::to_value(&receipt).unwrap()];
+        let (valid, _) = find_valid_approval(&other_challenge, &values, &pins);
+        assert!(valid.is_none());
+
+        // Expired challenge.
+        let mut expired = challenge.clone();
+        expired.expires_at_utc = 1;
+        let (valid, _) = find_valid_approval(&expired, &values, &pins);
+        assert!(valid.is_none());
+
+        // Malformed receipt JSON.
+        let values = vec![serde_json::json!({"approved": true})];
+        let (valid, rejected) = find_valid_approval(&challenge, &values, &pins);
+        assert!(valid.is_none());
+        assert!(rejected.iter().any(|r| r.contains("malformed")));
+
+        // The old attack: operator `approved:true` with no verifiable receipt.
+        let values = vec![];
+        let (valid, _) = find_valid_approval(&challenge, &values, &pins);
+        assert!(valid.is_none());
     }
 }

@@ -247,10 +247,22 @@ pub(crate) async fn cmd_approve_status(challenge_id: String) -> Result<()> {
                             let name = r["approver_name"].as_str().unwrap_or("Unknown");
                             let pk = r["approver_pk_hex"].as_str().unwrap_or("");
                             let short_pk = if pk.len() >= 12 { &pk[..12] } else { pk };
+                            // Display-only, but never assert validity unchecked:
+                            // verify each receipt against the fetched challenge.
+                            let valid = serde_json::from_value::<
+                                ciphervault_recovery::SignedApprovalReceipt,
+                            >(r.clone())
+                            .map(|receipt| receipt.verify(&challenge).is_ok())
+                            .unwrap_or(false);
                             println!(
-                                "    - Signed by: {} (Key: {}...)",
+                                "    - Signed by: {} (Key: {}...) [{}]",
                                 name.cyan(),
-                                short_pk.dimmed()
+                                short_pk.dimmed(),
+                                if valid {
+                                    "VALID".green()
+                                } else {
+                                    "INVALID".red().bold()
+                                }
                             );
                         }
                     }
