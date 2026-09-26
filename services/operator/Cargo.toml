@@ -22,6 +22,7 @@ thiserror.workspace = true
 hex.workspace = true
 rand.workspace = true
 sha2.workspace = true
+subtle.workspace = true
 chrono.workspace = true
 clap.workspace = true
 colored.workspace = true

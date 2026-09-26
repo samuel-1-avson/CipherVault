@@ -5,6 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use ciphervault_storage::types::{
     AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt, LeaseRequest,
@@ -43,6 +44,12 @@ fn strict_operator_auth() -> bool {
         .unwrap_or(true)
 }
 
+/// Constant-time service-token comparison: mismatched lengths and
+/// mismatched contents both fail without early exit.
+fn service_token_matches(provided: &str, expected: &str) -> bool {
+    bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
+}
+
 pub(crate) fn require_control_auth(
     state: &OperatorState,
     headers: &HeaderMap,
@@ -52,7 +59,7 @@ pub(crate) fn require_control_auth(
             && headers
                 .get("X-CipherVault-Service-Token")
                 .and_then(|value| value.to_str().ok())
-                .is_some_and(|provided| provided == expected)
+                .is_some_and(|provided| service_token_matches(provided, &expected))
         {
             return Ok(());
         }
@@ -76,7 +83,7 @@ fn require_service_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)
         || headers
             .get("X-CipherVault-Service-Token")
             .and_then(|value| value.to_str().ok())
-            .is_none_or(|provided| provided != expected)
+            .is_none_or(|provided| !service_token_matches(provided, &expected))
     {
         return Err((StatusCode::UNAUTHORIZED, "Invalid service token".into()));
     }
@@ -919,6 +926,16 @@ mod tests {
     /// identity: operator id matches, the signature verifies against the
     /// node's key, and the advertised endpoint honors
     /// `CIPHERVAULT_ADVERTISE_ENDPOINT` with a loopback default.
+    #[test]
+    fn service_token_comparison_has_no_early_accept() {
+        assert!(service_token_matches("s3cret-token", "s3cret-token"));
+        assert!(!service_token_matches("s3cret-token", "s3cret-t0ken"));
+        assert!(!service_token_matches("s3cret-token", "s3cret-toke"));
+        assert!(!service_token_matches("s3cret-toke", "s3cret-token"));
+        assert!(!service_token_matches("", "s3cret-token"));
+        assert!(!service_token_matches("s3cret-token", ""));
+    }
+
     #[tokio::test]
     async fn self_peer_descriptor_is_fresh_and_self_signed() {
         let dir = std::env::temp_dir().join(format!("cv-selfpeer-{}", rand::random::<u128>()));
