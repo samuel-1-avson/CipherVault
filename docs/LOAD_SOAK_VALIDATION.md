@@ -38,6 +38,14 @@ Harness fixes (2026-09-26):
   come from CI (`cargo test --locked -p ciphervault-cli --release
   --test push_bench -- --ignored`).
 
+## Live evidence (2026-09-26, approved run)
+
+- 10 rounds x (push 4 KiB fresh snapshot + pull-overwrite + pull-restore
+  with SHA-256 byte comparison) against op1/op2/op3: 10/10 pass, ~9 s
+  per round, no failures, no slowdown trend, no 429s at paced load.
+- Local temp vault and recovery kit removed after the run; soak objects
+  persist on the fleet under their lease terms (accepted residue).
+
 ## Live soak procedure (approval-gated)
 
 1. Get explicit approval for live writes and a target window.
