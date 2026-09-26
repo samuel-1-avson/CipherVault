@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-account"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "axum",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-agent"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "chrono",
@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-cli"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "axum",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-crypto"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "argon2",
  "blake2",
@@ -696,11 +696,11 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-file-lock"
-version = "1.0.16"
+version = "1.0.17"
 
 [[package]]
 name = "ciphervault-format"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "ciborium",
  "ciphervault-crypto",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-local-store"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "ciphervault-crypto",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-maintenance"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "chrono",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-operator"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "axum",
  "chrono",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-recovery"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "chrono",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-snapshot"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "chrono",
  "ciphervault-crypto",
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-storage"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "chrono",
  "ciborium",
