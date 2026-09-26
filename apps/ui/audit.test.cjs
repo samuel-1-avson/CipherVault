@@ -697,7 +697,42 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(shellHtml.match(/id="command-palette-results"[^>]*role="listbox"/), 'Palette results must have role=listbox');
   assert(shellHtml.match(/id="card-secret-health"[^>]*data-private-surface/), 'Secret Health card must carry data-private-surface');
 
+  // 21. Minimal Design & Light/Dark Theme Engine verification
+  assert(shellHtml.match(/id="btn-theme-toggle"[^>]*aria-label/), 'Theme toggle button must have aria-label');
+  assert(shellHtml.includes('icon-theme-sun') && shellHtml.includes('icon-theme-moon'), 'Theme toggle button must include both sun and moon SVG icons');
+
+  const cssContent = fs.readFileSync(`${__dirname}/styles.css`, 'utf8');
+  assert(cssContent.includes('html[data-theme="light"]'), 'styles.css must contain light theme variables');
+  assert(cssContent.includes('html[data-theme="dark"]') || cssContent.includes(':root'), 'styles.css must contain dark theme variables');
+  assert(!cssContent.includes('#0b0a08'), 'styles.css must not use harsh pitch-black #0b0a08');
+
+  // Verify theme functions in VM
+  vm.runInContext(`
+    document.documentElement = {
+      attrs: {},
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return this.attrs[k] || null; }
+    };
+    applyTheme('light');
+  `, context);
+  assert.equal(vm.runInContext("document.documentElement.getAttribute('data-theme')", context), 'light');
+  assert.equal(getElementById('btn-theme-toggle').getAttribute('aria-label'), 'Switch to Dark Mode');
+
+  vm.runInContext("applyTheme('dark')", context);
+  assert.equal(vm.runInContext("document.documentElement.getAttribute('data-theme')", context), 'dark');
+  assert.equal(getElementById('btn-theme-toggle').getAttribute('aria-label'), 'Switch to Light Mode');
+
+  const toggledTheme = vm.runInContext("toggleTheme()", context);
+  assert.equal(toggledTheme, 'light');
+  assert.equal(vm.runInContext("document.documentElement.getAttribute('data-theme')", context), 'light');
+
+  // Command palette includes theme toggle
+  const paletteThemeItem = vm.runInContext("buildPaletteItems('').find(i => i.title.includes('Theme'))", context);
+  assert(paletteThemeItem, 'Command Palette must contain theme toggle action');
+  assert.equal(paletteThemeItem.category, 'Actions');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
 
 

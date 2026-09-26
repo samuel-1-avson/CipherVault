@@ -6,45 +6,97 @@
    floating layers (modal / drawer / toast / dropdown).
    ========================================================================== */
 
-:root {
-  /* Surfaces: warm black steps. */
-  --bg0: #0b0a08;
-  --bg1: #141310;
-  --bg2: #1d1c18;
-  --line: #2b2a25;
+:root,
+html[data-theme="dark"] {
+  /* Surfaces: Dark Slate / Charcoal */
+  --bg0: #0d1117;
+  --bg1: #161b22;
+  --bg2: #21262d;
+  --line: #30363d;
   --edge-line: 1px solid var(--line);
 
-  /* Ink. */
-  --bone: #ede6d6;
-  --fog: #a8a294;
-  --ash: #87827a;
+  /* Typography / Ink */
+  --bone: #f0f6fc;
+  --fog: #8b949e;
+  --ash: #6e7681;
 
-  /* The one accent + semantic states. */
-  --signal: #ffb000;
-  --signal-dim: rgba(255, 176, 0, 0.38);
-  --signal-faint: rgba(255, 176, 0, 0.09);
-  --ok: #57e389;
-  --ok-dim: rgba(87, 227, 137, 0.3);
-  --ok-faint: rgba(87, 227, 137, 0.09);
-  --bad: #ff5c5c;
-  --bad-dim: rgba(255, 92, 92, 0.32);
-  --bad-faint: rgba(255, 92, 92, 0.09);
-  /* Second hue, reserved for on-chain (L1) artifacts only. */
-  --chain: #b78cff;
-  --chain-dim: rgba(183, 140, 255, 0.32);
-  --chain-faint: rgba(183, 140, 255, 0.1);
+  /* Primary Accent & Semantic States */
+  --signal: #2f81f7;
+  --signal-hover: #1f6feb;
+  --signal-contrast: #ffffff;
+  --signal-dim: rgba(47, 129, 247, 0.4);
+  --signal-faint: rgba(47, 129, 247, 0.12);
 
-  /* Type: system stacks (no webfont fetch; CSP-clean). */
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --ok: #3fb950;
+  --ok-dim: rgba(63, 185, 80, 0.4);
+  --ok-faint: rgba(63, 185, 80, 0.12);
 
-  /* Edges stay square. */
-  --edge: 2px;
-  --edge-lg: 3px;
+  --bad: #f85149;
+  --bad-dim: rgba(248, 81, 73, 0.4);
+  --bad-faint: rgba(248, 81, 73, 0.12);
 
-  /* One hard offset for floating layers only. */
-  --shadow-hard: 7px 7px 0 rgba(0, 0, 0, 0.5);
+  /* On-chain L1 / Arbitrum artifacts */
+  --chain: #a371f7;
+  --chain-dim: rgba(163, 113, 247, 0.4);
+  --chain-faint: rgba(163, 113, 247, 0.12);
+
+  /* Type: Fast native system stacks (CSP compliant) */
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Modern agreeable radii */
+  --edge: 4px;
+  --edge-lg: 6px;
+
+  /* Floating layer shadow */
+  --shadow-hard: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  /* Surfaces: Clean Minimal Paper Canvas */
+  --bg0: #f6f8fa;
+  --bg1: #ffffff;
+  --bg2: #eaeef2;
+  --line: #d0d7de;
+  --edge-line: 1px solid var(--line);
+
+  /* Typography / Ink */
+  --bone: #1f2328;
+  --fog: #57606a;
+  --ash: #8c959f;
+
+  /* Primary Accent & Semantic States */
+  --signal: #0969da;
+  --signal-hover: #0860ca;
+  --signal-contrast: #ffffff;
+  --signal-dim: rgba(9, 105, 218, 0.35);
+  --signal-faint: rgba(9, 105, 218, 0.08);
+
+  --ok: #1a7f37;
+  --ok-dim: rgba(26, 127, 55, 0.35);
+  --ok-faint: rgba(26, 127, 55, 0.08);
+
+  --bad: #cf222e;
+  --bad-dim: rgba(207, 34, 46, 0.35);
+  --bad-faint: rgba(207, 34, 46, 0.08);
+
+  /* On-chain L1 / Arbitrum artifacts */
+  --chain: #8250df;
+  --chain-dim: rgba(130, 80, 223, 0.35);
+  --chain-faint: rgba(130, 80, 223, 0.08);
+
+  /* Type: Fast native system stacks */
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Modern agreeable radii */
+  --edge: 4px;
+  --edge-lg: 6px;
+
+  /* Floating layer shadow */
+  --shadow-hard: 0 10px 28px rgba(140, 149, 159, 0.22);
+  --color-scheme: light;
 }
 
 * {
@@ -67,7 +119,7 @@ body {
 
 ::selection {
   background: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
 }
 
 ::-webkit-scrollbar {
@@ -115,7 +167,7 @@ select {
   left: -9999px;
   top: 0;
   background: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
   font-weight: 700;
   font-size: 0.85rem;
   padding: 10px 18px;
@@ -168,7 +220,7 @@ header.app-header {
   flex-shrink: 0;
 }
 .brand-icon svg {
-  stroke: #0b0a08;
+  stroke: var(--signal-contrast, #ffffff);
 }
 
 .brand-title {
@@ -429,7 +481,7 @@ header.app-header {
 .pulse-dot {
   width: 8px;
   height: 8px;
-  border-radius: var(--edge);
+  border-radius: 50%;
   background: var(--ok);
   flex-shrink: 0;
   animation: pulse-blink 2.4s ease-in-out infinite;
@@ -451,20 +503,20 @@ header.app-header {
 /* --- Buttons --- */
 .btn-action {
   background: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
   border: 1px solid var(--signal);
   border-radius: var(--edge);
   padding: 9px 20px;
   font-size: 0.85rem;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease;
   box-shadow: none;
   white-space: nowrap;
 }
 .btn-action:hover {
-  background: #e69e00;
-  border-color: #e69e00;
+  background: var(--signal-hover, var(--signal));
+  border-color: var(--signal-hover, var(--signal));
   transform: none;
   box-shadow: none;
 }
@@ -485,7 +537,7 @@ header.app-header {
 .btn-action.secondary:hover {
   border-color: var(--signal);
   color: var(--signal);
-  background: transparent;
+  background: var(--signal-faint);
 }
 
 .btn-action-ghost {
@@ -503,7 +555,8 @@ header.app-header {
   background: var(--signal-faint);
 }
 
-.btn-icon-refresh {
+.btn-icon-refresh,
+.btn-theme-toggle {
   background: var(--bg1);
   border: var(--edge-line);
   border-radius: var(--edge);
@@ -511,13 +564,36 @@ header.app-header {
   cursor: pointer;
   padding: 7px;
   line-height: 0;
-  transition: color 0.12s ease, border-color 0.12s ease;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
-.btn-icon-refresh:hover {
+.btn-icon-refresh:hover,
+.btn-theme-toggle:hover {
   color: var(--signal);
   border-color: var(--signal-dim);
+  background: var(--bg2);
   box-shadow: none;
   transform: none;
+}
+
+/* Light / Dark Mode Toggle Icon Logic */
+.btn-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+html[data-theme="light"] .btn-theme-toggle .icon-theme-sun {
+  display: none !important;
+}
+html[data-theme="light"] .btn-theme-toggle .icon-theme-moon {
+  display: inline-block !important;
+}
+html[data-theme="dark"] .btn-theme-toggle .icon-theme-sun,
+:root:not([data-theme="light"]) .btn-theme-toggle .icon-theme-sun {
+  display: inline-block !important;
+}
+html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
+:root:not([data-theme="light"]) .btn-theme-toggle .icon-theme-moon {
+  display: none !important;
 }
 
 .btn-icon-refresh.rotating svg {
@@ -3418,7 +3494,7 @@ select.form-input option,
 .btn-copy-code:hover {
   background: var(--signal);
   border-color: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
 }
 .relayer-status-banner {
   display: flex;
@@ -3829,7 +3905,7 @@ select.form-input option,
 .btn-toggle-secret:hover {
   background: var(--signal);
   border-color: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
 }
 .btn-copy-secret {
   background: var(--bg2);
@@ -4566,16 +4642,18 @@ select.form-input option,
 }
 .btn-terminal-exec {
   background: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
   border: 1px solid var(--signal);
   font-weight: 700;
   font-size: 0.82rem;
   padding: 8px 16px;
   border-radius: var(--edge);
   cursor: pointer;
+  transition: background 0.12s ease;
 }
 .btn-terminal-exec:hover {
-  background: #e69e00;
+  background: var(--signal-hover, var(--signal));
+  border-color: var(--signal-hover, var(--signal));
 }
 .system-line {
   font-family: var(--font-mono);
@@ -4713,7 +4791,7 @@ select.form-input option,
 .btn-action.primary {
   background: var(--signal);
   border-color: var(--signal);
-  color: #0b0a08;
+  color: var(--signal-contrast, #ffffff);
 }
 
 /* --- Print --- */

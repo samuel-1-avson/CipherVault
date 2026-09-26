@@ -69,6 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initCommandPalette();
   initTabCategoryFilter();
   initWorkspaceSwitcher();
+  initThemeToggle();
   
   // Initial data load and periodic polling
   consumeHostedBrowserHandoff().finally(() => fetchAllData());
@@ -3052,6 +3053,7 @@ function escapeHtml(str) {
 }
 
 function showToast(message, type = 'info') {
+  if (typeof document === 'undefined' || !document.createElement) return;
   const container = document.getElementById('toast-container');
   if (!container) return;
 
@@ -4653,6 +4655,9 @@ function buildPaletteItems(query) {
       const modal = document.getElementById('modal-shortcuts');
       if (modal) openModal(modal);
     }},
+    { title: 'Toggle Theme (Light / Dark Mode)', category: 'Actions', badge: 'Ctrl+Shift+D', action: () => {
+      toggleTheme();
+    }},
   ];
 
   const files = (state.overview?.tracked_files || state.vault?.tracked_files || []);
@@ -4700,6 +4705,7 @@ function buildPaletteItems(query) {
   if (state.paletteSelectedIndex >= state.paletteItems.length) {
     state.paletteSelectedIndex = Math.max(0, state.paletteItems.length - 1);
   }
+  return state.paletteItems;
 }
 
 function renderPaletteResults() {
@@ -4963,5 +4969,105 @@ function initWorkspaceSwitcher() {
     });
   }
 }
+
+// -------------------------------------------------------------
+// Minimal Theme Engine (Dark & Light Modes)
+// -------------------------------------------------------------
+
+function getPreferredTheme() {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem) {
+      const saved = localStorage.getItem('ciphervault-theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    }
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      const mql = window.matchMedia('(prefers-color-scheme: light)');
+      if (mql && mql.matches) return 'light';
+    }
+  } catch (e) {
+    // Ignore storage/permission errors
+  }
+  return 'dark';
+}
+
+function applyTheme(theme) {
+  try {
+    if (typeof document !== 'undefined' && document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.setItem) {
+      localStorage.setItem('ciphervault-theme', theme);
+    }
+  } catch (e) {}
+
+  try {
+    const toggleBtn = typeof document !== 'undefined' && document.getElementById ? document.getElementById('btn-theme-toggle') : null;
+    if (toggleBtn && toggleBtn.setAttribute) {
+      toggleBtn.setAttribute('title', theme === 'light' ? 'Switch to Dark Mode (Ctrl+Shift+D)' : 'Switch to Light Mode (Ctrl+Shift+D)');
+      toggleBtn.setAttribute('aria-label', theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode');
+    }
+  } catch (e) {}
+}
+
+function toggleTheme() {
+  let active = 'dark';
+  try {
+    if (typeof document !== 'undefined' && document.documentElement && document.documentElement.getAttribute) {
+      active = document.documentElement.getAttribute('data-theme') || 'dark';
+    }
+  } catch (e) {}
+
+  const next = active === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  if (typeof showToast === 'function') {
+    showToast(`Switched to ${next === 'light' ? 'Light' : 'Dark'} theme`, 'info');
+  }
+  return next;
+}
+
+function initThemeToggle() {
+  const currentTheme = getPreferredTheme();
+  applyTheme(currentTheme);
+
+  try {
+    const toggleBtn = typeof document !== 'undefined' && document.getElementById ? document.getElementById('btn-theme-toggle') : null;
+    if (toggleBtn && toggleBtn.addEventListener) {
+      toggleBtn.addEventListener('click', (e) => {
+        if (e && e.preventDefault) e.preventDefault();
+        toggleTheme();
+      });
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      const mql = window.matchMedia('(prefers-color-scheme: dark)');
+      if (mql && mql.addEventListener) {
+        mql.addEventListener('change', (e) => {
+          try {
+            if (typeof localStorage !== 'undefined' && !localStorage.getItem('ciphervault-theme')) {
+              applyTheme(e.matches ? 'dark' : 'light');
+            }
+          } catch (err) {}
+        });
+      }
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+          if (e.preventDefault) e.preventDefault();
+          toggleTheme();
+        }
+      });
+    }
+  } catch (e) {}
+}
+
 
 
