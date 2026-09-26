@@ -139,6 +139,22 @@ foreach ($file in $StagedFiles) {
 }
 $ChecksumLines | Out-File -FilePath $ChecksumFile -Encoding utf8 -Force
 
+# 3b. Sign SHA256SUMS.txt (required: updaters reject unsigned releases).
+# Fails closed before any upload when the seed or signer is unavailable.
+if (-not $env:CIPHERVAULT_RELEASE_SIGNING_KEY) {
+    throw "CIPHERVAULT_RELEASE_SIGNING_KEY is not set; releases must be signed (see docs/UPDATER_SIGNATURE_VERIFICATION.md). Aborting before upload."
+}
+$Signer = Join-Path $PSScriptRoot "..\dist\bin\ciphervault.exe"
+if (-not (Test-Path -Path $Signer)) {
+    throw "Signer binary not found at $Signer; build the CLI so this release can be signed. Aborting before upload."
+}
+$SigFile = Join-Path $StagingDir "SHA256SUMS.txt.sig"
+& $Signer release sign --tag $Tag --sums $ChecksumFile --out $SigFile
+if ($LASTEXITCODE -ne 0) { throw "Release signing failed; aborting before upload." }
+& $Signer release verify --tag $Tag --sums $ChecksumFile --sig $SigFile
+if ($LASTEXITCODE -ne 0) { throw "Release signature self-verification failed; aborting before upload." }
+Write-Host "Signed SHA256SUMS.txt for $Tag (SHA256SUMS.txt.sig)." -ForegroundColor Green
+
 # 4. Upload Assets to GitHub Release
 Write-Host "Uploading release assets to GitHub Release $Tag..." -ForegroundColor Cyan
 

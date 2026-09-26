@@ -5,6 +5,7 @@
 //! only the progress reporting differs (stdout vs. status line).
 
 use anyhow::{bail, Context, Result};
+use ed25519_dalek::{Signature, VerifyingKey};
 use reqwest::Client as HttpClient;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -208,6 +209,121 @@ fn tar_listing_is_confined(listing: &str) -> bool {
     })
 }
 
+/// Pinned release-signing trust roots: (key id, Ed25519 pubkey hex).
+/// Key id = first 16 hex chars of the pubkey. Rotation appends the
+/// successor here BEFORE it signs anything and removes the predecessor
+/// only after every supported updater carries the successor. Trust model:
+/// `docs/UPDATER_SIGNATURE_VERIFICATION.md`. The private seeds live in CI
+/// secrets / offline ceremony media and never in the repo.
+const RELEASE_SIGNING_KEYS: &[(&str, &str)] = &[(
+    "b625994c0c3f53a6",
+    "b625994c0c3f53a6c40b0eadebe7ba1f5199e9f829a4bf20e064ae7aaab22c1e",
+)];
+
+/// Detached-signature asset published next to every release archive set.
+const RELEASE_SIG_ASSET: &str = "SHA256SUMS.txt.sig";
+
+/// Only this signature envelope version is accepted; bump on format change.
+const RELEASE_SIG_VERSION: &str = "CIPHERVAULT-RELEASE-SIG-V1";
+
+/// Key id for a validated 64-char lowercase pubkey hex string.
+pub(crate) fn release_key_id_of_pubkey(pubkey_hex: &str) -> String {
+    pubkey_hex[..16].to_string()
+}
+
+/// True when `pubkey_hex` is a pinned release-signing key.
+pub(crate) fn is_pinned_release_key(pubkey_hex: &str) -> bool {
+    RELEASE_SIGNING_KEYS
+        .iter()
+        .any(|(_, pinned)| *pinned == pubkey_hex)
+}
+
+/// Renders the detached-signature envelope over signed `SHA256SUMS.txt` bytes.
+pub(crate) fn render_release_signature(tag: &str, key_id: &str, signature_hex: &str) -> String {
+    format!("{RELEASE_SIG_VERSION}\ntag: {tag}\nkey-id: {key_id}\nsignature: {signature_hex}\n")
+}
+
+/// Decodes a hex field, requiring lowercase-canonical form (same rule as
+/// join invites and vouchers: one byte string, one spelling).
+fn decode_canonical_hex(field: &str, what: &str, len: usize) -> Result<Vec<u8>> {
+    let bytes =
+        hex::decode(field).with_context(|| format!("release signature {what} must be hex"))?;
+    if bytes.len() != len {
+        bail!("release signature {what} must be {len} bytes");
+    }
+    if hex::encode(&bytes) != field {
+        bail!("release signature {what} must be lowercase hex");
+    }
+    Ok(bytes)
+}
+
+/// Verifies a detached Ed25519 release signature over the exact
+/// `SHA256SUMS.txt` bytes. The envelope binds the release tag, so a
+/// signature cut from any other release is rejected even though the raw
+/// Ed25519 message is the sums file alone. Returns the signing key id.
+pub(crate) fn verify_release_signature(
+    sums_bytes: &[u8],
+    sig_text: &str,
+    expected_tag: &str,
+) -> Result<String> {
+    let normalized = sig_text.trim_end_matches(['\r', '\n']);
+    let lines: Vec<&str> = normalized.split('\n').collect();
+    if lines.len() != 4 {
+        bail!("release signature is malformed (expected a 4-line envelope)");
+    }
+    if lines[0] != RELEASE_SIG_VERSION {
+        bail!(
+            "release signature has unsupported version '{}' (expected {RELEASE_SIG_VERSION})",
+            lines[0]
+        );
+    }
+    let tag = lines[1]
+        .strip_prefix("tag: ")
+        .context("release signature is malformed (tag line)")?;
+    if tag.is_empty() {
+        bail!("release signature is malformed (empty tag)");
+    }
+    if tag != expected_tag {
+        bail!("release signature is for tag '{tag}', not expected '{expected_tag}'");
+    }
+    let key_id = lines[2]
+        .strip_prefix("key-id: ")
+        .context("release signature is malformed (key-id line)")?;
+    decode_canonical_hex(key_id, "key id", 8)?;
+    let (_, pubkey_hex) = RELEASE_SIGNING_KEYS
+        .iter()
+        .find(|(id, _)| *id == key_id)
+        .with_context(|| {
+            format!("release signature key id '{key_id}' is not a trusted release signer")
+        })?;
+    let signature_hex = lines[3]
+        .strip_prefix("signature: ")
+        .context("release signature is malformed (signature line)")?;
+    let signature_bytes = decode_canonical_hex(signature_hex, "signature", 64)?;
+    let pubkey_bytes = decode_canonical_hex(pubkey_hex, "pinned key", 32)?;
+    let verifying_key = VerifyingKey::from_bytes(
+        pubkey_bytes
+            .as_slice()
+            .try_into()
+            .context("pinned release key is not 32 bytes")?,
+    )
+    .context("pinned release key is not a valid Ed25519 key")?;
+    let signature = Signature::from_bytes(
+        signature_bytes
+            .as_slice()
+            .try_into()
+            .context("release signature is not 64 bytes")?,
+    );
+    verifying_key
+        .verify_strict(sums_bytes, &signature)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "release signature verification failed (SHA256SUMS.txt is not signed by key '{key_id}')"
+            )
+        })?;
+    Ok(key_id.to_string())
+}
+
 /// Looks up one file's digest in `sha256sum` output (`<hex>  <name>`).
 fn find_checksum(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
@@ -352,6 +468,8 @@ pub(crate) async fn apply_update(
         asset_url(&archive_name).with_context(|| format!("release {tag} has no {archive_name}"))?;
     let sums_url =
         asset_url(sums_name).with_context(|| format!("release {tag} has no {sums_name}"))?;
+    let sig_url = asset_url(RELEASE_SIG_ASSET)
+        .with_context(|| format!("release {tag} is not signed (missing {RELEASE_SIG_ASSET})"))?;
     on_stage(&format!("Downloading {archive_name}..."));
     let archive = authed_request(&client, archive_url)
         .header("Accept", "application/octet-stream")
@@ -378,6 +496,22 @@ pub(crate) async fn apply_update(
         .text()
         .await
         .context("reading the CipherVault release checksum")?;
+    on_stage("Downloading release signature...");
+    let sig_text = authed_request(&client, sig_url)
+        .header("Accept", "application/octet-stream")
+        .send()
+        .await
+        .context("downloading the CipherVault release signature")?
+        .error_for_status()
+        .with_context(|| {
+            format!("latest CipherVault release signature is unavailable ({PRIVATE_REPO_HINT})")
+        })?
+        .text()
+        .await
+        .context("reading the CipherVault release signature")?;
+    on_stage("Verifying release signature...");
+    let signer = verify_release_signature(sums.as_bytes(), &sig_text, tag)?;
+    on_stage(&format!("Release signature valid (key {signer})."));
     on_stage("Verifying checksum...");
     let expected = find_checksum(&sums, &archive_name)
         .context("release checksum does not contain the selected archive")?;
@@ -738,6 +872,165 @@ mod update_version_tests {
         assert_eq!(find_binary_in(&root, &wanted), Some(bin_dir.join(&wanted)));
         assert_eq!(find_binary_in(&root, "no-such-binary"), None);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Fixture: `SHA256SUMS.txt` bytes signed offline by the pinned release
+    /// key for tag `v9.9.9`. The seed never enters the repo; only the
+    /// resulting signature is embedded, so this test proves the pinned
+    /// trust root verifies a genuine release signature end to end.
+    const FIXTURE_TAG: &str = "v9.9.9";
+    const FIXTURE_SUMS: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  ciphervault-v9.9.9-x86_64-unknown-linux-gnu.tar.gz\n";
+    const FIXTURE_SIG_HEX: &str = "ed0b77b87e8194636f04dcf90268a0142f1c6380bc4bbb58ba7f84592019d8e8d4699befb5ea2bd09f76badfeeea33a0fbec7522fd1e760e22bd93a47d72c303";
+
+    fn fixture_envelope() -> String {
+        render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", FIXTURE_SIG_HEX)
+    }
+
+    #[test]
+    fn pinned_release_keys_are_valid_and_self_describing() {
+        assert!(!RELEASE_SIGNING_KEYS.is_empty());
+        for (id, pubkey) in RELEASE_SIGNING_KEYS {
+            assert_eq!(release_key_id_of_pubkey(pubkey), *id);
+            assert!(is_pinned_release_key(pubkey));
+            let raw = hex::decode(pubkey).unwrap();
+            assert_eq!(raw.len(), 32);
+            let bytes: [u8; 32] = raw.try_into().unwrap();
+            assert!(VerifyingKey::from_bytes(&bytes).is_ok());
+        }
+        assert!(!is_pinned_release_key(
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ));
+    }
+
+    #[test]
+    fn genuine_release_signature_verifies() {
+        let key_id =
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &fixture_envelope(), FIXTURE_TAG)
+                .unwrap();
+        assert_eq!(key_id, "b625994c0c3f53a6");
+    }
+
+    #[test]
+    fn tampered_sums_rejected() {
+        let tampered = FIXTURE_SUMS.replacen("9f86", "9f87", 1);
+        let err = verify_release_signature(tampered.as_bytes(), &fixture_envelope(), FIXTURE_TAG)
+            .unwrap_err();
+        assert!(err.to_string().contains("verification failed"), "{err:#}");
+    }
+
+    #[test]
+    fn flipped_signature_bit_rejected() {
+        let mut bad_sig = FIXTURE_SIG_HEX.to_string();
+        bad_sig.replace_range(0..1, if bad_sig.starts_with('e') { "f" } else { "e" });
+        let envelope = render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", &bad_sig);
+        let err =
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG).unwrap_err();
+        assert!(err.to_string().contains("verification failed"), "{err:#}");
+    }
+
+    #[test]
+    fn wrong_signer_rejected() {
+        // Attacker signs the same sums with their own key but claims the
+        // pinned key id: the Ed25519 check against the pinned key fails.
+        use ed25519_dalek::{Signer as DalekSigner, SigningKey as DalekSigningKey};
+        let attacker = DalekSigningKey::from_bytes(&[0x42; 32]);
+        let forged = hex::encode(attacker.sign(FIXTURE_SUMS.as_bytes()).to_bytes());
+        assert_ne!(forged, FIXTURE_SIG_HEX);
+        let envelope = render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", &forged);
+        let err =
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG).unwrap_err();
+        assert!(err.to_string().contains("verification failed"), "{err:#}");
+    }
+
+    #[test]
+    fn unknown_key_id_rejected() {
+        // Attacker's self-consistent envelope (own key id + own signature)
+        // is rejected at the trust root, before any crypto runs.
+        use ed25519_dalek::{Signer as DalekSigner, SigningKey as DalekSigningKey};
+        let attacker = DalekSigningKey::from_bytes(&[0x42; 32]);
+        let attacker_pub = hex::encode(attacker.verifying_key().to_bytes());
+        let attacker_id = release_key_id_of_pubkey(&attacker_pub);
+        assert!(!is_pinned_release_key(&attacker_pub));
+        let forged = hex::encode(attacker.sign(FIXTURE_SUMS.as_bytes()).to_bytes());
+        let envelope = render_release_signature(FIXTURE_TAG, &attacker_id, &forged);
+        let err =
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG).unwrap_err();
+        assert!(
+            err.to_string().contains("not a trusted release signer"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn cross_tag_signature_rejected() {
+        // A genuine signature cut from another release does not verify for
+        // this tag, even though the raw sums bytes are identical.
+        let err = verify_release_signature(FIXTURE_SUMS.as_bytes(), &fixture_envelope(), "v9.9.10")
+            .unwrap_err();
+        assert!(err.to_string().contains("not expected"), "{err:#}");
+    }
+
+    #[test]
+    fn malformed_envelopes_rejected() {
+        let bad_version = fixture_envelope().replacen(
+            "CIPHERVAULT-RELEASE-SIG-V1",
+            "CIPHERVAULT-RELEASE-SIG-V9",
+            1,
+        );
+        assert!(
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &bad_version, FIXTURE_TAG)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported version")
+        );
+        // Truncated envelope.
+        assert!(
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), "tag: v9.9.9\n", FIXTURE_TAG)
+                .is_err()
+        );
+        // Empty document / unsigned artifact.
+        assert!(verify_release_signature(FIXTURE_SUMS.as_bytes(), "", FIXTURE_TAG).is_err());
+        // Extra trailing line.
+        let extra = fixture_envelope() + "note: hello\n";
+        assert!(verify_release_signature(FIXTURE_SUMS.as_bytes(), &extra, FIXTURE_TAG).is_err());
+        // Uppercase hex is not canonical.
+        let upper =
+            fixture_envelope().replacen(FIXTURE_SIG_HEX, &FIXTURE_SIG_HEX.to_uppercase(), 1);
+        assert!(
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &upper, FIXTURE_TAG)
+                .unwrap_err()
+                .to_string()
+                .contains("lowercase hex")
+        );
+        // Short signature.
+        let short = render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", "ab");
+        assert!(verify_release_signature(FIXTURE_SUMS.as_bytes(), &short, FIXTURE_TAG).is_err());
+        // Missing tag prefix.
+        let no_prefix = fixture_envelope().replacen("tag: ", "", 1);
+        assert!(
+            verify_release_signature(FIXTURE_SUMS.as_bytes(), &no_prefix, FIXTURE_TAG).is_err()
+        );
+    }
+
+    #[test]
+    fn signature_then_checksum_order_pins_artifact_identity() {
+        // The verified sums must still name the exact archive under install:
+        // signature authenticity first, then checksum integrity of the bytes.
+        assert_eq!(
+            find_checksum(
+                FIXTURE_SUMS,
+                "ciphervault-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
+            )
+            .as_deref(),
+            Some("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+        );
+        assert_eq!(
+            find_checksum(
+                FIXTURE_SUMS,
+                "ciphervault-v9.9.10-x86_64-unknown-linux-gnu.tar.gz"
+            ),
+            None
+        );
     }
 
     #[test]

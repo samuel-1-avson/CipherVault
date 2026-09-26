@@ -256,6 +256,24 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Sign SHA256 Checksums
+        shell: bash
+        env:
+          CIPHERVAULT_RELEASE_SIGNING_KEY: ${{ secrets.CIPHERVAULT_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$CIPHERVAULT_RELEASE_SIGNING_KEY" ]; then
+            echo "ERROR: CIPHERVAULT_RELEASE_SIGNING_KEY secret is not set; releases must be signed (see docs/UPDATER_SIGNATURE_VERIFICATION.md)" >&2
+            exit 1
+          fi
+          TAG="${{ github.ref_name }}"
+          # Self-hosting signer: the freshly built Linux CLI signs the checksums
+          # it just packaged, then verifies the envelope before publishing.
+          tar -xzf "dist-release/ciphervault-${TAG}-x86_64-unknown-linux-gnu.tar.gz" --wildcards "*/bin/ciphervault" -O > ./ciphervault-signer
+          chmod +x ./ciphervault-signer
+          ./ciphervault-signer release sign --tag "$TAG" --sums dist-release/SHA256SUMS.txt --out dist-release/SHA256SUMS.txt.sig
+          ./ciphervault-signer release verify --tag "$TAG" --sums dist-release/SHA256SUMS.txt --sig dist-release/SHA256SUMS.txt.sig
+          rm -f ./ciphervault-signer
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

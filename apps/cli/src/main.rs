@@ -76,6 +76,7 @@ Account & devices:
 
 App:
   update               Check for and install the latest signed GitHub release for this platform
+  release              Sign and verify release checksum signatures (release engineering)
   ui                   Open the production cloud dashboard or launch an offline local inspector
   tui                  Launch interactive terminal user interface (TUI)
   doctor               Run local self-checks (vault, keyring, operators, quorum, anchors)
@@ -592,6 +593,12 @@ enum Commands {
         check: bool,
     },
 
+    /// Sign and verify release checksum signatures (release engineering)
+    Release {
+        #[command(subcommand)]
+        sub: ReleaseSubcommand,
+    },
+
     /// Open the production cloud dashboard or launch an offline local inspector
     Ui {
         #[arg(
@@ -933,6 +940,39 @@ enum VoucherSubcommand {
 }
 
 #[derive(Subcommand)]
+enum ReleaseSubcommand {
+    /// Sign SHA256SUMS.txt for a release tag (seed from env or key file)
+    Sign {
+        #[arg(long, help = "Release tag the signature binds to (e.g. v1.0.18)")]
+        tag: String,
+
+        #[arg(long, help = "Checksum file to sign")]
+        sums: PathBuf,
+
+        #[arg(long, help = "Write the detached signature here (default: stdout)")]
+        out: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Hex seed file for an offline ceremony (default: CIPHERVAULT_RELEASE_SIGNING_KEY env)"
+        )]
+        key_file: Option<PathBuf>,
+    },
+
+    /// Verify a detached release signature against the pinned trust roots
+    Verify {
+        #[arg(long, help = "Expected release tag")]
+        tag: String,
+
+        #[arg(long, help = "Checksum file the signature covers")]
+        sums: PathBuf,
+
+        #[arg(long, help = "Detached signature file")]
+        sig: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum InviteSubcommand {
     /// Print the fleet public key for a seed file (pin as CIPHERVAULT_FLEET_KEY)
     Pubkey {
@@ -1193,6 +1233,15 @@ async fn run(cli: Cli) -> Result<()> {
     };
     match command {
         Commands::Update { check } => cmd_update(check).await,
+        Commands::Release { sub } => match sub {
+            ReleaseSubcommand::Sign {
+                tag,
+                sums,
+                out,
+                key_file,
+            } => cmd_release_sign(tag, sums, out, key_file),
+            ReleaseSubcommand::Verify { tag, sums, sig } => cmd_release_verify(tag, sums, sig),
+        },
         Commands::Auth { sub } => match sub {
             AuthSubcommand::Init { name } => cmd_auth_init(name),
             AuthSubcommand::Connect {

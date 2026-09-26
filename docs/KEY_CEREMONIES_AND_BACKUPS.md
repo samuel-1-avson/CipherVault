@@ -37,25 +37,40 @@ to identity B (A != B), timestamped `operator.key.previous-*` backup
 kept, reprint stable at B. Tooling path PASS; live-fleet repinning
 remains a human step per the runbook.
 
-### Fleet-key rotation (MISSING procedure + drill)
+### Fleet-key rotation (procedure exists, DRILLED 2026-09-26)
 
-No rotation drill has ever been run (playbook T5). First exercise, on
-a rehearsal node before touching the fleet:
+First exercise completed 2026-09-26 on rehearsal nodes (2 fleet + 4
+joiners, loopback): new offline seed generated, node-by-node re-pin
+with `/healthz` + join-accept between each, old tickets rejected (403),
+new tickets accepted, partial-rotation mixed state observed and
+resolved, membership + pins surviving two restarts, lost-seed issuance
+failing closed while the fleet kept serving. Full transcript:
+`docs/KEY_ROTATION_DRILLS.md` (script exit 0, 35/35 checks PASS).
 
 1. Generate a new offline seed; print both pubkeys.
 2. Re-pin every node (`CIPHERVAULT_FLEET_KEY`); join fails closed while
    any node still pins the old key, so roll node by node and confirm
    `/healthz` + join-accept between each.
 3. Old tickets die with the old key; re-issue any outstanding invites.
-4. Record the drill (date, nodes, result) here.
+4. Record the drill (date, nodes, result) here — done, see above.
 
-### Publisher rotation (procedure exists, drill not recorded)
+### Publisher rotation (procedure exists, DRILLED 2026-09-26)
 
 1. Generate a dedicated Ed25519 key offline.
 2. Set it on the publisher worker; re-pin the dashboard
    (`CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY`).
 3. Confirm `/api/anchors` still reports `publisher_signed`, then
    destroy the old signing key.
+
+Drill record (2026-09-26, rehearsal): live `publish-public-feed` under
+keys PA then PB (envelopes carry the new publisher key, signatures
+differ), dashboard pin/file plumbing confirmed over live `/api/anchors`
+(HTTP 200), stale-feed pin mismatch demonstrated, plus the committed
+`publisher_key_rotation_drill` regression test executing the real
+sign/verify/pin path (PA verifies, stale PA rejected after pin moves
+to PB, PB reissue verifies `publisher_signed`). Full record:
+`docs/KEY_ROTATION_DRILLS.md`. Remaining: populated-feed dashboard
+confirmation on the live fleet (needs anchored checkpoints).
 
 ### User recovery (exists, drilled)
 
@@ -75,6 +90,10 @@ printed share sheets; rotation = re-split + re-distribute.
 
 ## Open gaps
 
-- Fleet-key rotation drill never run (see above).
-- Fleet is open-write (public live test); re-close procedure exists in
-  the runbook but is a policy decision, not yet taken.
+- Fleet-key rotation drill: DONE at rehearsal scope 2026-09-26 (see
+  above); live-fleet rotation remains a human ceremony when needed.
+- Fleet re-close: LIVE EXECUTION DONE 2026-09-26 (all 3 nodes
+  strict+enrollment, anonymous writes rejected, authorized paths proven,
+  explorer healthy) — see `docs/FLEET_RE-CLOSE_EVIDENCE.md` §6.
+  Firewall-rule deletion explicitly held (would sever all client
+  access; reachability follow-up, not a writability gate).

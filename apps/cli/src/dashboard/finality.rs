@@ -1225,6 +1225,72 @@ mod tests {
     }
 
     #[test]
+    fn publisher_key_rotation_drill() {
+        // Automated rotation drill (Track 4 ceremony): feed signed under key
+        // A verifies while A is pinned; after the pin rotates to B the old
+        // feed is rejected and only a B-signed reissue verifies. Uses fixed
+        // drill seeds so the transcript is reproducible; production keys are
+        // random and offline.
+        use ed25519_dalek::SigningKey as DrillSigningKey;
+        let now = Utc::now().timestamp().max(0) as u64;
+        let key_a = DrillSigningKey::from_bytes(&[0xA5; 32]);
+        let key_b = DrillSigningKey::from_bytes(&[0xB6; 32]);
+        let pub_a = hex::encode(key_a.verifying_key().as_bytes());
+        let pub_b = hex::encode(key_b.verifying_key().as_bytes());
+        assert_ne!(pub_a, pub_b);
+        let checkpoint = PublicCheckpointFeedEntry {
+            network: "Drillnet".to_string(),
+            chain_id: 421614,
+            contract_address_hex: "11".repeat(20),
+            commitment_hex: "22".repeat(32),
+            head_record_cid_hex: "33".repeat(32),
+            tx_hash_hex: Some(format!("0x{}", "44".repeat(32))),
+            block_number: Some(123),
+            published_at_utc: now,
+        };
+        let sign_feed = |key: &DrillSigningKey| {
+            let unsigned = PublicCheckpointFeedUnsigned {
+                version: 1,
+                issued_at_utc: now,
+                checkpoints: vec![checkpoint.clone()],
+            };
+            let message = ciphervault_format::to_canonical_cbor(&unsigned).unwrap();
+            let signature = ciphervault_crypto::signatures::sign_with_domain(
+                key,
+                b"public_checkpoint_feed",
+                &message,
+            );
+            PublicCheckpointFeedEnvelope {
+                version: unsigned.version,
+                issued_at_utc: unsigned.issued_at_utc,
+                checkpoints: unsigned.checkpoints,
+                publisher_key_hex: hex::encode(key.verifying_key().as_bytes()),
+                signature_hex: hex::encode(signature),
+            }
+        };
+        // Pre-rotation: A-signed feed verifies under the A pin.
+        std::env::set_var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY", &pub_a);
+        let feed_a = sign_feed(&key_a);
+        let records = verify_public_checkpoint_feed(&feed_a).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["verification_status"], "publisher_signed");
+        // Rotation: pin moves to B; the stale A-signed feed is rejected.
+        std::env::set_var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY", &pub_b);
+        let stale = verify_public_checkpoint_feed(&feed_a).unwrap_err();
+        assert!(
+            stale.contains("not the pinned publisher key"),
+            "unexpected stale-feed error: {stale}"
+        );
+        // Post-rotation: B-signed reissue verifies under the B pin.
+        let feed_b = sign_feed(&key_b);
+        let records = verify_public_checkpoint_feed(&feed_b).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["verification_status"], "publisher_signed");
+        assert_eq!(records[0]["publisher_key_hex"], pub_b);
+        std::env::remove_var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY");
+    }
+
+    #[test]
     fn reorg_alarm_fires_on_deeply_confirmed_receipt_regression() {
         let previous = vec![("0xaaa".to_string(), 100u64), ("0xbbb".to_string(), 120u64)];
         // Vanished receipt + re-mined receipt alarm; steady ones stay quiet.
