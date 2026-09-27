@@ -1556,7 +1556,7 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault console (v1.0.19) — real CLI syntax, live where a browser can measure:',
+    'CipherVault console (v1.0.20) — real CLI syntax, live where a browser can measure:',
     '  Local vault commands (run in your terminal; this console shows usage):',
     '    init                 - Initialize local vault & print emergency paper kit',
     '    track <paths...>     - Enroll confidential files into the SQLite WAL ledger',
@@ -1876,10 +1876,10 @@ function closeReplDrawer() {
    10. Install Snippet Tabs & One-Click Copy
    ============================================================================== */
 const INSTALL_SNIPPETS = {
-  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.19)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.19)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
-  cargo: `# Build and install standalone CLI directly from Git source (v1.0.19)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
-  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.19)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
+  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.20)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.20)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  cargo: `# Build and install standalone CLI directly from Git source (v1.0.20)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.20)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
 function initInstallSnippets() {
