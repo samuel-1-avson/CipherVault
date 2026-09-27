@@ -155,16 +155,12 @@ fn find_binary_in(dir: &Path, name: &str) -> Option<PathBuf> {
     Some(first)
 }
 
-/// Builds the post-exit swap script: the CLI move waits unbounded (this
-/// process is exiting, so its lock always clears), while each companion
-/// move retries for ~60 s and then skips — a running node daemon holds
-/// its own .exe locked, and the update must not hang forever on it.
-#[allow(dead_code)] // Windows install path only; exercised by tests everywhere.
 /// PowerShell extraction command for the Windows updater, with both paths
 /// embedded single-quoted. powershell.exe joins everything after `-Command`
 /// into ONE command line, so trailing argv entries never reach `$args` —
 /// passing paths as extra argv (the pre-1.0.19 form) left `$args[0]` empty
 /// and broke every Windows self-update at extraction.
+#[allow(dead_code)] // Windows install path only; exercised by tests everywhere.
 fn windows_expand_archive_command(archive: &Path, dest: &Path) -> String {
     fn quote(path: &Path) -> String {
         format!("'{}'", path.to_string_lossy().replace('\'', "''"))
@@ -176,6 +172,11 @@ fn windows_expand_archive_command(archive: &Path, dest: &Path) -> String {
     )
 }
 
+/// Builds the post-exit swap script: the CLI move waits unbounded (this
+/// process is exiting, so its lock always clears), while each companion
+/// move retries for ~60 s and then skips — a running node daemon holds
+/// its own .exe locked, and the update must not hang forever on it.
+#[allow(dead_code)] // Windows install path only; exercised by tests everywhere.
 fn windows_update_script(
     cli_staged: &Path,
     cli_live: &Path,
