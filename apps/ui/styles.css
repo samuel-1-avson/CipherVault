@@ -193,12 +193,20 @@ header.app-header {
   border-bottom: var(--edge-line);
   border-radius: 0;
   box-shadow: none;
-  padding: 14px 4px 16px;
+  padding: 14px 0 16px;
   margin-bottom: 20px;
   display: flex;
   align-items: center;
-  gap: 22px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
 }
 
 .brand-section {
@@ -231,19 +239,19 @@ header.app-header {
 
 .repo-owner {
   font-family: var(--font-sans);
-  font-size: 1.15rem;
+  font-size: 1.12rem;
   font-weight: 500;
   color: var(--signal);
 }
 .repo-divider {
   font-family: var(--font-sans);
-  font-size: 1.15rem;
+  font-size: 1.12rem;
   color: var(--ash);
   margin: 0 2px;
 }
 .brand-title {
   font-family: var(--font-sans);
-  font-size: 1.15rem;
+  font-size: 1.12rem;
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0;
@@ -290,22 +298,37 @@ header.app-header {
 .brand-subtitle {
   margin: 2px 0 0;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--ash);
   letter-spacing: 0.02em;
 }
 
-/* --- Header Omni-Search (Blockchain Explorer style) --- */
+.header-context-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- Center: Omni-Search Bar --- */
+.header-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  max-width: 440px;
+  min-width: 240px;
+  margin: 0 12px;
+}
+
 .header-omni-search {
   display: flex;
   align-items: center;
   gap: 8px;
   background: var(--bg2);
-  border: var(--edge-line);
+  border: 1px solid var(--line);
   border-radius: var(--edge-lg);
   padding: 6px 12px;
-  width: 320px;
-  max-width: 420px;
+  width: 100%;
   transition: all 0.15s ease;
 }
 .header-omni-search:focus-within {
@@ -329,14 +352,31 @@ header.app-header {
 .header-omni-search input::placeholder {
   color: var(--ash);
 }
+.omni-search-shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
 .header-omni-search .kbd-badge {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.65rem;
   background: var(--bg1);
   border: 1px solid var(--line);
   border-radius: 3px;
-  padding: 1px 6px;
+  padding: 1px 5px;
   color: var(--ash);
+  line-height: 1.2;
+}
+
+/* --- Right: Controls & Badges --- */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* --- GitHub-style Sign In and Account Controls --- */
@@ -866,15 +906,102 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
   transition: width 0.4s ease;
 }
 
-/* --- GitHub Repository Style Tabs --- */
+/* --- Explorer Navigation Container --- */
+.explorer-nav-container {
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: var(--edge-lg);
+  margin-bottom: 16px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.explorer-nav-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg0);
+  flex-wrap: wrap;
+}
+
+.tabs-category-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabs-category-filter::-webkit-scrollbar {
+  display: none;
+}
+
+.filter-pill {
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  color: var(--fog);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.filter-pill:hover {
+  color: var(--bone);
+  border-color: var(--ash);
+  background: var(--bg2);
+}
+.filter-pill.active {
+  color: #ffffff;
+  background: var(--signal);
+  border-color: var(--signal);
+  font-weight: 600;
+}
+.filter-pill svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.filter-pill.active svg {
+  opacity: 1;
+}
+
+.nav-hint-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--ash);
+}
+.nav-hint-label {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  color: var(--ash);
+}
+
+/* --- Main Tab Navigation Strip --- */
 .tabs-nav {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 24px;
+  gap: 2px;
   overflow-x: auto;
   scrollbar-width: thin;
-  padding: 0 4px;
+  padding: 4px 8px 0;
+  background: var(--bg1);
+}
+.tabs-nav::-webkit-scrollbar {
+  height: 4px;
+}
+.tabs-nav::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 2px;
 }
 
 .tab-btn {
@@ -884,11 +1011,11 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
   border-radius: 6px 6px 0 0;
   color: var(--fog);
   font-family: var(--font-sans);
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   font-weight: 500;
   letter-spacing: normal;
   text-transform: none;
-  padding: 9px 14px;
+  padding: 10px 14px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -904,7 +1031,7 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
 .tab-btn.active {
   color: var(--bone);
   font-weight: 600;
-  background: transparent;
+  background: var(--bg0);
   border-bottom: 2px solid var(--signal);
   box-shadow: none;
 }
@@ -922,7 +1049,7 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
 
 .tab-badge {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 600;
   background: var(--bg2);
   border: 1px solid var(--line);
@@ -934,6 +1061,94 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
   background: var(--signal-faint);
   border-color: var(--signal-dim);
   color: var(--signal);
+}
+
+/* --- Page Context & Breadcrumb Bar --- */
+.page-context-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: var(--edge-lg);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.page-context-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.page-breadcrumbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ash);
+}
+.breadcrumb-root {
+  color: var(--signal);
+  font-weight: 600;
+}
+.breadcrumb-sep {
+  color: var(--line);
+}
+.breadcrumb-cat {
+  color: var(--fog);
+}
+.breadcrumb-current {
+  color: var(--bone);
+  font-weight: 600;
+}
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.page-context-title {
+  font-family: var(--font-sans);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--bone);
+  margin: 0;
+  letter-spacing: -0.015em;
+}
+
+.page-context-tag {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: var(--signal-faint);
+  border: 1px solid var(--signal-dim);
+  color: var(--signal);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.page-context-desc {
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  color: var(--fog);
+  margin: 0;
+  line-height: 1.45;
+  max-width: 85ch;
+}
+
+.page-context-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .tab-content {
@@ -5117,41 +5332,6 @@ select.form-input option,
   color: var(--ash);
 }
 
-/* --- Tabs Category Filter --- */
-.tabs-category-filter {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-  padding: 2px 0;
-  overflow-x: auto;
-}
-.filter-pill {
-  font-family: var(--font-sans);
-  font-size: 0.78rem;
-  font-weight: 500;
-  letter-spacing: normal;
-  text-transform: none;
-  padding: 4px 12px;
-  border-radius: 20px;
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  color: var(--fog);
-  cursor: pointer;
-  transition: all 0.12s ease;
-  white-space: nowrap;
-}
-.filter-pill:hover {
-  color: var(--bone);
-  background: var(--bg1);
-  border-color: var(--ash);
-}
-.filter-pill.active {
-  color: #ffffff;
-  background: var(--signal);
-  border-color: var(--signal);
-  font-weight: 600;
-}
 
 /* --- Secret Health & Hygiene Card --- */
 .secret-health-card {

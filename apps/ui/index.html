@@ -18,7 +18,7 @@
       <div class="header-left">
         <div class="brand-section">
           <div class="brand-icon" aria-hidden="true">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
@@ -35,72 +35,98 @@
           </div>
         </div>
 
-        <!-- Blockchain Explorer Omni-Search Input -->
-        <div class="header-omni-search" id="header-omni-search">
-          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-          <input type="text" id="input-omni-search" placeholder="Search by Snapshot CID, Txn Hash (0x...), Operator..." autocomplete="off" spellcheck="false" aria-label="Explorer Search or Command Palette">
-          <kbd class="kbd-badge">/</kbd>
-        </div>
-
-        <div class="vault-identity-pill" id="vault-identity-pill" title="Click to copy full Vault ID">
-          <span class="pill-label" id="vault-identity-label">VAULT</span>
-          <span class="vault-id-text" id="vault-id-display">Loading...</span>
-          <button class="btn-copy" id="btn-copy-vault-id" title="Copy Vault ID" aria-label="Copy Vault ID">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
-        </div>
-
-        <!-- Multi-Vault Workspace Explorer Switcher -->
-        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap">
-          <button class="workspace-switcher-btn" id="btn-workspace-switcher" aria-haspopup="true" aria-expanded="false" title="Switch active local vault workspace">
-            <span class="workspace-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        <div class="header-context-chips">
+          <div class="vault-identity-pill" id="vault-identity-pill" title="Click to copy full Vault ID">
+            <span class="pill-label" id="vault-identity-label">VAULT</span>
+            <span class="vault-id-text" id="vault-id-display">Loading...</span>
+            <button class="btn-copy" id="btn-copy-vault-id" title="Copy Vault ID" aria-label="Copy Vault ID">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
-            </span>
-            <span class="workspace-name" id="active-workspace-name">Workspaces</span>
-            <span class="workspace-count-badge" id="workspace-count-badge">1</span>
-            <svg class="dropdown-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </button>
-          <div class="workspace-dropdown-menu" id="workspace-dropdown-menu" role="menu" aria-label="Workspace Profiles">
-            <div class="workspace-menu-header">
-              <span>LOCAL VAULT WORKSPACES</span>
-              <button class="btn-rescan-workspaces" id="btn-rescan-workspaces" title="Rescan system for local vaults">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l6 5.67"/>
+            </button>
+          </div>
+
+          <!-- Multi-Vault Workspace Explorer Switcher -->
+          <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap">
+            <button class="workspace-switcher-btn" id="btn-workspace-switcher" aria-haspopup="true" aria-expanded="false" title="Switch active local vault workspace">
+              <span class="workspace-icon" aria-hidden="true">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
                 </svg>
-                <span>Rescan</span>
-              </button>
-            </div>
-            <div class="workspace-list" id="workspace-dropdown-list">
-              <!-- Dynamically populated -->
+              </span>
+              <span class="workspace-name" id="active-workspace-name">Workspaces</span>
+              <span class="workspace-count-badge" id="workspace-count-badge">1</span>
+              <svg class="dropdown-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            <div class="workspace-dropdown-menu" id="workspace-dropdown-menu" role="menu" aria-label="Workspace Profiles">
+              <div class="workspace-menu-header">
+                <span>LOCAL VAULT WORKSPACES</span>
+                <button class="btn-rescan-workspaces" id="btn-rescan-workspaces" title="Rescan system for local vaults">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l6 5.67"/>
+                  </svg>
+                  <span>Rescan</span>
+                </button>
+              </div>
+              <div class="workspace-list" id="workspace-dropdown-list">
+                <!-- Dynamically populated -->
+              </div>
             </div>
           </div>
         </div>
       </div>
 
+      <!-- Center: Omni-Search Bar -->
+      <div class="header-center">
+        <div class="header-omni-search" id="header-omni-search">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="input-omni-search" placeholder="Search snapshots, txns (0x...), operators, or type / ..." autocomplete="off" spellcheck="false" aria-label="Explorer Search or Command Palette">
+          <div class="omni-search-shortcuts">
+            <kbd class="kbd-badge" title="Focus search">/</kbd>
+            <kbd class="kbd-badge" title="Command Palette">Ctrl K</kbd>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: System Status, Account & Controls -->
       <div class="header-right">
         <!-- Cluster Status Indicator -->
-        <div class="cluster-status-indicator" id="cluster-status-indicator" role="status" aria-live="polite">
+        <div class="cluster-status-indicator" id="cluster-status-indicator" role="status" aria-live="polite" title="Storage cluster reachability status">
           <span class="pulse-dot" id="pulse-dot"></span>
           <span id="cluster-status-text">Probing Cluster...</span>
         </div>
 
-        <!-- Optional account/control-plane identity. Hidden in public explorer mode. -->
+        <!-- Live Real-Time SSE Indicator -->
+        <div class="cluster-status-indicator sse-live-badge" id="sse-stream-indicator" role="status" aria-live="polite" title="Continuous operator telemetry stream">
+          <span class="pulse-dot sse-dot" id="sse-pulse-dot"></span>
+          <span id="sse-stream-text">SSE Stream: Connecting...</span>
+        </div>
+
+        <!-- Account Status Badge -->
         <div class="cluster-status-indicator account-status-badge" id="account-status-indicator" role="status" aria-live="polite">
           <span class="pulse-dot" id="account-pulse-dot"></span>
           <span id="account-status-text">Account: Local-only</span>
         </div>
-        <div class="account-actions" aria-label="Account controls">
-          <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key">Device sign in</button>
+
+        <!-- Prominent GitHub-style Sign In Button -->
+        <button class="btn-action secondary small btn-github-signin" id="btn-header-signin" type="button" title="Sign in to CipherVault account">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+            <polyline points="10 17 15 12 10 7"></polyline>
+            <line x1="15" y1="12" x2="3" y2="12"></line>
+          </svg>
+          <span>Sign in</span>
+        </button>
+
+        <!-- Account Action Buttons (Bound by app.js) -->
+        <div class="account-actions" id="account-actions-group" aria-label="Account controls">
+          <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key" hidden>Device sign in</button>
           <button class="btn-action secondary small" id="btn-account-connect" type="button" title="Connect a local CLI account to the hosted service" hidden>Connect account</button>
           <button class="btn-action secondary small" id="btn-account-passkey" type="button" title="Sign in to a hosted CipherVault account with a passkey" hidden>Passkey sign in</button>
           <button class="btn-action secondary small" id="btn-account-totp" type="button" title="Sign in with an authenticator app code" hidden>Authenticator sign in</button>
@@ -109,41 +135,8 @@
           <button class="btn-action secondary small" id="btn-account-logout" type="button" title="Revoke the current local account session" hidden>Sign out</button>
         </div>
 
-        <!-- Live Real-Time SSE Indicator -->
-        <div class="cluster-status-indicator sse-live-badge" id="sse-stream-indicator" role="status" aria-live="polite" title="Continuous operator telemetry">
-          <span class="pulse-dot sse-dot" id="sse-pulse-dot"></span>
-          <span id="sse-stream-text">SSE Stream: Connecting...</span>
-        </div>
-
         <!-- Quick Action Buttons Toolbar -->
         <div class="header-actions">
-          <!-- Account Status Indicator -->
-          <div class="cluster-status-indicator account-status-badge" id="account-status-indicator" role="status" aria-live="polite">
-            <span class="pulse-dot" id="account-pulse-dot"></span>
-            <span id="account-status-text">Account: Local-only</span>
-          </div>
-
-          <!-- Prominent GitHub-style Sign In Button -->
-          <button class="btn-action secondary small btn-github-signin" id="btn-header-signin" type="button" title="Sign in to CipherVault account">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
-              <polyline points="10 17 15 12 10 7"></polyline>
-              <line x1="15" y1="12" x2="3" y2="12"></line>
-            </svg>
-            <span>Sign in</span>
-          </button>
-
-          <!-- Account action buttons bound by app.js -->
-          <div class="account-actions" id="account-actions-group" aria-label="Account controls">
-            <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key" hidden>Device sign in</button>
-            <button class="btn-action secondary small" id="btn-account-connect" type="button" title="Connect a local CLI account to the hosted service" hidden>Connect account</button>
-            <button class="btn-action secondary small" id="btn-account-passkey" type="button" title="Sign in to a hosted CipherVault account with a passkey" hidden>Passkey sign in</button>
-            <button class="btn-action secondary small" id="btn-account-totp" type="button" title="Sign in with an authenticator app code" hidden>Authenticator sign in</button>
-            <button class="btn-action secondary small" id="btn-account-register-passkey" type="button" title="Register a passkey on this device" hidden>Register passkey</button>
-            <button class="btn-action secondary small" id="btn-account-manage" type="button" title="Manage hosted account membership and recovery" hidden>Manage account</button>
-            <button class="btn-action secondary small" id="btn-account-logout" type="button" title="Revoke the current local account session" hidden>Sign out</button>
-          </div>
-
           <button class="btn-action secondary command-palette-trigger-btn" id="btn-open-command-palette" title="Open Command Palette (Ctrl+K / Cmd+K)" aria-label="Open Command Palette (Ctrl+K / Cmd+K)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="8"></circle>
@@ -281,136 +274,179 @@
     <!-- Main Content Landmark -->
     <main id="main-content" tabindex="-1">
 
-    <!-- Tab View Category Filter -->
-    <div class="tabs-category-filter" id="tabs-category-filter" role="group" aria-label="Tab View Filter">
-      <button class="filter-pill active" data-category="all" id="pill-filter-all">All Views (11)</button>
-      <button class="filter-pill" data-category="secrets" id="pill-filter-secrets">Secrets &amp; History</button>
-      <button class="filter-pill" data-category="network" id="pill-filter-network">Network &amp; Cluster</button>
-      <button class="filter-pill" data-category="security" id="pill-filter-security">Security &amp; Recovery</button>
+    <!-- Tab View Category Filter & Unified Navigation Bar -->
+    <div class="explorer-nav-container" id="explorer-nav-container">
+      <div class="explorer-nav-toolbar">
+        <div class="tabs-category-filter" id="tabs-category-filter" role="group" aria-label="Tab View Filter">
+          <button class="filter-pill active" data-category="all" id="pill-filter-all">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            <span>All Views (12)</span>
+          </button>
+          <button class="filter-pill" data-category="network" id="pill-filter-network">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+            <span>Network &amp; Cluster</span>
+          </button>
+          <button class="filter-pill" data-category="secrets" id="pill-filter-secrets">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+            <span>Secrets &amp; Storage</span>
+          </button>
+          <button class="filter-pill" data-category="security" id="pill-filter-security">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+            <span>Security &amp; Governance</span>
+          </button>
+        </div>
+
+        <div class="nav-hint-badge" title="Navigate tabs with Arrow Keys, [ and ], or 1-9">
+          <kbd class="kbd-badge">1-9</kbd>
+          <kbd class="kbd-badge">[ ]</kbd>
+          <span class="nav-hint-label">Tab Switch</span>
+        </div>
+      </div>
+
+      <!-- Main Tab Navigation -->
+      <nav class="tabs-nav" aria-label="Dashboard Navigation" role="tablist">
+        <button class="tab-btn active" id="tab-btn-operators" data-target="tab-operators" data-category="network" role="tab" aria-selected="true" aria-controls="tab-operators" tabindex="0">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+          <span>Storage Operators</span>
+          <span class="tab-badge" id="badge-tab-operators">--</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-overview" data-target="tab-overview" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-overview" tabindex="-1" data-private-surface>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <span>My Data</span>
+          <span class="tab-badge" id="badge-tab-overview">--</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-explorer" data-target="tab-explorer" data-category="network" role="tab" aria-selected="false" aria-controls="tab-explorer" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <span>Explorer</span>
+          <span class="tab-badge" id="badge-tab-explorer">Search</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="18" r="3"></circle>
+            <circle cx="6" cy="6" r="3"></circle>
+            <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+            <line x1="6" y1="9" x2="6" y2="21"></line>
+          </svg>
+          <span>Snapshot DAG</span>
+          <span class="tab-badge" id="badge-tab-snapshots">--</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"></line>
+            <line x1="12" y1="20" x2="12" y2="4"></line>
+            <line x1="6" y1="20" x2="6" y2="14"></line>
+            <line x1="4" y1="14" x2="8" y2="14"></line>
+            <line x1="10" y1="4" x2="14" y2="4"></line>
+            <line x1="16" y1="10" x2="20" y2="10"></line>
+          </svg>
+          <span>Secret Diff</span>
+          <span class="tab-badge" id="badge-tab-diff">Compare</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-files" data-target="tab-files" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>
+          <span>Tracked Secrets</span>
+          <span class="tab-badge" id="badge-tab-files">--</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" data-category="security" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <circle cx="12" cy="11" r="3"></circle>
+          </svg>
+          <span>Threshold Guardians</span>
+          <span class="tab-badge" id="badge-tab-guardians">--</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-anchor" data-target="tab-anchor" data-category="network" role="tab" aria-selected="false" aria-controls="tab-anchor" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <span>Arbitrum Relayer</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          <span>Maintenance Fleet</span>
+          <span class="tab-badge" id="badge-tab-fleet">--</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery" data-category="security" role="tab" aria-selected="false" aria-controls="tab-recovery" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+          </svg>
+          <span>Recovery Readiness</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+            <line x1="7" y1="10" x2="7.01" y2="10"></line>
+            <line x1="12" y1="10" x2="12.01" y2="10"></line>
+            <line x1="17" y1="10" x2="17.01" y2="10"></line>
+          </svg>
+          <span>FastCDC Inspector</span>
+          <span class="tab-badge" id="badge-tab-fastcdc">Live</span>
+        </button>
+
+        <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" data-category="security" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+          </svg>
+          <span>Activity Log</span>
+          <span class="tab-badge" id="badge-tab-activity">--</span>
+        </button>
+      </nav>
     </div>
 
-    <!-- Main Tab Navigation -->
-    <nav class="tabs-nav" aria-label="Dashboard Navigation" role="tablist">
-      <button class="tab-btn active" id="tab-btn-operators" data-target="tab-operators" data-category="network" role="tab" aria-selected="true" aria-controls="tab-operators" tabindex="0">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-          <line x1="6" y1="6" x2="6.01" y2="6"></line>
-          <line x1="6" y1="18" x2="6.01" y2="18"></line>
-        </svg>
-        Storage Operators
-        <span class="tab-badge" id="badge-tab-operators">--</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-overview" data-target="tab-overview" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-overview" tabindex="-1" data-private-surface>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="7" height="7"></rect>
-          <rect x="14" y="3" width="7" height="7"></rect>
-          <rect x="14" y="14" width="7" height="7"></rect>
-          <rect x="3" y="14" width="7" height="7"></rect>
-        </svg>
-        My Data
-        <span class="tab-badge" id="badge-tab-overview">--</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-explorer" data-target="tab-explorer" data-category="network" role="tab" aria-selected="false" aria-controls="tab-explorer" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="8"></circle>
-          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-        </svg>
-        Explorer
-        <span class="tab-badge" id="badge-tab-explorer">Search</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="18" cy="18" r="3"></circle>
-          <circle cx="6" cy="6" r="3"></circle>
-          <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
-          <line x1="6" y1="9" x2="6" y2="21"></line>
-        </svg>
-        Snapshot DAG
-        <span class="tab-badge" id="badge-tab-snapshots">--</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="20" x2="18" y2="10"></line>
-          <line x1="12" y1="20" x2="12" y2="4"></line>
-          <line x1="6" y1="20" x2="6" y2="14"></line>
-          <line x1="4" y1="14" x2="8" y2="14"></line>
-          <line x1="10" y1="4" x2="14" y2="4"></line>
-          <line x1="16" y1="10" x2="20" y2="10"></line>
-        </svg>
-        Secret Diff
-        <span class="tab-badge" id="badge-tab-diff">Compare</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-files" data-target="tab-files" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-          <polyline points="14 2 14 8 20 8"></polyline>
-        </svg>
-        Tracked Secrets
-        <span class="tab-badge" id="badge-tab-files">--</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" data-category="security" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-          <circle cx="12" cy="11" r="3"></circle>
-        </svg>
-        Threshold Guardians
-        <span class="tab-badge" id="badge-tab-guardians">--</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-anchor" data-target="tab-anchor" data-category="network" role="tab" aria-selected="false" aria-controls="tab-anchor" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-          <polyline points="2 17 12 22 22 17"></polyline>
-          <polyline points="2 12 12 17 22 12"></polyline>
-        </svg>
-        Arbitrum Relayer
-      </button>
-
-      <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="2" y1="12" x2="22" y2="12"></line>
-          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-        </svg>
-        Maintenance Fleet
-        <span class="tab-badge" id="badge-tab-fleet">--</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-recovery" data-target="tab-recovery" data-category="security" role="tab" aria-selected="false" aria-controls="tab-recovery" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
-        </svg>
-        Recovery Readiness
-      </button>
-
-      <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-          <line x1="8" y1="21" x2="16" y2="21"></line>
-          <line x1="12" y1="17" x2="12" y2="21"></line>
-          <line x1="7" y1="10" x2="7.01" y2="10"></line>
-          <line x1="12" y1="10" x2="12.01" y2="10"></line>
-          <line x1="17" y1="10" x2="17.01" y2="10"></line>
-        </svg>
-        FastCDC Inspector
-        <span class="tab-badge" id="badge-tab-fastcdc">Live</span>
-      </button>
-
-      <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" data-category="security" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-        </svg>
-        Activity Log
-        <span class="tab-badge" id="badge-tab-activity">--</span>
-      </button>
-    </nav>
+    <!-- Active Page Context & Breadcrumb Bar -->
+    <header class="page-context-bar" id="page-context-bar" aria-label="Current Page Context">
+      <div class="page-context-left">
+        <nav class="page-breadcrumbs" aria-label="Breadcrumb navigation">
+          <span class="breadcrumb-item breadcrumb-root">CipherVault</span>
+          <span class="breadcrumb-sep">/</span>
+          <span class="breadcrumb-item breadcrumb-cat" id="page-breadcrumb-category">Network &amp; Cluster</span>
+          <span class="breadcrumb-sep">/</span>
+          <span class="breadcrumb-item breadcrumb-current" id="page-breadcrumb-current">Storage Operators</span>
+        </nav>
+        <div class="page-title-row">
+          <h2 class="page-context-title" id="page-title-heading">Storage Operator Telemetry</h2>
+          <span class="page-context-tag" id="page-context-tag">Live Quorum</span>
+        </div>
+        <p class="page-context-desc" id="page-title-subheading">Current response status from configured operator gateways. Reachability and latency do not establish storage durability or recovery readiness.</p>
+      </div>
+      <div class="page-context-actions" id="page-context-actions">
+        <!-- Quick Context Action Shortcuts -->
+      </div>
+    </header>
 
     <!-- Tab 1: Storage Operators Grid -->
     <section class="tab-content active" id="tab-operators" role="tabpanel" aria-labelledby="tab-btn-operators" tabindex="0">

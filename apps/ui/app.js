@@ -1019,6 +1019,10 @@ function applyAccessContext(context) {
     const publicTab = document.getElementById('tab-btn-operators');
     if (activeTab && publicTab && typeof publicTab.click === 'function') publicTab.click();
   }
+
+  if (typeof updateCategoryPillCounts === 'function') {
+    updateCategoryPillCounts();
+  }
 }
 
 function captureSearchFilters() {
@@ -2592,6 +2596,109 @@ function initExplorer() {
   });
 }
 
+const TAB_METADATA = {
+  'tab-operators': {
+    title: 'Storage Operator Telemetry',
+    category: 'Network & Cluster',
+    badge: 'Live Quorum',
+    desc: 'Current response status and roundtrip latency across configured storage operator gateways.',
+  },
+  'tab-overview': {
+    title: 'My Data Overview',
+    category: 'Secrets & Storage',
+    badge: 'Private Workspace',
+    desc: 'Local vault metrics, storage leases, active head commitment, and secret hygiene.',
+  },
+  'tab-explorer': {
+    title: 'Cryptographic Object & Anchor Explorer',
+    category: 'Network & Cluster',
+    badge: 'Omni-Search',
+    desc: 'Query cryptographic object CIDs, L2 anchor transaction receipts, and operator nodes across the cluster.',
+  },
+  'tab-dag': {
+    title: 'Snapshot DAG History',
+    category: 'Secrets & Storage',
+    badge: 'Active Head',
+    desc: 'Directed Acyclic Graph of cryptographic snapshot revisions, device counters, and parent linkages.',
+  },
+  'tab-diff': {
+    title: 'Secret Revision Diff Viewer',
+    category: 'Secrets & Storage',
+    badge: 'Comparison Engine',
+    desc: 'Deterministic secret comparison between local working tree, active head, and historical snapshots.',
+  },
+  'tab-files': {
+    title: 'Tracked Confidential Secrets',
+    category: 'Secrets & Storage',
+    badge: 'Zero-Knowledge',
+    desc: 'Protected configuration, credential, and environment secret files secured with client-side zero-knowledge encryption.',
+  },
+  'tab-guardians': {
+    title: 'Threshold Recovery Guardians',
+    category: 'Security & Governance',
+    badge: 'k-of-n Shamir',
+    desc: 'Threshold Shamir Secret Sharing recovery sheets with locator addresses and offline CRC32 validation.',
+  },
+  'tab-anchor': {
+    title: 'Arbitrum L2 Relayer & Checkpoints',
+    category: 'Network & Cluster',
+    badge: 'L2 Rollup',
+    desc: 'State anchoring to Arbitrum L2 rollup with cryptographic commitments and canary reorg monitoring.',
+  },
+  'tab-fleet': {
+    title: 'Maintenance Fleet Telemetry',
+    category: 'Network & Cluster',
+    badge: 'Cluster Admin',
+    desc: 'Multi-vault cluster coordination, storage allowances, background recovery audits, and operator nodes.',
+  },
+  'tab-recovery': {
+    title: 'Disaster Recovery Readiness',
+    category: 'Security & Governance',
+    badge: 'Emergency Runbook',
+    desc: 'Emergency disaster recovery drill steps, offline bundle instructions, and cryptographic validation.',
+  },
+  'tab-fastcdc': {
+    title: 'FastCDC Content-Defined Chunking',
+    category: 'Secrets & Storage',
+    badge: 'Deduplication',
+    desc: 'Variable-size content-defined chunking inspector with Gear hash fingerprints, Shannon entropy, and deduplication analytics.',
+  },
+  'tab-activity': {
+    title: 'Durable Activity Log',
+    category: 'Security & Governance',
+    badge: 'Audit Trail',
+    desc: 'Append-only event journal recording snapshot captures, restorations, and L2 anchoring events.',
+  },
+};
+
+function updatePageContextBar(targetId) {
+  const meta = TAB_METADATA[targetId] || {
+    title: 'CipherVault Explorer',
+    category: 'Explorer',
+    badge: 'Active View',
+    desc: 'Decentralized Secret Backup & Disaster Recovery Ledger'
+  };
+
+  const breadcrumbCat = document.getElementById('page-breadcrumb-category');
+  if (breadcrumbCat) breadcrumbCat.textContent = meta.category;
+
+  const breadcrumbCur = document.getElementById('page-breadcrumb-current');
+  if (breadcrumbCur) {
+    const tabBtn = document.querySelector(`.tab-btn[data-target="${targetId}"]`);
+    const btnSpan = tabBtn ? tabBtn.querySelector('span') : null;
+    breadcrumbCur.textContent = btnSpan ? btnSpan.textContent : (tabBtn ? tabBtn.textContent.trim().split(/\s+/).slice(0, 2).join(' ') : meta.title);
+  }
+
+  const heading = document.getElementById('page-title-heading');
+  if (heading) heading.textContent = meta.title;
+
+  const subheading = document.getElementById('page-title-subheading');
+  if (subheading) subheading.textContent = meta.desc;
+
+  const tag = document.getElementById('page-context-tag');
+  if (tag) tag.textContent = meta.badge;
+}
+
 function initTabs() {
   const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
   const tabContents = Array.from(document.querySelectorAll('.tab-content'));
@@ -2626,7 +2733,16 @@ function initTabs() {
         loadVaultFilesForFastCdc();
       }
     }
+
+    updatePageContextBar(targetId);
   };
+
+  // Set initial page context for the active tab
+  const activeBtn = tabButtons.find(b => b.classList.contains('active')) || tabButtons[0];
+  if (activeBtn) {
+    const initialTarget = activeBtn.getAttribute('data-target');
+    if (initialTarget) updatePageContextBar(initialTarget);
+  }
 
   tabButtons.forEach((btn, idx) => {
     btn.setAttribute('role', 'tab');
@@ -4450,21 +4566,41 @@ function initKeyboardShortcuts() {
     // Number keys 1-9 for tab switching
     if (e.key >= '1' && e.key <= '9') {
       const idx = parseInt(e.key, 10) - 1;
-      const tabButtons = Array.from(document.querySelectorAll('.tab-btn')).filter(tab => !tab.hidden);
+      const tabButtons = Array.from(document.querySelectorAll('.tab-btn')).filter(tab => !tab.hidden && tab.style.display !== 'none');
       if (tabButtons[idx]) {
         tabButtons[idx].click();
       }
       return;
     }
 
-    // '/' to focus search input
+    // '[' and ']' to cycle through tabs
+    if (e.key === '[' || e.key === ']') {
+      const visibleTabs = Array.from(document.querySelectorAll('.tab-btn')).filter(tab => !tab.hidden && tab.style.display !== 'none');
+      if (visibleTabs.length > 0) {
+        const activeIdx = visibleTabs.findIndex(t => t.classList.contains('active'));
+        let nextIdx = 0;
+        if (e.key === '[') {
+          nextIdx = activeIdx > 0 ? activeIdx - 1 : visibleTabs.length - 1;
+        } else {
+          nextIdx = activeIdx >= 0 && activeIdx < visibleTabs.length - 1 ? activeIdx + 1 : 0;
+        }
+        e.preventDefault();
+        visibleTabs[nextIdx].click();
+        if (typeof visibleTabs[nextIdx].focus === 'function') visibleTabs[nextIdx].focus();
+      }
+      return;
+    }
+
+    // '/' to focus omni-search input
     if (e.key === '/') {
-      const searchInput = document.getElementById('input-search-files')
+      const searchInput = document.getElementById('input-omni-search')
+        || document.getElementById('input-search-files')
         || document.getElementById('input-search-dag')
         || document.getElementById('terminal-cmd-input');
       if (searchInput) {
         e.preventDefault();
         searchInput.focus();
+        if (typeof searchInput.select === 'function') searchInput.select();
       }
       return;
     }
@@ -4499,12 +4635,54 @@ function initKeyboardShortcuts() {
 
 function switchTab(targetId) {
   const btn = document.querySelector(`.tab-btn[data-target="${targetId}"]`);
-  if (btn) btn.click();
+  if (!btn) return;
+
+  // If target button is currently hidden due to category filter, switch filter to that tab's category or 'all'
+  if (btn.style.display === 'none') {
+    const tabCat = btn.getAttribute('data-category') || 'all';
+    const pill = document.querySelector(`.filter-pill[data-category="${tabCat}"]`) || document.querySelector(`.filter-pill[data-category="all"]`);
+    if (pill) {
+      pill.click();
+    } else {
+      btn.style.display = '';
+    }
+  }
+
+  btn.click();
+  if (typeof btn.scrollIntoView === 'function') {
+    btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  }
+}
+
+function updateCategoryPillCounts() {
+  const allTabs = Array.from(document.querySelectorAll('.tabs-nav .tab-btn'));
+  const availableTabs = allTabs.filter(tab => !tab.hidden);
+
+  const counts = {
+    all: availableTabs.length,
+    network: availableTabs.filter(t => t.getAttribute('data-category') === 'network').length,
+    secrets: availableTabs.filter(t => t.getAttribute('data-category') === 'secrets').length,
+    security: availableTabs.filter(t => t.getAttribute('data-category') === 'security').length,
+  };
+
+  const elAll = document.getElementById('count-cat-all');
+  if (elAll) elAll.textContent = counts.all;
+
+  const elNetwork = document.getElementById('count-cat-network');
+  if (elNetwork) elNetwork.textContent = counts.network;
+
+  const elSecrets = document.getElementById('count-cat-secrets');
+  if (elSecrets) elSecrets.textContent = counts.secrets;
+
+  const elSecurity = document.getElementById('count-cat-security');
+  if (elSecurity) elSecurity.textContent = counts.security;
 }
 
 function initTabCategoryFilter() {
   const container = document.getElementById('tabs-category-filter');
   if (!container) return;
+
+  updateCategoryPillCounts();
 
   const pills = container.querySelectorAll('.filter-pill');
   pills.forEach(pill => {
@@ -4520,6 +4698,10 @@ function initTabCategoryFilter() {
       let activeTabVisible = false;
 
       tabs.forEach(tab => {
+        if (tab.hidden) {
+          tab.style.display = 'none';
+          return;
+        }
         const tabCat = tab.getAttribute('data-category') || 'secrets';
         const match = category === 'all' || tabCat === category;
         tab.style.display = match ? '' : 'none';
