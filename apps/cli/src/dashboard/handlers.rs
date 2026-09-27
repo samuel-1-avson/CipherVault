@@ -313,7 +313,8 @@ pub(crate) async fn private_ui_request_guard(
         || (path.starts_with("/api/account/") && path.ends_with("/webauthn/registration/verify"))
         || (path.starts_with("/api/account/") && path.ends_with("/devices/challenge"))
         || (path.starts_with("/api/account/") && path.ends_with("/devices"));
-    let session_valid = if is_api && !is_context && !is_account_bootstrap {
+    let is_metrics = path == "/metrics" || path == "/api/metrics";
+    let session_valid = if is_api && !is_context && !is_account_bootstrap && !is_metrics {
         let session = private_ui_session_snapshot();
         let private_cookie_valid = headers
             .get(axum::http::header::COOKIE)

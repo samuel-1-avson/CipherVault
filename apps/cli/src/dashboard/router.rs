@@ -23,14 +23,15 @@ use crate::{
     api_fleet_audit_handler, api_fleet_handler, api_guardians_handler, api_operators_handler,
     api_overview_handler, api_private_context_handler, api_private_fallback_handler,
     api_private_session_revoke_handler, api_public_anchors_handler, api_public_context_handler,
-    api_public_fallback_handler, api_public_fleet_handler, api_public_operators_handler,
-    api_public_operators_history_handler, api_public_operators_jobs_handler,
-    api_public_relayer_checkpoints_handler, api_public_status_handler, api_public_stream_handler,
-    api_public_vault_handler, api_relayer_anchor_handler, api_relayer_checkpoints_handler,
-    api_snapshot_manifest_handler, api_snapshots_handler, api_snapshots_restore_handler,
-    api_stream_handler, api_token_handler, api_vault_handler, api_workspaces_handler,
-    api_workspaces_scan_handler, api_workspaces_switch_handler, private_ui_request_guard,
-    UI_APP_JS, UI_INDEX_HTML, UI_STYLES_CSS,
+    api_public_fallback_handler, api_public_fleet_handler, api_public_metrics_handler,
+    api_public_operators_handler, api_public_operators_history_handler,
+    api_public_operators_jobs_handler, api_public_relayer_checkpoints_handler,
+    api_public_status_handler, api_public_stream_handler, api_public_vault_handler,
+    api_relayer_anchor_handler, api_relayer_checkpoints_handler, api_snapshot_manifest_handler,
+    api_snapshots_handler, api_snapshots_restore_handler, api_stream_handler, api_token_handler,
+    api_vault_handler, api_workspaces_handler, api_workspaces_scan_handler,
+    api_workspaces_switch_handler, private_ui_request_guard, UI_APP_JS, UI_INDEX_HTML,
+    UI_STYLES_CSS,
 };
 
 /// Content-Security-Policy for the UI shell document. The bundle is a
@@ -279,6 +280,13 @@ pub(crate) fn private_ui_router() -> axum::Router {
             "/api/workspaces/scan",
             axum::routing::post(api_workspaces_scan_handler),
         )
+        .route("/api/explorer/overview", get(api_explorer_overview_handler))
+        .route(
+            "/api/explorer/object/:cid",
+            get(api_explorer_object_handler),
+        )
+        .route("/metrics", get(api_public_metrics_handler))
+        .route("/api/metrics", get(api_public_metrics_handler))
         .fallback(api_private_fallback_handler)
         .layer(axum::middleware::from_fn(private_ui_request_guard))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
@@ -392,6 +400,10 @@ impl RateLimiter {
         }
         window.count += 1;
         Ok(())
+    }
+
+    pub(crate) fn tracked_clients_count(&self) -> usize {
+        self.windows.lock().map(|guard| guard.len()).unwrap_or(0)
     }
 }
 
@@ -571,13 +583,16 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             "/api/explorer/object/:cid",
             get(api_explorer_object_handler),
         )
+        .route("/metrics", get(api_public_metrics_handler))
+        .route("/api/metrics", get(api_public_metrics_handler))
         .fallback(api_public_fallback_handler)
         // Innermost so 429s still pass through the hardening headers below.
         .layer(axum::middleware::from_fn_with_state(
-            limiter,
+            limiter.clone(),
             public_rate_limit,
         ))
         .layer(axum::middleware::from_fn(public_api_headers))
+        .layer(axum::Extension(limiter))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             UI_REQUEST_BODY_LIMIT_BYTES,
         ))
@@ -1481,5 +1496,57 @@ mod tests {
         // Nothing known: fail open.
         let request = test_request(None, None);
         assert_eq!(rate_limit_client_ip(&request, true), None);
+    }
+
+    #[tokio::test]
+    async fn public_metrics_endpoint_returns_prometheus_format() {
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base_url}/metrics"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("text/plain"),
+            "content-type was {content_type}"
+        );
+        assert!(
+            content_type.contains("version=0.0.4"),
+            "content-type was {content_type}"
+        );
+
+        let body = response.text().await.unwrap();
+        assert!(body.contains("ciphervault_build_info{version="));
+        assert!(body.contains("ciphervault_operators_total"));
+        assert!(body.contains("ciphervault_operators_reachable"));
+        assert!(body.contains("ciphervault_checkpoints_total"));
+        assert!(body.contains("ciphervault_pos_probe_cache_entries"));
+        assert!(body.contains("ciphervault_rate_limit_tracked_clients"));
+
+        // Verify /api/metrics alias returns identical status and content type
+        let alias = client
+            .get(format!("{base_url}/api/metrics"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(alias.status(), StatusCode::OK);
+        let alias_content_type = alias
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(alias_content_type.contains("text/plain"));
+
+        server.abort();
+        let _ = server.await;
     }
 }

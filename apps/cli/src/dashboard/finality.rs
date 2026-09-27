@@ -81,6 +81,13 @@ fn explorer_probe_permits() -> &'static tokio::sync::Semaphore {
     PERMITS.get_or_init(|| tokio::sync::Semaphore::new(EXPLORER_PROBE_MAX_CONCURRENT))
 }
 
+pub(crate) async fn explorer_probe_cache_stats() -> (usize, usize) {
+    let cache_len = explorer_probe_cache().lock().await.entries.len();
+    let available = explorer_probe_permits().available_permits();
+    let in_flight = EXPLORER_PROBE_MAX_CONCURRENT.saturating_sub(available);
+    (cache_len, in_flight)
+}
+
 async fn probe_explorer_object_cached(
     cid: [u8; 32],
     endpoints: Vec<String>,

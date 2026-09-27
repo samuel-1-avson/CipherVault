@@ -233,6 +233,17 @@ routes pass through caller `Cookie`/`Authorization` headers, see below).
   PoS-presence probes (8 s timeout, anonymous token); object bytes are
   never fetched. Malformed CID: `400 { status: "error", code:
   "INVALID_CID", error }`; no operators: `503 NO_OPERATORS_CONFIGURED`; over budget: `429` + `Retry-After` (30/min per client on this route, 600/min elsewhere).
+- `GET /metrics`, `GET /api/metrics` → Prometheus / OpenMetrics 0.0.4 text
+  exposition (`text/plain; version=0.0.4; charset=utf-8`, `no-cache`). Exposes:
+  - `ciphervault_build_info{version}`: build metadata gauge.
+  - `ciphervault_operators_total`, `ciphervault_operators_reachable`, `ciphervault_operators_unreachable`: cluster reachability gauges.
+  - `ciphervault_operator_reachable{operator_id, region, identity_status}`: 1 if reachable, 0 if unreachable.
+  - `ciphervault_operator_latency_seconds{operator_id, region}`: observed round-trip latency in seconds.
+  - `ciphervault_operator_probe_attempts{operator_id}`: retry count during reachability check.
+  - `ciphervault_checkpoints_total`, `ciphervault_anchor_block_height`: verified on-chain anchor head.
+  - `ciphervault_reorg_suspects_total`: counter of detected Arbitrum blockchain reorgs.
+  - `ciphervault_pos_probe_cache_entries`, `ciphervault_pos_probes_in_flight`: anti-amplification cache/semaphore metrics.
+  - `ciphervault_rate_limit_tracked_clients`: active client windows in the in-app sliding rate limiter.
 
 ## Hosted-account routes (both modes unless noted)
 
