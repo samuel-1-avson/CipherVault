@@ -853,7 +853,9 @@ mod tests {
         impl EndpointGuard {
             fn clear() -> Self {
                 let prior = std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT");
-                std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT");
+                // Empty (not removed): an unset endpoint now defaults to
+                // production, so "not configured" is spelled as empty.
+                std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", "");
                 Self { prior }
             }
         }
@@ -902,6 +904,24 @@ mod tests {
 
         server.abort();
         let _ = server.await;
+    }
+
+    /// An unset account endpoint defaults to the production account API
+    /// (explicitly empty still means "not configured"). Pure assertion —
+    /// no network.
+    #[tokio::test]
+    async fn unset_account_endpoint_defaults_to_production() {
+        let _serialized = serialized_router_test().await;
+        let prior = std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT");
+        std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT");
+        assert_eq!(
+            crate::dashboard::account_proxy::hosted_account_endpoint().as_deref(),
+            Some("https://vault.cipherv.online/api/account")
+        );
+        match prior {
+            Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", value),
+            None => std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT"),
+        }
     }
 
     /// Malformed account IDs are rejected before any upstream URL is built,
