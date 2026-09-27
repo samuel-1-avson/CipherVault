@@ -120,6 +120,29 @@ so the job now opens a PR instead (commit `707b3dc`); v1.0.18 hashes
 were filled manually with the identical procedure and pushed as
 `db18742`.
 
+## v1.0.19: Windows extraction fix + migration note
+
+Live reproduction (2026-09-27) proved Windows self-update never worked:
+`powershell.exe` joins everything after `-Command` into one command
+line, so the updater's `$args[0]`/`$args[1]` placeholders were always
+empty and every update died in `Expand-Archive` ("Windows release
+archive extraction failed"). Fixed in v1.0.19 by embedding quoted paths
+in a single `-Command` string (`windows_expand_archive_command`, with
+regression tests). Same release: `update --reinstall` (verified repair
+path; proven end to end against the real v1.0.19 artifacts on Windows:
+download → signature → checksum → extract → swap all green) and a TUI
+fix that quits promptly after staging so the swap helper can proceed
+(previously the TUI lingered, stalling the install).
+
+Migration: Windows installs at ≤1.0.18 carry the broken updater and
+cannot self-update — those users must fresh-install ≥1.0.19 once via
+`dist/scripts/install.ps1` (or the release zip), after which in-app
+update works. v1.0.19's own signature verified independently (`SIG-OK`,
+key `b625994c0c3f53a6`); v1.0.19 manifest hashes merged via PR #4 after
+the fill job's branch push (repo setting still blocks Actions-created
+PRs — either enable "Allow GitHub Actions to create and approve pull
+requests" in repo settings, or keep opening the fill PR manually).
+
 ## Files
 
 - `apps/cli/src/commands/update.rs` — trust roots, verification, updater hook, tests
