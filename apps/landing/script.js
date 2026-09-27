@@ -3,13 +3,17 @@
  * Features:
  * - Multi-theme switcher: Cyber (Default) | Dark | Light | Mono with localStorage persistence
  * - Spacious TUI pane navigation with keyboard shortcuts [1-6]
- * - Collapsible CLI REPL console with command execution and history
- * - Interactive FastCDC dynamic chunk slicing simulator
- * - M-of-N Shamir polynomial threshold reconstruction widget
- * - Emergency paper recovery kit unmasker
- * - Live real-time cryptographic audit telemetry stream
+ * - Collapsible CLI REPL console with live fleet probes and honest command guidance
+ * - Interactive FastCDC chunking workstation (real content-defined slicing + SHA-256)
+ * - M-of-N Shamir polynomial threshold workstation (real GF(2^8) math)
+ * - Emergency paper recovery kit workstation (real CSPRNG key + CRC32)
+ * - Live fleet reachability telemetry stream (real HTTPS probes)
  * - Retro CRT scanline toggle
  * - Single-click clipboard copying with visual feedback
+ *
+ * Every interactive computation on this page is real: the chunker, the
+ * threshold math, the checksums, and the network probes execute for real in
+ * the visitor's browser. No canned transcripts, no fabricated hashes.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -28,6 +32,292 @@ document.addEventListener('DOMContentLoaded', () => {
   initMobileNavigation();
   initKeyboardShortcuts();
 });
+
+/* ==============================================================================
+   0. Real cryptographic primitives (exact ports of the Rust implementation)
+   ------------------------------------------------------------------------------
+   The workstations below execute genuine algorithms, not canned transcripts:
+   - FastCDC content-defined chunking: verbatim port of
+     crates/snapshot/src/fastcdc.rs (SplitMix64 gear matrix with seed
+     0x853c49e6748fea9b, dual-mask normalization, 4/16/64 KiB defaults).
+   - Shamir M-of-N over GF(2^8): verbatim port of crates/crypto/src/shamir.rs
+     (Rijndael 0x11B field, Horner evaluation, Lagrange weights at x = 0).
+   - CRC32-IEEE: matches crc32fast (crates/recovery/src/kit.rs checksums).
+   - SHA-256: standard FIPS 180-4 (matches compute_digest CIDs).
+   Secrets come from the platform CSPRNG (crypto.getRandomValues), never from
+   Math.random or hardcoded constants.
+   ============================================================================== */
+function cvRandomBytes(n) {
+  const out = new Uint8Array(n);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(out);
+  } else {
+    // Non-secure fallback (ancient browsers): explicit, never silent.
+    throw new Error('Secure random number generator is unavailable in this browser');
+  }
+  return out;
+}
+
+function cvBytesToHex(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) {
+    s += bytes[i].toString(16).padStart(2, '0');
+  }
+  return s;
+}
+
+/* SHA-256 (FIPS 180-4). Synchronous so chunk digests never need async plumbing. */
+const CV_SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
+function cvSha256Bytes(data) {
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const bitLen = data.length * 8;
+  const paddedLen = (((data.length + 8) >> 6) + 1) << 6;
+  const padded = new Uint8Array(paddedLen);
+  padded.set(data);
+  padded[data.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLen - 4, bitLen >>> 0, false);
+  view.setUint32(paddedLen - 8, Math.floor(bitLen / 0x100000000), false);
+  const w = new Uint32Array(64);
+  const rotr = (x, n) => ((x >>> n) | (x << (32 - n))) >>> 0;
+  for (let off = 0; off < paddedLen; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) >>> 0;
+      const s1 = (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)) >>> 0;
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0;
+      const ch = ((e & f) ^ (~e & g)) >>> 0;
+      const t1 = (h + S1 + ch + CV_SHA256_K[i] + w[i]) >>> 0;
+      const S0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0;
+      const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0;
+      d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  }
+  const out = new Uint8Array(32);
+  const oview = new DataView(out.buffer);
+  oview.setUint32(0, h0, false); oview.setUint32(4, h1, false);
+  oview.setUint32(8, h2, false); oview.setUint32(12, h3, false);
+  oview.setUint32(16, h4, false); oview.setUint32(20, h5, false);
+  oview.setUint32(24, h6, false); oview.setUint32(28, h7, false);
+  return out;
+}
+
+function cvSha256Hex(data) {
+  return cvBytesToHex(cvSha256Bytes(data));
+}
+
+/* CRC32-IEEE (polynomial 0xEDB88320), matching crc32fast. */
+const CV_CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function cvCrc32(data) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i++) {
+    crc = CV_CRC32_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/* SplitMix64 gear matrix, seed 0x853c49e6748fea9b — identical to fastcdc.rs. */
+let CV_GEAR_MATRIX = null;
+function cvGearMatrix() {
+  if (CV_GEAR_MATRIX) return CV_GEAR_MATRIX;
+  const mask64 = (1n << 64n) - 1n;
+  const table = new Array(256);
+  let state = 0x853c49e6748fea9bn;
+  for (let i = 0; i < 256; i++) {
+    state = (state + 0x9e3779b97f4a7c15n) & mask64;
+    let z = state;
+    z = ((z ^ (z >> 30n)) * 0xbf58476d1ce4e5b9n) & mask64;
+    z = ((z ^ (z >> 27n)) * 0x94d049bb133111ebn) & mask64;
+    table[i] = z ^ (z >> 31n);
+  }
+  CV_GEAR_MATRIX = table;
+  return table;
+}
+
+/* Verbatim port of fastcdc_chunk (crates/snapshot/src/fastcdc.rs). */
+/* Returns an array of {offset, length} cut points over `data`. */
+function cvFastCdcChunk(data, minSize, avgSize, maxSize) {
+  const gear = cvGearMatrix();
+  const mask64 = (1n << 64n) - 1n;
+  let pow2 = 1;
+  while (pow2 < avgSize) pow2 <<= 1;
+  let bits = 0;
+  let tmp = pow2;
+  while (tmp > 1) { tmp >>= 1; bits++; }
+  const maskS = (1n << BigInt(bits + 1)) - 1n;
+  const maskL = (1n << BigInt(Math.max(bits - 1, 0))) - 1n;
+  const chunks = [];
+  let cursor = 0;
+  while (cursor < data.length) {
+    const remaining = data.length - cursor;
+    if (remaining <= minSize) {
+      chunks.push({ offset: cursor, length: remaining });
+      break;
+    }
+    const maxChunk = Math.min(remaining, maxSize);
+    const normalSplit = Math.min(remaining, avgSize);
+    let cutPoint = maxChunk;
+    let hash = 0n;
+    let i = minSize;
+    while (i < normalSplit) {
+      hash = ((hash << 1n) + gear[data[cursor + i]]) & mask64;
+      if ((hash & maskS) === 0n) { cutPoint = i + 1; break; }
+      i++;
+    }
+    if (cutPoint === maxChunk && normalSplit < maxChunk) {
+      while (i < maxChunk) {
+        hash = ((hash << 1n) + gear[data[cursor + i]]) & mask64;
+        if ((hash & maskL) === 0n) { cutPoint = i + 1; break; }
+        i++;
+      }
+    }
+    chunks.push({ offset: cursor, length: cutPoint });
+    cursor += cutPoint;
+  }
+  return chunks;
+}
+
+/* GF(2^8) with Rijndael polynomial 0x11B — verbatim port of shamir.rs. */
+function cvGfMul(a, b) {
+  let p = 0;
+  for (let k = 0; k < 8; k++) {
+    const maskB = (0 - (b & 1)) & 0xff;
+    p ^= a & maskB;
+    const maskHi = (0 - ((a >> 7) & 1)) & 0xff;
+    a = ((a << 1) ^ (0x1b & maskHi)) & 0xff;
+    b >>= 1;
+  }
+  return p;
+}
+
+function cvGfInv(a) {
+  if (a === 0) throw new Error('Division by zero in GF(2^8)');
+  // a^254 via the same addition chain as shamir.rs.
+  const a2 = cvGfMul(a, a);
+  const a3 = cvGfMul(a2, a);
+  const a6 = cvGfMul(a3, a3);
+  const a7 = cvGfMul(a6, a);
+  const a14 = cvGfMul(a7, a7);
+  const a15 = cvGfMul(a14, a);
+  const a30 = cvGfMul(a15, a15);
+  const a31 = cvGfMul(a30, a);
+  const a62 = cvGfMul(a31, a31);
+  const a63 = cvGfMul(a62, a);
+  const a126 = cvGfMul(a63, a63);
+  const a127 = cvGfMul(a126, a);
+  return cvGfMul(a127, a127);
+}
+
+function cvGfDiv(a, b) {
+  if (b === 0) throw new Error('Division by zero in GF(2^8)');
+  if (a === 0) return 0;
+  return cvGfMul(a, cvGfInv(b));
+}
+
+function cvGfPolyEval(coefficients, x) {
+  let result = 0;
+  for (let i = coefficients.length - 1; i >= 0; i--) {
+    result = cvGfMul(result, x) ^ coefficients[i];
+  }
+  return result;
+}
+
+/* Splits a 32-byte secret into N shares with threshold M (x = 1..=N). */
+function cvShamirSplit(secret32, threshold, totalShares) {
+  if (threshold < 2) throw new Error('Threshold (M) must be at least 2');
+  if (totalShares < threshold) throw new Error('Total shares (N) cannot be less than threshold (M)');
+  if (secret32.length !== 32) throw new Error('Secret must be exactly 32 bytes');
+  const shares = [];
+  for (let s = 0; s < totalShares; s++) shares.push(new Uint8Array(32));
+  for (let byteIdx = 0; byteIdx < 32; byteIdx++) {
+    const poly = new Uint8Array(threshold);
+    poly[0] = secret32[byteIdx];
+    const rand = cvRandomBytes(threshold - 1);
+    for (let c = 1; c < threshold; c++) poly[c] = rand[c - 1];
+    for (let s = 0; s < totalShares; s++) {
+      shares[s][byteIdx] = cvGfPolyEval(poly, s + 1);
+    }
+    poly.fill(0);
+  }
+  return shares.map((data, i) => ({ index: i + 1, data }));
+}
+
+/* Reconstructs the 32-byte secret from >= 2 distinct shares (Lagrange at x = 0). */
+function cvShamirCombine(shares) {
+  if (shares.length < 2) throw new Error('At least 2 shares are required to reconstruct');
+  const seen = new Set();
+  for (const sh of shares) {
+    if (sh.index === 0) throw new Error('Share index 0 is reserved for the secret');
+    if (seen.has(sh.index)) throw new Error('Duplicate share index ' + sh.index);
+    seen.add(sh.index);
+  }
+  const weights = shares.map((sh, j) => {
+    let w = 1;
+    shares.forEach((other, k) => {
+      if (k === j) return;
+      w = cvGfMul(w, cvGfDiv(other.index, sh.index ^ other.index));
+    });
+    return w;
+  });
+  const secret = new Uint8Array(32);
+  for (let byteIdx = 0; byteIdx < 32; byteIdx++) {
+    let acc = 0;
+    for (let j = 0; j < shares.length; j++) {
+      acc ^= cvGfMul(shares[j].data[byteIdx], weights[j]);
+    }
+    secret[byteIdx] = acc;
+  }
+  return secret;
+}
+
+/* Timed HTTPS reachability probe. no-cors yields an opaque response: the
+   browser proves the endpoint answered (and how fast) without exposing the
+   body, which is exactly what a third-party page is allowed to observe. */
+async function cvProbeHttps(url, timeoutMs) {
+  const timeout = timeoutMs || 10000;
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeout) : null;
+  const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+    const end = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    return { ok: true, ms: Math.max(1, Math.round(end - start)) };
+  } catch (err) {
+    const end = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const aborted = err && err.name === 'AbortError';
+    return { ok: false, ms: Math.round(end - start), timeout: aborted };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /* ==============================================================================
    1. Multi-Theme Switching System (Cyber | Dark | Light | Mono)
@@ -125,10 +415,11 @@ function animateGauges() {
     });
   });
 
-  animateCounter('gauge-val-1', 0, 558.62, 900, 2, '', ' MiB/s');
-  animateCounter('gauge-val-2', 0, 656.84, 900, 2, '', ' MiB/s');
+  animateCounter('gauge-val-1', 0, 362.21, 900, 2, '', ' MiB/s');
+  animateCounter('gauge-val-2', 0, 669.74, 900, 2, '', ' MiB/s');
   animateCounter('gauge-val-3', 0, 96.15, 900, 2, '', '% (25/26 Chunks Reused)');
   animateCounter('gauge-val-4', 0, 99.956, 1000, 3, '', '% (1 MiB -> 461 B)');
+  animateCounter('gauge-val-5', 0, 3.17, 900, 2, '', 'x concurrent push speedup');
 }
 
 function initBenchmarkGauges() {
@@ -159,12 +450,53 @@ function initBenchmarkGauges() {
       rerunBtn.classList.add('running');
       rerunBtn.textContent = '[⚡ Benchmarking...]';
       animateGauges();
+      // A rerun genuinely re-measures: real SHA-256, real FastCDC, and real
+      // Shamir execute on this visitor's machine and the results are shown.
+      const liveResult = document.getElementById('bench-live-result');
+      if (liveResult) liveResult.textContent = 'Measuring on this device...';
       setTimeout(() => {
+        try {
+          const msg = cvRunBrowserBenchmarks();
+          if (liveResult) liveResult.textContent = msg;
+        } catch (err) {
+          if (liveResult) liveResult.textContent = 'Browser measurement failed: ' + (err && err.message ? err.message : err);
+        }
         rerunBtn.classList.remove('running');
         rerunBtn.textContent = '[⚡ Rerun Benchmarks]';
-      }, 950);
+      }, 60);
     });
   }
+}
+
+/* Real in-browser micro-benchmarks over deterministic payloads. */
+function cvRunBrowserBenchmarks() {
+  const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+  // SHA-256 over 4 MiB.
+  const shaPayload = new Uint8Array(4 * 1024 * 1024);
+  for (let i = 0; i < shaPayload.length; i++) shaPayload[i] = (i * 37 + 19) % 256;
+  let start = now();
+  cvSha256Hex(shaPayload);
+  const shaSecs = Math.max((now() - start) / 1000, 1e-6);
+  const shaMibs = (shaPayload.length / (1024 * 1024)) / shaSecs;
+  // FastCDC over 1 MiB with production parameters.
+  const cdcPayload = cvBuildDemoPayload(1024 * 1024);
+  start = now();
+  const cdcChunks = cvFastCdcChunk(cdcPayload, 4096, 16384, 65536);
+  const cdcSecs = Math.max((now() - start) / 1000, 1e-6);
+  const cdcMibs = 1 / cdcSecs;
+  // Shamir 2-of-3 split + combine throughput.
+  const shamirSecret = cvRandomBytes(32);
+  const shamirIters = 50;
+  start = now();
+  for (let i = 0; i < shamirIters; i++) {
+    const shares = cvShamirSplit(shamirSecret, 2, 3);
+    cvShamirCombine([shares[0], shares[2]]);
+  }
+  const shamirSecs = Math.max((now() - start) / 1000, 1e-6);
+  const shamirOps = Math.round(shamirIters / shamirSecs);
+  return `This browser measured: SHA-256 ${shaMibs.toFixed(1)} MiB/s · ` +
+    `FastCDC ${cdcMibs.toFixed(1)} MiB/s (${cdcChunks.length} chunks) · ` +
+    `Shamir 2-of-3 ${shamirOps} ops/s. Reference Rust numbers are the gauges above.`;
 }
 
 function animateCounter(id, start, end, duration, decimals, prefix = '', suffix = '') {
@@ -392,8 +724,31 @@ function initKeyboardShortcuts() {
   });
 }
 /* ==============================================================================
-   5. Interactive FastCDC Chunking Simulator
+   5. Interactive FastCDC Chunking Workstation (real content-defined slicing)
+   ==============================================================================
+   Chunks a genuine 128 KiB payload with the exact FastCDC algorithm the Rust
+   client uses (same gear matrix, same 4/16/64 KiB dual-mask config), digests
+   every chunk with real SHA-256, and diffs edits by digest. Nothing is canned.
    ============================================================================== */
+function cvBuildDemoPayload(size) {
+  // Deterministic .env-style config bytes: stable across page loads so the
+  // workstation is reproducible; the chunking and hashing over it are real.
+  const out = new Uint8Array(size);
+  const enc = new TextEncoder();
+  let pos = 0;
+  let line = 0;
+  while (pos < size) {
+    const n = String(line % 100000).padStart(5, '0');
+    const text = 'ENV_VAR_SETTING_' + n + '=SECRET_VALUE_CONFIG_TOKEN_' + n + '\n';
+    const bytes = enc.encode(text);
+    const take = Math.min(bytes.length, size - pos);
+    out.set(bytes.subarray(0, take), pos);
+    pos += take;
+    line++;
+  }
+  return out;
+}
+
 function initFastCdcSimulator() {
   const grid = document.getElementById('chunk-visual-grid');
   const input = document.getElementById('sim-input-editor');
@@ -413,51 +768,56 @@ function initFastCdcSimulator() {
 
   if (!grid || !input) return;
 
-  const totalChunks = 26;
-  const chunkSizes = [
-    4, 4, 8, 4, 8, 4, 16, 4, 4, 8, 4, 4, 8, 4, 4, 8, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4
-  ];
-  
-  let currentModifiedSet = new Set([14]); // Chunk 15 by default
-  let selectedChunkIndex = 14;
+  // Real baseline: chunk the 128 KiB payload with production parameters and
+  // digest every chunk. Edits re-chunk and diff by digest — the same
+  // content-defined behavior the Rust client relies on for deduplication.
+  const CDC_MIN = 4096;
+  const CDC_AVG = 16384;
+  const CDC_MAX = 65536;
+
+  const basePayload = cvBuildDemoPayload(128 * 1024);
+  const baseChunks = cvFastCdcChunk(basePayload, CDC_MIN, CDC_AVG, CDC_MAX);
+  const baseHashes = baseChunks.map(c => cvSha256Hex(basePayload.subarray(c.offset, c.offset + c.length)));
+  const baseHashSet = new Set(baseHashes);
+
+  let currentChunks = baseChunks;
+  let currentHashes = baseHashes;
+  let currentPayload = basePayload;
+  let currentModifiedSet = new Set();
+  let selectedChunkIndex = 0;
 
   const updateInspector = (idx) => {
-    selectedChunkIndex = idx;
-    const isMod = currentModifiedSet.has(idx);
-    const size = chunkSizes[idx] || 4;
-    
-    let offsetStart = 0;
-    for (let j = 0; j < idx; j++) offsetStart += (chunkSizes[j] || 4) * 1024;
-    const offsetEnd = offsetStart + (size * 1024);
-    
-    const hashHex = isMod ? 
-      ((idx * 99991 + 0xbeef).toString(16).padStart(8, '0') + '...e104') : 
-      ((idx * 44417 + 0xcafe).toString(16).padStart(8, '0') + '...9a21');
+    if (!currentChunks.length) return;
+    selectedChunkIndex = Math.min(Math.max(idx, 0), currentChunks.length - 1);
+    const chunk = currentChunks[selectedChunkIndex];
+    const digest = currentHashes[selectedChunkIndex];
+    const isMod = currentModifiedSet.has(selectedChunkIndex);
+    const offsetStart = chunk.offset;
+    const offsetEnd = chunk.offset + chunk.length;
+    const boundaryByte = currentPayload[offsetEnd - 1];
 
     if (inspStatusBadge) {
       inspStatusBadge.className = isMod ? 'insp-pill mod' : 'insp-pill cached';
-      inspStatusBadge.textContent = isMod ? `DELTA CHUNK #${idx + 1}` : `CACHED CHUNK #${idx + 1}`;
+      inspStatusBadge.textContent = isMod ? `DELTA CHUNK #${selectedChunkIndex + 1}` : `CACHED CHUNK #${selectedChunkIndex + 1}`;
     }
     if (inspChunkTitle) {
       inspChunkTitle.textContent = isMod ? 'Target of Local Modification' : 'Deduplication Cache Hit';
     }
     if (inspChunkHash) {
-      inspChunkHash.innerHTML = `BLAKE2B: <code class="hash-code">sha256:${hashHex}</code>`;
+      inspChunkHash.innerHTML = `SHA-256: <code class="hash-code" title="sha256:${digest}">sha256:${digest.slice(0, 8)}...${digest.slice(-4)}</code>`;
     }
     if (inspChunkSize) {
-      inspChunkSize.innerHTML = `SIZE: <strong>${size}.00 KiB</strong>`;
+      inspChunkSize.innerHTML = `SIZE: <strong>${(chunk.length / 1024).toFixed(2)} KiB</strong>`;
     }
     if (inspChunkRange) {
       inspChunkRange.textContent = `0x${offsetStart.toString(16).padStart(8, '0').toUpperCase()} - 0x${offsetEnd.toString(16).padStart(8, '0').toUpperCase()} (${offsetStart.toLocaleString()} - ${offsetEnd.toLocaleString()} B)`;
     }
     if (inspChunkGear) {
-      inspChunkGear.textContent = isMod ? 
-        `Gear Mask 0x00001FFF (Entropy Shift at ${size * 1024} B)` : 
-        `Gear Boundary Match (Cached DAG Node #sha256:${(idx * 73).toString(16)})`;
+      inspChunkGear.textContent = `Dual-mask cut (mask_s 0x7FFF / mask_l 0x1FFF) · boundary byte 0x${boundaryByte.toString(16).padStart(2, '0')}`;
     }
     if (inspChunkSync) {
-      inspChunkSync.textContent = isMod ? 
-        'AEAD Re-encryption -> 3/3 Storage Quorum' : 
+      inspChunkSync.textContent = isMod ?
+        'AEAD Re-encryption -> 3/3 Storage Quorum' :
         'Zero Wire Re-upload (0 B Synchronized)';
       inspChunkSync.className = isMod ? 'd-val text-gold' : 'd-val text-mint';
     }
@@ -467,17 +827,18 @@ function initFastCdcSimulator() {
     grid.innerHTML = '';
     currentModifiedSet = modifiedIndicesSet;
 
+    const totalChunks = currentChunks.length;
     const modCount = currentModifiedSet.size;
     const reusedCount = totalChunks - modCount;
-    const dedupRatio = ((reusedCount / totalChunks) * 100).toFixed(2);
-    
+    const dedupRatio = totalChunks ? ((reusedCount / totalChunks) * 100).toFixed(2) : '100.00';
+
     let deltaBytes = 0;
     currentModifiedSet.forEach(i => {
-      deltaBytes += (chunkSizes[i] || 4);
+      deltaBytes += currentChunks[i].length;
     });
 
-    if (statReused) statReused.textContent = `${reusedCount} (${dedupRatio}%)`;
-    if (statMod) statMod.textContent = modCount === 0 ? '0 (0 KiB)' : `${modCount} (#${Array.from(currentModifiedSet).map(x => x + 1).join(',')} - ${deltaBytes} KiB)`;
+    if (statReused) statReused.textContent = `${reusedCount}/${totalChunks} (${dedupRatio}%)`;
+    if (statMod) statMod.textContent = modCount === 0 ? '0 (0 KiB)' : `${modCount} (#${Array.from(currentModifiedSet).map(x => x + 1).join(',')} - ${(deltaBytes / 1024).toFixed(1)} KiB)`;
     if (statBandwidth) statBandwidth.textContent = `${dedupRatio}%`;
 
     for (let i = 0; i < totalChunks; i++) {
@@ -489,29 +850,27 @@ function initFastCdcSimulator() {
       if (isMod) cell.classList.add('modified');
       if (isSelected) cell.classList.add('selected');
 
-      const size = chunkSizes[i] || 4;
+      const sizeK = currentChunks[i].length / 1024;
       cell.innerHTML = `
         <span class="chunk-index">${isMod ? 'Δ' + (i + 1) : 'C' + (i + 1)}</span>
-        <span class="chunk-size-tag">${size}K</span>
+        <span class="chunk-size-tag">${sizeK >= 10 ? sizeK.toFixed(0) : sizeK.toFixed(1)}K</span>
       `;
 
       if (triggerRipple && isMod) {
         cell.classList.add('ripple');
       }
 
+      // Hovering or clicking a chunk inspects it; it never fabricates an edit.
       cell.addEventListener('mouseenter', () => {
-        document.querySelectorAll('.chunk-cell').forEach(c => c.classList.remove('selected'));
+        grid.querySelectorAll('.chunk-cell').forEach(c => c.classList.remove('selected'));
         cell.classList.add('selected');
         updateInspector(i);
       });
 
       cell.addEventListener('click', () => {
-        document.querySelectorAll('.chunk-cell').forEach(c => c.classList.remove('selected'));
+        grid.querySelectorAll('.chunk-cell').forEach(c => c.classList.remove('selected'));
         cell.classList.add('selected');
-        input.value = `0x${(i * 1337).toString(16)}_chunk_${i + 1}`;
-        renderChunks(new Set([i]), true);
         updateInspector(i);
-        presetButtons.forEach(btn => btn.classList.remove('active'));
       });
 
       grid.appendChild(cell);
@@ -520,7 +879,31 @@ function initFastCdcSimulator() {
     updateInspector(selectedChunkIndex);
   };
 
-  // Preset Scenario Handlers
+  // Applies a byte-level edit to the baseline, re-chunks, and diffs by digest.
+  const applyPayloadEdit = (editedPayload, selectFirstModified) => {
+    currentPayload = editedPayload;
+    currentChunks = cvFastCdcChunk(editedPayload, CDC_MIN, CDC_AVG, CDC_MAX);
+    currentHashes = currentChunks.map(c => cvSha256Hex(editedPayload.subarray(c.offset, c.offset + c.length)));
+    const modified = new Set();
+    currentHashes.forEach((h, i) => {
+      if (!baseHashSet.has(h)) modified.add(i);
+    });
+    if (selectFirstModified && modified.size) {
+      selectedChunkIndex = Math.min.apply(null, Array.from(modified));
+    } else if (selectedChunkIndex >= currentChunks.length) {
+      selectedChunkIndex = 0;
+    }
+    renderChunks(modified, modified.size > 0);
+  };
+
+  const editReplaceMiddle = (replacement) => {
+    const edited = new Uint8Array(basePayload);
+    const at = (basePayload.length >> 1) - (replacement.length >> 1);
+    edited.set(replacement, at);
+    return edited;
+  };
+
+  // Preset Scenario Handlers — each performs a genuine byte-level edit.
   presetButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       presetButtons.forEach(b => b.classList.remove('active'));
@@ -528,21 +911,32 @@ function initFastCdcSimulator() {
 
       const preset = btn.getAttribute('data-preset');
       if (preset === 'api-key') {
-        input.value = '0x491e_chunk_15';
-        selectedChunkIndex = 14;
-        renderChunks(new Set([14]), true);
+        // Rotate a 32-byte secret value mid-file.
+        const rotation = new TextEncoder().encode('ROTATED_API_KEY_32B_SECRET_VALUE!');
+        input.value = 'ROTATED_API_KEY_32B_SECRET_VALUE!';
+        applyPayloadEdit(editReplaceMiddle(rotation), true);
       } else if (preset === 'db-pass') {
-        input.value = 'PORT=5433_host_04';
-        selectedChunkIndex = 3;
-        renderChunks(new Set([3]), true);
+        // Flip a single byte (1-byte password change).
+        const edited = new Uint8Array(basePayload);
+        const at = basePayload.length >> 2;
+        edited[at] = edited[at] ^ 0x01;
+        input.value = 'single-byte flip @0x' + at.toString(16);
+        applyPayloadEdit(edited, true);
       } else if (preset === 'tls-cert') {
-        input.value = 'BEGIN_CERT_CHAIN_KEY_22_25';
-        selectedChunkIndex = 21;
-        renderChunks(new Set([21, 22, 23, 24]), true);
+        // Append a 16 KiB certificate chain block.
+        const block = cvBuildDemoPayload(16 * 1024);
+        const edited = new Uint8Array(basePayload.length + block.length);
+        edited.set(basePayload, 0);
+        edited.set(block, basePayload.length);
+        input.value = 'append 16 KiB TLS chain block';
+        applyPayloadEdit(edited, true);
       } else if (preset === 'clean') {
-        input.value = '0x00_unmodified_master';
+        input.value = '';
         selectedChunkIndex = 0;
-        renderChunks(new Set([]), false);
+        currentPayload = basePayload;
+        currentChunks = baseChunks;
+        currentHashes = baseHashes;
+        renderChunks(new Set(), false);
       }
     });
   });
@@ -550,26 +944,28 @@ function initFastCdcSimulator() {
   input.addEventListener('input', () => {
     presetButtons.forEach(btn => btn.classList.remove('active'));
     const val = input.value;
-    if (val.trim() === '' || val.includes('unmodified')) {
-      renderChunks(new Set([]), false);
+    if (val === '') {
+      selectedChunkIndex = 0;
+      currentPayload = basePayload;
+      currentChunks = baseChunks;
+      currentHashes = baseHashes;
+      renderChunks(new Set(), false);
     } else {
-      const modIdx = Math.abs(hashCode(val)) % totalChunks;
-      selectedChunkIndex = modIdx;
-      renderChunks(new Set([modIdx]), true);
+      // Splice the typed bytes into the payload mid-file and re-chunk.
+      const splice = new TextEncoder().encode(val).subarray(0, 4096);
+      const at = basePayload.length >> 1;
+      const edited = new Uint8Array(basePayload.length + splice.length);
+      edited.set(basePayload.subarray(0, at), 0);
+      edited.set(splice, at);
+      edited.set(basePayload.subarray(at), at + splice.length);
+      applyPayloadEdit(edited, true);
     }
   });
 
-  // Initial load: Chunk 15 modified
-  renderChunks(new Set([14]), false);
-}
-
-function hashCode(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return hash;
+  // Initial load: the active api-key preset, genuinely chunked and diffed.
+  const initialRotation = new TextEncoder().encode('ROTATED_API_KEY_32B_SECRET_VALUE!');
+  input.value = 'ROTATED_API_KEY_32B_SECRET_VALUE!';
+  applyPayloadEdit(editReplaceMiddle(initialRotation), true);
 }
 
 /* ==============================================================================
@@ -579,65 +975,41 @@ const PIPELINE_STAGES = {
   1: {
     kicker: 'STAGE [01] DEEP-DIVE SPECIFICATION',
     heading: 'Developer Working Tree Secret Enrollment',
-    mechanics: 'CipherVault tracks confidential files completely out-of-band from Git. During enrollment via `ciphervault track .env`, the file is indexed into an encrypted local SQLite WAL database (`vault.db`) with cryptographic content digest binding. The Git working tree and `.gitignore` remain completely untouched.',
-    security: 'Guarantees zero accidental staging into Git commits (`git add .` will never expose secrets). Host OS hardware keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R.',
-    statVal: '< 1.2 ms',
-    statDesc: 'Local metadata indexing & DPAPI hardware key binding',
-    code: `// apps/cli/src/commands/track.rs & crates/local-store/src/db.rs
-pub fn enroll_secret_file(
-    path: &Path,
-    store: &LocalVaultStore
-) -> Result<TrackedMetadata> {
-    let raw = std::fs::read(path)?;
-    let digest = blake2b_256(&raw);
-    store.track_file(path, &digest, raw.len() as u64)?;
-    Ok(TrackedMetadata { digest, bytes: raw.len() })
+    mechanics: 'CipherVault tracks confidential files out-of-band from Git. During enrollment via `ciphervault track .env`, the path is registered in the local SQLite WAL ledger (`track_file`), and the path is appended to `.gitignore` (skip with `--no-gitignore`) so `git add .` can never stage it. Content digests bind at snapshot time, not at enrollment.',
+    security: 'Guarantees zero accidental staging into Git commits. Host OS keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R, with Argon2id-wrapped machine-entropy fallback off-Windows.',
+    statVal: 'Out-of-band',
+    statDesc: 'SQLite WAL ledger + `.gitignore` guard (skip with `--no-gitignore`)',
+    code: `// apps/cli/src/commands/track.rs — cmd_track (real flow)
+let file_id = store.track_file(&path_str)?;  // SQLite WAL registry
+if !no_gitignore {
+    ensure_file_in_gitignore(&path)?;        // appended, not untouched
 }`
   },
   2: {
     kicker: 'STAGE [02] DEEP-DIVE SPECIFICATION',
     heading: 'FastCDC Content-Defined Chunk Slicing',
-    mechanics: 'Unlike fixed-size blocking (which causes catastrophic cascade re-chunking on 1-byte insertions), FastCDC uses a precomputed Gear rolling hash table with dynamic normalization masks to discover content-defined cut boundaries between 4 KiB and 64 KiB.',
-    security: 'Ensures localized byte edits only produce 1 modified chunk while 96%+ of all other chunks retain identical cryptographic hashes across versions, enabling extreme sub-file deduplication.',
+    mechanics: 'Unlike fixed-size blocking (which causes catastrophic cascade re-chunking on 1-byte insertions), the hand-rolled FastCDC uses a SplitMix64 Gear rolling hash table with dual-mask normalization to discover content-defined cut boundaries between 4 KiB and 64 KiB (avg 16 KiB). Chunk identities are SHA-256 CIDs.',
+    security: 'Ensures localized byte edits only disturb nearby chunks while the rest retain identical SHA-256 hashes across versions, enabling extreme sub-file deduplication (measured 96.15% on a middle-insertion edit).',
     statVal: '96.15% Deduplication',
-    statDesc: '25 of 26 chunks reused per localized edit; 1.85 GB/s hashing throughput',
-    code: `// crates/storage/src/chunk.rs
-use fastcdc::v2020::FastCDC;
-
-pub fn slice_into_chunks(buffer: &[u8]) -> Vec<Chunk> {
-    let chunker = FastCDC::new(buffer, 4096, 16384, 65536);
-    chunker.map(|entry| Chunk {
-        offset: entry.offset,
-        length: entry.length,
-        hash: blake2b_256(&buffer[entry.offset..entry.offset + entry.length]),
-    }).collect()
-}`
+    statDesc: '25 of 26 chunks reused on middle-insertion (measured, throughput_benchmark)',
+    code: `// crates/snapshot/src/fastcdc.rs — fastcdc_chunk (real core)
+hash = (hash << 1) + GEAR_MATRIX[byte];  // SplitMix64 gear table
+if (hash & mask_s) == 0 { cut_point = i + 1; }  // 4/16/64 KiB dual-mask
+// Chunk CID: SHA-256 (compute_digest), not BLAKE2`
   },
   3: {
     kicker: 'STAGE [03] DEEP-DIVE SPECIFICATION',
     heading: 'Client-Side XChaCha20-Poly1305 AEAD Encryption',
-    mechanics: 'Every chunk payload is encrypted on the client machine using XChaCha20-Poly1305 authenticated encryption with an extended 192-bit random nonce and client-derived 256-bit symmetric key. Volatile memory buffers are wrapped in ZeroizeOnDrop to guarantee scrubbed RAM upon scope drop.',
+    mechanics: 'Every chunk payload is encrypted on the client machine using XChaCha20-Poly1305 authenticated encryption with a fresh 192-bit random nonce, a 256-bit file-version key, and AAD binding vault, chunk, and position. Key material is zeroized on drop (ZeroizeOnDrop); wire format is [24-byte nonce || ciphertext + 16-byte tag].',
     security: 'Zero-knowledge guarantee: plaintext is never sent over any network. Storage operators and cloud custodians only ever receive opaque high-entropy ciphertext blobs with zero metadata leakage.',
-    statVal: '558.62 MiB/s',
-    statDesc: 'AES-NI / SIMD accelerated client encryption (Poly1305 MAC)',
-    code: `// crates/crypto/src/cipher.rs
-use chacha20poly1305::{
-    XChaCha20Poly1305, Key, XNonce,
-    aead::{Aead, KeyInit}
-};
-use zeroize::ZeroizeOnDrop;
-
-#[derive(ZeroizeOnDrop)]
-pub struct SecretBuffer(pub Vec<u8>);
-
-pub fn encrypt_chunk(
-    key: &Key,
-    nonce: &XNonce,
-    chunk: &SecretBuffer
-) -> Result<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new(key);
-    cipher.encrypt(nonce, chunk.0.as_ref())
-        .map_err(|_| CryptoError::EncryptionFailed)
+    statVal: '362.21 MiB/s',
+    statDesc: 'Release-mode reference run: end-to-end chunk+encrypt pipeline (x86_64)',
+    code: `// crates/crypto/src/aead.rs — encrypt_chunk (real shape)
+pub fn encrypt_chunk(key: &[u8; 32], plaintext: &[u8], aad: &[u8])
+    -> Result<Vec<u8>, CryptoError> {
+    rand::thread_rng().fill_bytes(&mut nonce);  // fresh 192-bit XNonce
+    encrypt_chunk_with_nonce(key, &nonce, plaintext, aad)
+    // wire: [24-byte nonce || ciphertext + 16-byte tag]
 }`
   },
   4: {
@@ -647,45 +1019,33 @@ pub fn encrypt_chunk(
     security: 'Byzantine fault-tolerant storage + strict abuse defense: 429 quota limits prevent sybil disk-fill attacks, while K-of-N multi-signatures guarantee that no single compromised keyholder can admit rogue operators into the routing table.',
     statVal: 'K-of-N Quorum',
     statDesc: 'Multi-sig admission + voucher quotas (--user-quota-bytes)',
-    code: `// crates/storage/src/invites.rs & vouchers.rs
-pub fn verify_quorum_admission(
-    ticket: &JoinInvite,
-    fleet_keys: &[VerifyingKey],
-    k_threshold: usize
-) -> Result<(), StorageError> {
-    let valid_approvals = ticket.count_distinct_approvals(fleet_keys)?;
-    if valid_approvals < k_threshold {
-        return Err(forbidden("insufficient keyholder approvals for quorum admission"));
-    }
-    log_admission_evidence(ticket)?; // Appends join-admissions.json
-    Ok(())
-}`
+    code: `// crates/storage/src/invites.rs — JoinInvite::verify_quorum (real shape)
+pub fn verify_quorum(&self, pinned_keys: &[String], quorum_k: usize, now_utc: u64)
+    -> Result<Vec<String>, StorageError> {  // distinct approvers or forbidden
+    // v1 single-key legacy + v2 K-of-N multisig; fully offline verify
+// + WriteVoucher quotas: --user-quota-bytes lifetime cap per holder`
   },
   5: {
     kicker: 'STAGE [05] DEEP-DIVE SPECIFICATION',
     heading: 'Proof-of-Storage (PoS) Durability Challenge',
-    mechanics: 'To prove ongoing chunk durability without downloading massive gigabyte backups, the client issues a PoS challenge containing an ephemeral cryptographic nonce. The operator computes a deterministic HMAC-BLAKE2b proof over the stored chunk and returns an unforgeable 461-byte wire proof.',
+    mechanics: 'To prove ongoing chunk durability without downloading massive gigabyte backups, the client issues a PoS challenge containing an ephemeral 32-byte nonce. The operator computes a domain-separated SHA-256 proof over cid || nonce || ciphertext and returns a signed receipt: 32-byte nonce + 429-byte receipt = 461 bytes on the wire.',
     security: 'Prevents operators from silently dropping data, claiming phantom storage, or executing data-withholding attacks. Verified in sub-millisecond execution on the client.',
     statVal: '99.956% Wire Savings',
     statDesc: '1 MiB raw chunk verified with only 461 bytes transmitted over wire',
-    code: `// crates/storage/src/pos.rs
-pub fn verify_pos_proof(
-    expected_cid: &ChunkId,
-    challenge_nonce: &[u8; 32],
-    proof: &PoSProof
-) -> bool {
-    let computed_hash = hmac_blake2b(proof.chunk_sample(), challenge_nonce);
-    computed_hash == proof.signature() && proof.wire_size() == 461
-}`
+    code: `// crates/storage/src/lib.rs — compute_pos_proof (verbatim)
+pub fn compute_pos_proof(cid: &[u8; 32], nonce: &[u8; 32], data: &[u8]) -> [u8; 32] {
+    hasher.update(b"CIPHERVAULT-POS-V1");  // domain separation
+    hasher.update(cid); hasher.update(nonce); hasher.update(data);
+    // operator signs the proof; receipt.verify() checks proof + signature`
   },
   6: {
     kicker: 'STAGE [06] DEEP-DIVE SPECIFICATION',
-    heading: 'Arbitrum One L2 Blockchain Anchor & Consensus',
-    mechanics: 'Snapshot commitments (SHA-256 of salt || head_cid) are anchored to the immutable CipherVaultRegistry.sol smart contract on Arbitrum One L2. The client CLI (ciphervault anchor) submits raw L2 transactions or uses automated relayers, polling for sequencer receipt confirmation (eth_getTransactionReceipt).',
+    heading: 'Arbitrum L2 Checkpoint Anchor (Live: Sepolia Testnet)',
+    mechanics: 'Snapshot commitments (SHA-256 of salt || head_cid) are anchored to the immutable CipherVaultRegistry.sol smart contract. The live fleet checkpoints on Arbitrum Sepolia (chain 421614, registry 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5); the CLI defaults to Arbitrum One (42161) for mainnet, whose promotion is gated on the external security audit.',
     security: 'Zero plaintext, zero filenames, and zero user keys are ever revealed on-chain. Permanent L2 immutable timestamp prevents history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify with ciphervault verify-anchor.',
-    statVal: '< $0.002 Gas',
-    statDesc: 'Arbitrum One L2 sequencer finality + on-chain receipt verification',
-    code: `// contracts/CipherVaultRegistry.sol (Arbitrum One L2)
+    statVal: 'Live on Sepolia',
+    statDesc: 'Registry 0xa26E…F63Db5 · chain 421614 · mainnet target: Arbitrum One',
+    code: `// contracts/CipherVaultRegistry.sol (live: Arbitrum Sepolia 421614)
 contract CipherVaultRegistry {
     event CommitmentPublished(
         bytes32 indexed commitment,
@@ -805,7 +1165,7 @@ function initInteractivePipeline() {
     });
   }
 
-  // Simulation runner
+  // Guided stage-tour runner (walks the inspector through stages 1-6)
   let simTimer = null;
   if (btnSim) {
     btnSim.addEventListener('click', () => {
@@ -814,7 +1174,7 @@ function initInteractivePipeline() {
         simTimer = null;
       }
       btnSim.disabled = true;
-      btnSim.textContent = '[SIMULATING DATAFLOW...]';
+      btnSim.textContent = '[TOURING STAGES...]';
 
       let currentStep = 1;
       selectStage(currentStep, true);
@@ -832,8 +1192,8 @@ function initInteractivePipeline() {
           simTimer = null;
           nodes.forEach(n => n.classList.remove('simulating'));
           btnSim.disabled = false;
-          btnSim.textContent = '[▶ RUN PIPELINE SIMULATION]';
-          if (statusText) statusText.textContent = '✓ Pipeline cycle completed! Snapshot anchored to Arbitrum One L2.';
+          btnSim.textContent = '[▶ TOUR ALL STAGES]';
+          if (statusText) statusText.textContent = '✓ Stage tour completed — that is the path every snapshot travels.';
           selectStage(6, false);
           return;
         }
@@ -853,7 +1213,11 @@ function initInteractivePipeline() {
 }
 
 /* ==============================================================================
-   6. M-of-N Shamir Threshold Simulator
+   6. M-of-N Shamir Threshold Workstation (real GF(2^8) math)
+   ==============================================================================
+   Generates a genuine 32-byte secret, splits it 2-of-3 with the exact
+   algorithm from crates/crypto/src/shamir.rs, and reconstructs via real
+   Lagrange interpolation at x = 0 when any 2 guardians are selected.
    ============================================================================== */
 function initShamirSimulator() {
   const checkboxes = document.querySelectorAll('.tui-guardian-check');
@@ -865,16 +1229,24 @@ function initShamirSimulator() {
 
   if (!checkboxes.length || !badge || !output) return;
 
-  let solveTimer = null;
+  // Real 2-of-3 split of a fresh CSPRNG secret; shares are shown per guardian.
+  const masterSecret = cvRandomBytes(32);
+  const masterHex = cvBytesToHex(masterSecret);
+  const guardianShares = cvShamirSplit(masterSecret, 2, 3);
+  const guardianHex = guardianShares.map(s => cvBytesToHex(s.data));
+  checkboxes.forEach((cb) => {
+    const id = parseInt(cb.getAttribute('data-id') || '1', 10);
+    const box = cb.closest('.shamir-guardian-box');
+    const shareEl = box ? box.querySelector('.guardian-share') : null;
+    if (shareEl && guardianHex[id - 1]) {
+      shareEl.textContent = `0x0${id}-${guardianHex[id - 1].slice(0, 6).toUpperCase()}...`;
+      shareEl.setAttribute('title', `Share x=${id}: ${guardianHex[id - 1]}`);
+    }
+  });
 
   const updateShamir = () => {
     const selected = Array.from(checkboxes).filter(cb => cb.checked);
     const count = selected.length;
-
-    if (solveTimer) {
-      clearTimeout(solveTimer);
-      solveTimer = null;
-    }
 
     checkboxes.forEach(cb => {
       const box = cb.closest('.shamir-guardian-box');
@@ -892,24 +1264,41 @@ function initShamirSimulator() {
       const firstName = selected[0].closest('.shamir-guardian-box')?.querySelector('.guardian-name')?.textContent || 'Guardian';
       badge.textContent = '1/2 SELECTED';
       badge.style.color = 'var(--term-warning)';
-      if (hudText) hudText.textContent = `Coordinate (x_${firstId}, y_${firstId}) from ${firstName} loaded into interpolation matrix. Degree-1 polynomial remains underdetermined.`;
+      if (hudText) hudText.textContent = `Share x=${firstId} from ${firstName} loaded. Degree-1 polynomial remains underdetermined: one share reveals zero information.`;
       output.className = 'shamir-terminal-output';
-      output.textContent = `[STATUS] 1 share loaded: Share #0x0${firstId} (${firstName}). Underconstrained system: infinite solutions exist.`;
+      output.textContent = `[STATUS] 1 share loaded: x=0x0${firstId} (${firstName}). Underconstrained system: 256 candidate secrets per byte position.`;
     } else if (count >= 2) {
+      // Genuine Lagrange interpolation over the selected shares.
+      const picked = selected.map(cb => {
+        const id = parseInt(cb.getAttribute('data-id') || '1', 10);
+        return guardianShares[id - 1];
+      }).filter(Boolean);
+      let recovered = null;
+      let recoveryError = '';
+      try {
+        recovered = cvShamirCombine(picked);
+      } catch (err) {
+        recoveryError = err && err.message ? err.message : String(err);
+      }
+      if (!recovered) {
+        badge.textContent = `${count}/2 ERROR`;
+        badge.style.color = 'var(--term-warning)';
+        output.className = 'shamir-terminal-output';
+        output.textContent = `[ERROR] Reconstruction failed: ${recoveryError}`;
+        return;
+      }
+      const recoveredHex = cvBytesToHex(recovered);
+      const match = recoveredHex === masterHex;
       const names = selected.map(cb => cb.closest('.shamir-guardian-box')?.querySelector('.guardian-name')?.textContent).filter(Boolean).join(' + ');
-      badge.textContent = `${count}/2 EVALUATING...`;
-      badge.style.color = 'var(--term-gold)';
-      if (hudText) hudText.textContent = `Interpolating Lagrange basis polynomials ℓ_j(x) over GF(2^8) with shares from ${names}...`;
-      output.className = 'shamir-terminal-output calculating';
-      output.innerHTML = `[INTERPOLATING] Computing Lagrange basis polynomials ℓ_j(0) over Galois field GF(2^8)...`;
-
-      solveTimer = setTimeout(() => {
-        badge.textContent = `${count}/2 THRESHOLD REACHED ✓`;
-        badge.style.color = 'var(--term-mint)';
-        if (hudText) hudText.textContent = `Unique polynomial reconstructed! Constant term f(0) extracted in constant time.`;
-        output.className = 'shamir-terminal-output solved';
-        output.innerHTML = `[SUCCESS] Lagrange interpolation in GF(2^8) solved!<br>RECONSTRUCTED MASTER ROOT (R): <span class="text-gold">0xDEMO-DEADBEEF-CAFEBABE-0123456789AB</span> (Vault unsealed)`;
-      }, 240);
+      const xs = picked.map(s => 'x=' + s.index).join(', ');
+      badge.textContent = `${count}/2 THRESHOLD REACHED ✓`;
+      badge.style.color = 'var(--term-mint)';
+      if (hudText) hudText.textContent = `Lagrange basis weights computed over GF(2^8) for ${xs} (${names}). Constant term f(0) recovered.`;
+      output.className = 'shamir-terminal-output solved';
+      output.innerHTML =
+        `[SUCCESS] Real Lagrange interpolation in GF(2^8) over ${escapeHtml(xs)}.<br>` +
+        `RECONSTRUCTED MASTER ROOT (R): <span class="text-gold" title="0x${recoveredHex}">0x${recoveredHex.slice(0, 24).toUpperCase()}…${recoveredHex.slice(-8).toUpperCase()}</span><br>` +
+        `[VERIFY] Matches committed secret: <span class="text-gold">${match ? 'YES ✓' : 'NO ✗'}</span>`;
     }
   };
 
@@ -947,53 +1336,81 @@ function initShamirSimulator() {
 }
 
 /* ==============================================================================
-   7. Emergency Paper Recovery Kit Unmasker
+   7. Emergency Paper Recovery Kit Workstation (real key + CRC32)
+   ==============================================================================
+   Mints a genuine 256-bit master secret R from the platform CSPRNG and
+   checksums it with CRC32-IEEE — the same checksum the Rust recovery kit
+   (crates/recovery/src/kit.rs) prints as `Checksum (CRC32): 0x........`.
+   This is a format demonstration: it is NOT your vault's kit.
    ============================================================================== */
 function initPaperKit() {
   const btn = document.getElementById('btn-toggle-paper-key');
   const keyDisplay = document.getElementById('paper-key-display');
   const btnCopy = document.getElementById('btn-copy-paper-cmd');
   const copyToast = document.getElementById('voucher-copy-toast');
+  const crcBadge = document.getElementById('paper-crc-badge');
 
   if (!btn || !keyDisplay) return;
 
-  // Simulated mock paper recovery key for interactive UI demonstration
-  const RAW_SLOTS = ['DEMO-DEAD', 'BEEF-CAFE', 'BABE-0123', '4567-89AB']; // ggignore
-  const MASK_SLOTS = ['••••••••', '••••••••', '••••••••', '••••••••'];
+  const masterR = cvRandomBytes(32);
+  const masterHex = cvBytesToHex(masterR);
+  const checksum = cvCrc32(masterR);
+  const checksumHex = '0x' + checksum.toString(16).padStart(8, '0');
+  const RAW_SLOTS = [
+    masterHex.slice(0, 16).toUpperCase(),
+    masterHex.slice(16, 32).toUpperCase(),
+    masterHex.slice(32, 48).toUpperCase(),
+    masterHex.slice(48, 64).toUpperCase(),
+  ];
+  const MASKED_SLOT = '••••••••••••••••';
   let revealed = false;
+
+  // Voucher serial + CRC badge are derived from the real key, never canned.
+  const voucherId = 'CV-' + new Date().getUTCFullYear() + '-' +
+    cvSha256Hex(masterR).slice(0, 6).toUpperCase();
+  const voucherVal = document.querySelector('.voucher-serial .v-val');
+  if (voucherVal) voucherVal.textContent = voucherId;
+  if (crcBadge) crcBadge.textContent = `✓ CRC32: ${checksumHex} VALID`;
 
   btn.addEventListener('click', () => {
     revealed = !revealed;
     const slots = keyDisplay.querySelectorAll('.key-slot');
     if (revealed) {
+      // Re-verify the checksum at reveal time; a mismatch can only mean memory
+      // corruption, and it must fail closed, never display.
+      const recheck = cvCrc32(masterR);
+      if (recheck !== checksum) {
+        if (crcBadge) crcBadge.textContent = '✗ CRC32 MISMATCH — REFUSING TO DISPLAY';
+        return;
+      }
       if (slots.length >= 4) {
         slots.forEach((slot, i) => {
-          slot.textContent = RAW_SLOTS[i] || '••••••••';
+          slot.textContent = RAW_SLOTS[i] || MASKED_SLOT;
           slot.classList.remove('masked');
         });
       } else {
-        keyDisplay.textContent = 'DEMO-DEAD-BEEF-CAFE-BABE-0123-4567-89AB [CRC32: TEST]';
+        keyDisplay.textContent = `${RAW_SLOTS.join('-')} [CRC32: ${checksumHex}]`;
         keyDisplay.style.color = 'var(--term-gold)';
       }
       btn.textContent = '[🔒 MASK KEY]';
     } else {
       if (slots.length >= 4) {
-        slots.forEach((slot, i) => {
-          slot.textContent = MASK_SLOTS[i] || '••••••••';
+        slots.forEach((slot) => {
+          slot.textContent = MASKED_SLOT;
           slot.classList.add('masked');
         });
       } else {
-        keyDisplay.textContent = '••••••••-••••••••-••••••••-•••••••• [CRC32: TEST]';
+        keyDisplay.textContent = `${MASKED_SLOT}-${MASKED_SLOT}-${MASKED_SLOT}-${MASKED_SLOT} [CRC32: ${checksumHex}]`;
         keyDisplay.style.color = 'var(--text-main)';
       }
-      btn.textContent = '[👁 REVEAL SIMULATED KEY]';
+      btn.textContent = '[👁 REVEAL KEY]';
     }
   });
 
   if (btnCopy) {
     let toastTimer = null;
     btnCopy.addEventListener('click', () => {
-      const cmd = 'ciphervault recover --paper-kit';
+      const cmd = 'ciphervault recovery test --kit <PATH> --to <TEST_DIR>';
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(cmd).catch(() => {});
       }
@@ -1009,21 +1426,18 @@ function initPaperKit() {
 }
 
 /* ==============================================================================
-   8. Live Real-Time Cryptographic Audit Telemetry Stream
+   8. Live Fleet Reachability Telemetry Stream (real HTTPS probes)
+   ==============================================================================
+   Probes the production operator health endpoints and the public explorer
+   from the visitor's browser (no-cors timing: reachability + round-trip ms,
+   the only signals a third-party page may observe) and streams the genuine
+   outcomes. Failures are reported as failures — never papered over.
    ============================================================================== */
-const TELEMETRY_EVENTS = [
-  'Arbitrum One L2 anchor commitment published (CipherVaultRegistry.sol) [block #248901422]',
-  'K-of-N quorum admission evidence appended to join-admissions.json [ADR-011]',
-  'PoS challenge verified on cv-operator-1 (461-byte HMAC-BLAKE2b wire proof)',
-  'FastCDC gear rolling hash sliced chunk at boundary 16,384 bytes (96.15% deduplication)',
-  'Voucher ledger verified per-user lifetime quota: 0 / 100 MiB spent [HTTP 200 OK]',
-  'Automated store reconstruction initialized vault.db at epoch 2 (init_vault_at_epoch)',
-  'libp2p mesh peer discovery: 3/3 storage operators connected & synchronized',
-  'XChaCha20-Poly1305 multi-chunk AEAD throughput clocked at 558.62 MiB/s',
-  'ZeroizeOnDrop compiler fence scrubbed ephemeral RAM key buffer',
-  'Snapshot DAG head advanced to CID sha256:4a9c1f20b8e...',
-  'YubiKey 5 PIV Slot 9C short APDU round-trip confirmed in 1.42 ms',
-  'Deduplication cache hit: 25 chunks reused without network transmission'
+const CV_FLEET_PROBE_TARGETS = [
+  { name: 'op1.cipherv.online', url: 'https://op1.cipherv.online/healthz', pingId: 'live-ping-op1' },
+  { name: 'op2.cipherv.online', url: 'https://op2.cipherv.online/healthz', pingId: 'live-ping-op2' },
+  { name: 'op3.cipherv.online', url: 'https://op3.cipherv.online/healthz', pingId: 'live-ping-op3' },
+  { name: 'vault.cipherv.online', url: 'https://vault.cipherv.online/api/vault', pingId: null },
 ];
 
 function initLiveTelemetryStream() {
@@ -1048,181 +1462,198 @@ function initLiveTelemetryStream() {
     }, 1200);
   };
 
-  for (let i = 0; i < 4; i++) {
-    addTelemetryItem(TELEMETRY_EVENTS[i]);
-  }
+  // The REPL `status`/`testnet` commands probe through cvReplLiveProbe instead,
+  // which formats results for the console; this cycle feeds the stream + pings.
+  const runProbeCycle = async () => {
+    const results = [];
+    for (const target of CV_FLEET_PROBE_TARGETS) {
+      const probe = await cvProbeHttps(target.url, 10000);
+      const pingEl = target.pingId ? document.getElementById(target.pingId) : null;
+      if (pingEl) {
+        pingEl.textContent = probe.ok ? `${probe.ms}ms` : 'DOWN';
+        pingEl.classList.toggle('down', !probe.ok);
+      }
+      results.push({ name: target.name, ok: probe.ok, ms: probe.ms, timeout: probe.timeout });
+    }
+    const reached = results.filter(r => r.ok);
+    if (reached.length === results.length) {
+      const detail = results.map(r => `${r.name} ${r.ms}ms`).join(' · ');
+      addTelemetryItem(`Fleet probe: 4/4 endpoints answered — ${detail}`);
+    } else {
+      const bad = results.filter(r => !r.ok).map(r => r.name).join(', ');
+      const good = reached.map(r => `${r.name} ${r.ms}ms`).join(' · ');
+      addTelemetryItem(`Fleet probe: ${reached.length}/4 answered${good ? ` (${good})` : ''} — UNREACHABLE: ${bad}`);
+    }
+    return results;
+  };
 
-  // Live Ping & Stream loop
-  const p1 = document.getElementById('live-ping-op1');
-  const p2 = document.getElementById('live-ping-op2');
-  const p3 = document.getElementById('live-ping-op3');
-
-  setInterval(() => {
-    const randomEvent = TELEMETRY_EVENTS[Math.floor(Math.random() * TELEMETRY_EVENTS.length)];
-    addTelemetryItem(randomEvent);
-
-    // Subtle realistic latency jitter
-    if (p1) p1.textContent = `${Math.floor(36 + Math.random() * 5)}ms`;
-    if (p2) p2.textContent = `${Math.floor(39 + Math.random() * 6)}ms`;
-    if (p3) p3.textContent = `${Math.floor(49 + Math.random() * 7)}ms`;
-  }, 4800);
+  addTelemetryItem('Fleet prober online: HTTPS reachability + round-trip latency, measured live from this browser.');
+  runProbeCycle();
+  setInterval(runProbeCycle, 20000);
 }
 
 /* ==============================================================================
    9. Interactive CLI REPL Console & Collapsible Bar
+   ==============================================================================
+   Honesty contract: this browser console cannot touch your vault, your keys,
+   or the fleet's authenticated APIs — so it never prints fabricated command
+   transcripts. Vault commands show real syntax + guidance; `status` and
+   `testnet` run genuine live probes; `bench`/`compare`/`donate` show checked,
+   sourced information.
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault CLI Help & Command Index (v1.0.19):',
-    '  init               - Initialize local vault & print emergency paper kit',
-    '  track <paths...>   - Enroll confidential files into out-of-band ledger',
-    '  push [-m msg]      - FastCDC chunk, AEAD encrypt, and replicate across quorum',
-    '  pull               - Pull and decrypt latest secret snapshot from operators',
-    '  diff               - Compare working secrets against active snapshot head',
-    '  anchor [--head CID]- Anchor salted snapshot commitment to Arbitrum One L2',
-    '  verify-anchor      - Verify on-chain L2 receipt & first-seen block',
-    '  invite [cmd]       - K-of-N multi-sig operator admission ceremony (ADR-011)',
-    '  recover            - Clean-machine paper kit & Shamir rebuild (init_vault_at_epoch)',
-    '  status             - Probe live operator mesh health & public status API',
-    '  donate             - Community crypto donation addresses (Arbitrum & Ethereum)',
-    '  run -- <cmd...>    - Decrypt secrets into volatile RAM and spawn process',
-    '  bench              - Run multi-chunk AEAD and PoS throughput benchmarks',
-    '  compare            - Print architectural matrix vs AWS/Vault/1Password',
-    '  testnet            - Inspect live 3-node storage quorum endpoints',
-    '  clear              - Clear terminal log drawer'
+    'CipherVault console (v1.0.19) — real CLI syntax, live where a browser can measure:',
+    '  Local vault commands (run in your terminal; this console shows usage):',
+    '    init                 - Initialize local vault & print emergency paper kit',
+    '    track <paths...>     - Enroll confidential files into the SQLite WAL ledger',
+    '    push [-m msg]        - FastCDC chunk, AEAD encrypt, replicate across quorum',
+    '    pull [--dry-run]     - Pull and decrypt the latest snapshot from operators',
+    '    diff                 - Compare working secrets against the active snapshot head',
+    '    anchor [--head CID]  - Anchor a salted snapshot commitment to Arbitrum L2',
+    '    verify-anchor        - Verify an on-chain L2 commitment & first-seen block',
+    '    invite <request|approve|combine|verify|join|pubkey> - K-of-N admission (ADR-011)',
+    '    recover --kit/--shares --to <DIR> - Clean-machine rebuild (init_vault_at_epoch)',
+    '    run -- <cmd...>      - Decrypt secrets into volatile RAM and spawn process',
+    '  Live from this browser (measured now, not canned):',
+    '    status               - Probe fleet + explorer reachability & round-trip ms',
+    '    testnet              - Same live probe with endpoint inventory',
+    '    bench                - Published reference benchmark measurements (sourced)',
+    '    compare              - Architectural matrix vs AWS / Vault / 1Password / SOPS',
+    '    donate               - Community crypto donation addresses (repo-sourced)',
+    '    clear                - Clear terminal log drawer'
   ],
   init: [
-    'ciphervault init',
-    '🔐 Probing OS secure enclave (Windows DPAPI CryptProtectData)... [OK]',
-    '✓ Master secret R generated (256-bit high-entropy Argon2id/Blake2b KDF)',
-    'ROOT SECRET: DEMO-DEAD-BEEF-CAFE-BABE-0123-4567-89AB [CRC32: TEST]', // ggignore
-    '✓ Local SQLite WAL vault initialized at .ciphervault/vault.db (Epoch 1)',
-    '✓ Ready to track secrets: ciphervault track .env'
+    'Runs on your machine — this console cannot initialize a vault for you.',
+    '  ciphervault init [--save-kit <PATH>]',
+    '  What it really does: generates the 256-bit master secret R, seals vault',
+    '  keys with the OS keyring (DPAPI / Keychain / Secret Service, Argon2id-',
+    '  wrapped fallback off-Windows), prints the paper kit to stdout ONLY, then',
+    '  zeroizes secret buffers. Install the CLI to run it (see Install pane).'
   ],
   track: [
-    'ciphervault track .env config/credentials.json',
-    '✓ Enrolled: .env (1.4 KiB) -> Content ID: sha256:4a9c1f...',
-    '✓ Enrolled: config/credentials.json (8.2 KiB) -> Content ID: sha256:d81e04...',
-    'Notice: Git working tree unmodified. No plaintext staged into Git.'
+    'Runs on your machine against your vault.',
+    '  ciphervault track .env config/credentials.json [--from-gitignore] [--no-gitignore]',
+    '  What it really does: registers each path in the SQLite WAL ledger and',
+    '  appends it to .gitignore (unless --no-gitignore) so Git can never stage it.',
+    '  Content digests bind later, at `push` snapshot time.'
   ],
   push: [
-    'ciphervault push -m "Update production secrets"',
-    '⚡ FastCDC Chunking: 26 total chunks evaluated',
-    '✓ Chunks reused: 25 | Chunks modified: 1 (4 KiB)',
-    '🎯 Deduplication: 96.15% bandwidth saved!',
-    '✓ Replicated to 3 independent storage operators [3/3 OK]',
-    '  op1.cipherv.online: 200 OK (voucher spend recorded)',
-    '  op2.cipherv.online: 200 OK (voucher spend recorded)',
-    '  op3.cipherv.online: 200 OK (voucher spend recorded)',
-    '✓ Active Head Snapshot CID: 0x8f2d...c3a9 (Epoch 2)'
-  ],
-  snapshot: [
-    'Notice: "snapshot" is aliased to "ciphervault push" in v1.0.14.',
-    'ciphervault push -m "Update production secrets"',
-    '⚡ FastCDC Chunking: 26 total chunks evaluated',
-    '✓ Chunks reused: 25 | Chunks modified: 1 (4 KiB) -> 96.15% saved',
-    '✓ Replicated to 3 independent storage operators [3/3 OK]'
+    'Runs on your machine against your vault + operators.',
+    '  ciphervault push -m "message" [--touch] [--local] [--anchor] [--concurrency N]',
+    '  What it really does: FastCDC-chunks tracked files (4/16/64 KiB), encrypts',
+    '  each chunk with XChaCha20-Poly1305 + AAD, and replicates to a 3-operator',
+    '  quorum. Reference dedup measured: 96.15% (25/26 chunks) on a middle edit.'
   ],
   pull: [
-    'ciphervault pull',
-    'Connecting to storage quorum (op1/op2/op3.cipherv.online)...',
-    '✓ Active Head fetched: 0x8f2d...c3a9',
-    '✓ Fetched 1 delta chunk (4 KiB), reused 25 cached chunks',
-    '✓ Verified HMAC-BLAKE2b content digest: MATCH',
-    '✓ Working tree secrets restored and verified against local manifest.'
+    'Runs on your machine against your vault + operators.',
+    '  ciphervault pull [--dry-run] [--force]',
+    '  What it really does: fetches the active head snapshot, verifies every',
+    '  chunk by SHA-256 CID, decrypts, and restores working files. --dry-run',
+    '  checks for remote updates without touching local files.'
   ],
   diff: [
-    'ciphervault diff',
-    'Comparing working tree against snapshot 0x8f2d...c3a9:',
-    '  M .env (1 line modified, +1 key added)',
-    '  - config/credentials.json (unchanged, identical CID)',
-    'FastCDC delta estimate: 1 chunk (4 KiB) to sync on next push.'
+    'Runs on your machine against your vault.',
+    '  ciphervault diff',
+    '  What it really does: compares working-tree secrets against the active',
+    '  snapshot head and reports added / modified / removed files with a FastCDC',
+    '  delta estimate for the next push. Values stay masked by default.'
   ],
   anchor: [
-    'ciphervault anchor',
-    'Preparing Arbitrum Checkpoint Commitment...',
-    '  Head Record CID:   0x8f2dc3a9e102b487d903f56e1872a0c8413b567d98e7201cba643210fe987654',
-    '  Target Chain ID:   42161 (Arbitrum One L2)',
-    '  Contract Registry: 0x14809CipherVaultRegistry.sol',
-    '  Opaque Commitment: 0x3d7b901a54c8e23f9b0123456789abcdef0123456789abcdef0123456789abcd',
-    '  Publish Calldata:  0x6a05e2bb3d7b901a54c8e23f9b0123456789abcdef...',
-    'Submitting commitment to Arbitrum L2 relayer (gas-abstracted)...',
-    '✓ Automated L2 Relayer Sequencer Confirmation Received!',
-    '  Sequencer Tx Hash: 0xa8f190c37b2d5e4a819c0b2468135790abcdef1234567890abcdef1234567890',
-    '  Sequencer Block:   248901422',
-    '  Finality Status:   SequencerConfirmed (Live Arbitrum L2 Settlement)'
+    'Runs on your machine against your vault + an Arbitrum RPC endpoint.',
+    '  ciphervault anchor [--head <CID>] [--rpc <URL>] [--contract <0x..>] [--chain-id <N>]',
+    '                   [--tx-hash <0x..> | --raw-tx <hex> | --auto-relay] [--daemon]',
+    '  Live network today: Arbitrum Sepolia testnet (chain 421614), registry',
+    '  0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5. The CLI defaults to Arbitrum',
+    '  One (42161); mainnet promotion is gated on the external security audit.',
+    '  Verify any real anchor with: ciphervault verify-anchor [--head <CID>] [--rpc <URL>]'
   ],
   verify_anchor: [
-    'ciphervault verify-anchor',
-    'Querying Arbitrum One L2 Registry (0x14809...) at RPC https://arb1.arbitrum.io/rpc...',
-    '✓ On-chain Commitment Verified: 0x3d7b901a54c8...',
-    '  First Seen Block: 248901422',
-    '  Current L2 Block: 248901460 (38 confirmations)',
-    '  Receipt Verified: Independent RPC transaction receipt matches exact commitment inclusion.',
-    '✓ State root timestamp is immutable and cryptographically bound.'
+    'Runs on your machine against an Arbitrum RPC endpoint.',
+    '  ciphervault verify-anchor [--head <CID>] [--rpc <URL>]',
+    '  What it really does: reads the registry firstSeenBlock for your salted',
+    '  commitment and checks an independent RPC receipt for inclusion + finality.',
+    '  Live registry: 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 on chain 421614',
+    '  (see it on sepolia.arbiscan.io — this console shows no fabricated receipts).'
   ],
   invite: [
-    'ciphervault invite (ADR-011 K-of-N Quorum Ceremony):',
-    '  Step 1: ciphervault invite request --node <node-pk>    -> Mint unsigned InviteRequest',
-    '  Step 2: ciphervault invite approve request.json         -> Keyholder signs with offline seed',
-    '  Step 3: ciphervault invite combine app1.json app2.json -> Coordinator combines K approvals',
-    '  Step 4: ciphervault invite verify ticket.json          -> Verify multi-sig ticket offline',
-    '  Result: Admitted into probation with permanent record in join-admissions.json.'
-  ],
-  status: [
-    'ciphervault status (GET https://cipherv.online/api/status):',
-    '  Fleet Health    : OPTIMAL (3/3 nodes ready & storage_ready)',
-    '  Operator 1 (IA) : READY (Latency: 42ms, Version: 1.0.19, Quotas: Active)',
-    '  Operator 2 (IA) : READY (Latency: 45ms, Version: 1.0.19, Quotas: Active)',
-    '  Operator 3 (SC) : READY (Latency: 48ms, Version: 1.0.19, Quotas: Active)',
-    '  Probe Watcher   : 5-minute scheduled probe green (100% SLA)'
+    'Runs fully offline (ADR-011 K-of-N quorum ceremony):',
+    '  Step 1: ciphervault invite request <64-hex-node-pk> [--ttl S] [--out req.json]',
+    '  Step 2: ciphervault invite approve --request req.json --fleet-key-file k.seed [--out a.json]',
+    '  Step 3: ciphervault invite combine --request req.json --approval a1.json [--approval a2.json] [--out ticket.json]',
+    '  Step 4: ciphervault invite verify ticket.json --fleet-keys <k1,k2,...> [--quorum-k K]',
+    '  Step 5: ciphervault invite join ticket.json --node <own-endpoint>  (probation, then liveness)',
+    '  Single-key fleets: `invite pubkey --fleet-key-file k.seed` prints the fleet key.'
   ],
   run: [
-    'ciphervault run -- npm start',
-    '🛡️  CipherVault Zero-Disk Execution Guard Active',
-    '🔓 Decrypting environment variables into process RAM...',
-    '> App server started on port 3000 with authenticated secrets (0 plaintext on disk)'
+    'Runs on your machine inside your vault directory.',
+    '  ciphervault run -- <command> [args...]',
+    '  What it really does: decrypts tracked secrets into volatile process RAM,',
+    '  spawns the child with them as environment, and zeroizes buffers on exit.',
+    '  Zero plaintext is written to disk; nothing here is executed by the browser.'
   ],
   bench: [
-    'Empirical Benchmarks (x86_64, Windows):',
-    '  Encryption Throughput : 558.62 MiB/s (XChaCha20-Poly1305 AEAD)',
-    '  Decryption Throughput : 656.84 MiB/s (Streaming In-Memory)',
-    '  FastCDC Deduplication : 96.15% (25/26 chunks reused)',
-    '  PoS Wire Savings      : 99.956% (1 MiB -> 461-byte proof)',
-    '  Hardware Token APDU   : < 1.5 ms (YubiKey 5 PIV PC/SC)'
+    'Reference measurements (repo benchmarks, x86_64 Windows, release mode):',
+    '  Chunk+Encrypt Pipeline : 362.21 MiB/s end-to-end (FastCDC + XChaCha20-Poly1305)',
+    '  Decrypt+Reassemble     : 669.74 MiB/s (streaming in-memory)',
+    '  FastCDC Deduplication  : 96.15% (25/26 chunks reused on middle-insert)',
+    '  PoS Wire Savings       : 99.9560% (1 MiB -> 461 B: 32 B nonce + 429 B receipt)',
+    '  Concurrent Push        : 3.17x speedup, c=8 vs sequential (48 x 16 KiB, 3 loopback ops)',
+    '  Sources: throughput_benchmark + push_bench. Your machine will differ — that is normal.'
   ],
   compare: [
-    'Architectural Comparison Summary:',
+    'Architectural Comparison Summary (see the Benchmarks pane table):',
     '  CipherVault vs Cloud Secrets : Zero-knowledge client encryption vs Custodial KMS',
     '  CipherVault vs HashiCorp     : 96.15% FastCDC deduplication vs Full-blob storage',
     '  CipherVault vs 1Password     : Zero-disk RAM execution vs Plaintext local .env',
     '  CipherVault vs SOPS          : Quorum replication & L2 anchor vs Git commit hash only'
   ],
   recover: [
-    'Clean-Machine Disaster Recovery (Recover-then-Rebuild Engine):',
-    '  ciphervault recover --kit-key <MASTER-KEY>',
-    '  1. Fetches genesis from immutable locator record',
-    '  2. Rebuilds local SQLite vault.db at recovered epoch (init_vault_at_epoch)',
-    '  3. Mints recovery-signed device certificate at authority generation',
-    '  4. Pulls active head snapshot and decrypts files without manual config',
-    '  Alternative: M-of-N Shamir Threshold Guardians in GF(2^8) (e.g. 2-of-3 leads)'
-  ],
-  testnet: [
-    'Live Testnet Quorum Endpoints:',
-    '  cv-operator-1 : https://op1.cipherv.online (Council Bluffs, Iowa) [v1.0.19]',
-    '  cv-operator-2 : https://op2.cipherv.online (Council Bluffs, Iowa) [v1.0.19]',
-    '  cv-operator-3 : https://op3.cipherv.online (Moncks Corner, S. Carolina) [v1.0.19]',
-    'Live Explorer   : https://vault.cipherv.online',
-    'Settlement      : Arbitrum One L2 (CipherVaultRegistry.sol)'
+    'Runs on a clean machine with your offline kit (Recover-then-Rebuild):',
+    '  ciphervault recover --kit <KIT.txt> --to <DIR>     (paper kit path)',
+    '  ciphervault recover --shares g1.txt g2.txt --to <DIR>  (2-of-3 guardian path)',
+    '  1. Validates the kit CRC32, rebuilds vault.db at the epoch (init_vault_at_epoch)',
+    '  2. Mints a recovery-signed device certificate at authority generation',
+    '  3. Pulls the active head snapshot and decrypts files without manual config',
+    '  Drill it first: ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>'
   ],
   donate: [
-    'Support CipherVault Open-Source Infrastructure:',
+    'Support CipherVault Open-Source Infrastructure (address from docs/CRYPTO_DONATION_PLAN.md):',
     '  Accepted Chains : Arbitrum One L2 (Recommended, < $0.05 fee) | Ethereum Mainnet | Sepolia Testnet',
     '  Accepted Assets : ETH, USDT, ARB, Sepolia ETH',
     '  Recipient Address: 0x5f424b4ec88073fd461eb194833681a31adfa311',
-    '  Funds directly support storage operator nodes, L2 settlement gas, and CI runners.'
+    '  Funds directly support storage operator nodes, L2 settlement gas, and CI runners.',
+    '  Verify on arbiscan.io / etherscan.io before sending. Use the Donate modal for a QR code.'
   ]
 };
+
+/* Live REPL commands: measured in the visitor's browser at execution time. */
+async function cvReplLiveProbe(verbose) {
+  const lines = ['Probing the live fleet from this browser (HTTPS reachability + RTT)...'];
+  const order = [
+    { label: 'cv-operator-1 : https://op1.cipherv.online (us-central1)', url: 'https://op1.cipherv.online/healthz' },
+    { label: 'cv-operator-2 : https://op2.cipherv.online (us-central1)', url: 'https://op2.cipherv.online/healthz' },
+    { label: 'cv-operator-3 : https://op3.cipherv.online (us-east1)', url: 'https://op3.cipherv.online/healthz' },
+    { label: 'Live Explorer : https://vault.cipherv.online', url: 'https://vault.cipherv.online/api/vault' },
+  ];
+  let answered = 0;
+  for (const target of order) {
+    const probe = await cvProbeHttps(target.url, 10000);
+    if (probe.ok) {
+      answered++;
+      lines.push(`  ✓ ${target.label} — answered in ${probe.ms}ms`);
+    } else {
+      lines.push(`  ✗ ${target.label} — UNREACHABLE${probe.timeout ? ' (10s timeout)' : ''}`);
+    }
+  }
+  lines.push(`Fleet reachability from your network: ${answered}/4 endpoints answered.`);
+  if (verbose) {
+    lines.push('Settlement      : Arbitrum Sepolia testnet, chain 421614 (mainnet target: Arbitrum One)');
+    lines.push('Registry        : 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 (CipherVaultRegistry.sol)');
+  }
+  lines.push('Note: browsers observe reachability + latency only; versions and ready-state live in the explorer.');
+  return lines;
+}
 
 function initInteractiveRepl() {
   const input = document.getElementById('repl-input');
@@ -1248,6 +1679,19 @@ function initInteractiveRepl() {
     });
   }
 
+  const appendLines = (entry, responseLines) => {
+    responseLines.forEach(line => {
+      const lineDiv = document.createElement('div');
+      lineDiv.style.color = line.startsWith('✓') || line.startsWith('🎯') ? 'var(--term-mint)' : 'var(--text-secondary)';
+      if (line.startsWith('  ✗') || line.includes('UNREACHABLE')) {
+        lineDiv.style.color = 'var(--term-warning)';
+      }
+      lineDiv.textContent = line;
+      entry.appendChild(lineDiv);
+    });
+    drawer.scrollTop = drawer.scrollHeight;
+  };
+
   const executeCommand = (cmdText) => {
     const raw = cmdText.trim();
     if (!raw) return;
@@ -1270,23 +1714,6 @@ function initInteractiveRepl() {
       return;
     }
 
-    let responseLines = REPL_RESPONSES[lower];
-    if (!responseLines) {
-      if (lower.startsWith('bench')) responseLines = REPL_RESPONSES['bench'];
-      else if (lower.startsWith('comp')) responseLines = REPL_RESPONSES['compare'];
-      else if (lower.startsWith('rec')) responseLines = REPL_RESPONSES['recover'];
-      else if (lower.startsWith('anch')) responseLines = REPL_RESPONSES['anchor'];
-      else if (lower.startsWith('ver')) responseLines = REPL_RESPONSES['verify_anchor'];
-      else if (lower.startsWith('inv')) responseLines = REPL_RESPONSES['invite'];
-      else if (lower.startsWith('stat')) responseLines = REPL_RESPONSES['status'];
-      else if (lower.startsWith('snap')) responseLines = REPL_RESPONSES['snapshot'];
-      else if (lower.startsWith('push')) responseLines = REPL_RESPONSES['push'];
-      else if (lower.startsWith('pull')) responseLines = REPL_RESPONSES['pull'];
-      else if (lower.startsWith('diff')) responseLines = REPL_RESPONSES['diff'];
-      else if (lower.startsWith('don') || lower.startsWith('supp')) responseLines = REPL_RESPONSES['donate'];
-      else responseLines = [`ciphervault: command not found: '${raw}'. Type 'help' for available commands.`];
-    }
-
     drawer.removeAttribute('hidden');
 
     const entry = document.createElement('div');
@@ -1298,17 +1725,47 @@ function initInteractiveRepl() {
     cmdLine.style.fontWeight = '700';
     cmdLine.textContent = `ciphervault > ${raw}`;
     entry.appendChild(cmdLine);
-
-    responseLines.forEach(line => {
-      const lineDiv = document.createElement('div');
-      lineDiv.style.color = line.startsWith('✓') || line.startsWith('🎯') ? 'var(--term-mint)' : 'var(--text-secondary)';
-      lineDiv.textContent = line;
-      entry.appendChild(lineDiv);
-    });
-
     drawerContent.appendChild(entry);
     drawer.scrollTop = drawer.scrollHeight;
     input.value = '';
+
+    // Live commands probe the production fleet now; everything else is
+    // checked static guidance. There is no `snapshot` alias and no `testnet`
+    // transcript — unknown commands say so honestly.
+    const isStatus = lower === 'status' || lower.startsWith('stat');
+    const isTestnet = lower === 'testnet' || lower === 'test';
+    if (isStatus || isTestnet) {
+      const pending = document.createElement('div');
+      pending.style.color = 'var(--text-secondary)';
+      pending.textContent = 'Probing live endpoints from this browser...';
+      entry.appendChild(pending);
+      drawer.scrollTop = drawer.scrollHeight;
+      cvReplLiveProbe(isTestnet).then(lines => {
+        entry.removeChild(pending);
+        appendLines(entry, lines);
+      }).catch(err => {
+        pending.textContent = `Live probe failed in this browser: ${err && err.message ? err.message : err}`;
+      });
+      return;
+    }
+
+    let responseLines = REPL_RESPONSES[lower];
+    if (!responseLines) {
+      if (lower.startsWith('bench')) responseLines = REPL_RESPONSES['bench'];
+      else if (lower.startsWith('comp')) responseLines = REPL_RESPONSES['compare'];
+      else if (lower.startsWith('rec')) responseLines = REPL_RESPONSES['recover'];
+      else if (lower.startsWith('anch')) responseLines = REPL_RESPONSES['anchor'];
+      else if (lower.startsWith('ver')) responseLines = REPL_RESPONSES['verify_anchor'];
+      else if (lower.startsWith('inv')) responseLines = REPL_RESPONSES['invite'];
+      else if (lower.startsWith('tui')) responseLines = REPL_RESPONSES['help'];
+      else if (lower.startsWith('push')) responseLines = REPL_RESPONSES['push'];
+      else if (lower.startsWith('pull')) responseLines = REPL_RESPONSES['pull'];
+      else if (lower.startsWith('diff')) responseLines = REPL_RESPONSES['diff'];
+      else if (lower.startsWith('don') || lower.startsWith('supp')) responseLines = REPL_RESPONSES['donate'];
+      else responseLines = [`ciphervault: command not found: '${raw}'. Type 'help' for available commands.`];
+    }
+
+    appendLines(entry, responseLines);
   };
 
   btnExec.addEventListener('click', () => executeCommand(input.value));
@@ -1665,4 +2122,25 @@ function initCryptoDonations() {
   if (btnCopy) btnCopy.addEventListener('click', performCopy);
   if (addressText) addressText.addEventListener('click', performCopy);
   if (qrContainer) qrContainer.addEventListener('click', performCopy);
+}
+
+/* Node.js test export (inert in browsers): lets the committed contract test
+   exercise the real crypto core instead of trusting it. */
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    cvBytesToHex,
+    cvSha256Hex,
+    cvCrc32,
+    cvGearMatrix,
+    cvFastCdcChunk,
+    cvGfMul,
+    cvGfInv,
+    cvGfDiv,
+    cvGfPolyEval,
+    cvShamirSplit,
+    cvShamirCombine,
+    cvBuildDemoPayload,
+    cvRunBrowserBenchmarks,
+    cvReplLiveProbe,
+  };
 }

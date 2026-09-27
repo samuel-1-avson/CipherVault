@@ -3,7 +3,9 @@
 # Optional env knobs: CIPHERVAULT_VERSION=v1.0.19 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
-# node = CLI+operator+maintenance for guided `ciphervault node setup`).
+# node = CLI+operator+maintenance for guided `ciphervault node setup`),
+# CIPHERVAULT_INSTALL_NO_STOP=1 (never stop running CipherVault processes;
+# the install fails with instructions instead of replacing locked binaries).
 
 $ErrorActionPreference = "Stop"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -16,6 +18,78 @@ if ([string]::IsNullOrWhiteSpace($GithubToken)) { $GithubToken = $env:GH_TOKEN }
 if ([string]::IsNullOrWhiteSpace($GithubToken)) { $GithubToken = $env:GITHUB_TOKEN }
 if (-not [string]::IsNullOrWhiteSpace($GithubToken)) { $Headers["Authorization"] = "Bearer $($GithubToken.Trim())" }
 $PrivateHint = "If the repo is private, set CIPHERVAULT_GITHUB_TOKEN (a token with Contents: read) and re-run."
+
+# Windows locks a running .exe, so replacing the bindir while a TUI, agent,
+# or node daemon runs from it fails in Copy-Item. These helpers only ever
+# touch ciphervault* processes executing from the install bindir itself -
+# exactly the binaries this installer is about to replace.
+function Get-InstallDirProcesses {
+    param([string]$BinDir)
+    $found = @()
+    foreach ($proc in (Get-Process -Name "ciphervault*" -ErrorAction SilentlyContinue)) {
+        if ($proc.Id -eq $PID) { continue }
+        $procPath = $null
+        try { $procPath = $proc.Path } catch { continue }
+        if ([string]::IsNullOrWhiteSpace($procPath)) { continue }
+        $procDir = $null
+        try { $procDir = [System.IO.Path]::GetDirectoryName($procPath) } catch { continue }
+        if ($procDir -eq $BinDir) { $found += $proc }
+    }
+    return $found
+}
+
+function Stop-InstallDirProcesses {
+    param([string]$BinDir)
+    $stopped = @()
+    foreach ($proc in (Get-InstallDirProcesses -BinDir $BinDir)) {
+        $label = "$($proc.ProcessName) (PID $($proc.Id))"
+        Write-Host "Stopping running $label from the install directory..." -ForegroundColor Yellow
+        try { $null = $proc.CloseMainWindow() } catch {}
+        try {
+            if (-not $proc.WaitForExit(5000)) {
+                $proc.Kill()
+                $null = $proc.WaitForExit(10000)
+            }
+        } catch {}
+        $stopped += $label
+    }
+    return $stopped
+}
+
+function Install-BinaryWithLockHandling {
+    param([string]$Source, [string]$Destination, [string]$BinDir)
+    $stopped = @()
+    $stopAttempted = $false
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force
+            return $stopped
+        } catch {
+            $locked = $_.Exception -is [System.IO.IOException]
+            if (-not $locked) { throw }
+            if ($env:CIPHERVAULT_INSTALL_NO_STOP -eq "1") { throw (New-LockedError $Destination $BinDir) }
+            if (-not $stopAttempted) {
+                $stopAttempted = $true
+                $justStopped = Stop-InstallDirProcesses -BinDir $BinDir
+                if ($justStopped) { $stopped += @($justStopped) }
+            }
+            if ($attempt -eq 6) { throw (New-LockedError $Destination $BinDir) }
+            Start-Sleep -Milliseconds 1000
+        }
+    }
+    return $stopped
+}
+
+function New-LockedError {
+    param([string]$Destination, [string]$BinDir)
+    $holders = @(Get-InstallDirProcesses -BinDir $BinDir | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" })
+    $holderText = if ($holders.Count -gt 0) {
+        "Still holding it: $($holders -join ', ')."
+    } else {
+        "No CipherVault process is holding it now - a transient antivirus/file-manager lock is likely."
+    }
+    return "Cannot replace '$Destination': the file is locked. $holderText Close any CipherVault windows (TUI, agent, operator, maintenance) and re-run the installer."
+}
 $InstallDir = $env:CIPHERVAULT_INSTALL_DIR
 if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Join-Path $HOME ".ciphervault" }
 $BinDir = Join-Path $InstallDir "bin"
@@ -92,10 +166,12 @@ try {
 
     $extract = Join-Path $tempRoot "extract"
     Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+    $stoppedProcesses = @()
     foreach ($name in $Binaries) {
         $binary = Get-ChildItem -LiteralPath $extract -Filter $name -Recurse -File | Select-Object -First 1
         if ($null -eq $binary) { throw "The verified release archive does not contain $name." }
-        Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $BinDir $name) -Force
+        $justStopped = Install-BinaryWithLockHandling -Source $binary.FullName -Destination (Join-Path $BinDir $name) -BinDir $BinDir
+        if ($justStopped) { $stoppedProcesses += @($justStopped) }
     }
 
     # Double-clicking a console executable is expected to close when it exits.
@@ -114,6 +190,9 @@ if ($UserPath -notlike "*$BinDir*") {
 }
 
 Write-Host "[+] CipherVault $Tag ($Role) installed to $BinDir" -ForegroundColor Green
+if ($stoppedProcesses.Count -gt 0) {
+    Write-Host "Stopped for replacement: $($stoppedProcesses -join ', '). Restart anything you need (operator daemon, file-watcher agent, TUI)." -ForegroundColor Yellow
+}
 if ($Role -eq "node") {
     Write-Host "Next (from a NEW terminal): 'ciphervault node setup' for guided node onboarding." -ForegroundColor Yellow
 } else {

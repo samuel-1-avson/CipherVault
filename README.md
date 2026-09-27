@@ -613,15 +613,15 @@ New operators start with the guided wizard (`ciphervault node setup` answers thr
 
 ## 📊 Performance Benchmarks
 
-Empirical performance metrics measured on x86_64 architecture:
+Empirical performance metrics measured on x86_64 (release mode; your machine will differ):
 
 | Metric | Measured Value | Benchmark Description / Comparison |
 |---|---|---|
-| **Encryption Throughput** | **558.62 MiB/s** | Client-side `XChaCha20-Poly1305` AEAD encryption |
-| **Decryption Throughput** | **656.84 MiB/s** | Client-side `XChaCha20-Poly1305` AEAD decryption |
+| **Chunk+Encrypt Pipeline** | **362.21 MiB/s** | End-to-end FastCDC chunking + `XChaCha20-Poly1305` AEAD (`throughput_benchmark`) |
+| **Decryption Throughput** | **669.74 MiB/s** | Streaming in-memory decrypt + reassembly, byte-identical round-trip |
 | **FastCDC Deduplication Ratio** | **96.15%** | 25/26 chunks preserved upon localized secret edit |
 | **PoS Readback Wire Reduction** | **99.956%** | Reduced from 1,048,576 bytes to 461 bytes per 1 MiB chunk |
-| **Hardware Token APDU Latency** | **< 1.5 ms** | Direct native PC/SC short APDU round-trip latency |
+| **Concurrent Push Speedup** | **3.17x** | 8-way vs sequential replication, 48 x 16 KiB objects on 3 loopback operators (`push_bench`) |
 | **Integrity Fidelity** | **100.00%** | Zero bitflips across all chaos failure and recovery drills |
 
 ---
