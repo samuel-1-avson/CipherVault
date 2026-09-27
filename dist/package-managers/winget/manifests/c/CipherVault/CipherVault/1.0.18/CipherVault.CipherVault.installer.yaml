@@ -23,7 +23,7 @@ Installers:
     InstallerUrl: https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.18/ciphervault-v1.0.18-x86_64-pc-windows-msvc.zip
     # Refresh from the release SHA256SUMS.txt line for the Windows zip before submit:
     #   (Get-Content SHA256SUMS.txt | Select-String "x86_64-pc-windows-msvc.zip")
-    InstallerSha256: 8db0ef29787799b3708320fcab7c3538c12b8938c9bafa95b1956bc3cc4fbf7c
+    InstallerSha256: 06f5d29c8c33892d860d5511ea27aa206c3025dca88b388482bda9aba1005329
 ManifestType: installer
 ManifestVersion: 1.12.0
 
