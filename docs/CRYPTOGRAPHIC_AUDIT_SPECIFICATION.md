@@ -65,8 +65,8 @@ graph TD
 | `b"CV_MANIF"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives manifest encryption key from epoch key |
 | `b"CV_FVERS"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives deterministic file key bound to epoch + plaintext SHA-256 |
 | `b"CV_CNONC"` (+ `CipherVault-KDF-v1` prefix) | Custom Blake2b-KDF | Derives deterministic 24-byte XChaCha20 nonce per chunk |
-| `b"CIPHERVAULT-POS-V1"` | BLAKE2b-256 | Domain separator for Proof-of-Storage challenges |
-| `b"CipherVault-ApprovalChallenge-v1"`| BLAKE2b-256 | Out-of-band authorization challenge hashing |
+| `b"CIPHERVAULT-POS-V1"` | SHA-256 | Domain separator for Proof-of-Storage digests: `SHA-256("CIPHERVAULT-POS-V1" \|\| cid \|\| nonce \|\| data)` (`compute_pos_proof`) |
+| `b"CipherVault-ApprovalChallenge-v1"`| Ed25519 (`sign_with_domain`, context `out_of_band_approval`) | Domain prefix inside out-of-band authorization signing bytes (no BLAKE2b step) |
 
 ---
 

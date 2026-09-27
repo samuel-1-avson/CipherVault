@@ -137,7 +137,7 @@ fix that quits promptly after staging so the swap helper can proceed
 Migration: Windows installs at ≤1.0.18 carry the broken updater and
 cannot self-update — those users must fresh-install ≥1.0.19 once via
 `dist/scripts/install.ps1` (or the release zip), after which in-app
-update works. v1.0.19's own signature verified independently (`SIG-OK`,
+update works. If the installer reports a locked file, a CipherVault process (TUI, agent, operator, maintenance) is running from the install directory: the installer stops only those processes automatically (reported at the end so they can be restarted), retries the copy, and fails with the holding PIDs if the lock persists. Set `CIPHERVAULT_INSTALL_NO_STOP=1` to disable the auto-stop and fail fast with manual instructions instead. v1.0.19's own signature verified independently (`SIG-OK`,
 key `b625994c0c3f53a6`); v1.0.19 manifest hashes merged via PR #4 after
 the fill job's branch push (repo setting still blocks Actions-created
 PRs — either enable "Allow GitHub Actions to create and approve pull

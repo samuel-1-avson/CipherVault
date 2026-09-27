@@ -1137,6 +1137,10 @@ html[data-theme="light"] .theme-pill-btn.active {
   font-family: var(--font-mono);
 }
 
+.node-ping.down {
+  color: var(--term-warning);
+}
+
 .node-sub {
   font-size: 0.78rem;
   color: var(--text-muted);
@@ -2854,6 +2858,18 @@ html[data-theme="light"] .theme-pill-btn.active {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.bench-live-result {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--term-mint);
+  margin-top: 10px;
+  min-height: 1.2em;
+}
+
+.bench-live-result:empty {
+  display: none;
 }
 
 .bench-filter-pills {

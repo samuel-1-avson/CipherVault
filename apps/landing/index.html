@@ -159,7 +159,7 @@
         <!-- Live Quorum Status Ribbon -->
         <div class="drawer-status-ribbon">
           <span class="tui-pulse-dot"></span>
-          <span class="drawer-status-text">TESTNET: 3/3 NODES SYNCED (Arbitrum One L2)</span>
+          <span class="drawer-status-text">FLEET: 3 OPERATORS · PROBED LIVE FROM THIS PAGE</span>
         </div>
 
         <!-- Section 1: Core Navigation Tabs -->
@@ -197,7 +197,7 @@
               <span class="d-tab-num">[4]</span>
               <div class="d-tab-content">
                 <span class="d-tab-title">Benchmarks</span>
-                <span class="d-tab-desc">558 MiB/s client AEAD &amp; 96% deduplication</span>
+                <span class="d-tab-desc">362 MiB/s chunk+encrypt pipeline &amp; 96% deduplication</span>
               </div>
               <span class="d-tab-arrow">➔</span>
             </button>
@@ -347,8 +347,8 @@
                 Secrets live in a local SQLite WAL ledger sealed by OS hardware enclaves (DPAPI, Keychain, SecretService). Your Git commits never touch plaintext.
               </p>
               <div class="pillar-stat-line">
-                <span class="pillar-val text-mint">&lt; 1.5 ms</span>
-                <span class="pillar-lbl">Hardware APDU Latency</span>
+                <span class="pillar-val text-mint">9C · 9D</span>
+                <span class="pillar-lbl">YubiKey PIV slots, touch-gated</span>
               </div>
             </div>
 
@@ -362,8 +362,8 @@
                 Gear-rolling hashing slices secrets at variable boundaries (4–64 KiB). When editing one line, only changed delta chunks are encrypted and synced.
               </p>
               <div class="pillar-stat-line">
-                <span class="pillar-val text-cyan">558.62 MiB/s</span>
-                <span class="pillar-lbl">XChaCha20-Poly1305 AEAD</span>
+                <span class="pillar-val text-cyan">362.21 MiB/s</span>
+                <span class="pillar-lbl">Chunk+encrypt pipeline, release mode</span>
               </div>
             </div>
 
@@ -492,7 +492,7 @@
           <div class="tui-box engine-fastcdc-demo">
             <div class="tui-box-title">
               <div class="box-title-left">
-                <span class="box-title-main">INTERACTIVE FASTCDC CHUNKING SIMULATOR</span>
+                <span class="box-title-main">INTERACTIVE FASTCDC CHUNKING WORKSTATION</span>
                 <span class="box-title-badge">Gear Rolling Hash (4 KiB - 64 KiB)</span>
               </div>
               <div class="box-title-meta">
@@ -501,21 +501,21 @@
             </div>
 
             <div class="fastcdc-sim-content">
-              <!-- Simulation Scenarios / Presets Strip -->
+              <!-- Edit Scenarios / Presets Strip (each performs a real byte-level edit) -->
               <div class="sim-presets-deck">
-                <span class="presets-label">SIMULATION PRESETS:</span>
+                <span class="presets-label">EDIT SCENARIOS:</span>
                 <div class="presets-pills" id="sim-presets-pills">
-                  <button class="preset-pill active" data-preset="api-key" title="Simulate rotating a 32-byte secret key">
-                    [1] Rotate API Key (1 Chunk Δ)
+                  <button class="preset-pill active" data-preset="api-key" title="Rotate a 32-byte secret key mid-file">
+                    [1] Rotate API Key (32-byte Δ)
                   </button>
-                  <button class="preset-pill" data-preset="db-pass" title="Simulate 1-byte DB password modification">
-                    [2] Change DB Port (1 Byte Δ)
+                  <button class="preset-pill" data-preset="db-pass" title="Flip 1 byte (DB password modification)">
+                    [2] Change DB Port (1-byte Δ)
                   </button>
-                  <button class="preset-pill" data-preset="tls-cert" title="Simulate appending a 16 KiB TLS Certificate chain">
-                    [3] Append TLS Cert (4 Chunks Δ)
+                  <button class="preset-pill" data-preset="tls-cert" title="Append a 16 KiB TLS certificate chain block">
+                    [3] Append TLS Cert (+16 KiB)
                   </button>
                   <button class="preset-pill" data-preset="clean" title="Verify zero-diff clean checkout cache hit">
-                    [4] Clean Re-snapshot (0 Chunks Δ)
+                    [4] Clean Re-snapshot (0-byte Δ)
                   </button>
                 </div>
               </div>
@@ -544,7 +544,7 @@
                     <div class="code-line-dim"># Database replica credentials & external API gateways</div>
                     <div class="code-line-active">
                       <span class="code-key">API_KEY_ROTATE=</span>
-                      <input type="text" class="sim-input" id="sim-input-editor" value="0x491e_chunk_15" spellcheck="false" aria-label="Simulate file edit value">
+                      <input type="text" class="sim-input" id="sim-input-editor" value="ROTATED_API_KEY_32B_SECRET_VALUE" spellcheck="false" aria-label="File edit value (spliced into the payload and re-chunked)">
                       <span class="code-cursor-blink"></span>
                     </div>
                     <div class="code-line-dim">DATABASE_URL=postgres://vault_op:******@127.0.0.1:5432/secrets</div>
@@ -577,7 +577,7 @@
                     <span class="insp-title" id="insp-chunk-title">Target of Edit</span>
                   </div>
                   <div class="insp-meta-row">
-                    <span class="insp-hash" id="insp-chunk-hash">BLAKE2B: <code class="hash-code">sha256:7f8a92...e104</code></span>
+                    <span class="insp-hash" id="insp-chunk-hash">SHA-256: <code class="hash-code">sha256:…</code></span>
                     <span class="insp-size" id="insp-chunk-size">SIZE: <strong>4.00 KiB</strong></span>
                   </div>
                 </div>
@@ -601,22 +601,22 @@
               <div class="chunk-stats-cards" id="chunk-stats-summary">
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">TOTAL CHUNKS</span>
-                  <span class="kpi-val">26</span>
-                  <span class="kpi-sub">128 KiB Total</span>
+                  <span class="kpi-val" id="stat-chunks-total">—</span>
+                  <span class="kpi-sub" id="stat-payload-total">—</span>
                 </div>
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">UNCHANGED CHUNKS</span>
-                  <span class="kpi-val text-mint" id="stat-chunks-reused">25 (96.15%)</span>
+                  <span class="kpi-val text-mint" id="stat-chunks-reused">—</span>
                   <span class="kpi-sub">0 Bytes Uploaded</span>
                 </div>
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">MODIFIED DELTA</span>
-                  <span class="kpi-val text-gold" id="stat-chunks-modified">1 (#15 - 4 KiB)</span>
-                  <span class="kpi-sub">Only 1 Chunk Synced</span>
+                  <span class="kpi-val text-gold" id="stat-chunks-modified">—</span>
+                  <span class="kpi-sub" id="stat-chunks-modified-sub">—</span>
                 </div>
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">BANDWIDTH SAVINGS</span>
-                  <span class="kpi-val text-cyan" id="stat-bandwidth-saved">96.15%</span>
+                  <span class="kpi-val text-cyan" id="stat-bandwidth-saved">—</span>
                   <span class="kpi-sub">FastCDC Efficiency</span>
                 </div>
               </div>
@@ -628,8 +628,8 @@
             <div class="tui-box-title">
               <span class="pipeline-main-title">END-TO-END CRYPTOGRAPHIC PIPELINE</span>
               <div class="pipeline-actions-bar">
-                <span class="pipeline-status-text" id="pipeline-status-text">Click any stage or run simulation:</span>
-                <button class="tui-btn-action" id="btn-run-pipeline-sim">[▶ RUN PIPELINE SIMULATION]</button>
+                <span class="pipeline-status-text" id="pipeline-status-text">Click any stage or tour the pipeline:</span>
+                <button class="tui-btn-action" id="btn-run-pipeline-sim">[▶ TOUR ALL STAGES]</button>
               </div>
             </div>
 
@@ -712,7 +712,7 @@
                     <span class="node-stage-badge">[06] ANCHOR</span>
                     <span class="node-pulse-dot"></span>
                   </div>
-                  <div class="node-title">Arbitrum One L2</div>
+                  <div class="node-title">Arbitrum L2 Anchor</div>
                   <div class="node-sub">CipherVaultRegistry.sol</div>
                   <div class="node-tag badge-purple">Sequencer Confirmed</div>
                   <div class="node-inspect-hint">Inspect [06] ↵</div>
@@ -778,7 +778,7 @@
                   <div class="insp-section">
                     <div class="insp-label text-cyan">CRYPTOGRAPHIC & ARCHITECTURAL MECHANICS:</div>
                     <p class="insp-body" id="insp-mechanics">
-                      CipherVault tracks secret files completely out-of-band from Git. During enrollment via <code class="tui-code">ciphervault track .env</code>, the file is hashed with BLAKE2b-256, and metadata is recorded in an encrypted local SQLite WAL ledger (<code class="tui-code">.ciphervault/state.db</code>). The Git working tree and <code class="tui-code">.gitignore</code> remain completely untouched.
+                      CipherVault tracks secret files out-of-band from Git. During enrollment via <code class="tui-code">ciphervault track .env</code>, the path is registered in the local SQLite WAL ledger and appended to <code class="tui-code">.gitignore</code> (skip with <code class="tui-code">--no-gitignore</code>). Content digests bind at snapshot time, not at enrollment.
                     </p>
                   </div>
                   <div class="insp-section">
@@ -794,21 +794,16 @@
                   <div class="insp-section">
                     <div class="insp-label text-mint">EMPIRICAL BENCHMARK & WIRE PROFILE:</div>
                     <div class="insp-stat-badge">
-                      <span class="insp-stat-val text-mint" id="insp-stat-val">&lt; 1.2 ms</span>
-                      <span class="insp-stat-desc" id="insp-stat-desc">Local metadata indexing & DPAPI hardware key binding</span>
+                      <span class="insp-stat-val text-mint" id="insp-stat-val">Out-of-band</span>
+                      <span class="insp-stat-desc" id="insp-stat-desc">SQLite WAL ledger + `.gitignore` guard (skip with `--no-gitignore`)</span>
                     </div>
                   </div>
                   <div class="insp-section">
                     <div class="insp-label text-purple">RUST ENGINE IMPLEMENTATION:</div>
-                    <pre class="insp-code-block"><code id="insp-code">// crates/vault-core/src/tracker.rs
-pub fn enroll_secret_file(
-    path: &Path
-) -> Result&lt;TrackedMetadata&gt; {
-    let raw = std::fs::read(path)?;
-    let cid = blake2b_256(&raw);
-    let master_key = platform::get_dpapi_master_key()?;
-    state_db::insert_tracked(path, &cid)?;
-    Ok(TrackedMetadata { cid, bytes: raw.len() })
+                    <pre class="insp-code-block"><code id="insp-code">// apps/cli/src/commands/track.rs — cmd_track (real flow)
+let file_id = store.track_file(&amp;path_str)?;  // SQLite WAL registry
+if !no_gitignore {
+    ensure_file_in_gitignore(&amp;path)?;        // appended, not untouched
 }</code></pre>
                   </div>
                 </div>
@@ -847,7 +842,7 @@ pub fn enroll_secret_file(
                 <div class="node-status-line">
                   <span class="node-dot active">●</span>
                   <span class="node-id">cv-operator-1</span>
-                  <span class="node-ping" id="live-ping-op1">38ms</span>
+                  <span class="node-ping" id="live-ping-op1">…</span>
                 </div>
                 <div class="node-sub">Council Bluffs, Iowa • us-central1-a (TLS 1.3 Verified)</div>
               </div>
@@ -855,7 +850,7 @@ pub fn enroll_secret_file(
                 <div class="node-status-line">
                   <span class="node-dot active">●</span>
                   <span class="node-id">cv-operator-2</span>
-                  <span class="node-ping" id="live-ping-op2">41ms</span>
+                  <span class="node-ping" id="live-ping-op2">…</span>
                 </div>
                 <div class="node-sub">Council Bluffs, Iowa • us-central1-b (TLS 1.3 Verified)</div>
               </div>
@@ -863,7 +858,7 @@ pub fn enroll_secret_file(
                 <div class="node-status-line">
                   <span class="node-dot active">●</span>
                   <span class="node-id">cv-operator-3</span>
-                  <span class="node-ping" id="live-ping-op3">52ms</span>
+                  <span class="node-ping" id="live-ping-op3">…</span>
                 </div>
                 <div class="node-sub">Moncks Corner, SC • us-east1-b (TLS 1.3 Verified)</div>
               </div>
@@ -898,33 +893,33 @@ pub fn enroll_secret_file(
             <div class="tui-box-title">
               <div class="bench-title-wrap">
                 <span class="bench-title-main">MEASURED PERFORMANCE GAUGES</span>
-                <span class="bench-harness-tag">x86_64 criterion.rs • AMD Ryzen 9 7950X</span>
+                <span class="bench-harness-tag">x86_64 • release-mode repo benchmarks (throughput_benchmark + push_bench)</span>
               </div>
               <div class="bench-actions-bar">
                 <div class="bench-filter-pills" id="bench-filter-pills" role="tablist" aria-label="Benchmark Categories">
                   <button class="bench-pill active" data-filter="all">All (5)</button>
                   <button class="bench-pill" data-filter="crypto">Crypto</button>
                   <button class="bench-pill" data-filter="storage">Storage</button>
-                  <button class="bench-pill" data-filter="hardware">Hardware</button>
                 </div>
-                <button class="tui-btn-action bench-rerun-btn" id="btn-rerun-benchmarks" title="Trigger real-time benchmark animation">
+                <button class="tui-btn-action bench-rerun-btn" id="btn-rerun-benchmarks" title="Measure SHA-256, FastCDC, and Shamir on this device">
                   [⚡ Rerun Benchmarks]
                 </button>
               </div>
+              <div class="bench-live-result" id="bench-live-result" role="status"></div>
             </div>
 
             <div class="benchmark-gauges-list" id="benchmark-gauges-list">
               
-              <!-- Metric 1: Encryption Throughput -->
+              <!-- Metric 1: End-to-end chunk+encrypt pipeline -->
               <div class="gauge-row" data-category="crypto">
                 <div class="gauge-meta">
                   <div class="gauge-title-group">
-                    <span class="gauge-name">Encryption Throughput (XChaCha20-Poly1305)</span>
-                    <span class="gauge-compare-pill tag-gold">11.6x faster than SaaS REST API</span>
+                    <span class="gauge-name">Chunk+Encrypt Pipeline (FastCDC + XChaCha20-Poly1305)</span>
+                    <span class="gauge-compare-pill tag-gold">101.7x faster than debug build</span>
                   </div>
                   <div class="gauge-val-group">
-                    <span class="gauge-val text-gold" id="gauge-val-1" data-target="558.62" data-suffix=" MiB/s">558.62 MiB/s</span>
-                    <span class="gauge-baseline-val">vs 48.2 MiB/s SaaS</span>
+                    <span class="gauge-val text-gold" id="gauge-val-1" data-target="362.21" data-suffix=" MiB/s">362.21 MiB/s</span>
+                    <span class="gauge-baseline-val">vs 3.56 MiB/s debug-mode</span>
                   </div>
                 </div>
                 <div class="gauge-bar-track">
@@ -933,12 +928,12 @@ pub fn enroll_secret_file(
                     <span class="tick t-50"></span>
                     <span class="tick t-75"></span>
                   </div>
-                  <div class="gauge-baseline-marker" style="left: 9%;" title="Industry SaaS Baseline: 48.2 MiB/s"></div>
+                  <div class="gauge-baseline-marker" style="left: 9%;" title="Debug-mode baseline (same test): 3.56 MiB/s"></div>
                   <div class="gauge-bar-fill fill-gold" data-target-width="85%" style="width: 0%;"></div>
                 </div>
                 <div class="gauge-detail-foot">
-                  <span>Zero C-FFI • AVX2-accelerated SIMD • Zero RAM allocation</span>
-                  <span class="baseline-legend">SaaS Baseline: 48.20 MiB/s ↗</span>
+                  <span>Pure Rust • 10 MiB payload • 160 chunks • release mode</span>
+                  <span class="baseline-legend">Debug-mode, same test: 3.56 MiB/s ↗</span>
                 </div>
               </div>
 
@@ -947,11 +942,11 @@ pub fn enroll_secret_file(
                 <div class="gauge-meta">
                   <div class="gauge-title-group">
                     <span class="gauge-name">Decryption Throughput (In-Memory Streaming)</span>
-                    <span class="gauge-compare-pill tag-mint">10.5x faster than HashiCorp Vault</span>
+                    <span class="gauge-compare-pill tag-mint">157.6x faster than debug build</span>
                   </div>
                   <div class="gauge-val-group">
-                    <span class="gauge-val text-mint" id="gauge-val-2" data-target="656.84" data-suffix=" MiB/s">656.84 MiB/s</span>
-                    <span class="gauge-baseline-val">vs 62.4 MiB/s HTTP</span>
+                    <span class="gauge-val text-mint" id="gauge-val-2" data-target="669.74" data-suffix=" MiB/s">669.74 MiB/s</span>
+                    <span class="gauge-baseline-val">vs 4.25 MiB/s debug-mode</span>
                   </div>
                 </div>
                 <div class="gauge-bar-track">
@@ -960,12 +955,12 @@ pub fn enroll_secret_file(
                     <span class="tick t-50"></span>
                     <span class="tick t-75"></span>
                   </div>
-                  <div class="gauge-baseline-marker" style="left: 10%;" title="HashiCorp Vault HTTP Baseline: 62.4 MiB/s"></div>
+                  <div class="gauge-baseline-marker" style="left: 10%;" title="Debug-mode baseline (same test): 4.25 MiB/s"></div>
                   <div class="gauge-bar-fill fill-mint" data-target-width="95%" style="width: 0%;"></div>
                 </div>
                 <div class="gauge-detail-foot">
-                  <span>Direct kernel zero-copy into child process RAM • Zero disk writes</span>
-                  <span class="baseline-legend">HashiCorp Vault HTTP: 62.40 MiB/s ↗</span>
+                  <span>In-memory reassembly • byte-identical round-trip verified</span>
+                  <span class="baseline-legend">Debug-mode, same test: 4.25 MiB/s ↗</span>
                 </div>
               </div>
 
@@ -1023,16 +1018,16 @@ pub fn enroll_secret_file(
                 </div>
               </div>
 
-              <!-- Metric 5: Hardware APDU Latency -->
-              <div class="gauge-row" data-category="hardware">
+              <!-- Metric 5: Concurrent push speedup (measured push_bench) -->
+              <div class="gauge-row" data-category="storage">
                 <div class="gauge-meta">
                   <div class="gauge-title-group">
-                    <span class="gauge-name">Hardware Token APDU Latency (YubiKey 5 PIV)</span>
-                    <span class="gauge-compare-pill tag-gold">96x lower latency than Cloud KMS</span>
+                    <span class="gauge-name">Concurrent Push Speedup (8-way vs sequential)</span>
+                    <span class="gauge-compare-pill tag-gold">62 ms vs 197 ms replication</span>
                   </div>
                   <div class="gauge-val-group">
-                    <span class="gauge-val text-white" id="gauge-val-5" data-target="1.5" data-prefix="< " data-suffix=" ms (PC/SC Bus)">&lt; 1.5 ms (PC/SC Bus)</span>
-                    <span class="gauge-baseline-val">vs 145 ms Cloud IAM</span>
+                    <span class="gauge-val text-white" id="gauge-val-5" data-target="3.17" data-suffix="x concurrent push speedup">3.17x concurrent push speedup</span>
+                    <span class="gauge-baseline-val">vs 1x sequential</span>
                   </div>
                 </div>
                 <div class="gauge-bar-track">
@@ -1041,12 +1036,12 @@ pub fn enroll_secret_file(
                     <span class="tick t-50"></span>
                     <span class="tick t-75"></span>
                   </div>
-                  <div class="gauge-baseline-marker" style="left: 15%;" title="Cloud KMS Latency: 145 ms"></div>
+                  <div class="gauge-baseline-marker" style="left: 15%;" title="Sequential baseline: 1x"></div>
                   <div class="gauge-bar-fill fill-gold" data-target-width="92%" style="width: 0%;"></div>
                 </div>
                 <div class="gauge-detail-foot">
-                  <span>Direct PC/SC CCID USB bus dispatch • Zero internet roundtrip latency</span>
-                  <span class="baseline-legend">Cloud KMS / IAM HTTP: ~145 ms ↗</span>
+                  <span>48 x 16 KiB objects • 3 loopback operators • release mode</span>
+                  <span class="baseline-legend">Sequential c=1: 197.36 ms ↗</span>
                 </div>
               </div>
 
@@ -1058,7 +1053,7 @@ pub fn enroll_secret_file(
                 <span class="summary-dot green">●</span> <strong>Autonomous Client Engine</strong>: Zero network delay for encryption or local reads.
               </div>
               <div class="summary-pill">
-                <span class="summary-dot cyan">●</span> <strong>Deterministic Storage</strong>: BLAKE2b deduplication eliminates repeat backups.
+                <span class="summary-dot cyan">●</span> <strong>Deterministic Storage</strong>: SHA-256 content-defined deduplication eliminates repeat backups.
               </div>
             </div>
           </div>
@@ -1188,7 +1183,7 @@ pub fn enroll_secret_file(
                 <div class="voucher-top-bar">
                   <div class="voucher-serial">
                     <span class="v-label">VOUCHER ID:</span>
-                    <span class="v-val">CV-2026-DEMO-R</span>
+                    <span class="v-val">CV-…-…</span>
                   </div>
                   <div class="voucher-seal">
                     <span class="seal-badge">AIR-GAPPED COLD STORAGE</span>
@@ -1198,27 +1193,27 @@ pub fn enroll_secret_file(
                 <div class="voucher-secret-display">
                   <div class="secret-label-row">
                     <span class="secret-field-name">MASTER KEY SEED (R):</span>
-                    <span class="secret-crc-badge" id="paper-crc-badge">✓ CRC32: TEST VALID</span>
+                    <span class="secret-crc-badge" id="paper-crc-badge">✓ CRC32: …</span>
                   </div>
 
                   <!-- The Key Slots (Monospace Illuminated Boxes) -->
                   <div class="voucher-key-slots" id="paper-key-display">
-                    <span class="key-slot masked">••••••••</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
                     <span class="key-slot-sep">-</span>
-                    <span class="key-slot masked">••••••••</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
                     <span class="key-slot-sep">-</span>
-                    <span class="key-slot masked">••••••••</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
                     <span class="key-slot-sep">-</span>
-                    <span class="key-slot masked">••••••••</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
                   </div>
                 </div>
 
                 <!-- Voucher Actions Bar -->
                 <div class="voucher-actions-bar">
-                  <button class="tui-btn-action" id="btn-toggle-paper-key">[👁 REVEAL SIMULATED KEY]</button>
+                  <button class="tui-btn-action" id="btn-toggle-paper-key">[👁 REVEAL KEY]</button>
                   <button class="tui-btn-action secondary" id="btn-copy-paper-cmd" title="Copy CLI recovery command">[⎘ COPY CLI RESTORE CMD]</button>
                 </div>
-                <div class="voucher-copy-toast" id="voucher-copy-toast">✓ COPIED: ciphervault recover --paper-kit</div>
+                <div class="voucher-copy-toast" id="voucher-copy-toast">✓ COPIED: ciphervault recovery test --kit &lt;PATH&gt; --to &lt;TEST_DIR&gt;</div>
 
                 <!-- Step Checklist -->
                 <div class="voucher-steps-list">
@@ -1254,7 +1249,7 @@ pub fn enroll_secret_file(
               </div>
             </div>
 
-            <!-- Method B: Shamir 2-of-3 Simulator Card -->
+            <!-- Method B: Shamir 2-of-3 Workstation Card (real GF(2^8) math) -->
             <div class="tui-box recovery-box recovery-box-shamir">
               <div class="card-accent-tag tag-mint">
                 <span class="accent-dot mint">●</span> POLYNOMIAL ESCROW • GALOIS FIELD GF(2^8)
@@ -1270,7 +1265,7 @@ pub fn enroll_secret_file(
                 
                 <div class="shamir-inst-bar">
                   <div class="shamir-inst-title">
-                    <span class="shamir-kicker">INTERACTIVE SIMULATOR:</span>
+                    <span class="shamir-kicker">INTERACTIVE WORKSTATION:</span>
                     <span>SELECT ANY 2 GUARDIANS (THRESHOLD = 2/3)</span>
                   </div>
                   <span class="shamir-badge" id="tui-shamir-badge">0/2 SELECTED</span>
@@ -1290,7 +1285,7 @@ pub fn enroll_secret_file(
                         <span class="guardian-role">Lead Dev</span>
                       </div>
                       <span class="guardian-name">Alice</span>
-                      <span class="guardian-share" title="Share coordinate (1, y1)">0x01-A4F98E...</span>
+                      <span class="guardian-share" title="Share coordinate (1, y1)">0x01-…</span>
                     </div>
                   </label>
 
@@ -1305,7 +1300,7 @@ pub fn enroll_secret_file(
                         <span class="guardian-role">DevOps</span>
                       </div>
                       <span class="guardian-name">Bob</span>
-                      <span class="guardian-share" title="Share coordinate (2, y2)">0x02-C7B31D...</span>
+                      <span class="guardian-share" title="Share coordinate (2, y2)">0x02-…</span>
                     </div>
                   </label>
 
@@ -1320,7 +1315,7 @@ pub fn enroll_secret_file(
                         <span class="guardian-role">SecOps</span>
                       </div>
                       <span class="guardian-name">Carol</span>
-                      <span class="guardian-share" title="Share coordinate (3, y3)">0x03-99E104...</span>
+                      <span class="guardian-share" title="Share coordinate (3, y3)">0x03-…</span>
                     </div>
                   </label>
 
@@ -1494,7 +1489,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
             <div class="step-card">
               <div class="step-idx">STEP 04</div>
               <div class="step-card-title">Anchor to Arbitrum L2</div>
-              <p class="step-card-desc">Publish salted snapshot commitments to CipherVaultRegistry.sol on Arbitrum One L2 for permanent tamper-proof timestamp evidence.</p>
+              <p class="step-card-desc">Publish salted snapshot commitments to CipherVaultRegistry.sol on Arbitrum L2 (live fleet: Sepolia testnet; CLI defaults to Arbitrum One) for permanent tamper-proof timestamp evidence.</p>
               <div class="step-cmd">ciphervault anchor &amp;&amp; ciphervault verify-anchor</div>
             </div>
 
