@@ -8,10 +8,10 @@
 #
 # Usage:
 #   # Dry run: resolve + verify signature + print the plan (default, changes nothing)
-#   powershell -ExecutionPolicy Bypass -File scripts/gcp/promote-operators-ghcr.ps1 -Version 1.0.18
+#   powershell -ExecutionPolicy Bypass -File scripts/gcp/promote-operators-ghcr.ps1 -Version 1.0.19
 #
 #   # Live rolling promote:
-#   powershell -ExecutionPolicy Bypass -File scripts/gcp/promote-operators-ghcr.ps1 -Version 1.0.18 -Apply
+#   powershell -ExecutionPolicy Bypass -File scripts/gcp/promote-operators-ghcr.ps1 -Version 1.0.19 -Apply
 #
 # Trust model: the version tag is resolved to an immutable digest with
 # `cosign triangulate`, the digest is verified against the release-workflow
