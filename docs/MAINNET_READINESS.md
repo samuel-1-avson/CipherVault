@@ -12,7 +12,7 @@ re-closed same date (~23:07–23:11 UTC).
 | 1. External audit / pen test | Readiness package written | n/a (external) | No | `docs/SECURITY_AUDIT_READINESS.md` | Auditor engagement + report | `BLOCKED — EXTERNAL AUDIT PENDING` |
 | 2. Key rotation drills | Procedures existed | Yes (live + unit) | Yes, 2026-09-26, exit 0 | `docs/KEY_ROTATION_DRILLS.md` | None (live-fleet ceremony is follow-up, not gating the drill) | `VERIFIED` (rehearsal scope) |
 | 3. Fleet re-close | Flags + compose on 3/3 nodes | Yes, live per-node | Yes, 2026-09-26 (anon challenge 200→400 all nodes; firewall hold documented) | `docs/FLEET_RE-CLOSE_EVIDENCE.md` §6 | None (firewall deletion is follow-up hardening, not gating) | `VERIFIED` |
-| 4. Updater signatures | Ed25519 verification shipped | Yes, 136/136 + CI wiring | Yes (tests); first signed release pending | `docs/UPDATER_SIGNATURE_VERIFICATION.md` | Secret setup + next release (ops) | `VERIFIED` (code+tests; activation on next release) |
+| 4. Updater signatures | Ed25519 verification shipped | Yes, 137/137 + CI wiring | Yes — v1.0.18 signed; published sig independently verified (SIG-OK) | `docs/UPDATER_SIGNATURE_VERIFICATION.md` | None | `VERIFIED` |
 | 5. Mainnet anchoring | Plan exists | Gates evaluated, red | No (correctly — gates red) | `docs/MAINNET_PROMOTION_EVIDENCE.md` | Blockers 1–3 + ceremony + funds | `BLOCKED — EXTERNAL DEPENDENCY` |
 | 6. Legal review | Review package written | n/a (external) | No | `docs/LEGAL_REVIEW_PACKAGE.md` | Owner `legal`: formal sign-off | `BLOCKED — LEGAL REVIEW PENDING` |
 
@@ -31,9 +31,8 @@ re-closed same date (~23:07–23:11 UTC).
 
 ## Remaining actions (ordered)
 
-1. You: store the release seed secret, cut next release, confirm
-   `.sig` enforcement (Blocker 4 activation). No GitHub credentials
-   exist in this environment, so this step is yours (30 s + release).
+1. [DONE 2026-09-27] Release secret set, v1.0.18 cut and signed,
+   signature independently verified (Blocker 4 `VERIFIED`).
 2. [DONE 2026-09-26] Fleet re-closed live (Blocker 3 `VERIFIED`).
 3. Engage auditor with `docs/SECURITY_AUDIT_READINESS.md` (Blocker 1);
    run the live soak in parallel (Blocker 5, gate 2).

@@ -102,14 +102,23 @@ Negative (each asserts the precise failure):
 Gates: `cargo fmt --check` clean, `cargo clippy -p ciphervault-cli
 --all-targets -- -D warnings` clean.
 
-## Remaining activation step (ops, not code)
+## Activation record (completed 2026-09-27)
 
-1. Store the release seed as the `CIPHERVAULT_RELEASE_SIGNING_KEY` repo
-   secret (delivered out of band with this report) + offline backup.
-2. Cut the next release; confirm `SHA256SUMS.txt.sig` is attached and a
-   staged `ciphervault update` installs from it.
-3. Never publish an unsigned release again; the workflow now fails
-   closed without the secret.
+1. [DONE] Release seed stored as the `CIPHERVAULT_RELEASE_SIGNING_KEY`
+   repo secret (API-verified present).
+2. [DONE] `v1.0.18` published with `SHA256SUMS.txt.sig` (205 B). The
+   published signature was independently verified: correct envelope
+   version, tag `v1.0.18`, key id `b625994c0c3f53a6`, Ed25519 valid
+   over the published sums under the pinned root (`SIG-OK`). Updaters
+   ≥ 1.0.18 now enforce authenticity; older updaters ignore the asset.
+3. Standing rule: never publish an unsigned release; the workflow
+   fails closed without the secret.
+
+Follow-up fixed in the same session: the manifest-fill job's direct
+push to `main` was rejected by repository rules (GH013: PRs required),
+so the job now opens a PR instead (commit `707b3dc`); v1.0.18 hashes
+were filled manually with the identical procedure and pushed as
+`db18742`.
 
 ## Files
 
