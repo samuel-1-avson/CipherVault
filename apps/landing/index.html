@@ -544,7 +544,7 @@
                     <div class="code-line-dim"># Database replica credentials & external API gateways</div>
                     <div class="code-line-active">
                       <span class="code-key">API_KEY_ROTATE=</span>
-                      <input type="text" class="sim-input" id="sim-input-editor" value="ROTATED_API_KEY_32B_SECRET_VALUE!" spellcheck="false" aria-label="File edit value (spliced into the payload and re-chunked)">
+                      <input type="text" class="sim-input" id="sim-input-editor" value="ROTATED_API_KEY_32B_SECRET_VALUE" spellcheck="false" aria-label="File edit value (spliced into the payload and re-chunked)">
                       <span class="code-cursor-blink"></span>
                     </div>
                     <div class="code-line-dim">DATABASE_URL=postgres://vault_op:******@127.0.0.1:5432/secrets</div>
@@ -601,8 +601,8 @@
               <div class="chunk-stats-cards" id="chunk-stats-summary">
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">TOTAL CHUNKS</span>
-                  <span class="kpi-val">26</span>
-                  <span class="kpi-sub">128 KiB Total</span>
+                  <span class="kpi-val" id="stat-chunks-total">—</span>
+                  <span class="kpi-sub" id="stat-payload-total">—</span>
                 </div>
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">UNCHANGED CHUNKS</span>
@@ -612,7 +612,7 @@
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">MODIFIED DELTA</span>
                   <span class="kpi-val text-gold" id="stat-chunks-modified">—</span>
-                  <span class="kpi-sub">Only 1 Chunk Synced</span>
+                  <span class="kpi-sub" id="stat-chunks-modified-sub">—</span>
                 </div>
                 <div class="chunk-kpi-card">
                   <span class="kpi-label">BANDWIDTH SAVINGS</span>

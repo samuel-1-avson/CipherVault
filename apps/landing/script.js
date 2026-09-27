@@ -252,9 +252,13 @@ function cvGfPolyEval(coefficients, x) {
 
 /* Splits a 32-byte secret into N shares with threshold M (x = 1..=N). */
 function cvShamirSplit(secret32, threshold, totalShares) {
-  if (threshold < 2) throw new Error('Threshold (M) must be at least 2');
-  if (totalShares < threshold) throw new Error('Total shares (N) cannot be less than threshold (M)');
-  if (secret32.length !== 32) throw new Error('Secret must be exactly 32 bytes');
+  if (!Number.isInteger(threshold) || threshold < 2) throw new Error('Threshold (M) must be an integer of at least 2');
+  // Share coordinates are GF(2^8) values (u8 domain, matching the Rust API):
+  // anything above 255 would silently coerce and corrupt shares.
+  if (!Number.isInteger(totalShares) || totalShares < threshold || totalShares > 255) {
+    throw new Error('Total shares (N) must be an integer in the range M..255');
+  }
+  if (!secret32 || secret32.length !== 32) throw new Error('Secret must be exactly 32 bytes');
   const shares = [];
   for (let s = 0; s < totalShares; s++) shares.push(new Uint8Array(32));
   for (let byteIdx = 0; byteIdx < 32; byteIdx++) {
@@ -275,7 +279,10 @@ function cvShamirCombine(shares) {
   if (shares.length < 2) throw new Error('At least 2 shares are required to reconstruct');
   const seen = new Set();
   for (const sh of shares) {
-    if (sh.index === 0) throw new Error('Share index 0 is reserved for the secret');
+    if (!sh || !Number.isInteger(sh.index) || sh.index < 1 || sh.index > 255) {
+      throw new Error('Share index must be an integer in the range 1..255');
+    }
+    if (!sh.data || sh.data.length !== 32) throw new Error('Each share must carry exactly 32 bytes');
     if (seen.has(sh.index)) throw new Error('Duplicate share index ' + sh.index);
     seen.add(sh.index);
   }
@@ -755,6 +762,9 @@ function initFastCdcSimulator() {
   const statReused = document.getElementById('stat-chunks-reused');
   const statMod = document.getElementById('stat-chunks-modified');
   const statBandwidth = document.getElementById('stat-bandwidth-saved');
+  const statTotal = document.getElementById('stat-chunks-total');
+  const statPayload = document.getElementById('stat-payload-total');
+  const statModSub = document.getElementById('stat-chunks-modified-sub');
   const presetButtons = document.querySelectorAll('.preset-pill');
 
   // Inspector elements
@@ -804,10 +814,19 @@ function initFastCdcSimulator() {
       inspChunkTitle.textContent = isMod ? 'Target of Local Modification' : 'Deduplication Cache Hit';
     }
     if (inspChunkHash) {
-      inspChunkHash.innerHTML = `SHA-256: <code class="hash-code" title="sha256:${digest}">sha256:${digest.slice(0, 8)}...${digest.slice(-4)}</code>`;
+      // DOM construction only: values never pass through an HTML parser.
+      inspChunkHash.textContent = 'SHA-256: ';
+      const hashCode = document.createElement('code');
+      hashCode.className = 'hash-code';
+      hashCode.title = `sha256:${digest}`;
+      hashCode.textContent = `sha256:${digest.slice(0, 8)}...${digest.slice(-4)}`;
+      inspChunkHash.appendChild(hashCode);
     }
     if (inspChunkSize) {
-      inspChunkSize.innerHTML = `SIZE: <strong>${(chunk.length / 1024).toFixed(2)} KiB</strong>`;
+      inspChunkSize.textContent = 'SIZE: ';
+      const sizeStrong = document.createElement('strong');
+      sizeStrong.textContent = `${(chunk.length / 1024).toFixed(2)} KiB`;
+      inspChunkSize.appendChild(sizeStrong);
     }
     if (inspChunkRange) {
       inspChunkRange.textContent = `0x${offsetStart.toString(16).padStart(8, '0').toUpperCase()} - 0x${offsetEnd.toString(16).padStart(8, '0').toUpperCase()} (${offsetStart.toLocaleString()} - ${offsetEnd.toLocaleString()} B)`;
@@ -840,6 +859,13 @@ function initFastCdcSimulator() {
     if (statReused) statReused.textContent = `${reusedCount}/${totalChunks} (${dedupRatio}%)`;
     if (statMod) statMod.textContent = modCount === 0 ? '0 (0 KiB)' : `${modCount} (#${Array.from(currentModifiedSet).map(x => x + 1).join(',')} - ${(deltaBytes / 1024).toFixed(1)} KiB)`;
     if (statBandwidth) statBandwidth.textContent = `${dedupRatio}%`;
+    if (statTotal) statTotal.textContent = String(totalChunks);
+    if (statPayload) statPayload.textContent = `${(currentPayload.length / 1024).toFixed(0)} KiB Total`;
+    if (statModSub) {
+      statModSub.textContent = modCount === 0
+        ? 'Pristine: 0 Chunks Synced'
+        : `${modCount} Chunk${modCount === 1 ? '' : 's'} Synced (${(deltaBytes / 1024).toFixed(1)} KiB delta)`;
+    }
 
     for (let i = 0; i < totalChunks; i++) {
       const cell = document.createElement('div');
@@ -851,10 +877,14 @@ function initFastCdcSimulator() {
       if (isSelected) cell.classList.add('selected');
 
       const sizeK = currentChunks[i].length / 1024;
-      cell.innerHTML = `
-        <span class="chunk-index">${isMod ? 'Δ' + (i + 1) : 'C' + (i + 1)}</span>
-        <span class="chunk-size-tag">${sizeK >= 10 ? sizeK.toFixed(0) : sizeK.toFixed(1)}K</span>
-      `;
+      const idxSpan = document.createElement('span');
+      idxSpan.className = 'chunk-index';
+      idxSpan.textContent = (isMod ? 'Δ' : 'C') + (i + 1);
+      const sizeSpan = document.createElement('span');
+      sizeSpan.className = 'chunk-size-tag';
+      sizeSpan.textContent = (sizeK >= 10 ? sizeK.toFixed(0) : sizeK.toFixed(1)) + 'K';
+      cell.appendChild(idxSpan);
+      cell.appendChild(sizeSpan);
 
       if (triggerRipple && isMod) {
         cell.classList.add('ripple');
@@ -912,8 +942,8 @@ function initFastCdcSimulator() {
       const preset = btn.getAttribute('data-preset');
       if (preset === 'api-key') {
         // Rotate a 32-byte secret value mid-file.
-        const rotation = new TextEncoder().encode('ROTATED_API_KEY_32B_SECRET_VALUE!');
-        input.value = 'ROTATED_API_KEY_32B_SECRET_VALUE!';
+        const rotation = new TextEncoder().encode('ROTATED_API_KEY_32B_SECRET_VALUE');
+        input.value = 'ROTATED_API_KEY_32B_SECRET_VALUE';
         applyPayloadEdit(editReplaceMiddle(rotation), true);
       } else if (preset === 'db-pass') {
         // Flip a single byte (1-byte password change).
@@ -963,8 +993,8 @@ function initFastCdcSimulator() {
   });
 
   // Initial load: the active api-key preset, genuinely chunked and diffed.
-  const initialRotation = new TextEncoder().encode('ROTATED_API_KEY_32B_SECRET_VALUE!');
-  input.value = 'ROTATED_API_KEY_32B_SECRET_VALUE!';
+  const initialRotation = new TextEncoder().encode('ROTATED_API_KEY_32B_SECRET_VALUE');
+  input.value = 'ROTATED_API_KEY_32B_SECRET_VALUE';
   applyPayloadEdit(editReplaceMiddle(initialRotation), true);
 }
 
@@ -1295,10 +1325,22 @@ function initShamirSimulator() {
       badge.style.color = 'var(--term-mint)';
       if (hudText) hudText.textContent = `Lagrange basis weights computed over GF(2^8) for ${xs} (${names}). Constant term f(0) recovered.`;
       output.className = 'shamir-terminal-output solved';
-      output.innerHTML =
-        `[SUCCESS] Real Lagrange interpolation in GF(2^8) over ${escapeHtml(xs)}.<br>` +
-        `RECONSTRUCTED MASTER ROOT (R): <span class="text-gold" title="0x${recoveredHex}">0x${recoveredHex.slice(0, 24).toUpperCase()}…${recoveredHex.slice(-8).toUpperCase()}</span><br>` +
-        `[VERIFY] Matches committed secret: <span class="text-gold">${match ? 'YES ✓' : 'NO ✗'}</span>`;
+      // DOM construction only: no interpolated string reaches an HTML parser.
+      output.textContent = '';
+      output.appendChild(document.createTextNode(`[SUCCESS] Real Lagrange interpolation in GF(2^8) over ${xs}.`));
+      output.appendChild(document.createElement('br'));
+      output.appendChild(document.createTextNode('RECONSTRUCTED MASTER ROOT (R): '));
+      const rootSpan = document.createElement('span');
+      rootSpan.className = 'text-gold';
+      rootSpan.title = `0x${recoveredHex}`;
+      rootSpan.textContent = `0x${recoveredHex.slice(0, 24).toUpperCase()}…${recoveredHex.slice(-8).toUpperCase()}`;
+      output.appendChild(rootSpan);
+      output.appendChild(document.createElement('br'));
+      output.appendChild(document.createTextNode('[VERIFY] Matches committed secret: '));
+      const matchSpan = document.createElement('span');
+      matchSpan.className = 'text-gold';
+      matchSpan.textContent = match ? 'YES ✓' : 'NO ✗';
+      output.appendChild(matchSpan);
     }
   };
 
@@ -1464,27 +1506,38 @@ function initLiveTelemetryStream() {
 
   // The REPL `status`/`testnet` commands probe through cvReplLiveProbe instead,
   // which formats results for the console; this cycle feeds the stream + pings.
+  // Targets probe concurrently (one cycle costs one timeout, not four), and an
+  // in-flight guard keeps slow cycles from overlapping and racing the UI.
+  let probeInFlight = false;
   const runProbeCycle = async () => {
-    const results = [];
-    for (const target of CV_FLEET_PROBE_TARGETS) {
-      const probe = await cvProbeHttps(target.url, 10000);
-      const pingEl = target.pingId ? document.getElementById(target.pingId) : null;
-      if (pingEl) {
-        pingEl.textContent = probe.ok ? `${probe.ms}ms` : 'DOWN';
-        pingEl.classList.toggle('down', !probe.ok);
+    if (probeInFlight) return [];
+    probeInFlight = true;
+    try {
+      const probes = await Promise.all(
+        CV_FLEET_PROBE_TARGETS.map(target => cvProbeHttps(target.url, 10000))
+      );
+      const results = probes.map((probe, i) => {
+        const target = CV_FLEET_PROBE_TARGETS[i];
+        const pingEl = target.pingId ? document.getElementById(target.pingId) : null;
+        if (pingEl) {
+          pingEl.textContent = probe.ok ? `${probe.ms}ms` : 'DOWN';
+          pingEl.classList.toggle('down', !probe.ok);
+        }
+        return { name: target.name, ok: probe.ok, ms: probe.ms, timeout: probe.timeout };
+      });
+      const reached = results.filter(r => r.ok);
+      if (reached.length === results.length) {
+        const detail = results.map(r => `${r.name} ${r.ms}ms`).join(' · ');
+        addTelemetryItem(`Fleet probe: 4/4 endpoints answered — ${detail}`);
+      } else {
+        const bad = results.filter(r => !r.ok).map(r => r.name).join(', ');
+        const good = reached.map(r => `${r.name} ${r.ms}ms`).join(' · ');
+        addTelemetryItem(`Fleet probe: ${reached.length}/4 answered${good ? ` (${good})` : ''} — UNREACHABLE: ${bad}`);
       }
-      results.push({ name: target.name, ok: probe.ok, ms: probe.ms, timeout: probe.timeout });
+      return results;
+    } finally {
+      probeInFlight = false;
     }
-    const reached = results.filter(r => r.ok);
-    if (reached.length === results.length) {
-      const detail = results.map(r => `${r.name} ${r.ms}ms`).join(' · ');
-      addTelemetryItem(`Fleet probe: 4/4 endpoints answered — ${detail}`);
-    } else {
-      const bad = results.filter(r => !r.ok).map(r => r.name).join(', ');
-      const good = reached.map(r => `${r.name} ${r.ms}ms`).join(' · ');
-      addTelemetryItem(`Fleet probe: ${reached.length}/4 answered${good ? ` (${good})` : ''} — UNREACHABLE: ${bad}`);
-    }
-    return results;
   };
 
   addTelemetryItem('Fleet prober online: HTTPS reachability + round-trip latency, measured live from this browser.');

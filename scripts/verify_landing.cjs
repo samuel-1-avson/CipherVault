@@ -103,6 +103,17 @@ assertCore(Buffer.from(recovered12).equals(Buffer.from(secret)), 'Shamir 2-of-3 
 const shares35 = cv.cvShamirSplit(Buffer.from(secret), 3, 5);
 const recovered024 = cv.cvShamirCombine([shares35[0], shares35[2], shares35[4]]);
 assertCore(Buffer.from(recovered024).equals(Buffer.from(secret)), 'Shamir 3-of-5 reconstructs');
+let n256Rejected = false;
+try { cv.cvShamirSplit(Buffer.from(secret), 2, 256); } catch { n256Rejected = true; }
+assertCore(n256Rejected, 'Shamir rejects N=256 (u8 coordinate domain)');
+let badIndexRejected = false;
+try {
+  cv.cvShamirCombine([
+    { index: 1, data: shares23[0].data },
+    { index: 256, data: shares23[1].data },
+  ]);
+} catch { badIndexRejected = true; }
+assertCore(badIndexRejected, 'Shamir combine rejects out-of-range index');
 
 // Rust-generated reference vectors (payload A: 256 KiB (i*31+7)%256 bytes).
 assertCore(
