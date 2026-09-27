@@ -117,6 +117,33 @@
 
         <!-- Quick Action Buttons Toolbar -->
         <div class="header-actions">
+          <!-- Account Status Indicator -->
+          <div class="cluster-status-indicator account-status-badge" id="account-status-indicator" role="status" aria-live="polite">
+            <span class="pulse-dot" id="account-pulse-dot"></span>
+            <span id="account-status-text">Account: Local-only</span>
+          </div>
+
+          <!-- Prominent GitHub-style Sign In Button -->
+          <button class="btn-action secondary small btn-github-signin" id="btn-header-signin" type="button" title="Sign in to CipherVault account">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+              <polyline points="10 17 15 12 10 7"></polyline>
+              <line x1="15" y1="12" x2="3" y2="12"></line>
+            </svg>
+            <span>Sign in</span>
+          </button>
+
+          <!-- Account action buttons bound by app.js -->
+          <div class="account-actions" id="account-actions-group" aria-label="Account controls">
+            <button class="btn-action secondary small" id="btn-account-login" type="button" title="Sign in with the enrolled local device key" hidden>Device sign in</button>
+            <button class="btn-action secondary small" id="btn-account-connect" type="button" title="Connect a local CLI account to the hosted service" hidden>Connect account</button>
+            <button class="btn-action secondary small" id="btn-account-passkey" type="button" title="Sign in to a hosted CipherVault account with a passkey" hidden>Passkey sign in</button>
+            <button class="btn-action secondary small" id="btn-account-totp" type="button" title="Sign in with an authenticator app code" hidden>Authenticator sign in</button>
+            <button class="btn-action secondary small" id="btn-account-register-passkey" type="button" title="Register a passkey on this device" hidden>Register passkey</button>
+            <button class="btn-action secondary small" id="btn-account-manage" type="button" title="Manage hosted account membership and recovery" hidden>Manage account</button>
+            <button class="btn-action secondary small" id="btn-account-logout" type="button" title="Revoke the current local account session" hidden>Sign out</button>
+          </div>
+
           <button class="btn-action secondary command-palette-trigger-btn" id="btn-open-command-palette" title="Open Command Palette (Ctrl+K / Cmd+K)" aria-label="Open Command Palette (Ctrl+K / Cmd+K)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="8"></circle>
@@ -1418,6 +1445,85 @@
         <span class="terminal-prompt">ciphervault&gt;</span>
         <input type="text" id="terminal-cmd-input" class="terminal-input" placeholder="Type a CLI command (e.g. diff, status, audit, push)..." aria-label="CLI Command Input">
         <button class="btn-terminal-exec" id="btn-terminal-exec">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Unified Sign In Options Menu -->
+  <div class="modal-backdrop" id="modal-account-signin-menu" role="dialog" aria-modal="true" aria-labelledby="modal-signin-menu-title" hidden>
+    <div class="modal-card" style="max-width: 540px;">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-signin-menu-title" class="modal-title">Sign in to CipherVault</h3>
+          <p class="modal-subtitle" style="margin: 4px 0 0; font-size: 0.8rem; color: var(--ash);">Zero-knowledge sovereign authentication</p>
+        </div>
+        <button class="btn-modal-close" id="btn-close-modal-signin-menu" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.86rem; color: var(--fog); margin-bottom: 16px;">
+          Choose your authentication method to access authorized vault workspaces, manage team memberships, or review cryptographic recovery shares:
+        </p>
+
+        <div class="signin-options-grid">
+          <!-- Option 1: Passkey / Biometrics -->
+          <button class="signin-option-card" id="btn-signin-passkey" type="button">
+            <div class="signin-option-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+            </div>
+            <div class="signin-option-text">
+              <span class="signin-option-title">Passkey / WebAuthn</span>
+              <span class="signin-option-desc">Sign in with Touch ID, Windows Hello, Face ID, or FIDO2 Security Key</span>
+            </div>
+          </button>
+
+          <!-- Option 2: Authenticator App (TOTP) -->
+          <button class="signin-option-card" id="btn-signin-totp" type="button">
+            <div class="signin-option-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                <line x1="12" y1="18" x2="12.01" y2="18"></line>
+              </svg>
+            </div>
+            <div class="signin-option-text">
+              <span class="signin-option-title">Authenticator App</span>
+              <span class="signin-option-desc">Enter a 6-digit code from Google Authenticator, 1Password, or Authy</span>
+            </div>
+          </button>
+
+          <!-- Option 3: Local Device Key -->
+          <button class="signin-option-card" id="btn-signin-device" type="button">
+            <div class="signin-option-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 17 10 11 4 5"></polyline>
+                <line x1="12" y1="19" x2="20" y2="19"></line>
+              </svg>
+            </div>
+            <div class="signin-option-text">
+              <span class="signin-option-title">Enrolled Device Key</span>
+              <span class="signin-option-desc">Unlock using this computer's enrolled local OS keystore signing key</span>
+            </div>
+          </button>
+
+          <!-- Option 4: Connect CLI Account -->
+          <button class="signin-option-card" id="btn-signin-cli" type="button">
+            <div class="signin-option-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+            </div>
+            <div class="signin-option-text">
+              <span class="signin-option-title">Connect CLI Terminal</span>
+              <span class="signin-option-desc">Pair this browser with your local CLI via <code>ciphervault auth connect</code></span>
+            </div>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-signin-menu">Cancel</button>
       </div>
     </div>
   </div>

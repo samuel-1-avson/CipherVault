@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 pub(crate) fn hosted_account_endpoint() -> Option<String> {
-    let raw = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT").ok()?;
+    let raw = std::env::var("CIPHERVAULT_ACCOUNT_ENDPOINT")
+        .unwrap_or_else(|_| "https://vault.cipherv.online/api/account".to_string());
     let endpoint = raw.trim().trim_end_matches('/');
     if endpoint.is_empty() {
         return None;
@@ -88,7 +89,40 @@ pub(crate) async fn proxy_account_request(
         )
             .into_response();
     };
-    let url = format!("{}{}", endpoint, path);
+    let url = if endpoint.contains("vault.cipherv.online") {
+        let base = "https://vault.cipherv.online/api/account";
+        if path == "/v1/capabilities" {
+            format!("{}/capabilities", base)
+        } else if path == "/v1/accounts" {
+            format!("{}/register", base)
+        } else if path == "/v1/sessions" {
+            format!("{}/session", base)
+        } else if path == "/v1/sessions/challenge" {
+            format!("{}/sessions/challenge", base)
+        } else if path == "/v1/sessions/login" {
+            format!("{}/sessions/login", base)
+        } else if path == "/v1/sessions/handoff" {
+            format!("{}/sessions/handoff", base)
+        } else if path == "/v1/sessions/handoff/consume" {
+            format!("{}/session/handoff", base)
+        } else if path == "/v1/sessions/revoke" {
+            format!("{}/logout", base)
+        } else if path == "/v1/webauthn/authentication/options" {
+            format!("{}/webauthn/authentication/options", base)
+        } else if path == "/v1/webauthn/authentication/verify" {
+            format!("{}/webauthn/authentication/verify", base)
+        } else if path == "/v1/totp/authentication/options" {
+            format!("{}/totp/authentication/options", base)
+        } else if path == "/v1/totp/authentication/verify" {
+            format!("{}/totp/authentication/verify", base)
+        } else if let Some(stripped) = path.strip_prefix("/v1/accounts/") {
+            format!("{}/{}", base, stripped)
+        } else {
+            format!("{}{}", endpoint, path)
+        }
+    } else {
+        format!("{}{}", endpoint, path)
+    };
     let client = account_proxy_http_client();
     let mut request = client.request(method, url);
     if let Some(cookie) = headers.get(header::COOKIE) {

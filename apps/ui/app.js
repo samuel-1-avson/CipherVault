@@ -274,6 +274,30 @@ function renderAccountStatus(account) {
   if (registerPasskeyButton) registerPasskeyButton.hidden = !hosted || !authenticated;
   if (manageButton) manageButton.hidden = !hosted || !authenticated;
   if (logoutButton) logoutButton.hidden = !authenticated;
+
+  const headerSignInBtn = document.getElementById('btn-header-signin');
+  if (headerSignInBtn) {
+    if (authenticated) {
+      headerSignInBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+          <circle cx="12" cy="7" r="4"></circle>
+        </svg>
+        <span>${escapeHtml(id)}</span>
+      `;
+      headerSignInBtn.title = 'Manage active account session';
+    } else {
+      headerSignInBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+          <polyline points="10 17 15 12 10 7"></polyline>
+          <line x1="15" y1="12" x2="3" y2="12"></line>
+        </svg>
+        <span>Sign in</span>
+      `;
+      headerSignInBtn.title = 'Sign in to CipherVault account';
+    }
+  }
 }
 
 function initAccountControls() {
@@ -284,6 +308,69 @@ function initAccountControls() {
   const registerPasskeyButton = document.getElementById('btn-account-register-passkey');
   const manageButton = document.getElementById('btn-account-manage');
   const logoutButton = document.getElementById('btn-account-logout');
+
+  const headerSignInBtn = document.getElementById('btn-header-signin');
+  const signinMenuModal = document.getElementById('modal-account-signin-menu');
+  const btnCloseSigninMenu = document.getElementById('btn-close-modal-signin-menu');
+  const btnCancelSigninMenu = document.getElementById('btn-cancel-modal-signin-menu');
+  const btnSigninPasskey = document.getElementById('btn-signin-passkey');
+  const btnSigninTotp = document.getElementById('btn-signin-totp');
+  const btnSigninDevice = document.getElementById('btn-signin-device');
+  const btnSigninCli = document.getElementById('btn-signin-cli');
+
+  const closeSigninMenu = () => {
+    if (signinMenuModal) {
+      closeModal(signinMenuModal);
+      signinMenuModal.hidden = true;
+    }
+  };
+
+  const openSigninMenu = () => {
+    const session = state.account && state.account.session;
+    const authenticated = state.account && state.account.authenticated === true && session && session.authenticated !== false;
+    if (authenticated) {
+      openAccountManagementModal();
+      return;
+    }
+    if (signinMenuModal) {
+      signinMenuModal.hidden = false;
+      openModal(signinMenuModal, document.activeElement);
+    }
+  };
+
+  if (headerSignInBtn) headerSignInBtn.addEventListener('click', openSigninMenu);
+  if (btnCloseSigninMenu) btnCloseSigninMenu.addEventListener('click', closeSigninMenu);
+  if (btnCancelSigninMenu) btnCancelSigninMenu.addEventListener('click', closeSigninMenu);
+  if (signinMenuModal) {
+    signinMenuModal.addEventListener('click', (e) => {
+      if (e.target === signinMenuModal) closeSigninMenu();
+    });
+  }
+
+  if (btnSigninPasskey) {
+    btnSigninPasskey.addEventListener('click', () => {
+      closeSigninMenu();
+      openHostedPasskeyModal('authenticate');
+    });
+  }
+  if (btnSigninTotp) {
+    btnSigninTotp.addEventListener('click', () => {
+      closeSigninMenu();
+      openHostedTotpModal();
+    });
+  }
+  if (btnSigninDevice) {
+    btnSigninDevice.addEventListener('click', () => {
+      closeSigninMenu();
+      if (loginButton) loginButton.click();
+    });
+  }
+  if (btnSigninCli) {
+    btnSigninCli.addEventListener('click', () => {
+      closeSigninMenu();
+      openHostedAccountConnectModal();
+    });
+  }
   if (loginButton) {
     loginButton.addEventListener('click', async () => {
       loginButton.disabled = true;
@@ -926,260 +1013,11 @@ function applyAccessContext(context) {
   if (publicExplorer) {
     if (activeModal) closeModal(activeModal);
     closeSnapshotDrawer();
-    ensureExplorerDemonstrationData();
     const activeTab = typeof document.querySelector === 'function'
       ? document.querySelector('.tab-btn.active[hidden]')
       : null;
     const publicTab = document.getElementById('tab-btn-operators');
     if (activeTab && publicTab && typeof publicTab.click === 'function') publicTab.click();
-  }
-}
-
-function ensureExplorerDemonstrationData() {
-  // Demonstration Snapshots (Cryptographic DAG)
-  if (!state.snapshots || state.snapshots.length === 0) {
-    state.snapshots = [
-      {
-        snapshot_id_hex: 'e63584c0642f31b9638af6bc9c806dfb153bd16c91e7124770fcaa630795b28d',
-        manifest_cid_hex: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
-        device_id_hex: '6b793bf54a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6',
-        device_counter: 3,
-        is_head: true,
-        epoch: 1,
-        timestamp_utc: Math.floor(Date.now() / 1000) - 300,
-        parent_ids_hex: ['bbbb22224a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6'],
-        message: 'Rotate database credentials & add redis pool'
-      },
-      {
-        snapshot_id_hex: 'bbbb22224a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6',
-        manifest_cid_hex: 'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3',
-        device_id_hex: '6b793bf54a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6',
-        device_counter: 2,
-        is_head: false,
-        epoch: 1,
-        timestamp_utc: Math.floor(Date.now() / 1000) - 3600,
-        parent_ids_hex: ['aaaa11114a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6'],
-        message: 'Update TLS certificates & renewal token'
-      },
-      {
-        snapshot_id_hex: 'aaaa11114a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6',
-        manifest_cid_hex: 'c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
-        device_id_hex: '6b793bf54a16d7e5133ddb7eb6201771d4530398ff01400ead0d499bc13ab2d6',
-        device_counter: 1,
-        is_head: false,
-        epoch: 1,
-        timestamp_utc: Math.floor(Date.now() / 1000) - 86400,
-        parent_ids_hex: [],
-        message: 'Initial secret import: production API keys'
-      }
-    ];
-    if (typeof renderSnapshots === 'function') renderSnapshots(state.snapshots);
-    const snapBadge = document.getElementById('badge-tab-snapshots');
-    if (snapBadge) snapBadge.textContent = String(state.snapshots.length);
-  }
-
-  // Demonstration Tracked Secrets
-  if (!state.vault || !state.vault.tracked_files || state.vault.tracked_files.length === 0) {
-    const demoFiles = [
-      { path: '.env.production', size_bytes: 1420, file_id_hex: 'e1f2a3b4c5d6e7f8', chunk_count: 2 },
-      { path: 'secrets/database.env', size_bytes: 840, file_id_hex: 'f2a3b4c5d6e7f8e1', chunk_count: 1 },
-      { path: 'certs/tls-wildcard.key', size_bytes: 3240, file_id_hex: 'a3b4c5d6e7f8e1f2', chunk_count: 4 },
-      { path: 'keys/service-account.json', size_bytes: 2310, file_id_hex: 'b4c5d6e7f8e1f2a3', chunk_count: 3 }
-    ];
-    state.vault = { ...(state.vault || {}), tracked_files: demoFiles };
-    if (typeof renderTrackedFiles === 'function') renderTrackedFiles(demoFiles);
-    const fileBadge = document.getElementById('badge-tab-files');
-    if (fileBadge) fileBadge.textContent = String(demoFiles.length);
-    const filesCountEl = document.getElementById('val-files-count');
-    if (filesCountEl) filesCountEl.textContent = String(demoFiles.length);
-    const filesSubEl = document.getElementById('sub-metric-inventory');
-    if (filesSubEl) filesSubEl.textContent = '10 chunks encrypted';
-  }
-
-  // Demonstration Threshold Guardians (3-of-5 Shamir Secret Sharing)
-  if (!state.guardians) {
-    state.guardians = {
-      active_threshold: 3,
-      total_guardians: 5,
-      threshold: 3,
-      total_shares: 5,
-      sheets: [
-        {
-          share_index: 1,
-          guardian_name: 'Guardian 1 (Key Management Node)',
-          threshold: 3,
-          total_shares: 5,
-          recovery_signing_pk: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          recovery_encrypt_pk: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
-          recovery_locator: 'loc-primary-01',
-          crc32: '9ABCDEF0',
-          sheet_text: 'CIPHERVAULT RECOVERY SHEET - SHARE 1/5'
-        },
-        {
-          share_index: 2,
-          guardian_name: 'Guardian 2 (Security Lead Hardware Token)',
-          threshold: 3,
-          total_shares: 5,
-          recovery_signing_pk: '23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01',
-          recovery_encrypt_pk: 'bcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789a',
-          recovery_locator: 'loc-yubikey-02',
-          crc32: '8BCDEF01',
-          sheet_text: 'CIPHERVAULT RECOVERY SHEET - SHARE 2/5'
-        },
-        {
-          share_index: 3,
-          guardian_name: 'Guardian 3 (Cloud HSM Cold Storage)',
-          threshold: 3,
-          total_shares: 5,
-          recovery_signing_pk: '3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012',
-          recovery_encrypt_pk: 'cdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab',
-          recovery_locator: 'loc-hsm-03',
-          crc32: '7CDEF012',
-          sheet_text: 'CIPHERVAULT RECOVERY SHEET - SHARE 3/5'
-        },
-        {
-          share_index: 4,
-          guardian_name: 'Guardian 4 (Offline Airgap Escrow)',
-          threshold: 3,
-          total_shares: 5,
-          recovery_signing_pk: '456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123',
-          recovery_encrypt_pk: 'def0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc',
-          recovery_locator: 'loc-airgap-04',
-          crc32: '6DEF0123',
-          sheet_text: 'CIPHERVAULT RECOVERY SHEET - SHARE 4/5'
-        },
-        {
-          share_index: 5,
-          guardian_name: 'Guardian 5 (Emergency Backup)',
-          threshold: 3,
-          total_shares: 5,
-          recovery_signing_pk: '56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234',
-          recovery_encrypt_pk: 'ef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd',
-          recovery_locator: 'loc-emergency-05',
-          crc32: '5EF01234',
-          sheet_text: 'CIPHERVAULT RECOVERY SHEET - SHARE 5/5'
-        }
-      ]
-    };
-    if (typeof renderGuardians === 'function') renderGuardians(state.guardians);
-    const guardBadge = document.getElementById('badge-tab-guardians');
-    if (guardBadge) guardBadge.textContent = '3-of-5';
-  }
-
-  // Demonstration Activity Feed
-  if (!state.activity || state.activity.length === 0) {
-    state.activity = [
-      { event_type: 'SNAPSHOT_PUSH', summary: 'Encrypted snapshot captured (4 files, 10 chunks)', details_json: '{"epoch":1,"device":"6b793b"}', created_at_utc: Math.floor(Date.now() / 1000) - 300 },
-      { event_type: 'ARBITRUM_ANCHOR', summary: 'Anchored head commitment to Arbitrum Sepolia (Block #312,389,514)', details_json: '{"chain_id":421614,"tx":"0xdeadbeef"}', created_at_utc: Math.floor(Date.now() / 1000) - 1200 },
-      { event_type: 'AUDIT', summary: 'Recovery drill completed: quorum 3/3 operators verified', details_json: '{"healthy":true,"repaired":0}', created_at_utc: Math.floor(Date.now() / 1000) - 3600 },
-      { event_type: 'INIT', summary: 'Vault initialized with 3-of-5 threshold Shamir ceremony', details_json: '{"guardians":5,"threshold":3}', created_at_utc: Math.floor(Date.now() / 1000) - 86400 }
-    ];
-    if (typeof renderActivity === 'function') renderActivity(state.activity);
-    const actBadge = document.getElementById('badge-tab-activity');
-    if (actBadge) actBadge.textContent = String(state.activity.length);
-  }
-
-  // Demonstration Fleet
-  if (!state.fleet) {
-    state.fleet = {
-      fleet_summary: { total_tracked_vaults: 4, active_operators: 3, total_operators: 3, avg_latency_ms: 14, audits_completed: 18 },
-      vaults: [
-        { vault_id: 'vault_prod_alpha', head_cid: 'e63584c0642f', storage_allowance_bytes: 10485760, registered_at: '2026-09-12' },
-        { vault_id: 'vault_staging_beta', head_cid: 'a1b2c3d4e5f6', storage_allowance_bytes: 5242880, registered_at: '2026-09-14' }
-      ],
-      operator_nodes: [
-        { operator_id: 'cv-operator-1', endpoint: 'https://vault.cipherv.online/op/1', status: 'Online', latency_ms: 12, last_heartbeat: 'Just now' },
-        { operator_id: 'cv-operator-2', endpoint: 'https://vault.cipherv.online/op/2', status: 'Online', latency_ms: 14, last_heartbeat: 'Just now' },
-        { operator_id: 'cv-operator-3', endpoint: 'https://vault.cipherv.online/op/3', status: 'Online', latency_ms: 18, last_heartbeat: 'Just now' }
-      ],
-      audit_history: [
-        { id: 1, vault_id: 'vault_prod_alpha', status: 'Healthy', healthy_objects: 14, degraded_objects: 0, repaired_objects: 0, duration_ms: 16, timestamp: '2026-09-26 23:15:00' },
-        { id: 2, vault_id: 'vault_staging_beta', status: 'Healthy', healthy_objects: 8, degraded_objects: 0, repaired_objects: 0, duration_ms: 12, timestamp: '2026-09-26 23:00:00' }
-      ]
-    };
-    if (typeof renderFleet === 'function') renderFleet(state.fleet);
-    const fleetBadge = document.getElementById('badge-tab-fleet');
-    if (fleetBadge) fleetBadge.textContent = '3/3';
-  }
-
-  // Demonstration FastCDC Chunks
-  if (typeof renderFastCdcResults === 'function') {
-    renderFastCdcResults({
-      config: { min_size: 4096, avg_size: 16384, max_size: 65536 },
-      metrics: {
-        total_bytes: 65536,
-        total_chunks: 4,
-        unique_chunks: 3,
-        duplicate_chunks: 1,
-        unique_bytes: 49152,
-        saved_bytes: 16384,
-        dedup_savings_pct: 25.0,
-        fixed_chunks_count: 4,
-        boundary_shift_resilient: true
-      },
-      chunks: [
-        {
-          index: 0, offset: 0, length: 16384,
-          cid_hex: 'a1b2c3d4e5f600112233445566778899aabbccddeeff00112233445566778899',
-          gear_fingerprint: '0x1234567890abcdef',
-          entropy: 5.432, is_duplicate: false, preview: 'Content previews are disabled.'
-        },
-        {
-          index: 1, offset: 16384, length: 16384,
-          cid_hex: 'b2c3d4e5f6a100112233445566778899aabbccddeeff00112233445566778899',
-          gear_fingerprint: '0xabcdef1234567890',
-          entropy: 7.891, is_duplicate: false, preview: 'Content previews are disabled.'
-        },
-        {
-          index: 2, offset: 32768, length: 16384,
-          cid_hex: 'c3d4e5f6a1b200112233445566778899aabbccddeeff00112233445566778899',
-          gear_fingerprint: '0x2468ace013579bdf',
-          entropy: 6.124, is_duplicate: false, preview: 'Content previews are disabled.'
-        },
-        {
-          index: 3, offset: 49152, length: 16384,
-          cid_hex: 'a1b2c3d4e5f600112233445566778899aabbccddeeff00112233445566778899',
-          gear_fingerprint: '0x1234567890abcdef',
-          entropy: 5.432, is_duplicate: true, preview: 'Content previews are disabled.'
-        }
-      ]
-    });
-    const cdcBadge = document.getElementById('badge-tab-fastcdc');
-    if (cdcBadge) cdcBadge.textContent = '4 Chunks';
-  }
-
-  // Demonstration Secret Diff
-  if (typeof renderDiffResults === 'function') {
-    renderDiffResults({
-      base_label: 'head:b38eb88b',
-      target_label: 'working tree',
-      total_added_keys: 1,
-      total_modified_keys: 1,
-      total_deleted_keys: 0,
-      file_diffs: [
-        {
-          path: 'secrets.env',
-          format: 'Env',
-          change_type: 'Modified',
-          lines: [
-            {
-              kind: 'Modified',
-              key: 'DATABASE_URL',
-              old_value_masked: 'pos***0.1',
-              new_value_masked: 'pos***2.5',
-              old_value_plain: 'postgres://admin:old@10.0.0.1',
-              new_value_plain: 'postgres://admin:new@10.0.2.5'
-            },
-            {
-              kind: 'Added',
-              key: 'REDIS_PORT',
-              new_value_masked: '63***79',
-              new_value_plain: '6379'
-            }
-          ]
-        }
-      ]
-    });
   }
 }
 
@@ -1827,7 +1665,7 @@ function renderSnapshots(snapshots) {
 
   const canonicalSnapshots = dedupeSnapshots(snapshots);
   if (canonicalSnapshots.length === 0) {
-    container.innerHTML = `<div class="loading-placeholder">No snapshots captured yet. Click "Push Snapshot" to create the initial snapshot.</div>`;
+    container.innerHTML = `<div class="loading-placeholder">${isPublicExplorer() ? 'No snapshots available in public cluster feed. Connect local vault or sign in to view private history.' : 'No snapshots captured yet. Click "Push Snapshot" to create the initial snapshot.'}</div>`;
     return;
   }
 
@@ -1908,7 +1746,7 @@ function renderTrackedFiles(files) {
   if (!tbody) return;
 
   if (!files || files.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="loading-placeholder">No confidential files currently tracked in vault.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="loading-placeholder">${isPublicExplorer() ? 'Confidential files are client-side encrypted and shielded. Sign in with an authorized account or open a local private workspace to inspect tracked secrets.' : 'No confidential files currently tracked in vault.'}</td></tr>`;
     return;
   }
 
@@ -2135,7 +1973,13 @@ function renderAnchors(anchors) {
 }
 
 function renderGuardians(data) {
-  if (!data) return;
+  if (!data) {
+    const badgeTab = document.getElementById('badge-tab-guardians');
+    if (badgeTab) badgeTab.textContent = '--';
+    const grid = document.getElementById('guardians-grid');
+    if (grid) grid.innerHTML = `<div class="loading-placeholder" style="grid-column: 1 / -1;">No guardian recovery ceremony enrolled for this public session. Sign in to inspect Shamir key recovery shares.</div>`;
+    return;
+  }
 
   const badgeTab = document.getElementById('badge-tab-guardians');
   if (badgeTab && data.active_threshold && data.total_guardians) {
@@ -2382,7 +2226,13 @@ function renderRelayerCheckpoints(data) {
 }
 
 function renderFleet(data) {
-  if (!data) return;
+  if (!data) {
+    const badgeFleet = document.getElementById('badge-tab-fleet');
+    if (badgeFleet) badgeFleet.textContent = 'Cluster';
+    const grid = document.getElementById('fleet-nodes-grid');
+    if (grid) grid.innerHTML = `<div class="loading-placeholder">Storage fleet maintenance telemetry requires authenticated operator or cluster admin role.</div>`;
+    return;
+  }
 
   // Update KPIs
   if (data.fleet_summary) {
@@ -5089,7 +4939,7 @@ function renderActivity(events) {
   if (!container) return;
 
   if (!events || events.length === 0) {
-    container.innerHTML = '<div class="loading-placeholder">No activity events recorded yet. Snapshot creations and restores will appear here.</div>';
+    container.innerHTML = `<div class="loading-placeholder">${isPublicExplorer() ? 'No public activity events recorded in the cluster journal.' : 'No activity events recorded yet. Snapshot creations and restores will appear here.'}</div>`;
     return;
   }
 
