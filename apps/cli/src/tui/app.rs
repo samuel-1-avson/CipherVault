@@ -751,13 +751,27 @@ impl TuiApp {
         })
         .await;
         match outcome {
-            Ok(_) => {
+            Ok(crate::InstallOutcome::Installed) => {
                 self.update_in_progress = false;
                 self.show_update_modal = false;
                 self.set_status(
                     format!("✓ Updated to {tag}. Quit ([q]) and relaunch to use it."),
                     StatusLevel::Success,
                 );
+            }
+            Ok(crate::InstallOutcome::PendingRestart) => {
+                // Windows: the swap helper can only replace the binary after
+                // this process exits. Lingering would stall it, so quit now;
+                // the user relaunches into the new version.
+                self.update_in_progress = false;
+                self.show_update_modal = false;
+                self.set_status(
+                    format!(
+                        "✓ {tag} staged. Quitting now so Windows can install it — please relaunch."
+                    ),
+                    StatusLevel::Success,
+                );
+                self.should_quit = true;
             }
             Err(error) => {
                 self.update_in_progress = false;

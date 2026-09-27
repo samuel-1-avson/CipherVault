@@ -160,6 +160,22 @@ fn find_binary_in(dir: &Path, name: &str) -> Option<PathBuf> {
 /// move retries for ~60 s and then skips — a running node daemon holds
 /// its own .exe locked, and the update must not hang forever on it.
 #[allow(dead_code)] // Windows install path only; exercised by tests everywhere.
+/// PowerShell extraction command for the Windows updater, with both paths
+/// embedded single-quoted. powershell.exe joins everything after `-Command`
+/// into ONE command line, so trailing argv entries never reach `$args` —
+/// passing paths as extra argv (the pre-1.0.19 form) left `$args[0]` empty
+/// and broke every Windows self-update at extraction.
+fn windows_expand_archive_command(archive: &Path, dest: &Path) -> String {
+    fn quote(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+    }
+    format!(
+        "Expand-Archive -LiteralPath {} -DestinationPath {} -Force",
+        quote(archive),
+        quote(dest)
+    )
+}
+
 fn windows_update_script(
     cli_staged: &Path,
     cli_live: &Path,
@@ -533,15 +549,9 @@ pub(crate) async fn apply_update(
     fs::create_dir_all(&extract_dir)?;
     #[cfg(windows)]
     {
+        let script = windows_expand_archive_command(&archive_path, &extract_dir);
         let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-                &archive_path.to_string_lossy(),
-                &extract_dir.to_string_lossy(),
-            ])
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .status()
             .context("extracting the Windows release archive")?;
         if !status.success() {
@@ -637,13 +647,29 @@ pub(crate) async fn apply_update(
     Ok(outcome)
 }
 
-pub(crate) async fn cmd_update(check_only: bool) -> Result<()> {
+pub(crate) async fn cmd_update(check_only: bool, reinstall: bool) -> Result<()> {
     let check = check_for_updates().await?;
     println!(
         "Current CipherVault: {}; latest release: {}",
         check.current, check.latest_tag
     );
-    let Some(pending) = check.pending else {
+    // `--reinstall` forces the full verified install of the latest release
+    // even when this binary already reports it (repair path; same
+    // signature + checksum verification as a normal update).
+    let pending = match (check.pending, reinstall) {
+        (Some(pending), _) => Some(pending),
+        (None, true) => {
+            let (target, archive_suffix) = release_target()
+                .context("No published CipherVault release for this platform".to_string())?;
+            Some(PendingUpdate {
+                tag: check.latest_tag.clone(),
+                target,
+                archive_suffix,
+            })
+        }
+        (None, false) => None,
+    };
+    let Some(pending) = pending else {
         println!("Already at or ahead of the latest published release.");
         return Ok(());
     };
@@ -1031,6 +1057,39 @@ mod update_version_tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn windows_extract_embeds_quoted_paths_without_args() {
+        // Regression: powershell.exe joins everything after `-Command`
+        // into one command line, so `$args[N]` placeholders never receive
+        // the trailing argv. Every Windows self-update died in extraction.
+        let script = windows_expand_archive_command(
+            Path::new(r"C:\Temp\cv update\rel.zip"),
+            Path::new(r"C:\Temp\cv update\extract"),
+        );
+        assert!(!script.contains("$args"), "{script}");
+        assert!(
+            script.contains("'C:\\Temp\\cv update\\rel.zip'"),
+            "{script}"
+        );
+        assert!(
+            script.contains("'C:\\Temp\\cv update\\extract'"),
+            "{script}"
+        );
+        assert!(
+            script.starts_with("Expand-Archive -LiteralPath "),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn windows_extract_escapes_single_quotes() {
+        let script = windows_expand_archive_command(
+            Path::new(r"C:\o'brien\rel.zip"),
+            Path::new(r"C:\o'brien\extract"),
+        );
+        assert!(script.contains("'C:\\o''brien\\rel.zip'"), "{script}");
     }
 
     #[test]

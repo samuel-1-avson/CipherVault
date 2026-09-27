@@ -591,6 +591,12 @@ enum Commands {
     Update {
         #[arg(long, help = "Only check the latest release; do not install it")]
         check: bool,
+
+        #[arg(
+            long,
+            help = "Reinstall the latest release even when already on it (verified repair)"
+        )]
+        reinstall: bool,
     },
 
     /// Sign and verify release checksum signatures (release engineering)
@@ -1232,7 +1238,7 @@ async fn run(cli: Cli) -> Result<()> {
         None => return default_no_subcommand().await,
     };
     match command {
-        Commands::Update { check } => cmd_update(check).await,
+        Commands::Update { check, reinstall } => cmd_update(check, reinstall).await,
         Commands::Release { sub } => match sub {
             ReleaseSubcommand::Sign {
                 tag,
