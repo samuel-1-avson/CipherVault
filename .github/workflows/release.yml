@@ -289,6 +289,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -372,18 +373,23 @@ jobs:
               print(f"filled {path}")
           EOF
 
-      - name: Commit and push filled manifests
-        shell: bash
-        run: |
-          git config user.name "ciphervault-release"
-          git config user.email "ciphervault-release@users.noreply.github.com"
-          # Sync BEFORE staging: rebase refuses with staged changes, and
-          # --autostash carries the unstaged fill across the sync.
-          git pull --rebase --autostash origin main || { echo "rebase failed; aborting fill" >&2; exit 1; }
-          git add dist/package-managers/homebrew/Formula/ciphervault.rb dist/package-managers/scoop/ciphervault.json "dist/package-managers/winget/manifests/c/CipherVault/CipherVault/*/CipherVault.CipherVault.installer.yaml"
-          git diff --cached --quiet && { echo "no manifest changes to commit"; exit 0; }
-          git commit -m "fix(release): fill ${{ github.ref_name }} winget/scoop/brew hashes from SHA256SUMS"
-          git push origin main
+      - name: Open PR with filled manifests
+        # Direct pushes to main are blocked by repository rules (v1.0.18
+        # fill failed on GH013), so the fill opens a PR instead. Merge it
+        # after CI green; the manifests are inert until then.
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "fix(release): fill ${{ github.ref_name }} winget/scoop/brew hashes from SHA256SUMS"
+          title: "fix(release): fill ${{ github.ref_name }} manifest hashes"
+          body: |
+            Automated hash fill from the published SHA256SUMS.txt for ${{ github.ref_name }}.
+            Merge after CI green.
+          branch: release/fill-manifests-${{ github.ref_name }}
+          base: main
+          add-paths: |
+            dist/package-managers/homebrew/Formula/ciphervault.rb
+            dist/package-managers/scoop/ciphervault.json
+            dist/package-managers/winget/manifests/c/CipherVault/CipherVault/*/CipherVault.CipherVault.installer.yaml
 
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images
