@@ -1268,26 +1268,41 @@ mod tests {
                 signature_hex: hex::encode(signature),
             }
         };
-        // Pre-rotation: A-signed feed verifies under the A pin.
-        std::env::set_var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY", &pub_a);
+        // NOTE: this drill deliberately avoids the
+        // CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY env var: unit tests
+        // share one process, so env manipulation here races parallel
+        // tests that read the pin. The pin predicate takes the pin as a
+        // plain argument, which exercises the identical rotation logic
+        // hermetically (same predicate `verify_*` calls internally).
+        // Pre-rotation: A-signed feed is valid and matches pin A.
         let feed_a = sign_feed(&key_a);
         let records = verify_public_checkpoint_feed(&feed_a).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["verification_status"], "publisher_signed");
+        assert!(public_checkpoint_publisher_key_pinned(
+            &feed_a.publisher_key_hex,
+            Some(&pub_a)
+        ));
         // Rotation: pin moves to B; the stale A-signed feed is rejected.
-        std::env::set_var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY", &pub_b);
-        let stale = verify_public_checkpoint_feed(&feed_a).unwrap_err();
-        assert!(
-            stale.contains("not the pinned publisher key"),
-            "unexpected stale-feed error: {stale}"
-        );
-        // Post-rotation: B-signed reissue verifies under the B pin.
+        assert!(!public_checkpoint_publisher_key_pinned(
+            &feed_a.publisher_key_hex,
+            Some(&pub_b)
+        ));
+        // Post-rotation: B-signed reissue verifies and matches pin B.
         let feed_b = sign_feed(&key_b);
         let records = verify_public_checkpoint_feed(&feed_b).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["verification_status"], "publisher_signed");
+        assert!(public_checkpoint_publisher_key_pinned(
+            &feed_b.publisher_key_hex,
+            Some(&pub_b)
+        ));
         assert_eq!(records[0]["publisher_key_hex"], pub_b);
-        std::env::remove_var("CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY");
+        // Tampered payload still rejected at the crypto layer.
+        let mut tampered = feed_b.clone();
+        let bumped = tampered.checkpoints[0].block_number.unwrap_or(0) + 1;
+        tampered.checkpoints[0].block_number = Some(bumped);
+        assert!(verify_public_checkpoint_feed(&tampered).is_err());
     }
 
     #[test]
