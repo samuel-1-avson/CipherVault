@@ -120,22 +120,26 @@
             <span class="key-shortcut">[3]</span>
             <span class="tab-label">Engine</span>
           </button>
-          <button class="tui-tab-btn" id="tab-nav-benchmarks" data-target="pane-benchmarks" role="tab" aria-selected="false">
+          <button class="tui-tab-btn" id="tab-nav-scoped" data-target="pane-scoped" role="tab" aria-selected="false">
             <span class="key-shortcut">[4]</span>
+            <span class="tab-label">Scoped Secrets</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-benchmarks" data-target="pane-benchmarks" role="tab" aria-selected="false">
+            <span class="key-shortcut">[5]</span>
             <span class="tab-label">Benchmarks</span>
           </button>
           <button class="tui-tab-btn" id="tab-nav-recovery" data-target="pane-recovery" role="tab" aria-selected="false">
-            <span class="key-shortcut">[5]</span>
+            <span class="key-shortcut">[6]</span>
             <span class="tab-label">Recovery</span>
           </button>
           <button class="tui-tab-btn" id="tab-nav-quickstart" data-target="pane-quickstart" role="tab" aria-selected="false">
-            <span class="key-shortcut">[6]</span>
+            <span class="key-shortcut">[7]</span>
             <span class="tab-label">Install</span>
           </button>
         </nav>
 
         <div class="navdeck-shortcuts-hint" aria-hidden="true">
-          <span class="hint-item"><kbd class="tui-kbd">1-6</kbd> Switch Tab</span>
+          <span class="hint-item"><kbd class="tui-kbd">1-7</kbd> Switch Tab</span>
           <span class="hint-sep">/</span>
           <span class="hint-item"><kbd class="tui-kbd">/</kbd> REPL Console</span>
         </div>
@@ -193,8 +197,17 @@
               <span class="d-tab-arrow">➔</span>
             </button>
 
-            <button class="drawer-tab-btn" data-target="pane-benchmarks" role="tab">
+            <button class="drawer-tab-btn" data-target="pane-scoped" role="tab">
               <span class="d-tab-num">[4]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Scoped Secrets</span>
+                <span class="d-tab-desc">Resource hierarchy, envelope encryption &amp; DPoP</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-benchmarks" role="tab">
+              <span class="d-tab-num">[5]</span>
               <div class="d-tab-content">
                 <span class="d-tab-title">Benchmarks</span>
                 <span class="d-tab-desc">362 MiB/s chunk+encrypt pipeline &amp; 96% deduplication</span>
@@ -203,7 +216,7 @@
             </button>
 
             <button class="drawer-tab-btn" data-target="pane-recovery" role="tab">
-              <span class="d-tab-num">[5]</span>
+              <span class="d-tab-num">[6]</span>
               <div class="d-tab-content">
                 <span class="d-tab-title">Clean-Machine Recovery</span>
                 <span class="d-tab-desc">Shamir 3-of-5 threshold ceremony &amp; paper kit</span>
@@ -212,10 +225,10 @@
             </button>
 
             <button class="drawer-tab-btn" data-target="pane-quickstart" role="tab">
-              <span class="d-tab-num">[6]</span>
+              <span class="d-tab-num">[7]</span>
               <div class="d-tab-content">
                 <span class="d-tab-title">Installation &amp; Setup</span>
-                <span class="d-tab-desc">cURL binary installer &amp; Cargo package</span>
+                <span class="d-tab-desc">PowerShell, Brew, Scoop, Cargo, Bash &amp; Docker</span>
               </div>
               <span class="d-tab-arrow">➔</span>
             </button>
@@ -289,7 +302,7 @@
               <span class="text-gold">CipherVault protects your secrets.</span>
             </h1>
             <p class="hero-core-lead">
-              Zero-cloud secret version control, client-side AEAD encryption, and clean-machine disaster recovery for your <code class="tui-code">.env</code> files, API tokens, and signing certificates.
+              Hierarchical resource-scoped secrets, zero-cloud version control, envelope encryption with DPoP key binding, and clean-machine disaster recovery for modern development teams.
             </p>
           </div>
 
@@ -299,6 +312,8 @@
               <div class="hero-target-pills" id="hero-install-pills" role="tablist" aria-label="Installation Target">
                 <button class="hero-target-pill active" data-install-target="cargo" role="tab" aria-selected="true">[Cargo]</button>
                 <button class="hero-target-pill" data-install-target="win" role="tab" aria-selected="false">[PowerShell]</button>
+                <button class="hero-target-pill" data-install-target="brew" role="tab" aria-selected="false">[Homebrew]</button>
+                <button class="hero-target-pill" data-install-target="winget" role="tab" aria-selected="false">[Winget/Scoop]</button>
                 <button class="hero-target-pill" data-install-target="nix" role="tab" aria-selected="false">[Bash]</button>
                 <button class="hero-target-pill" data-install-target="docker" role="tab" aria-selected="false">[Docker]</button>
               </div>
@@ -329,12 +344,13 @@
               <div class="hero-trust-badges">
                 <span class="trust-badge"><span class="badge-dot green">●</span> Zero-Knowledge</span>
                 <span class="trust-badge"><span class="badge-dot cyan">●</span> 100% Client-Side</span>
+                <span class="trust-badge"><span class="badge-dot purple">●</span> DPoP Key Bound</span>
                 <span class="trust-badge"><span class="badge-dot gold">●</span> MIT / Apache-2.0</span>
               </div>
             </div>
           </div>
 
-          <!-- Three Minimalist Architectural Capability Pillars -->
+          <!-- Four Minimalist Architectural Capability Pillars -->
           <div class="tui-pillars-grid">
             
             <div class="pillar-card">
@@ -369,7 +385,22 @@
 
             <div class="pillar-card">
               <div class="pillar-top-meta">
-                <span class="pillar-num">[03] DISASTER RECOVERY</span>
+                <span class="pillar-num">[03] SCOPED RBAC</span>
+                <span class="pillar-badge badge-purple">DPOP BOUND</span>
+              </div>
+              <h3 class="pillar-title">Hierarchical Scopes</h3>
+              <p class="pillar-desc">
+                Organize secrets by Tenant → Project → Environment with per-version envelope encryption (DEK/KEK) and RFC 9449 DPoP key binding against token theft.
+              </p>
+              <div class="pillar-stat-line">
+                <span class="pillar-val text-purple">Dual-Admin</span>
+                <span class="pillar-lbl">Quorum gates &amp; Merkle audit chains</span>
+              </div>
+            </div>
+
+            <div class="pillar-card">
+              <div class="pillar-top-meta">
+                <span class="pillar-num">[04] DISASTER RECOVERY</span>
                 <span class="pillar-badge badge-gold">AIR-GAPPED</span>
               </div>
               <h3 class="pillar-title">Clean-Machine Restore</h3>
@@ -870,15 +901,436 @@ if !no_gitignore {
             <button class="pane-pager-btn prev" data-target="pane-dilemma">
               [← PREV: 02 Secrets Dilemma]
             </button>
-            <button class="pane-pager-btn next" data-target="pane-benchmarks">
-              [NEXT: 04 Performance Benchmarks →]
+            <button class="pane-pager-btn next" data-target="pane-scoped">
+              [NEXT: 04 Scoped Secrets &amp; RBAC →]
             </button>
           </div>
 
         </section>
 
         <!-- ====================================================================
-             PANE 4: BENCHMARKS & SYSTEMS COMPARISON
+             PANE 4: SCOPED SECRETS & MULTI-ENVIRONMENT GOVERNANCE (NEW v1.0.20)
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-scoped" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">[RESOURCE-SCOPED SECRETS &amp; ENVELOPE ENCRYPTION]</div>
+            <h2 class="pane-title" data-scramble-text="Hierarchical Scopes, Envelope Encryption &amp; DPoP Binding">Hierarchical Scopes, Envelope Encryption &amp; DPoP Binding</h2>
+            <p class="pane-desc">Move beyond monolithic <code class="tui-code">.env</code> files. Isolate credentials across Tenants, Workspaces, Projects, and Environments with per-version envelope encryption, dual-admin approvals, and tamper-evident audit chains.</p>
+          </div>
+
+          <!-- Interactive Scoped Architecture & Envelope Encryption Workstation -->
+          <div class="tui-box scoped-workstation-box">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">INTERACTIVE SCOPE &amp; ENVELOPE ENCRYPTION WORKSTATION</span>
+                <span class="box-title-badge">XChaCha20-Poly1305 + DPoP-Lite (RFC 9449)</span>
+              </div>
+              <div class="box-title-meta">
+                <span class="cdc-live-tag"><span class="pulse-dot-mini"></span> LIVE ENVELOPE SIMULATOR</span>
+              </div>
+            </div>
+
+            <!-- Environment Selector Strip -->
+            <div class="scoped-env-bar">
+              <span class="env-bar-label">TARGET ENVIRONMENT:</span>
+              <div class="scoped-env-pills" id="scoped-env-pills" role="tablist" aria-label="Environment Selection">
+                <button class="scoped-env-pill active" id="btn-env-prod" data-env="production" role="tab" aria-selected="true">
+                  <span class="env-pill-dot gold">●</span> Production (Dual-Admin &amp; Main Branch Gate)
+                </button>
+                <button class="scoped-env-pill" id="btn-env-stage" data-env="staging" role="tab" aria-selected="false">
+                  <span class="env-pill-dot cyan">●</span> Staging (Branch / PR Gated)
+                </button>
+                <button class="scoped-env-pill" id="btn-env-dev" data-env="development" role="tab" aria-selected="false">
+                  <span class="env-pill-dot mint">●</span> Development (Local Developer Fast-Path)
+                </button>
+              </div>
+            </div>
+
+            <!-- Two-Column Architecture Deck -->
+            <div class="scoped-hierarchy-grid">
+              
+              <!-- Column 1: Resource Scope Hierarchy Tree -->
+              <div class="scope-tree-card">
+                <div class="tree-card-header">
+                  <span class="tree-title">RESOURCE SCOPE HIERARCHY TREE</span>
+                  <span class="tree-badge">STRICT CONTAINMENT</span>
+                </div>
+                <div class="scope-tree-canvas">
+                  <div class="tree-node node-tenant">
+                    <span class="node-icon">🏢</span>
+                    <span class="node-label">TENANT:</span>
+                    <span class="node-val text-purple">acme-corp</span>
+                    <span class="node-tag">Root Authority</span>
+                  </div>
+                  <div class="tree-branch-line">│</div>
+                  <div class="tree-node node-workspace">
+                    <span class="node-icon">📁</span>
+                    <span class="node-label">WORKSPACE:</span>
+                    <span class="node-val text-cyan">payments-infra</span>
+                  </div>
+                  <div class="tree-branch-line">│  └──</div>
+                  <div class="tree-node node-project">
+                    <span class="node-icon">📦</span>
+                    <span class="node-label">PROJECT:</span>
+                    <span class="node-val text-gold">checkout-api</span>
+                    <span class="node-tag">Security Boundary</span>
+                  </div>
+                  <div class="tree-branch-line">│      ├──</div>
+                  <div class="tree-node node-repo">
+                    <span class="node-icon">🔗</span>
+                    <span class="node-label">VCS BINDING:</span>
+                    <span class="node-val text-mint">GitHub #84920194 (acme/checkout)</span>
+                  </div>
+                  <div class="tree-branch-line">│      └──</div>
+                  <div class="tree-node node-env active" id="tree-active-env-node">
+                    <span class="node-icon">🌐</span>
+                    <span class="node-label">ENVIRONMENT:</span>
+                    <span class="node-val text-gold" id="tree-active-env-val">production</span>
+                    <span class="node-tag" id="tree-active-env-tag">Dual-Admin Active</span>
+                  </div>
+                  <div class="tree-branch-line">           └──</div>
+                  <div class="tree-node node-secret">
+                    <span class="node-icon">🔑</span>
+                    <span class="node-label">SECRET:</span>
+                    <span class="node-val text-white">DATABASE_URL</span>
+                    <span class="node-version-badge">v4 (Active)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Column 2: Live Cryptographic Envelope Deck -->
+              <div class="scope-envelope-card">
+                <div class="envelope-card-header">
+                  <span class="envelope-title">CRYPTOGRAPHIC ENVELOPE &amp; DPOP EVIDENCE</span>
+                  <span class="envelope-badge" id="scoped-gate-status">DUAL-ADMIN REQUIRED</span>
+                </div>
+                
+                <div class="envelope-specs-list">
+                  
+                  <!-- Field 1: Scope Token -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-cyan">SCOPE TOKEN (HMAC-SHA256 SIGNED):</span>
+                      <span class="field-hint">Embedded claims (tenant, project, env, expiry)</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-token" id="scoped-token-preview">cvst1_acme_checkout_api_prod_8f3a9e2d...</code>
+                    </div>
+                  </div>
+
+                  <!-- Field 2: DEK Envelope -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-gold">PER-VERSION DATA ENCRYPTION KEY (DEK):</span>
+                      <span class="field-hint">256-bit XChaCha20 ephemeral key wrapped by Project KEK</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-hex" id="scoped-dek-hex">DEK: 8b4f129c... [ZeroizeOnDrop]</code>
+                    </div>
+                  </div>
+
+                  <!-- Field 3: Scope-Bound AAD -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-mint">AUTHENTICATED ADDITIONAL DATA (AAD):</span>
+                      <span class="field-hint">Cryptographic scope binding (cross-scope replay fails Poly1305 MAC)</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-aad" id="scoped-aad-display">tenant:acme-corp|project:checkout-api|env:production|secret:DATABASE_URL|v:4</code>
+                    </div>
+                    <div class="field-subline">
+                      <span class="sub-label">AAD SHA-256 Digest:</span>
+                      <code class="sub-val" id="scoped-aad-hash">Computing...</code>
+                    </div>
+                  </div>
+
+                  <!-- Field 4: DPoP Asymmetric Proof -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-purple">DPOP-LITE ASYMMETRIC KEY PROOF:</span>
+                      <span class="field-hint">RFC 9449-style client key binding prevents token theft replay</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-dpop" id="scoped-dpop-thumbprint">DPoP Fingerprint: ed25519:... (Verified on Loopback)</code>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Invariant Highlight Callout Banner -->
+            <div class="scoped-invariant-banner">
+              <div class="invariant-item">
+                <span class="inv-dot green">●</span>
+                <strong>Zero Cross-Scope Replay</strong>: Because AAD cryptographically binds <code class="tui-code">project_id ‖ env_id ‖ secret ‖ version</code>, staging ciphertext can never be injected into production.
+              </div>
+              <div class="invariant-item">
+                <span class="inv-dot cyan">●</span>
+                <strong>DPoP Stolen Token Defense</strong>: Stolen bearer tokens are useless to adversaries without the client device's private signing key.
+              </div>
+            </div>
+          </div>
+
+          <!-- Cryptographic Tamper-Evident Audit Ledger (T-901 / §20) -->
+          <div class="tui-box audit-chain-box">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">CRYPTOGRAPHIC TAMPER-EVIDENT AUDIT CHAIN (T-901 / §20)</span>
+                <span class="box-title-badge">12 Canonical Events • SHA-256 Hash Chained • Append-Only</span>
+              </div>
+              <div class="box-title-meta">
+                <span class="title-meta text-mint">MERKLE PROOF VERIFIABLE</span>
+              </div>
+            </div>
+
+            <p class="audit-box-desc">
+              Every secret creation, read, rotation, and deletion appends an immutable record into the control-plane SQLite WAL ledger. Each entry cryptographically incorporates the prior block's hash. Any retroactive row modification breaks the entire chain immediately.
+            </p>
+
+            <!-- Visual Audit Chain Grid -->
+            <div class="audit-chain-grid">
+              
+              <!-- Block 0: Genesis -->
+              <div class="audit-block-card verified" id="audit-block-0">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #00</span>
+                  <span class="block-type badge-purple">GENESIS</span>
+                </div>
+                <div class="block-actor">Root Key Setup</div>
+                <div class="block-target">Project Creation</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-0">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint">✓ Root Anchor</div>
+              </div>
+
+              <div class="audit-arrow">→</div>
+
+              <!-- Block 1: Secret Created -->
+              <div class="audit-block-card verified" id="audit-block-1">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #01</span>
+                  <span class="block-type badge-mint">secret.created</span>
+                </div>
+                <div class="block-actor">admin-alice@acme.corp</div>
+                <div class="block-target">DATABASE_URL (v1)</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-1">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint">✓ Chained to #00</div>
+              </div>
+
+              <div class="audit-arrow">→</div>
+
+              <!-- Block 2: Secret Read -->
+              <div class="audit-block-card verified" id="audit-block-2">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #02</span>
+                  <span class="block-type badge-cyan">secret.read</span>
+                </div>
+                <div class="block-actor" id="audit-actor-2">ci-runner-88 (DPoP Proof)</div>
+                <div class="block-target">DATABASE_URL (v1)</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-2">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint" id="audit-status-2">✓ Chained to #01</div>
+              </div>
+
+              <div class="audit-arrow">→</div>
+
+              <!-- Block 3: Secret Rotated -->
+              <div class="audit-block-card verified" id="audit-block-3">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #03</span>
+                  <span class="block-type badge-gold">secret.rotated</span>
+                </div>
+                <div class="block-actor">sec-lead-bob + sre-carol</div>
+                <div class="block-target">DATABASE_URL (v2)</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-3">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint" id="audit-status-3">✓ Chained to #02</div>
+              </div>
+
+            </div>
+
+            <!-- Live Status & Interactive Tamper Simulation Buttons -->
+            <div class="audit-actions-deck">
+              <div class="audit-status-banner verified" id="audit-chain-status">
+                <span class="status-dot green">●</span>
+                <span class="status-msg">CHAIN VERIFIED: All 4 audit blocks cryptographically linked via SHA-256 preimages.</span>
+              </div>
+              <div class="audit-btn-group">
+                <button class="tui-btn-action danger" id="btn-tamper-audit" title="Simulate an attacker altering a past audit record in SQLite">
+                  [ ⚠ SIMULATE DATABASE TAMPER IN BLOCK #02 ]
+                </button>
+                <button class="tui-btn-action primary-gold" id="btn-verify-audit" title="Recalculate genuine hashes and verify chain integrity">
+                  [ ✓ RESTORE &amp; VERIFY MERKLE INTEGRITY ]
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- 7-Stage Idempotent Migration Ledger (ciphervault migrate) -->
+          <div class="tui-box migration-ledger-box">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">ZERO-DOWNTIME 7-STAGE MIGRATION LEDGER</span>
+                <span class="box-title-badge">ciphervault migrate plan | apply | verify</span>
+              </div>
+              <span class="title-meta text-cyan">RESUMABLE &amp; SAFE</span>
+            </div>
+
+            <p class="migration-desc">
+              Migrate monolithic <code class="tui-code">.env</code> files and legacy raw vault snapshots into scoped secrets with zero downtime, zero plaintext disk writes, and readback verification before atomic cutover:
+            </p>
+
+            <div class="migration-steps-grid">
+              
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 01</span>
+                  <span class="m-step-badge badge-cyan">AST PARSE</span>
+                </div>
+                <div class="m-step-title">Classify &amp; Diff</div>
+                <p class="m-step-desc">Parses legacy dotenv files into discrete keys; computes SHA-256 pre-migration digests.</p>
+                <code class="m-step-cmd">ciphervault migrate plan</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 02</span>
+                  <span class="m-step-badge badge-danger">QUARANTINE</span>
+                </div>
+                <div class="m-step-title">Collision Check</div>
+                <p class="m-step-desc">Detects name collisions or invalid slugs; isolates conflicts into a non-destructive quarantine.</p>
+                <code class="m-step-cmd">migrate resolve --entry &lt;id&gt;</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 03</span>
+                  <span class="m-step-badge badge-gold">ENVELOPE</span>
+                </div>
+                <div class="m-step-title">Apply &amp; Wrap</div>
+                <p class="m-step-desc">Generates per-version DEKs under XChaCha20-Poly1305 with scope-bound AAD and project KEK wrap.</p>
+                <code class="m-step-cmd">ciphervault migrate apply</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 04</span>
+                  <span class="m-step-badge badge-mint">READBACK</span>
+                </div>
+                <div class="m-step-title">Integrity Verify</div>
+                <p class="m-step-desc">Reads back ciphertext over loopback TLS, decrypts in memory, and asserts bit-identical match.</p>
+                <code class="m-step-cmd">ciphervault migrate verify</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 05</span>
+                  <span class="m-step-badge badge-purple">QUORUM</span>
+                </div>
+                <div class="m-step-title">Dual-Admin Signoff</div>
+                <p class="m-step-desc">Production migrations require second-approver cryptographic signature before pointer promotion.</p>
+                <code class="m-step-cmd">ciphervault approve --sign</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 06</span>
+                  <span class="m-step-badge badge-cyan">ATOMIC</span>
+                </div>
+                <div class="m-step-title">Pointer Cutover</div>
+                <p class="m-step-desc">Atomically updates the active version pointer; older applications continue without interruption.</p>
+                <code class="m-step-cmd">Atomic DB Flip (WAL)</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 07</span>
+                  <span class="m-step-badge badge-danger">ZEROIZE</span>
+                </div>
+                <div class="m-step-title">Crypto-Shred</div>
+                <p class="m-step-desc">Zeroizes RAM buffers and shreds obsolete un-scoped plaintext copies from disks.</p>
+                <code class="m-step-cmd">ZeroizeOnDrop Memory Wipe</code>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- VCS Repository Bindings & Scoped CLI Cheatsheet -->
+          <div class="scoped-bottom-grid">
+            
+            <!-- VCS Binding Card -->
+            <div class="tui-box vcs-binding-box">
+              <div class="tui-box-title">
+                <span>VCS BINDINGS &amp; MONOREPO CONFINEMENT</span>
+                <span class="badge-mint">IMMUTABLE PROVIDER IDS</span>
+              </div>
+              <p class="vcs-box-desc">
+                Repositories are bound to projects by immutable provider IDs (GitHub numeric ID, GitLab project ID, Bitbucket UUID). Survives renames, transfers, and monorepos:
+              </p>
+              <div class="vcs-code-wrap">
+                <pre class="tui-code-block"><code># Bind GitHub repo with signed HMAC-SHA256 webhooks
+ciphervault repo link --provider github --repo-id 84920194 --project checkout-api
+
+# Confine secret to specific repository binding or service
+ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code></pre>
+              </div>
+            </div>
+
+            <!-- Scoped CLI Cheatsheet -->
+            <div class="tui-box scoped-cli-cheatsheet">
+              <div class="tui-box-title">
+                <span>SCOPED SECRETS CLI COMMAND REFERENCE</span>
+                <span class="badge-gold">v1.0.20 NATIVE</span>
+              </div>
+              <div class="cli-cheatsheet-grid">
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-cyan">ciphervault secret set &lt;NAME&gt;</span>
+                  <span class="cmd-desc">Create/update secret with envelope AAD</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-mint">ciphervault secret get &lt;NAME&gt;</span>
+                  <span class="cmd-desc">Bare value retrieval for piping</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-gold">ciphervault secret rotate &lt;NAME&gt;</span>
+                  <span class="cmd-desc">Rotate to new version (dual-admin in prod)</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-purple">ciphervault run --env prod -- &lt;cmd&gt;</span>
+                  <span class="cmd-desc">Fail-closed zero-disk RAM injection</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Pane 4 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-engine">
+              [← PREV: 03 Engine Pipeline]
+            </button>
+            <button class="pane-pager-btn next" data-target="pane-benchmarks">
+              [NEXT: 05 Performance Benchmarks →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 5: BENCHMARKS & SYSTEMS COMPARISON
              ==================================================================== -->
         <section class="tui-pane" id="pane-benchmarks" role="tabpanel" hidden>
           
@@ -1115,6 +1567,30 @@ if !no_gitignore {
                     <td class="text-danger">Checked out Plaintext</td>
                   </tr>
                   <tr>
+                    <td><strong>Scope Model &amp; Isolation</strong></td>
+                    <td class="col-highlight text-mint">Hierarchical (Tenant/Proj/Env) + AAD Envelope</td>
+                    <td class="text-danger">Flat ARNs / Paths</td>
+                    <td class="text-warning">Path Mount Namespaces</td>
+                    <td class="text-danger">SaaS Project / Env</td>
+                    <td class="text-danger">Single File PGP/KMS</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Token Security (DPoP)</strong></td>
+                    <td class="col-highlight text-mint">Asymmetric DPoP-Lite (Anti-Replay)</td>
+                    <td class="text-danger">Bearer IAM Credentials</td>
+                    <td class="text-warning">Bearer Vault Token</td>
+                    <td class="text-danger">Bearer Service Token</td>
+                    <td class="text-mint">N/A (Local Key Only)</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Audit Verification</strong></td>
+                    <td class="col-highlight text-mint">SHA-256 Chained Hash Ledger + L2 Anchor</td>
+                    <td class="text-danger">Centralized CloudTrail</td>
+                    <td class="text-warning">Flat File Audit Log</td>
+                    <td class="text-danger">SaaS Audit Export</td>
+                    <td class="text-danger">Git Commit History Only</td>
+                  </tr>
+                  <tr>
                     <td><strong>Offline Autonomy</strong></td>
                     <td class="col-highlight text-mint">100% Offline-First</td>
                     <td class="text-danger">Fails on Cloud Outage</td>
@@ -1135,20 +1611,20 @@ if !no_gitignore {
             </div>
           </div>
 
-          <!-- Pane 4 Bottom Pager -->
+          <!-- Pane 5 Bottom Pager -->
           <div class="pane-pager-bar split">
-            <button class="pane-pager-btn prev" data-target="pane-engine">
-              [← PREV: 03 Engine Pipeline]
+            <button class="pane-pager-btn prev" data-target="pane-scoped">
+              [← PREV: 04 Scoped Secrets &amp; RBAC]
             </button>
             <button class="pane-pager-btn next" data-target="pane-recovery">
-              [NEXT: 05 Sovereign Disaster Recovery →]
+              [NEXT: 06 Sovereign Disaster Recovery →]
             </button>
           </div>
 
         </section>
 
         <!-- ====================================================================
-             PANE 5: SOVEREIGN DISASTER RECOVERY
+             PANE 6: SOVEREIGN DISASTER RECOVERY
              ==================================================================== -->
         <section class="tui-pane" id="pane-recovery" role="tabpanel" hidden>
           
@@ -1372,20 +1848,20 @@ if !no_gitignore {
             </p>
           </div>
 
-          <!-- Pane 5 Bottom Pager -->
+          <!-- Pane 6 Bottom Pager -->
           <div class="pane-pager-bar split">
             <button class="pane-pager-btn prev" data-target="pane-benchmarks">
-              [← PREV: 04 Performance Benchmarks]
+              [← PREV: 05 Performance Benchmarks]
             </button>
             <button class="pane-pager-btn next" data-target="pane-quickstart">
-              [NEXT: 06 Installation & Quickstart →]
+              [NEXT: 07 Installation & Quickstart →]
             </button>
           </div>
 
         </section>
 
         <!-- ====================================================================
-             PANE 6: INSTALLATION & QUICKSTART
+             PANE 7: INSTALLATION & QUICKSTART
              ==================================================================== -->
         <section class="tui-pane" id="pane-quickstart" role="tabpanel" hidden>
           
@@ -1401,6 +1877,8 @@ if !no_gitignore {
               <button class="snippet-tab active" data-target-os="win">[Windows PowerShell]</button>
               <button class="snippet-tab" data-target-os="nix">[Linux / macOS Bash]</button>
               <button class="snippet-tab" data-target-os="cargo">[Cargo (Rust)]</button>
+              <button class="snippet-tab" data-target-os="brew">[Homebrew]</button>
+              <button class="snippet-tab" data-target-os="scoop">[Scoop &amp; Winget]</button>
               <button class="snippet-tab" data-target-os="docker">[Docker Compose]</button>
             </div>
             <div class="snippet-code-wrap">
@@ -1537,10 +2015,10 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
             </div>
           </div>
 
-          <!-- Pane 6 Bottom Pager -->
+          <!-- Pane 7 Bottom Pager -->
           <div class="pane-pager-bar split">
             <button class="pane-pager-btn prev" data-target="pane-recovery">
-              [← PREV: 05 Sovereign Disaster Recovery]
+              [← PREV: 06 Sovereign Disaster Recovery]
             </button>
             <button class="pane-pager-btn top" data-target="pane-overview">
               [↑ BACK TO OVERVIEW (01) ⇪]
@@ -1563,6 +2041,9 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
         <div class="repl-shortcuts-bar">
           <span class="shortcuts-label">CMDS:</span>
           <button class="cmd-pill" data-cmd="help">help</button>
+          <button class="cmd-pill" data-cmd="secret">secret</button>
+          <button class="cmd-pill" data-cmd="project">project</button>
+          <button class="cmd-pill" data-cmd="migrate">migrate</button>
           <button class="cmd-pill" data-cmd="init">init</button>
           <button class="cmd-pill" data-cmd="track">track .env</button>
           <button class="cmd-pill" data-cmd="push">push</button>

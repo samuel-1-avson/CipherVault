@@ -682,12 +682,15 @@ pub async fn boot_swarm(
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(300)))
         .build();
 
+    // Debug, not Display: some transport errors (notably quinn's) render
+    // an empty Display, which used to surface as a content-free
+    // "quic listen: " line that hid the real bind failure.
     swarm
         .listen_on(config.tcp_listen)
-        .map_err(|e| SwarmError::Transport(format!("tcp listen: {e}")))?;
+        .map_err(|e| SwarmError::Transport(format!("tcp listen: {e:?}")))?;
     swarm
         .listen_on(config.quic_listen)
-        .map_err(|e| SwarmError::Transport(format!("quic listen: {e}")))?;
+        .map_err(|e| SwarmError::Transport(format!("quic listen: {e:?}")))?;
 
     for addr in &config.advertise_addrs {
         swarm.add_external_address(addr.clone());

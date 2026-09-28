@@ -2,7 +2,7 @@
 //! background start, plain-language status, and stop. Uses a scratch data
 //! dir and a high test port; a Drop guard stops the node even on failure.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const TEST_PORT: u16 = 18511;
@@ -35,6 +35,60 @@ fn parse_tcp_bootstrap(output: &str) -> String {
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ciphervault"))
+}
+
+/// Resolves the operator daemon exactly like the wizard does: a sibling
+/// of the CLI binary, else whatever `PATH` resolves.
+fn operator_bin() -> PathBuf {
+    let exe_name = if cfg!(windows) {
+        "ciphervault-operator.exe"
+    } else {
+        "ciphervault-operator"
+    };
+    if let Some(dir) = PathBuf::from(env!("CARGO_BIN_EXE_ciphervault"))
+        .parent()
+        .map(Path::to_path_buf)
+    {
+        let sibling = dir.join(exe_name);
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    PathBuf::from(exe_name)
+}
+
+/// Fails fast when the operator the wizard would drive does not match
+/// the CLI under test (e.g. `cargo test -p ciphervault-cli` without a
+/// workspace build falls back to a stale global install). Version skew
+/// otherwise surfaces minutes later as cryptic swarm-boot or 404
+/// failures; the fix is `cargo build --workspace` (what CI does).
+fn require_matching_operator() {
+    let cli_version = Command::new(bin())
+        .arg("--version")
+        .output()
+        .expect("cli reports its version");
+    let op_output = Command::new(operator_bin()).arg("--version").output();
+    let op_version = op_output.expect(
+        "no operator binary found next to the test CLI nor on PATH; run `cargo build --workspace` first",
+    );
+    assert!(
+        op_version.status.success(),
+        "operator must report its version"
+    );
+    let cli_v = String::from_utf8_lossy(&cli_version.stdout)
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("?")
+        .to_string();
+    let op_v = String::from_utf8_lossy(&op_version.stdout)
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("?")
+        .to_string();
+    assert_eq!(
+        cli_v, op_v,
+        "operator/CLI version skew: rebuild the workspace (`cargo build --workspace`) so the wizard drives a matching daemon"
+    );
 }
 
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -306,6 +360,7 @@ fn two_wizard_nodes_peer_over_p2p() {
     // to the seed's advertised address. Committed signal: the wizard P2P
     // path end to end (flags plumbed, swarm booted, endpoint serving).
     // Live mesh proof (probe-peer RPC) is the drill script's job.
+    require_matching_operator();
     let dir_a = scratch_dir("p2p-a");
     let guard_a = StopOnDrop { dir: dir_a.clone() };
     let setup_a = Command::new(bin())

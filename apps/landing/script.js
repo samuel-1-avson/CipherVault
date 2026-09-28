@@ -22,6 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initFastCdcSimulator();
   initBenchmarkGauges();
   initInteractivePipeline();
+  initScopedSimulator();
+  initAuditChainSimulator();
   initShamirSimulator();
   initPaperKit();
   initLiveTelemetryStream();
@@ -689,13 +691,14 @@ function initMobileNavigation() {
 }
 
 /* ==============================================================================
-   3. Keyboard Shortcuts ([1-6], [/], [C], [Esc])
+   3. Keyboard Shortcuts ([1-7], [/], [C], [Esc])
    ============================================================================== */
 function initKeyboardShortcuts() {
   const paneOrder = [
     'pane-overview',
     'pane-dilemma',
     'pane-engine',
+    'pane-scoped',
     'pane-benchmarks',
     'pane-recovery',
     'pane-quickstart'
@@ -711,8 +714,8 @@ function initKeyboardShortcuts() {
       return;
     }
 
-    // Number keys 1-6
-    if (e.key >= '1' && e.key <= '6') {
+    // Number keys 1-7
+    if (e.key >= '1' && e.key <= '7') {
       const idx = parseInt(e.key, 10) - 1;
       if (paneOrder[idx]) {
         switchTab(paneOrder[idx]);
@@ -1557,6 +1560,13 @@ function initLiveTelemetryStream() {
 const REPL_RESPONSES = {
   help: [
     'CipherVault console (v1.0.20) — real CLI syntax, live where a browser can measure:',
+    '  Scoped secrets & enterprise management (NEW v1.0.20):',
+    '    project <list|show|use> - List and inspect scoped secret projects',
+    '    secret <get|set|rotate> - Granular per-secret CRUD with envelope encryption',
+    '    migrate <plan|apply...> - 7-stage zero-downtime migration from raw vaults',
+    '    repo <link|list>     - Bind VCS repositories to project by immutable ID',
+    '    scope <token|create> - Manage cryptographic scope tokens with DPoP binding',
+    '    context <show|set>   - Inspect and switch active project/environment context',
     '  Local vault commands (run in your terminal; this console shows usage):',
     '    init                 - Initialize local vault & print emergency paper kit',
     '    track <paths...>     - Enroll confidential files into the SQLite WAL ledger',
@@ -1575,6 +1585,61 @@ const REPL_RESPONSES = {
     '    compare              - Architectural matrix vs AWS / Vault / 1Password / SOPS',
     '    donate               - Community crypto donation addresses (repo-sourced)',
     '    clear                - Clear terminal log drawer'
+  ],
+  secret: [
+    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.20):',
+    '  ciphervault secret set <NAME> [--value <VAL>] [--env <ENV>] [--project <PROJ>]',
+    '  ciphervault secret get <NAME> [--meta] [--env <ENV>] [--project <PROJ>]',
+    '  ciphervault secret list [--tag <TAG>] [--status active] [--env <ENV>]',
+    '  ciphervault secret find <QUERY> (metadata-only substring search)',
+    '  ciphervault secret rotate <NAME> [--value <NEW_VAL>] [--reason <AUDIT_REASON>]',
+    '  ciphervault secret delete <NAME> [--reason <AUDIT_REASON>] (soft-delete + crypto-shred)',
+    '  What it really does: Generates a per-version 256-bit DEK under XChaCha20-Poly1305,',
+    '  binds Authenticated Additional Data (AAD) to (tenant||project||env||secret||version),',
+    '  wraps DEK with project KEK, and appends a tamper-evident entry to audit_chain.'
+  ],
+  project: [
+    'Scoped project boundary management (v1.0.20):',
+    '  ciphervault project list [--endpoint <URL>] [--token <TOKEN>]',
+    '  ciphervault project show <PROJECT_SLUG>',
+    '  ciphervault project use <PROJECT_SLUG>',
+    '  What it really does: Projects define the primary security and administrative boundary.',
+    '  Secrets belong to projects; environments (dev/staging/prod) and repository bindings',
+    '  are scoped strictly within their parent project to prevent cross-project disclosure.'
+  ],
+  scope: [
+    'Cryptographic scope tokens and DPoP authorization (v1.0.20):',
+    '  ciphervault scope token [--env <ENV>] [--project <PROJ>] [--ttl <SECONDS>]',
+    '  What it really does: Issues a signed HMAC scope token (cvst1...) with embedded',
+    '  claims (tenant, project, environment, allowed repos). Client HTTP calls attach',
+    '  asymmetric DPoP-Lite proofs so stolen tokens cannot be replayed from other hosts.'
+  ],
+  migrate: [
+    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.20):',
+    '  ciphervault migrate plan [--vault <DIR>] [--project <PROJ>] [--default-env <ENV>]',
+    '  ciphervault migrate apply --migration-id <ID> [--project <PROJ>]',
+    '  ciphervault migrate verify --migration-id <ID> [--project <PROJ>]',
+    '  ciphervault migrate resolve --migration-id <ID> --entry <ENTRY_ID>',
+    '  What it really does: Safely parses legacy monolithic .env files and vault snapshots,',
+    '  extracts discrete key-value pairs, assigns scope AAD, readback-verifies every applied',
+    '  credential before atomic pointer cutover, and crypto-shreds legacy plaintext.'
+  ],
+  repo: [
+    'Immutable VCS repository bindings (v1.0.20):',
+    '  ciphervault repo link --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID>',
+    '  ciphervault repo list [--project <PROJ>]',
+    '  What it really does: Binds projects to Git repositories by immutable numeric provider ID',
+    '  rather than volatile repository names. Survives renames, transfers, and monorepos',
+    '  without invalidating scoped secret bindings, verified by signed HMAC-SHA256 webhooks.'
+  ],
+  context: [
+    'Local developer workspace context pinning (v1.0.20):',
+    '  ciphervault context show',
+    '  ciphervault context set --project <PROJ> --env <ENV>',
+    '  ciphervault context clear',
+    '  What it really does: Stores local client UX defaults (.ciphervault/context.json)',
+    '  so routine CLI commands automatically target the active project and environment.',
+    '  All server requests still enforce server-side RBAC/ABAC token verification.'
   ],
   init: [
     'Runs on your machine — this console cannot initialize a vault for you.',
@@ -1804,7 +1869,13 @@ function initInteractiveRepl() {
 
     let responseLines = REPL_RESPONSES[lower];
     if (!responseLines) {
-      if (lower.startsWith('bench')) responseLines = REPL_RESPONSES['bench'];
+      if (lower.startsWith('sec')) responseLines = REPL_RESPONSES['secret'];
+      else if (lower.startsWith('proj')) responseLines = REPL_RESPONSES['project'];
+      else if (lower.startsWith('scop')) responseLines = REPL_RESPONSES['scope'];
+      else if (lower.startsWith('mig')) responseLines = REPL_RESPONSES['migrate'];
+      else if (lower.startsWith('rep')) responseLines = REPL_RESPONSES['repo'];
+      else if (lower.startsWith('cont')) responseLines = REPL_RESPONSES['context'];
+      else if (lower.startsWith('bench')) responseLines = REPL_RESPONSES['bench'];
       else if (lower.startsWith('comp')) responseLines = REPL_RESPONSES['compare'];
       else if (lower.startsWith('rec')) responseLines = REPL_RESPONSES['recover'];
       else if (lower.startsWith('anch')) responseLines = REPL_RESPONSES['anchor'];
@@ -1879,6 +1950,8 @@ const INSTALL_SNIPPETS = {
   win: `# Install CipherVault for Windows via PowerShell (Release v1.0.20)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
   nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.20)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
   cargo: `# Build and install standalone CLI directly from Git source (v1.0.20)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  brew: `# Install CipherVault on macOS or Linux via Homebrew (Release v1.0.20)\nbrew tap samuel-1-avson/ciphervault https://github.com/samuel-1-avson/CipherVault\nbrew install ciphervault`,
+  scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.20)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
   docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.20)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
@@ -1909,7 +1982,7 @@ function initInstallSnippets() {
     });
   }
 
-  // Hero Target Pills Switcher (Cargo / Windows / Linux / Docker)
+  // Hero Target Pills Switcher (Cargo / Windows / Linux / Docker / Brew / Winget)
   const heroPills = document.querySelectorAll('.hero-target-pill');
   const heroCmd = document.getElementById('tui-install-cmd');
   const heroOsLabel = document.getElementById('tui-os-label');
@@ -1922,6 +1995,14 @@ function initInstallSnippets() {
     win: {
       cmd: 'irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex',
       label: 'WINDOWS (POWERSHELL)'
+    },
+    brew: {
+      cmd: 'brew install ciphervault',
+      label: 'MACOS / LINUX (HOMEBREW)'
+    },
+    winget: {
+      cmd: 'winget install CipherVault',
+      label: 'WINDOWS (WINGET / SCOOP)'
     },
     nix: {
       cmd: 'curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash',
@@ -2175,6 +2256,209 @@ function initCryptoDonations() {
   if (btnCopy) btnCopy.addEventListener('click', performCopy);
   if (addressText) addressText.addEventListener('click', performCopy);
   if (qrContainer) qrContainer.addEventListener('click', performCopy);
+}
+
+/* ==============================================================================
+   14. Interactive Scoped Secrets & Envelope Encryption Workstation (T-701/T-703)
+   ============================================================================== */
+function initScopedSimulator() {
+  const btnProd = document.getElementById('btn-env-prod');
+  const btnStage = document.getElementById('btn-env-stage');
+  const btnDev = document.getElementById('btn-env-dev');
+  const envValElem = document.getElementById('tree-active-env-val');
+  const envTagElem = document.getElementById('tree-active-env-tag');
+  const gateStatusElem = document.getElementById('scoped-gate-status');
+  const tokenElem = document.getElementById('scoped-token-preview');
+  const dekElem = document.getElementById('scoped-dek-hex');
+  const aadElem = document.getElementById('scoped-aad-display');
+  const aadHashElem = document.getElementById('scoped-aad-hash');
+  const dpopElem = document.getElementById('scoped-dpop-thumbprint');
+
+  if (!btnProd || !btnStage || !btnDev || !aadHashElem) return;
+
+  const envButtons = [btnProd, btnStage, btnDev];
+  const te = new TextEncoder();
+
+  const ENV_CONFIGS = {
+    production: {
+      tag: 'Dual-Admin Active',
+      gate: 'DUAL-ADMIN REQUIRED',
+      branch: 'refs/heads/main',
+      prefix: 'prod'
+    },
+    staging: {
+      tag: 'Branch / PR Gated',
+      gate: 'BRANCH CONFINED',
+      branch: 'refs/heads/staging',
+      prefix: 'stage'
+    },
+    development: {
+      tag: 'Single-Dev Fast-Path',
+      gate: 'DEVELOPER LOCAL',
+      branch: 'any local branch',
+      prefix: 'dev'
+    }
+  };
+
+  const updateEnvironment = (envKey) => {
+    const cfg = ENV_CONFIGS[envKey] || ENV_CONFIGS.production;
+
+    envButtons.forEach(btn => {
+      const isCurrent = btn.getAttribute('data-env') === envKey;
+      btn.classList.toggle('active', isCurrent);
+      btn.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+    });
+
+    if (envValElem) envValElem.textContent = envKey;
+    if (envTagElem) envTagElem.textContent = cfg.tag;
+    if (gateStatusElem) {
+      gateStatusElem.textContent = cfg.gate;
+    }
+
+    // Generate genuine 256-bit DEK in volatile memory
+    const dekBytes = cvRandomBytes(32);
+    const dekHex = cvBytesToHex(dekBytes);
+    if (dekElem) {
+      dekElem.textContent = `DEK: ${dekHex.substring(0, 16)}... [ZeroizeOnDrop]`;
+    }
+
+    // Compute live Scope-bound AAD & real SHA-256 digest
+    const aadStr = `tenant:acme-corp|project:checkout-api|env:${envKey}|secret:DATABASE_URL|v:4`;
+    if (aadElem) aadElem.textContent = aadStr;
+
+    const aadHash = cvSha256Hex(te.encode(aadStr));
+    if (aadHashElem) aadHashElem.textContent = `sha256:${aadHash}`;
+
+    // Generate genuine DPoP ephemeral fingerprint
+    const dpopSeed = cvRandomBytes(16);
+    const dpopFp = cvSha256Hex(dpopSeed).substring(0, 12);
+    if (dpopElem) {
+      dpopElem.textContent = `DPoP Fingerprint: ed25519:${dpopFp}... (Branch: ${cfg.branch})`;
+    }
+
+    // Live Scope token preview
+    if (tokenElem) {
+      tokenElem.textContent = `cvst1_acme_checkout_api_${cfg.prefix}_${aadHash.substring(0, 10)}...`;
+    }
+  };
+
+  btnProd.addEventListener('click', () => updateEnvironment('production'));
+  btnStage.addEventListener('click', () => updateEnvironment('staging'));
+  btnDev.addEventListener('click', () => updateEnvironment('development'));
+
+  // Initial calculation on page load
+  updateEnvironment('production');
+}
+
+/* ==============================================================================
+   15. Cryptographic Tamper-Evident Audit Ledger (T-901 / §20 Hash Chaining)
+   ============================================================================== */
+function initAuditChainSimulator() {
+  const block0 = document.getElementById('audit-block-0');
+  const block1 = document.getElementById('audit-block-1');
+  const block2 = document.getElementById('audit-block-2');
+  const block3 = document.getElementById('audit-block-3');
+  const hash0 = document.getElementById('audit-hash-0');
+  const hash1 = document.getElementById('audit-hash-1');
+  const hash2 = document.getElementById('audit-hash-2');
+  const hash3 = document.getElementById('audit-hash-3');
+  const actor2 = document.getElementById('audit-actor-2');
+  const status2 = document.getElementById('audit-status-2');
+  const status3 = document.getElementById('audit-status-3');
+  const chainStatus = document.getElementById('audit-chain-status');
+  const btnTamper = document.getElementById('btn-tamper-audit');
+  const btnVerify = document.getElementById('btn-verify-audit');
+
+  if (!block0 || !hash0 || !btnTamper || !btnVerify) return;
+
+  const te = new TextEncoder();
+
+  // Genuine Merkle Hash Preimages (exact formula matching services/account/src/audit_chain.rs)
+  const GENESIS_PREIMAGE = 'CIPHERVAULT_AUDIT_V2_TENANT_ACME_CORP_GENESIS_ROOT';
+  const h0 = cvSha256Hex(te.encode(GENESIS_PREIMAGE));
+
+  const p1 = `${h0}|type:secret.created|actor:admin-alice@acme.corp|target:DATABASE_URL|v:1|res:ok`;
+  const h1 = cvSha256Hex(te.encode(p1));
+
+  const p2_authentic = `${h1}|type:secret.read|actor:ci-runner-88|target:DATABASE_URL|v:1|res:ok`;
+  const h2_authentic = cvSha256Hex(te.encode(p2_authentic));
+
+  const p3_authentic = `${h2_authentic}|type:secret.rotated|actor:sec-lead-bob+sre-carol|target:DATABASE_URL|v:2|res:ok`;
+  const h3_authentic = cvSha256Hex(te.encode(p3_authentic));
+
+  const renderGenuineState = () => {
+    hash0.textContent = `sha256:${h0.substring(0, 16)}…`;
+    hash1.textContent = `sha256:${h1.substring(0, 16)}…`;
+    hash2.textContent = `sha256:${h2_authentic.substring(0, 16)}…`;
+    hash3.textContent = `sha256:${h3_authentic.substring(0, 16)}…`;
+
+    if (actor2) actor2.textContent = 'ci-runner-88 (DPoP Proof)';
+    if (status2) {
+      status2.textContent = '✓ Chained to #01';
+      status2.className = 'block-status-pill text-mint';
+    }
+    if (status3) {
+      status3.textContent = '✓ Chained to #02';
+      status3.className = 'block-status-pill text-mint';
+    }
+
+    [block0, block1, block2, block3].forEach(b => {
+      if (b) {
+        b.classList.remove('tampered');
+        b.classList.add('verified');
+      }
+    });
+
+    if (chainStatus) {
+      chainStatus.className = 'audit-status-banner verified';
+      chainStatus.innerHTML = `
+        <span class="status-dot green">●</span>
+        <span class="status-msg">CHAIN VERIFIED: All 4 audit blocks cryptographically linked via SHA-256 preimages.</span>
+      `;
+    }
+  };
+
+  const renderTamperedState = () => {
+    // Attacker modifies row 2 in SQLite (spoofing actor or injecting rogue access)
+    const p2_tampered = `${h1}|type:secret.read|actor:attacker-injected@rogue-host|target:DATABASE_URL|v:1|res:ok`;
+    const h2_tampered = cvSha256Hex(te.encode(p2_tampered));
+
+    if (actor2) actor2.textContent = 'attacker-injected@rogue-host [UNAUTHORIZED]';
+    if (hash2) hash2.textContent = `sha256:${h2_tampered.substring(0, 16)}…`;
+
+    if (status2) {
+      status2.textContent = '⚠ ROW PREIMAGE ALTERED';
+      status2.className = 'block-status-pill text-danger';
+    }
+
+    if (status3) {
+      status3.textContent = '✗ PARENT HASH MISMATCH';
+      status3.className = 'block-status-pill text-danger';
+    }
+
+    if (block2) {
+      block2.classList.remove('verified');
+      block2.classList.add('tampered');
+    }
+    if (block3) {
+      block3.classList.remove('verified');
+      block3.classList.add('tampered');
+    }
+
+    if (chainStatus) {
+      chainStatus.className = 'audit-status-banner tampered';
+      chainStatus.innerHTML = `
+        <span class="status-dot red">●</span>
+        <span class="status-msg">ALERT: TAMPER DETECTED at Block #02! Stored hash differs from Block #03 parent pointer. Merkle validation failed.</span>
+      `;
+    }
+  };
+
+  btnTamper.addEventListener('click', renderTamperedState);
+  btnVerify.addEventListener('click', renderGenuineState);
+
+  // Initialize genuine chain on load
+  renderGenuineState();
 }
 
 /* Node.js test export (inert in browsers): lets the committed contract test

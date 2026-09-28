@@ -235,14 +235,28 @@ fn port_is_free(port: u16) -> bool {
         && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-/// Finds a currently free loopback port for P2P listeners.
-/// Best-effort: another process could grab it before the daemon binds.
+/// Finds a currently free loopback port for P2P listeners. The daemon
+/// binds the port on TCP *and* UDP (QUIC), so a candidate must be free
+/// on both protocols: a TCP-only probe happily hands out a UDP-held
+/// port, and the daemon then dies with a bind failure at boot.
+/// Best-effort: another process could still grab it before the daemon
+/// binds, but steady-state holders are excluded.
 fn find_free_port() -> Option<u16> {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .ok()?
-        .local_addr()
-        .ok()
-        .map(|addr| addr.port())
+    for _ in 0..10 {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .ok()?
+            .local_addr()
+            .ok()
+            .map(|addr| addr.port())?;
+        // Mirror port_is_free: probe wildcard and loopback, since each
+        // direction alone misses holders on Windows.
+        let udp_free = std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok()
+            && std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok();
+        if udp_free {
+            return Some(port);
+        }
+    }
+    None
 }
 
 /// Picks two distinct free ports for the P2P TCP and QUIC listeners.
@@ -926,6 +940,12 @@ pub(crate) async fn cmd_node_p2p_info(data_dir: Option<PathBuf>) -> Result<()> {
     if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
         bail!(
             "P2P is not enabled for \"{}\" (it was set up without --p2p). Set up a new folder with --p2p to join the mesh.",
+            config.operator_id
+        );
+    }
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!(
+            "the operator running \"{}\" is too old for P2P identity (no /v1/peers/p2p route); run `ciphervault update` to refresh every binary",
             config.operator_id
         );
     }
