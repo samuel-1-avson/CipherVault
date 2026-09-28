@@ -27,6 +27,9 @@ param(
     [string]$DomainName = "vault.cipherv.online",
     [string]$AcmeEmail = "admin@example.com",
     [string]$AccountTotpSecret = "ciphervault-account-totp-key",
+    [string]$AccountScopeTokenSecret = "ciphervault-account-scope-token-key",
+    [string]$AccountLocalKekSecret = "ciphervault-account-local-kek",
+    [string]$VcsWebhookSecret = "ciphervault-vcs-webhook-key",
     [string]$HealthCheckIp = "",
 
     [string]$FinalityConfirmations = "",
@@ -223,11 +226,16 @@ foreach ($item in @(
     @{ Name = "RuntimeServiceAccount"; Value = $RuntimeServiceAccount },
     @{ Name = "DomainName"; Value = $DomainName },
     @{ Name = "AccountTotpSecret"; Value = $AccountTotpSecret }
+    @{ Name = "AccountScopeTokenSecret"; Value = $AccountScopeTokenSecret },
+    @{ Name = "AccountLocalKekSecret"; Value = $AccountLocalKekSecret },
+    @{ Name = "VcsWebhookSecret"; Value = $VcsWebhookSecret }
 )) {
     Assert-MetadataValue $item.Name $item.Value
 }
-if ($AccountTotpSecret -notmatch '^[A-Za-z0-9_-]+$') {
-    throw "AccountTotpSecret contains unsupported characters."
+foreach ($secretName in @($AccountTotpSecret, $AccountScopeTokenSecret, $AccountLocalKekSecret, $VcsWebhookSecret)) {
+    if ($secretName -notmatch '^[A-Za-z0-9_-]+$') {
+        throw "A Secret Manager secret name contains unsupported characters."
+    }
 }
 if ($RuntimeServiceAccount -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\.iam\.gserviceaccount\.com$') {
     throw "RuntimeServiceAccount must be a Google service-account address."
@@ -325,6 +333,9 @@ try {
         "webauthn-origin=https://$DomainName",
         "account-allowed-origins=https://$DomainName",
         "account-totp-secret=$AccountTotpSecret",
+        "account-scope-token-secret=$AccountScopeTokenSecret",
+        "account-local-kek-secret=$AccountLocalKekSecret",
+        "vcs-webhook-secret=$VcsWebhookSecret",
         "project-id=$ProjectId"
     )
     if ($FinalityConfirmations.Trim() -ne "") { $metadata += "finality-confirmations=$($FinalityConfirmations.Trim())" }

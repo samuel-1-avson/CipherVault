@@ -43,6 +43,9 @@ services:
       - CIPHERVAULT_ACCOUNT_COOKIE_SECURE=${CIPHERVAULT_ACCOUNT_COOKIE_SECURE:-true}
       - CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=/run/secrets/account-totp-key
       - CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=${CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY:-true}
+      - CIPHERVAULT_ACCOUNT_SCOPE_TOKEN_KEY_FILE=/run/secrets/account-scope-token-key
+      - CIPHERVAULT_ACCOUNT_LOCAL_KEK_FILE=/run/secrets/account-local-kek
+      - CIPHERVAULT_VCS_WEBHOOK_KEY_FILE=/run/secrets/vcs-webhook-key
       - CIPHERVAULT_OPERATOR_ENDPOINTS=${CIPHERVAULT_OPERATOR_ENDPOINTS:-}
       - CIPHERVAULT_OPERATOR_SERVICE_TOKEN=${CIPHERVAULT_OPERATOR_SERVICE_TOKEN:-}
     volumes:
@@ -50,6 +53,21 @@ services:
     secrets:
       - source: account_totp_key
         target: account-totp-key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: account_scope_token_key
+        target: account-scope-token-key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: account_local_kek
+        target: account-local-kek
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: vcs_webhook_key
+        target: vcs-webhook-key
         uid: "10001"
         gid: "10001"
         mode: 0400
@@ -102,3 +120,9 @@ volumes:
 secrets:
   account_totp_key:
     file: ${CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE:-/run/ciphervault-account-totp-key}
+  account_scope_token_key:
+    file: ${CIPHERVAULT_ACCOUNT_SCOPE_TOKEN_KEY_FILE:-/run/ciphervault-account-scope-token-key}
+  account_local_kek:
+    file: ${CIPHERVAULT_ACCOUNT_LOCAL_KEK_FILE:-/run/ciphervault-account-local-kek}
+  vcs_webhook_key:
+    file: ${CIPHERVAULT_VCS_WEBHOOK_KEY_FILE:-/run/ciphervault-vcs-webhook-key}

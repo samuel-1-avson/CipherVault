@@ -12,6 +12,9 @@ readonly RELEASE_DIR="$APP_DIR/release"
 readonly SECRETS_DIR="$APP_DIR/secrets"
 readonly ENV_FILE="$APP_DIR/.env"
 readonly TOTP_KEY_FILE="$SECRETS_DIR/account-totp-key"
+readonly SCOPE_TOKEN_KEY_FILE="$SECRETS_DIR/account-scope-token-key"
+readonly LOCAL_KEK_FILE="$SECRETS_DIR/account-local-kek"
+readonly VCS_WEBHOOK_KEY_FILE="$SECRETS_DIR/vcs-webhook-key"
 
 metadata_value() {
     local key="$1"
@@ -54,9 +57,11 @@ install_docker() {
     fi
 }
 
-fetch_totp_key() {
+fetch_hex_secret() {
     local project_id="$1"
     local secret_name="$2"
+    local dest_file="$3"
+    local label="$4"
     local token response_file key_file
     token=$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' \
         'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
@@ -70,11 +75,15 @@ fetch_totp_key() {
         > "$response_file"
     jq -er '.payload.data' "$response_file" | base64 --decode | tr -d '\r\n' > "$key_file"
     if ! grep -Eq '^[[:xdigit:]]{64}$' "$key_file"; then
-        echo 'The account TOTP wrapping secret must contain exactly 32 hex bytes' >&2
+        echo "The $label secret must contain exactly 32 hex bytes" >&2
         exit 1
     fi
     install -d -m 0700 "$SECRETS_DIR"
-    install -o 10001 -g 10001 -m 0400 "$key_file" "$TOTP_KEY_FILE"
+    install -o 10001 -g 10001 -m 0400 "$key_file" "$dest_file"
+}
+
+fetch_totp_key() {
+    fetch_hex_secret "$1" "$2" "$TOTP_KEY_FILE" 'account TOTP wrapping'
 }
 
 install_docker
@@ -95,6 +104,9 @@ readonly WEBAUTHN_RP_ID="$(metadata_value webauthn-rp-id "$WEB_DOMAIN")"
 readonly WEBAUTHN_ORIGIN="$(metadata_value webauthn-origin "https://$WEB_DOMAIN")"
 readonly ACCOUNT_ALLOWED_ORIGINS="$(metadata_value account-allowed-origins "$WEBAUTHN_ORIGIN")"
 readonly TOTP_SECRET_NAME="$(metadata_value account-totp-secret ciphervault-account-totp-key)"
+readonly SCOPE_TOKEN_SECRET_NAME="$(metadata_value account-scope-token-secret ciphervault-account-scope-token-key)"
+readonly LOCAL_KEK_SECRET_NAME="$(metadata_value account-local-kek-secret ciphervault-account-local-kek)"
+readonly VCS_WEBHOOK_SECRET_NAME="$(metadata_value vcs-webhook-secret ciphervault-vcs-webhook-key)"
 readonly PROJECT_ID="$(metadata_value project-id)"
 readonly FINALITY_CONFIRMATIONS="$(metadata_value finality-confirmations)"
 readonly OPERATOR_REGIONS="$(metadata_value operator-regions)"
@@ -111,8 +123,17 @@ if [[ -z "$PROJECT_ID" || ! "$TOTP_SECRET_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
     echo 'project-id or account-totp-secret metadata is invalid' >&2
     exit 1
 fi
+for secret_name in "$SCOPE_TOKEN_SECRET_NAME" "$LOCAL_KEK_SECRET_NAME" "$VCS_WEBHOOK_SECRET_NAME"; do
+    if [[ ! "$secret_name" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo 'account-scope-token-secret, account-local-kek-secret, or vcs-webhook-secret metadata is invalid' >&2
+        exit 1
+    fi
+done
 
 fetch_totp_key "$PROJECT_ID" "$TOTP_SECRET_NAME"
+fetch_hex_secret "$PROJECT_ID" "$SCOPE_TOKEN_SECRET_NAME" "$SCOPE_TOKEN_KEY_FILE" 'scope-token signing'
+fetch_hex_secret "$PROJECT_ID" "$LOCAL_KEK_SECRET_NAME" "$LOCAL_KEK_FILE" 'account local KEK'
+fetch_hex_secret "$PROJECT_ID" "$VCS_WEBHOOK_SECRET_NAME" "$VCS_WEBHOOK_KEY_FILE" 'VCS webhook'
 install -o root -g root -m 0644 "$RELEASE_DIR/docker-compose.yml" "$APP_DIR/docker-compose.yml"
 install -o root -g root -m 0644 "$RELEASE_DIR/Caddyfile" "$APP_DIR/Caddyfile"
 umask 077
@@ -129,6 +150,9 @@ CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=$ACCOUNT_ALLOWED_ORIGINS
 CIPHERVAULT_ACCOUNT_COOKIE_SECURE=true
 CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=$TOTP_KEY_FILE
 CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=true
+CIPHERVAULT_ACCOUNT_SCOPE_TOKEN_KEY_FILE=$SCOPE_TOKEN_KEY_FILE
+CIPHERVAULT_ACCOUNT_LOCAL_KEK_FILE=$LOCAL_KEK_FILE
+CIPHERVAULT_VCS_WEBHOOK_KEY_FILE=$VCS_WEBHOOK_KEY_FILE
 CIPHERVAULT_FINALITY_CONFIRMATIONS=$FINALITY_CONFIRMATIONS
 CIPHERVAULT_OPERATOR_REGIONS=$OPERATOR_REGIONS
 CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY=$CHECKPOINT_PUBLISHER_KEY
