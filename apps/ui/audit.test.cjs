@@ -517,6 +517,7 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(matrixHtml.includes('Editor or below'), 'Role matrix must show the admin grant ceiling');
   assert(matrixHtml.includes('Link vault'), 'Role matrix must list the vault-link capability');
 
+  vm.runInContext(`state.accessMode = 'local_private';`, context);
   response = { ok: true, json: async () => ({ operators: [
     { endpoint: 'op-1', status: 'online', challenges: [{
       challenge_id: 'abcdef1234567890abcdef1234567890',
@@ -758,6 +759,26 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   vm.runInContext(`applyAccessContext({ mode: 'local_private' })`, context);
   assert.equal(getElementById('btn-signin-device').hidden, false);
   assert.equal(getElementById('btn-signin-device').getAttribute('aria-hidden'), 'false');
+
+  // 23. Local-vault tabs stay off the public explorer, and local-only
+  // actions never touch the network there (no 403 error walls).
+  for (const tab of ['diff', 'dag', 'files', 'activity', 'guardians', 'fleet', 'fastcdc']) {
+    assert(shellHtml.match(new RegExp(`id="tab-btn-${tab}"[^>]*data-private-surface`)), `tab-btn-${tab} must carry data-private-surface`);
+    assert(shellHtml.match(new RegExp(`id="tab-${tab}"[^>]*data-private-surface`)), `tab-${tab} must carry data-private-surface`);
+  }
+  assert(shellHtml.match(/id="workspace-switcher-wrap"[^>]*data-private-surface/), 'Workspace switcher must carry data-private-surface');
+  assert(shellHtml.match(/id="scope-banner"[^>]*data-private-surface/), 'Scope banner must carry data-private-surface');
+
+  let publicFetchCount = 0;
+  const stockFetch = context.fetch;
+  context.fetch = async () => { publicFetchCount++; return { ok: false, status: 403, json: async () => ({}) }; };
+  vm.runInContext(`state.accessMode = 'public_explorer';`, context);
+  await vm.runInContext('runDiffComparison()', context);
+  assert.equal(publicFetchCount, 0, 'diff must not fetch on the public explorer');
+  await vm.runInContext('fetchApprovals()', context);
+  assert.equal(publicFetchCount, 0, 'approvals must not fetch on the public explorer');
+  assert.equal(getElementById('approvals-status').textContent, 'Approval queue is available only in a local private workspace.');
+  context.fetch = stockFetch;
 
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });

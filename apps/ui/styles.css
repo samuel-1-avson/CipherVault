@@ -1700,6 +1700,9 @@ html[data-theme="dark"] .btn-theme-toggle .icon-theme-moon,
   display: block;
   animation: fade-in 0.12s ease;
 }
+.tab-content[hidden] {
+  display: none !important;
+}
 @keyframes fade-in {
   from {
     opacity: 0;

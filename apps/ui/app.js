@@ -689,6 +689,12 @@ function renderRoleMatrix() {
 }
 
 async function fetchApprovals() {
+  if (isPublicExplorer()) {
+    renderApprovalQueue({ operators: [] });
+    const approvalsStatus = document.getElementById('approvals-status');
+    if (approvalsStatus) approvalsStatus.textContent = 'Approval queue is available only in a local private workspace.';
+    return;
+  }
   const status = document.getElementById('approvals-status');
   if (status) status.textContent = 'Loading…';
   try {
@@ -3963,6 +3969,10 @@ function initDiffViewer() {
 }
 
 async function runDiffComparison() {
+  if (isPublicExplorer()) {
+    showToast('Secret diff is available only in a local private workspace.', 'warning');
+    return;
+  }
   const selectBase = document.getElementById('diff-select-base');
   const selectTarget = document.getElementById('diff-select-target');
   const btnRun = document.getElementById('btn-run-diff');
@@ -4632,6 +4642,10 @@ function handleTerminalCommand(cmd) {
       fetchAllData();
       break;
     case 'fleet':
+      if (isPublicExplorer()) {
+        appendTerminalLog('FLEET', 'Maintenance fleet is available only in a local private workspace.', 'var(--signal)');
+        break;
+      }
       const tabFleetBtn = document.querySelector('[data-target="tab-fleet"]');
       if (tabFleetBtn) tabFleetBtn.click();
       appendTerminalLog('FLEET', 'Switched to Maintenance Fleet Overview', 'var(--chain)');
@@ -5394,10 +5408,10 @@ async function switchWorkspace(dbPath) {
       if (btn) btn.setAttribute('aria-expanded', 'false');
       await Promise.all([fetchWorkspaces(), fetchAllData()]);
     } else {
-      showToast("Workspace switch error: " + (data.error || "Failed"), true);
+      showToast("Workspace switch error: " + (data.error || "Failed"), 'error');
     }
   } catch (err) {
-    showToast("Workspace switch failed: " + err.message, true);
+    showToast("Workspace switch failed: " + err.message, 'error');
   }
 }
 
@@ -5425,6 +5439,10 @@ function initWorkspaceSwitcher() {
     rescanBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       try {
+        if (isPublicExplorer()) {
+          showToast('Workspace scanning is available only in a local private workspace.', 'warning');
+          return;
+        }
         showToast("Scanning system for local vaults...");
         const res = await fetch('/api/workspaces/scan', { method: 'POST' });
         const data = await res.json();
@@ -5433,7 +5451,7 @@ function initWorkspaceSwitcher() {
           renderWorkspaces(data.workspaces, data.active_workspace_db);
         }
       } catch (err) {
-        showToast("Rescan failed: " + err.message, true);
+        showToast("Rescan failed: " + err.message, 'error');
       }
     });
   }

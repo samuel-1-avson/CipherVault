@@ -32,7 +32,7 @@
         </div>
 
         <!-- Multi-Vault Workspace Explorer Switcher -->
-        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap">
+        <div class="workspace-switcher-dropdown" id="workspace-switcher-wrap" data-private-surface>
           <button class="workspace-switcher-btn" id="btn-workspace-switcher" aria-haspopup="true" aria-expanded="false" title="Switch active local vault workspace">
             <span class="workspace-icon" aria-hidden="true">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -62,7 +62,7 @@
         </div>
 
         <!-- Scoped explorer context banner: active project/environment (T-703) -->
-        <div class="scope-banner is-unset" id="scope-banner" role="status" aria-live="polite" title="Active scoped project/environment">
+        <div class="scope-banner is-unset" id="scope-banner" data-private-surface role="status" aria-live="polite" title="Active scoped project/environment">
           <span class="scope-banner-dot" id="scope-banner-dot" aria-hidden="true"></span>
           <span class="scope-banner-text" id="scope-banner-text">Scope: ...</span>
         </div>
@@ -122,7 +122,7 @@
           <span class="nav-title">Arbitrum Relayer</span>
         </button>
 
-        <button class="tab-btn" id="tab-btn-fleet" data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-fleet" data-private-surface data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="2" y1="12" x2="22" y2="12"></line>
@@ -144,7 +144,7 @@
           <span class="tab-badge" id="badge-tab-overview">--</span>
         </button>
 
-        <button class="tab-btn" id="tab-btn-files" data-target="tab-files" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-files" data-private-surface data-target="tab-files" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
@@ -153,7 +153,7 @@
           <span class="tab-badge" id="badge-tab-files">--</span>
         </button>
 
-        <button class="tab-btn" id="tab-btn-dag" data-target="tab-dag" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-dag" data-private-surface data-target="tab-dag" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-dag" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="18" cy="18" r="3"></circle>
             <circle cx="6" cy="6" r="3"></circle>
@@ -164,7 +164,7 @@
           <span class="tab-badge" id="badge-tab-snapshots">--</span>
         </button>
 
-        <button class="tab-btn" id="tab-btn-diff" data-target="tab-diff" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-diff" data-private-surface data-target="tab-diff" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-diff" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="20" x2="18" y2="10"></line>
             <line x1="12" y1="20" x2="12" y2="4"></line>
@@ -177,7 +177,7 @@
           <span class="tab-badge" id="badge-tab-diff">Compare</span>
         </button>
 
-        <button class="tab-btn" id="tab-btn-fastcdc" data-target="tab-fastcdc" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-fastcdc" data-private-surface data-target="tab-fastcdc" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-fastcdc" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
             <line x1="8" y1="21" x2="16" y2="21"></line>
@@ -191,7 +191,7 @@
         </button>
 
         <div class="nav-section-label" data-nav-group="security">Security &amp; Governance</div>
-        <button class="tab-btn" id="tab-btn-guardians" data-target="tab-guardians" data-category="security" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-guardians" data-private-surface data-target="tab-guardians" data-category="security" role="tab" aria-selected="false" aria-controls="tab-guardians" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
             <circle cx="12" cy="11" r="3"></circle>
@@ -207,7 +207,7 @@
           <span class="nav-title">Recovery Readiness</span>
         </button>
 
-        <button class="tab-btn" id="tab-btn-activity" data-target="tab-activity" data-category="security" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
+        <button class="tab-btn" id="tab-btn-activity" data-private-surface data-target="tab-activity" data-category="security" role="tab" aria-selected="false" aria-controls="tab-activity" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
           </svg>
@@ -617,7 +617,7 @@
     </section>
 
     <!-- Tab 2: Snapshot DAG Explorer -->
-    <section class="tab-content" id="tab-dag" role="tabpanel" aria-labelledby="tab-btn-dag" tabindex="0">
+    <section class="tab-content" id="tab-dag" data-private-surface role="tabpanel" aria-labelledby="tab-btn-dag" tabindex="0">
       <div class="tab-toolbar">
         <div class="search-bar-wrap">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -637,7 +637,7 @@
     </section>
 
     <!-- Tab: Secret Revision Diff Engine -->
-    <section class="tab-content" id="tab-diff" role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0">
+    <section class="tab-content" id="tab-diff" data-private-surface role="tabpanel" aria-labelledby="tab-btn-diff" tabindex="0">
       <div class="tab-toolbar">
         <div class="diff-controls">
           <div class="diff-selector-group">
@@ -738,7 +738,7 @@
     </section>
 
     <!-- Tab 3: Tracked Secrets Explorer -->
-    <section class="tab-content" id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0">
+    <section class="tab-content" id="tab-files" data-private-surface role="tabpanel" aria-labelledby="tab-btn-files" tabindex="0">
       <div class="tab-toolbar">
         <div class="header-actions">
           <button class="btn-action primary" id="btn-open-track-modal" title="Add a confidential file to vault tracking">
@@ -916,7 +916,7 @@
     </section>
 
     <!-- Tab 5: Threshold Guardian Recovery (M-of-N Shamir) -->
-    <section class="tab-content" id="tab-guardians" role="tabpanel" aria-labelledby="tab-btn-guardians" tabindex="0">
+    <section class="tab-content" id="tab-guardians" data-private-surface role="tabpanel" aria-labelledby="tab-btn-guardians" tabindex="0">
       <div class="guardian-local-guidance" role="note">
         <strong>Use a trusted local terminal for recovery ceremonies.</strong>
         <span>Run the relevant CipherVault CLI recovery command on the device that holds the offline material. Browser forms never receive the master recovery secret or guardian shares.</span>
@@ -956,7 +956,7 @@
     </section>
 
     <!-- Tab 6: Maintenance Fleet Daemon -->
-    <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tab-btn-fleet" tabindex="0">
+    <section class="tab-content" id="tab-fleet" data-private-surface role="tabpanel" aria-labelledby="tab-btn-fleet" tabindex="0">
       <div class="tab-toolbar">
         <button class="btn-action primary" id="btn-run-fleet-audit" data-private-action title="Trigger immediate self-repair audit across all replicas">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -1158,7 +1158,7 @@
     </section>
 
     <!-- Tab 8: FastCDC Inspector -->
-    <section class="tab-content" id="tab-fastcdc" role="tabpanel" aria-labelledby="tab-btn-fastcdc" tabindex="0">
+    <section class="tab-content" id="tab-fastcdc" data-private-surface role="tabpanel" aria-labelledby="tab-btn-fastcdc" tabindex="0">
       <div class="tab-toolbar">
         <div class="fastcdc-header-badges">
           <span class="badge-status-subtle badge-fastcdc-algo">Algorithm: FastCDC (Gear-64)</span>
@@ -1359,7 +1359,7 @@
     </section>
 
     <!-- Tab: Durable Activity Log -->
-    <section class="tab-content" id="tab-activity" role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0">
+    <section class="tab-content" id="tab-activity" data-private-surface role="tabpanel" aria-labelledby="tab-btn-activity" tabindex="0">
       <div class="tab-toolbar">
         <button class="btn-action secondary" id="btn-refresh-activity">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
