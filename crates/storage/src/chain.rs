@@ -599,6 +599,9 @@ impl AnchorRelayerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(auth_error) = relayer_auth_error(&self.relayer_url, status, &body) {
+                return Err(auth_error);
+            }
             return Err(StorageError::ServerError {
                 status,
                 message: format!("Relayer error: {}", body),
@@ -625,6 +628,9 @@ impl AnchorRelayerClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(auth_error) = relayer_auth_error(&self.relayer_url, status, &body) {
+                return Err(auth_error);
+            }
             return Err(StorageError::ServerError {
                 status,
                 message: format!("Relayer error: {}", body),
@@ -635,9 +641,52 @@ impl AnchorRelayerClient {
     }
 }
 
+/// Explains relayer authentication rejections. Production operators run
+/// strict auth: without a service token (or a vault session, which this
+/// client does not attach) every call is a 401, so the guidance has to
+/// stand alone — the response body is frequently empty.
+fn relayer_auth_error(relayer_url: &str, status: u16, body: &str) -> Option<StorageError> {
+    if status != 401 && status != 403 {
+        return None;
+    }
+    let server_said = if body.trim().is_empty() {
+        "no detail from server".to_string()
+    } else {
+        body.trim().to_string()
+    };
+    Some(StorageError::ServerError {
+        status,
+        message: format!(
+            "Relayer at {relayer_url} rejected the request (HTTP {status}: {server_said}). This relayer requires operator credentials: set CIPHERVAULT_OPERATOR_SERVICE_TOKEN, anchor against your own node (http://127.0.0.1:8787), or broadcast the commitment yourself with `anchor --raw-tx` / `--tx-hash`."
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relayer_auth_error_guides_on_401_and_403() {
+        for status in [401u16, 403u16] {
+            let err = relayer_auth_error("https://op1.example", status, "")
+                .expect("auth statuses map to guidance");
+            let rendered = err.to_string();
+            assert!(rendered.contains("https://op1.example"), "{rendered}");
+            assert!(
+                rendered.contains("CIPHERVAULT_OPERATOR_SERVICE_TOKEN"),
+                "{rendered}"
+            );
+            assert!(rendered.contains("127.0.0.1:8787"), "{rendered}");
+            assert!(rendered.contains("--raw-tx"), "{rendered}");
+        }
+        assert!(relayer_auth_error("https://op1.example", 500, "boom").is_none());
+        assert!(relayer_auth_error("https://op1.example", 400, "bad").is_none());
+        // A useful server body is preserved, not replaced.
+        let with_body = relayer_auth_error("https://op1.example", 401, "Missing Bearer token")
+            .expect("401 maps");
+        assert!(with_body.to_string().contains("Missing Bearer token"));
+    }
 
     #[test]
     fn test_selector_computation() {

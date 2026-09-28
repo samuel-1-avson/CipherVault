@@ -1455,7 +1455,10 @@ pub(crate) async fn execute_quick_anchor() -> anyhow::Result<String> {
     {
         Ok(_) => Ok("✓ Checkpoint registered with Arbitrum L2 relayer (QueuedForRelay).".into()),
         Err(e) => {
-            anyhow::bail!("{e}");
+            // Alternate display renders the full anyhow chain (outer
+            // context plus the relayer's status/body); plain `{e}` shows
+            // only "Failed to submit checkpoint..." with no cause.
+            anyhow::bail!("{e:#}");
         }
     }
 }
