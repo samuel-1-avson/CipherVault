@@ -50,9 +50,19 @@ $ErrorActionPreference = "Stop"
 
 function Invoke-Gcloud {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & gcloud @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "gcloud $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    # Same stderr discipline as Invoke-NativeText: routine native stderr
+    # (caddy info logs, docker progress) must not terminate under PS 5.1
+    # $Stop; the exit code drives control flow instead.
+    $previousEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & gcloud @Arguments
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEAP
+    }
+    if ($exitCode -ne 0) {
+        throw "gcloud $($Arguments -join ' ') failed with exit code $exitCode"
     }
 }
 
