@@ -1,4 +1,4 @@
-use super::app::{StatusLevel, TuiApp, TuiTab};
+use super::app::{StatusLevel, TuiApp, TuiTab, TuiTable};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
@@ -27,7 +27,7 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
                             Ok(store) => match store.track_file(&path_str) {
                                 Ok(_) => {
                                     app.set_status(
-                                        format!("✓ Tracked '{}' into vault database", path_str),
+                                        format!("✓ Tracked '{path_str}' into vault database"),
                                         StatusLevel::Success,
                                     );
                                     app.refresh_local_state();
@@ -48,7 +48,7 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
                         }
                     } else {
                         app.set_status(
-                            format!("File not found: '{}'", path_str),
+                            format!("File not found: '{path_str}'"),
                             StatusLevel::Warning,
                         );
                     }
@@ -76,7 +76,9 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             }
             KeyCode::Enter => {
                 app.show_explorer_search_modal = false;
-                app.run_explorer_object_probe().await;
+                // The probe runs in a background task; the status line and the
+                // object panel update when it completes.
+                app.spawn_object_probe();
                 app.explorer_search_buffer.clear();
             }
             KeyCode::Backspace => {
@@ -99,7 +101,7 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
                     app.show_update_modal = false;
                 }
                 KeyCode::Enter | KeyCode::Char('u') | KeyCode::Char('U') => {
-                    app.apply_app_update().await;
+                    app.spawn_update_apply();
                 }
                 _ => {}
             }
@@ -128,16 +130,19 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         KeyCode::Char('3') => app.switch_tab(TuiTab::Snapshots),
         KeyCode::Char('4') => app.switch_tab(TuiTab::Operators),
         KeyCode::Char('5') => app.switch_tab(TuiTab::FastCdc),
-        KeyCode::Char('6') => app.switch_tab(TuiTab::HardwareToken),
+        KeyCode::Char('6') => {
+            app.switch_tab(TuiTab::HardwareToken);
+            app.spawn_token_probe();
+        }
         KeyCode::Char('7') => {
             app.switch_tab(TuiTab::Explorer);
-            app.refresh_explorer_async().await;
+            app.spawn_explorer_refresh();
         }
 
         // Explorer object lookup
         KeyCode::Char('/') => {
             app.switch_tab(TuiTab::Explorer);
-            app.refresh_explorer_async().await;
+            app.spawn_explorer_refresh();
             app.show_explorer_search_modal = true;
             app.explorer_search_buffer.clear();
         }
@@ -148,73 +153,34 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
 
         // Table / List Navigation
         KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
-            TuiTab::Files => {
-                if !app.tracked_files.is_empty() {
-                    app.file_table_index = (app.file_table_index + 1) % app.tracked_files.len();
-                    app.run_fastcdc_inspection();
-                }
-            }
-            TuiTab::Snapshots if !app.snapshots.is_empty() => {
-                app.snapshot_table_index = (app.snapshot_table_index + 1) % app.snapshots.len();
-            }
-            TuiTab::FastCdc if !app.fastcdc_chunks.is_empty() => {
-                app.chunk_table_index = (app.chunk_table_index + 1) % app.fastcdc_chunks.len();
-            }
-            TuiTab::Explorer if !app.explorer_checkpoints.is_empty() => {
-                app.explorer_checkpoint_index =
-                    (app.explorer_checkpoint_index + 1) % app.explorer_checkpoints.len();
-            }
+            TuiTab::Files => app.select_next(TuiTable::Files),
+            TuiTab::Snapshots => app.select_next(TuiTable::Snapshots),
+            TuiTab::FastCdc => app.select_next(TuiTable::Chunks),
+            TuiTab::Explorer => app.select_next(TuiTable::Checkpoints),
             _ => {}
         },
 
         KeyCode::Up | KeyCode::Char('k') => match app.active_tab {
-            TuiTab::Files => {
-                if !app.tracked_files.is_empty() {
-                    app.file_table_index = if app.file_table_index == 0 {
-                        app.tracked_files.len() - 1
-                    } else {
-                        app.file_table_index - 1
-                    };
-                    app.run_fastcdc_inspection();
-                }
-            }
-            TuiTab::Snapshots if !app.snapshots.is_empty() => {
-                app.snapshot_table_index = if app.snapshot_table_index == 0 {
-                    app.snapshots.len() - 1
-                } else {
-                    app.snapshot_table_index - 1
-                };
-            }
-            TuiTab::FastCdc if !app.fastcdc_chunks.is_empty() => {
-                app.chunk_table_index = if app.chunk_table_index == 0 {
-                    app.fastcdc_chunks.len() - 1
-                } else {
-                    app.chunk_table_index - 1
-                };
-            }
-            TuiTab::Explorer if !app.explorer_checkpoints.is_empty() => {
-                app.explorer_checkpoint_index = if app.explorer_checkpoint_index == 0 {
-                    app.explorer_checkpoints.len() - 1
-                } else {
-                    app.explorer_checkpoint_index - 1
-                };
-            }
+            TuiTab::Files => app.select_prev(TuiTable::Files),
+            TuiTab::Snapshots => app.select_prev(TuiTable::Snapshots),
+            TuiTab::FastCdc => app.select_prev(TuiTable::Chunks),
+            TuiTab::Explorer => app.select_prev(TuiTable::Checkpoints),
             _ => {}
         },
 
         // Action: Force Refresh
         KeyCode::Char('r') => {
-            app.set_status(
-                "Refreshing local state and pinging storage operators...",
-                StatusLevel::Info,
-            );
+            app.set_status("Refreshing local state and operators...", StatusLevel::Info);
             app.refresh_local_state();
-            app.poll_operators_async().await;
-            app.refresh_explorer_async().await;
-            app.set_status(
-                "✓ Local state, operators, and explorer updated.",
-                StatusLevel::Success,
-            );
+            app.spawn_operator_poll();
+            app.spawn_explorer_refresh();
+            app.refresh_echo = app.poll_in_flight;
+            if !app.poll_in_flight && app.operators.is_empty() {
+                app.set_status(
+                    "Local state refreshed; no operators configured to poll.",
+                    StatusLevel::Warning,
+                );
+            }
         }
 
         // Account session actions. Hosted TOTP login remains a browser
@@ -229,91 +195,16 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             app.track_input_buffer.clear();
         }
 
-        // Action: Push snapshot
-        KeyCode::Char('p') => {
-            app.set_status(
-                "Pushing encrypted snapshot across operators...",
-                StatusLevel::Info,
-            );
-            match execute_quick_push().await {
-                Ok(msg) => {
-                    app.set_status(msg, StatusLevel::Success);
-                    app.refresh_local_state();
-                }
-                Err(e) => {
-                    app.set_status(format!("Snapshot push failed: {e}"), StatusLevel::Error);
-                }
-            }
-        }
+        // Action: Push snapshot (background task; completion lands on the
+        // status line without freezing input).
+        KeyCode::Char('p') => app.spawn_push(),
 
         // Action: Check for updates
-        KeyCode::Char('u') => app.manual_update_check().await,
+        KeyCode::Char('u') => app.spawn_update_check(true),
 
-        // Action: Anchor to Arbitrum L2
-        KeyCode::Char('a') => {
-            app.set_status(
-                "Submitting state commitment to Arbitrum L2 relayer...",
-                StatusLevel::Info,
-            );
-            match execute_quick_anchor().await {
-                Ok(msg) => {
-                    app.set_status(msg, StatusLevel::Success);
-                    app.refresh_local_state();
-                }
-                Err(e) => {
-                    app.set_status(format!("L2 anchor failed: {e}"), StatusLevel::Error);
-                }
-            }
-        }
+        // Action: Anchor to Arbitrum L2 (background task).
+        KeyCode::Char('a') => app.spawn_anchor(),
 
         _ => {}
-    }
-}
-
-async fn execute_quick_push() -> anyhow::Result<String> {
-    crate::cmd_push(
-        Some("TUI Snapshot commit".into()),
-        false,
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
-    Ok("✓ Encrypted snapshot created and confirmed across operator quorum.".into())
-}
-
-async fn execute_quick_anchor() -> anyhow::Result<String> {
-    let store = crate::get_vault_store()?;
-    let head = store.get_active_head()?;
-    let head_record = match head {
-        Some(h) => h,
-        None => {
-            anyhow::bail!(
-                "Vault has no snapshots committed yet. Press [p] to create a snapshot first."
-            );
-        }
-    };
-    let head_hex = hex::encode(&head_record.snapshot_id);
-    let relayer_url = crate::get_configured_operators().first().cloned();
-
-    match crate::cmd_anchor(
-        Some(head_hex),
-        None,
-        None,
-        None,
-        None,
-        None,
-        true,
-        relayer_url,
-    )
-    .await
-    {
-        Ok(_) => Ok("✓ Checkpoint registered with Arbitrum L2 relayer (QueuedForRelay).".into()),
-        Err(e) => {
-            anyhow::bail!("{e}");
-        }
     }
 }

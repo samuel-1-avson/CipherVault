@@ -780,3 +780,82 @@ DeeplyConfirmed at 50400+. Neither stage verifies L1 settlement.
    `ARBITRUM_CONTRACT_ADDRESS`) and dashboard collectors, promote,
    confirm each node reports the new chain id.
 3. Run one anchor ceremony end-to-end before announcing.
+
+## 20. Scoped Secrets Operations (SLOs, Backup, Scale-Out)
+
+Single-instance account service (SQLite WAL, FULL sync). Day-to-day
+procedures live in OPERATOR_PLAYBOOKS.md §13; this section holds SLOs,
+the DR drill, game-days, and the scale-out design.
+
+### SLOs (SQLite scale)
+
+| Signal | Objective | Evidence |
+|--------|-----------|----------|
+| Value-read p99 | <250ms debug / <50ms release | `scoped_load_gate` (LOAD_SOAK_VALIDATION.md) |
+| Read failures (paced) | 0 | same gate |
+| `sqlite_busy_retries` (paced) | 0 | same gate (durability stays FULL) |
+| Audit export | verify-first; broken chain = 500, never partial | `audit_export_lifecycle` test |
+| Telemetry | zero value-shaped data in audit/logs/metrics | canary test + Trivy secret scan (security.yml) |
+
+Scale ceiling: one global `Mutex<Connection>` serializes all writes,
+and every value read appends an audit row (fsync per write at FULL
+sync). That is the intended durability posture — when p99 breaches
+the SLO under real traffic, scale out (§Scale-out design), never
+weaken sync.
+
+### Backup / restore (RPO/RTO)
+
+Live snapshot without downtime (WAL-safe, single portable file):
+
+```powershell
+sqlite3 /var/lib/ciphervault-account/accounts.sqlite3 "VACUUM INTO '/backup/accounts-$(date -u +%F).sqlite3'"
+```
+
+Restore drill (run quarterly; automated by
+`audit_chain::tests::backup_restore_roundtrip_preserves_chain`):
+
+1. Copy a snapshot to a staging host as `accounts.sqlite3` in a fresh
+   data dir; start the service (it runs migrations idempotently).
+2. `GET /v1/projects/$PID/audit/export` (dual-control) must return
+   200 — the chain verifies on the restored copy.
+3. Spot-read one secret per environment; compare against the canary
+   values recorded at backup time.
+
+RPO = snapshot age (schedule VACUUM INTO hourly via systemd timer);
+RTO = copy + restart (minutes). Residency: backups contain wrapped
+DEKs and audit digests, never plaintext — still encrypt at rest.
+
+### Game-days
+
+- KMS outage + rotation storm: local-KEK posture degrades to
+  read-only cache serve with writes blocked (§22); drill by revoking
+  the KEK file mount on staging, confirming reads serve and
+  rotations fail closed, then restoring the mount and running one
+  rotation end-to-end. (KMS/HSM providers are deferred — see below.)
+- Quota storm: point the load gate at staging with
+  `CIPHERVAULT_LOAD_READS` above the read-value bucket and confirm
+  429s (not 500s) with `Retry-After`, then re-pace and confirm
+  recovery without restart.
+- Audit tamper: flip one byte in a staging audit row and confirm the
+  export endpoint returns 500 `AUDIT_CHAIN_BROKEN` naming the event.
+
+### Scale-out design (deferred)
+
+PG partitioning, Redis, and KMS are designed but not implemented:
+they need dependencies the `--locked` build does not carry, and the
+SQLite port meets the small-scale profile (§21: 10-50 secrets,
+<2ms lookup target at p50 — measured p50 11ms release on shared
+CI-class hardware; re-baseline on prod iron).
+
+- Partitioning: hash-partition `secrets`/`secret_versions`/
+  `secret_access_events` by `tenant_id`; per-tenant audit chains
+  stay partition-local, so verify/export need no cross-shard reads.
+- Redis L1/L2: cache keys
+  `cv:sec:{tenant}:{project}:{env}:{secret}` (values encrypted under
+  a short-lived memory key); rotation publishes invalidation on the
+  bus; TTLs bound KMS-outage serving.
+- Pooling replaces the global mutex; the quota and DPoP-replay
+  tables move to Redis with the same fixed-window semantics.
+- KMS envelope: `KeyWrappingService` gains AWS/GCP/Azure providers;
+  re-wrap jobs rotate DEKs without downtime; the local KEK remains
+  the small-deployment default.

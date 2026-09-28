@@ -430,7 +430,11 @@ pub fn generate_diff_report(
     };
 
     let parse_snap_id = |s: &str| -> Result<[u8; 32]> {
-        let bytes = hex::decode(s.trim())?;
+        let bytes = hex::decode(s.trim()).with_context(|| {
+            format!(
+                "Snapshot ID '{s}' is not valid hex (expected the 64-character ID from `ciphervault history`; git-style refs like HEAD~1 are not supported)"
+            )
+        })?;
         if bytes.len() != 32 {
             bail!("Snapshot ID must be 32 bytes hex string (64 characters)");
         }

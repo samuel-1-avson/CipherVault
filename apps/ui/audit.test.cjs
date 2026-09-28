@@ -31,7 +31,7 @@ let response;
 const context = vm.createContext({
   document: { addEventListener() {}, getElementById, querySelectorAll: () => [], activeElement: null },
   window: { addEventListener() {} },
-  console: { warn() {}, error() {} },
+  console: { warn() {}, error() {}, debug() {} },
   fetch: async () => response,
 });
 vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
@@ -730,6 +730,24 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   const paletteThemeItem = vm.runInContext("buildPaletteItems('').find(i => i.title.includes('Theme'))", context);
   assert(paletteThemeItem, 'Command Palette must contain theme toggle action');
   assert.equal(paletteThemeItem.category, 'Actions');
+
+  // Scoped explorer banner (T-703): shows project/env, degrades honestly.
+  response = { ok: true, json: async () => ({ status: 'ok', project_slug: 'shop', project_source: 'env', environment_slug: 'staging' }) };
+  await vm.runInContext('fetchScopeBanner()', context);
+  assert.equal(getElementById('scope-banner-text').textContent, 'Scope: shop/staging');
+  assert(getElementById('scope-banner').classList.contains('is-ok'));
+  assert(!getElementById('scope-banner').classList.contains('is-unset'));
+  response = { ok: true, json: async () => ({ status: 'ok', project_slug: 'shop', environment_slug: null }) };
+  await vm.runInContext('fetchScopeBanner()', context);
+  assert.equal(getElementById('scope-banner-text').textContent, 'Scope: shop');
+  response = { ok: true, json: async () => ({ status: 'unconfigured', hint: 'Set CIPHERVAULT_SCOPE_TOKEN' }) };
+  await vm.runInContext('fetchScopeBanner()', context);
+  assert.equal(getElementById('scope-banner-text').textContent, 'Scope: not configured');
+  assert(getElementById('scope-banner').classList.contains('is-unset'));
+  assert(!getElementById('scope-banner').classList.contains('is-ok'));
+  response = { ok: false };
+  await vm.runInContext('fetchScopeBanner()', context);
+  assert.equal(getElementById('scope-banner-text').textContent, 'Scope: not configured');
 
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });

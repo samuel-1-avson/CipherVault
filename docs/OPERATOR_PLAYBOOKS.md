@@ -321,3 +321,48 @@ Tiers marked MISSING are re-entry conditions, not runnable steps.
 - T5 Fleet-key rotation (MISSING procedure): new offline seed, re-pin
   every node (join fails closed when unset), old tickets die. No
   rotation drill has been run — practice before federating.
+
+## 13. Scoped-secrets operations (T-903)
+
+Account-service SLOs at SQLite scale (single instance, WAL, FULL
+sync): value-read p99 <250ms debug / <50ms release (local evidence in
+LOAD_SOAK_VALIDATION.md), zero `sqlite_busy_retries` under paced load,
+audit export verify-first. systemd unit
+`deploy/systemd/ciphervault-account.service` restarts on failure.
+
+- Quotas (T-902): per-principal buckets — api 1000/60s, read-value
+  300/60s, mint 30/60s, export 10/300s. 429 `QUOTA_EXCEEDED` carries
+  `Retry-After` + `X-RateLimit-*`; 503 `QUOTA_UNAVAILABLE` means the
+  store is down (fail-closed). Triage: a single principal 429ing is
+  abuse or a runaway client; fleet-wide 429s are harness-sizing
+  (raise the caller's pacing, not the buckets). Rows live in
+  `abuse_quotas` (key `bucket:tenant:principal`).
+- Dual-control export: bulk audit export needs a second credential:
+  `curl -H "Authorization: Bearer $ADMIN" -H "x-step-up-authorization:
+  Bearer $SECOND" $ACCT/v1/projects/$PID/audit/export > audit.jsonl`.
+  Both principals need ViewAudit (admin/auditor), must differ, and the
+  step-up token must be unbound. 403 `DUAL_CONTROL_REQUIRED` covers
+  every step-up failure (no oracle). Ship the JSONL to append-only
+  cold storage on a cron; the export self-verifies (`x-audit-head`).
+- DPoP-lite: mint CI tokens bound to an ed25519 key
+  (`bind_pubkey_ed25519_hex`); every use then needs a `DPoP` proof
+  (single-use, ±60s). 401 `DPOP_REQUIRED` = proof missing;
+  `DPOP_INVALID` = bad/expired/replayed. A stolen bound token alone
+  buys nothing. CLI side (T-902 follow-up): set
+  `CIPHERVAULT_DPOP_KEY=<64-hex-seed>` (or `@/path/to/seed.hex`)
+  and every `project`/`secret`/`repo`/`run`/`migrate` CLI request —
+  plus the dashboard proxy — attaches a fresh proof automatically.
+  Env-only by design (never a flag: no shell-history leakage);
+  unset = legacy behavior, set-but-bad = fail closed (requests
+  abort; dashboard proxy answers 500 `DPOP_KEY_INVALID`).
+- Backup/restore: live snapshot without downtime —
+  `sqlite3 accounts.sqlite3 "VACUUM INTO '/backup/accounts.sqlite3'"`,
+  then point a staging instance at the copy and check
+  `GET /v1/projects/$PID/audit/export` returns 200 (chain verifies).
+  RPO = snapshot age; RTO = copy + restart. Locked by
+  `audit_chain::tests::backup_restore_roundtrip_preserves_chain`.
+- Rotation storm: rotations are row-atomic with rollback-on-verify-fail;
+  pace bulk rotations under the mint/api buckets and watch for 429s.
+- Telemetry hygiene: audit rows, exports, and errors carry digests and
+  metadata only — Trivy secret scanning gates the repo (security.yml)
+  and the canary test proves values stay out of the audit surface.

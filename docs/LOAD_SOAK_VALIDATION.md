@@ -65,3 +65,31 @@ Harness fixes (2026-09-26):
 CHAOS_LOG.md fallback flow (Docker engine unavailable on the
 workstation), `chaos_federation_drill`, `swarm_dos`, operator chaos
 gates in CI.
+
+## Account-service load gate (T-903)
+
+`secret_routes::tests::scoped_load_gate` (ignored by default): seeds
+N secrets, then hammers value reads with C concurrent workers over
+the in-process router and asserts zero failures, p99 under budget,
+and zero `sqlite_busy_retries` (durability stays FULL).
+
+```powershell
+cargo test -p ciphervault-account --release --lib -- --ignored --nocapture scoped_load_gate
+```
+
+Knobs: `CIPHERVAULT_LOAD_SECRETS` (50), `CIPHERVAULT_LOAD_READS`
+(200), `CIPHERVAULT_LOAD_CONCURRENCY` (8),
+`CIPHERVAULT_LOAD_P99_MS` (250). Knobs must respect quotas
+(read-value 300/60s, api 1000/60s): a 429 fails the gate by design —
+harness-sizing failure, not product failure.
+
+Local evidence (2026-09-27, workstation):
+
+- Debug: 200 reads / 50 secrets / 8 workers in 509ms (393 reads/s);
+  p50=19ms p99=36ms, failures=0, `sqlite_busy_retries: 0`.
+- Release: 200 reads / 50 secrets / 8 workers in 348ms (574
+  reads/s); p50=11ms p99=36ms, failures=0, `sqlite_busy_retries: 0`.
+
+The p99 floor is the per-read audit append (fsync at FULL sync) plus
+quota writes under one global mutex — the intended durability
+posture at SQLite scale (see runbook §20 scale ceiling).

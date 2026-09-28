@@ -353,6 +353,7 @@ fn find_checksum(sums: &str, name: &str) -> Option<String> {
 
 /// Effectively crate-confined (`commands` is `pub(crate)`); declared `pub`
 /// so the `pub` TUI app state can hold it.
+#[derive(Debug, Clone)]
 pub struct PendingUpdate {
     pub tag: String,
     pub(crate) target: &'static str,

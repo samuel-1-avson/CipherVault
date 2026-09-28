@@ -8,6 +8,7 @@ pub(crate) mod finality;
 pub(crate) mod handlers;
 pub(crate) mod metrics;
 pub(crate) mod router;
+pub(crate) mod scoped_api;
 pub(crate) mod server;
 pub(crate) mod session;
 
@@ -19,5 +20,6 @@ pub(crate) use finality::*;
 pub(crate) use handlers::*;
 pub(crate) use metrics::*;
 pub(crate) use router::*;
+pub(crate) use scoped_api::*;
 pub(crate) use server::*;
 pub(crate) use session::*;

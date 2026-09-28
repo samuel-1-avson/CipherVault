@@ -7,6 +7,16 @@ use zeroize::Zeroize;
 
 /// Parses raw UTF-8 bytes of a `.env` file into a vector of key-value tuples.
 pub fn parse_dotenv_bytes(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
+    Ok(parse_dotenv_with_lines(bytes)?
+        .into_iter()
+        .map(|(key, value, _)| (key, value))
+        .collect())
+}
+
+/// Parses raw UTF-8 bytes of a `.env` file into key-value tuples with 1-based
+/// source line numbers (migration provenance; duplicate keys keep every
+/// occurrence so conflicts quarantine with file/line evidence).
+pub fn parse_dotenv_with_lines(bytes: &[u8]) -> Result<Vec<(String, String, usize)>, String> {
     let text = match std::str::from_utf8(bytes) {
         Ok(t) => t,
         Err(e) => return Err(format!("Invalid UTF-8 in secret file: {}", e)),
@@ -61,7 +71,7 @@ pub fn parse_dotenv_bytes(bytes: &[u8]) -> Result<Vec<(String, String)>, String>
         }
 
         let parsed_val = parse_value(raw_val);
-        result.push((raw_key.to_string(), parsed_val));
+        result.push((raw_key.to_string(), parsed_val, line_num + 1));
     }
 
     Ok(result)
@@ -246,5 +256,19 @@ BASE64_TOKEN=ZXhhbXBsZTEyMw==
         assert!(err
             .unwrap_err()
             .contains("Invalid environment variable name"));
+    }
+
+    #[test]
+    fn test_parse_dotenv_with_lines_tracks_provenance() {
+        let input = b"# comment\nSTRIPE_KEY=one\n\nexport DUP=first\nDUP=second\n";
+        let parsed = parse_dotenv_with_lines(input).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ("STRIPE_KEY".to_string(), "one".to_string(), 2),
+                ("DUP".to_string(), "first".to_string(), 4),
+                ("DUP".to_string(), "second".to_string(), 5),
+            ]
+        );
     }
 }

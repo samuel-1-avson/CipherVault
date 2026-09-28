@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use ciphervault_local_store::AccountStore;
 
+use super::dpop::maybe_dpop;
 use crate::util::current_device_identity;
 
 pub(crate) fn cmd_auth_init(name: Option<String>) -> Result<()> {
@@ -266,17 +267,19 @@ pub(crate) async fn cmd_auth_connect(
         .get("token")
         .and_then(serde_json::Value::as_str)
         .context("hosted browser-login response did not include a session token")?;
-    let vault_link_response = client
-        .post(format!("{endpoint}/{}/vaults", account.account_id()))
-        .bearer_auth(login_token)
-        .json(&serde_json::json!({
-            "vault_id_hex": vault_id,
-            "alias": vault_alias,
-            "role": "owner",
-        }))
-        .send()
-        .await
-        .context("linking the vault to the hosted account")?;
+    let vault_link_response = maybe_dpop(
+        client.post(format!("{endpoint}/{}/vaults", account.account_id())),
+        login_token,
+    )?
+    .bearer_auth(login_token)
+    .json(&serde_json::json!({
+        "vault_id_hex": vault_id,
+        "alias": vault_alias,
+        "role": "owner",
+    }))
+    .send()
+    .await
+    .context("linking the vault to the hosted account")?;
     if !vault_link_response.status().is_success()
         && vault_link_response.status() != reqwest::StatusCode::CONFLICT
     {
@@ -284,12 +287,14 @@ pub(crate) async fn cmd_auth_connect(
         let body = vault_link_response.text().await.unwrap_or_default();
         bail!("hosted vault link failed ({status}): {body}");
     }
-    let handoff_response = client
-        .post(format!("{endpoint}/sessions/handoff"))
-        .bearer_auth(login_token)
-        .send()
-        .await
-        .context("creating hosted browser handoff")?;
+    let handoff_response = maybe_dpop(
+        client.post(format!("{endpoint}/sessions/handoff")),
+        login_token,
+    )?
+    .bearer_auth(login_token)
+    .send()
+    .await
+    .context("creating hosted browser handoff")?;
     let handoff_status = handoff_response.status();
     let handoff: serde_json::Value = handoff_response
         .json()
@@ -465,18 +470,20 @@ pub(crate) async fn sync_hosted_device_revocation(
         .get("token")
         .and_then(serde_json::Value::as_str)
         .context("hosted account session did not include a token")?;
-    HttpClient::new()
-        .post(format!(
+    maybe_dpop(
+        HttpClient::new().post(format!(
             "{endpoint}/v1/accounts/{}/devices/{}/revoke",
             account.account_id(),
             device_id
-        ))
-        .bearer_auth(token)
-        .send()
-        .await
-        .context("requesting hosted device revocation")?
-        .error_for_status()
-        .context("hosted device revocation was rejected")?;
+        )),
+        token,
+    )?
+    .bearer_auth(token)
+    .send()
+    .await
+    .context("requesting hosted device revocation")?
+    .error_for_status()
+    .context("hosted device revocation was rejected")?;
     Ok(())
 }
 

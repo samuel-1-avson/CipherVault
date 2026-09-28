@@ -15,14 +15,29 @@ use rusqlite::params;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+mod abuse;
 mod accounts;
+mod audit_chain;
 mod db;
 mod devices;
+mod dpop;
 mod error;
+mod grants;
+mod grants_routes;
 mod guards;
 mod http;
 mod memberships;
+mod migration_ledger;
+mod migration_routes;
+mod policy;
+mod projects;
+mod reconcile;
 mod recovery;
+mod rotation;
+mod scope_tokens;
+mod scoped;
+mod secret_routes;
+mod secrets;
 mod sessions;
 mod state;
 #[cfg(test)]
@@ -30,6 +45,7 @@ mod test_support;
 mod totp;
 mod util;
 mod vaults;
+mod vcs;
 mod webauthn;
 mod webauthn_crypto;
 
@@ -37,9 +53,12 @@ use accounts::*;
 use db::*;
 use devices::*;
 pub use error::AccountServiceError;
+use grants_routes::*;
 use http::*;
 use memberships::*;
+use migration_routes::*;
 use recovery::*;
+use secret_routes::*;
 use sessions::*;
 use state::*;
 pub use state::{
@@ -78,7 +97,7 @@ async fn test_panic_handler() -> &'static str {
 }
 
 pub fn create_router(state: AccountState) -> axum::Router {
-    use axum::routing::{get, post};
+    use axum::routing::{delete, get, patch, post};
     let cors = std::env::var("CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS")
         .ok()
         .map(|value| {
@@ -183,7 +202,112 @@ pub fn create_router(state: AccountState) -> axum::Router {
             "/v1/accounts/:account_id/recovery/codes",
             post(post_recovery_codes),
         )
-        .route("/v1/recovery/redeem", post(post_recovery_redeem));
+        .route("/v1/recovery/redeem", post(post_recovery_redeem))
+        .route(
+            "/v1/projects/:project_id/environments/:environment_id/secrets",
+            post(post_secret),
+        )
+        .route(
+            "/v1/projects/:project_id/environments/:environment_id/secrets/:name",
+            get(get_secret_value_route),
+        )
+        .route("/v1/projects/:project_id/secrets", get(get_secrets))
+        .route(
+            "/v1/projects/:project_id/secrets/:secret_id",
+            patch(patch_secret).delete(delete_secret_route),
+        )
+        .route(
+            "/v1/projects/:project_id/secrets/:secret_id/move",
+            post(post_secret_move),
+        )
+        .route(
+            "/v1/projects/:project_id/secrets/:secret_id/rebind",
+            post(post_secret_rebind),
+        )
+        .route(
+            "/v1/projects/:project_id/secrets/:secret_id/rotate",
+            post(post_secret_rotate),
+        )
+        .route(
+            "/v1/projects/:project_id/members",
+            post(post_project_member).delete(delete_project_member),
+        )
+        .route(
+            "/v1/projects/:project_id/members/requests",
+            get(list_grant_requests_route),
+        )
+        .route(
+            "/v1/projects/:project_id/members/requests/:request_id/decision",
+            post(decide_grant_request_route),
+        )
+        .route(
+            "/v1/projects/:project_id/invites",
+            post(create_invite_route).get(list_invites_route),
+        )
+        .route(
+            "/v1/projects/:project_id/invites/:invite_id",
+            delete(revoke_invite_route),
+        )
+        .route("/v1/invites/accept", post(accept_invite_route))
+        .route(
+            "/v1/projects/:project_id/migrations",
+            post(post_migration).get(get_migrations),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id",
+            get(get_migration),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id/entries",
+            post(post_migration_entries),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id/entries/:ledger_id/migrated",
+            post(post_migration_entry_migrated),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id/entries/:ledger_id/resolve",
+            post(post_migration_entry_resolve),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id/verify",
+            post(post_migration_verify),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id/disable-legacy",
+            post(post_migration_disable_legacy),
+        )
+        .route(
+            "/v1/projects/:project_id/migrations/:migration_id/abort",
+            post(post_migration_abort),
+        )
+        .route(
+            "/v1/scope-tokens",
+            post(post_scope_token).delete(delete_scope_token),
+        )
+        .route(
+            "/v1/projects/:project_id/repositories",
+            post(post_repository).get(get_repositories),
+        )
+        .route(
+            "/v1/projects/:project_id/repositories/:binding_id",
+            delete(delete_repository),
+        )
+        .route(
+            "/v1/projects/:project_id/repositories/:binding_id/prove",
+            post(post_repository_prove),
+        )
+        .route(
+            "/v1/projects/:project_id/repositories/:binding_id/reactivate",
+            post(post_repository_reactivate),
+        )
+        .route("/v1/webhooks/vcs/:provider", post(post_vcs_webhook))
+        .route("/v1/projects", get(get_projects))
+        .route(
+            "/v1/projects/:project_id/audit/export",
+            get(get_audit_export),
+        )
+        .route("/v1/projects/:project_ref", get(get_project));
     #[cfg(test)]
     let router = router.route("/__test_panic", get(test_panic_handler));
     router

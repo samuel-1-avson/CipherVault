@@ -1,0 +1,39 @@
+[Unit]
+Description=CipherVault Account Service - Control Plane & Scoped Secrets API
+Documentation=https://github.com/ciphervault/ciphervault
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ciphervault
+Group=ciphervault
+WorkingDirectory=/var/lib/ciphervault-account
+StateDirectory=ciphervault-account
+Environment=CIPHERVAULT_ACCOUNT_BIND=127.0.0.1:8300
+Environment=CIPHERVAULT_ACCOUNT_DATA_DIR=/var/lib/ciphervault-account
+# Key files must be supplied by the deployment secret mount and must never be
+# committed. Direct *_KEY env values are accepted but file mounts are preferred.
+Environment=CIPHERVAULT_ACCOUNT_SCOPE_TOKEN_KEY_FILE=/run/ciphervault-account/scope-token-key
+Environment=CIPHERVAULT_ACCOUNT_LOCAL_KEK_FILE=/run/ciphervault-account/local-kek
+Environment=CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=/run/ciphervault-account/totp-key
+Environment=CIPHERVAULT_VCS_WEBHOOK_KEY_FILE=/run/ciphervault-account/vcs-webhook-key
+ExecStart=/usr/local/bin/ciphervault-account
+Restart=always
+RestartSec=10s
+
+# Security Sandboxing & Hardening
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

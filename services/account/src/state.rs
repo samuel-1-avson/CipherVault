@@ -194,8 +194,20 @@ impl AccountState {
                  failures INTEGER NOT NULL,
                  blocked_until_utc INTEGER NOT NULL,
                  updated_at_utc INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS abuse_quotas (
+                 quota_key TEXT PRIMARY KEY,
+                 window_started_at_utc INTEGER NOT NULL,
+                 count INTEGER NOT NULL,
+                 updated_at_utc INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS dpop_proofs (
+                 proof_hash_hex TEXT PRIMARY KEY,
+                 expires_at_utc INTEGER NOT NULL
              );",
         )?;
+        crate::scoped::init_scoped_schema(&connection)?;
+        crate::migration_ledger::init_migration_schema(&connection)?;
         // Older account databases predate device-bound WebAuthn credentials.
         // Add the nullable binding in place so existing installations can
         // migrate without dropping credentials; new registrations require a

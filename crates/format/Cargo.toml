@@ -13,4 +13,10 @@ sha2.workspace = true
 thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
+rand.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
 ciphervault-crypto = { path = "../crypto" }
+
+[dev-dependencies]
+serde_json.workspace = true

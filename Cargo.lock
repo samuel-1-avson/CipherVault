@@ -598,6 +598,8 @@ dependencies = [
  "chrono",
  "ciborium",
  "ciphervault-crypto",
+ "ciphervault-format",
+ "ciphervault-redact",
  "ed25519-dalek 2.2.0",
  "hex",
  "rand 0.8.8",
@@ -643,6 +645,7 @@ version = "1.0.20"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "ciphervault-agent",
  "ciphervault-crypto",
@@ -706,10 +709,14 @@ dependencies = [
  "ciphervault-crypto",
  "ed25519-dalek 2.2.0",
  "hex",
+ "rand 0.8.8",
  "serde",
  "serde_bytes",
+ "serde_json",
  "sha2 0.10.9",
+ "subtle",
  "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]
@@ -801,6 +808,10 @@ dependencies = [
  "x25519-dalek 2.0.1",
  "zeroize",
 ]
+
+[[package]]
+name = "ciphervault-redact"
+version = "1.0.20"
 
 [[package]]
 name = "ciphervault-snapshot"

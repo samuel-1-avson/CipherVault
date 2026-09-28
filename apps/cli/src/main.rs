@@ -48,6 +48,11 @@ Developer: vault & secrets:
   recovery             Emergency offline recovery commands
   diff                 Compare changes in confidential files across snapshots or against working tree
   hook                 Manage Git pre-commit hooks and secret leak prevention
+  repo                 Bind VCS repositories to a project by immutable provider id
+  context              Inspect and edit the local scope context file
+  project              List and resolve scoped-secret projects
+  secret               Manage scoped secrets (set, get, list, rotate)
+  migrate              Migrate a legacy vault into scoped secrets (ledgered: plan, apply, verify, resolve, shred)
   audit                Audit ciphertext replica health across independent operators
   repair               Detect and repair degraded replicas across operators
   lease                Create, renew, and list storage leases on an operator
@@ -394,6 +399,30 @@ enum Commands {
 
         #[arg(
             long,
+            help = "Scoped mode: project slug or ID (fetches secrets from the account service instead of a snapshot)"
+        )]
+        project: Option<String>,
+
+        #[arg(long, help = "Scoped mode: environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+
+        #[arg(
+            long,
+            help = "Acknowledge legacy snapshot mode (suppresses the LEGACY_PATH_DEPRECATED warning)"
+        )]
+        legacy: bool,
+
+        #[arg(
+            long,
             help = "Do not inherit host process environment variables (except essential OS paths)"
         )]
         no_inherit: bool,
@@ -416,8 +445,8 @@ enum Commands {
 
         #[arg(
             trailing_var_arg = true,
-            required = true,
-            help = "Command and arguments to execute"
+            required = false,
+            help = "Command and arguments to execute (omit with --dry-run to only list secret keys)"
         )]
         command: Vec<String>,
     },
@@ -585,6 +614,36 @@ enum Commands {
     Vault {
         #[command(subcommand)]
         sub: VaultSubcommand,
+    },
+
+    /// Bind VCS repositories to a project by immutable provider id
+    Repo {
+        #[command(subcommand)]
+        sub: RepoSubcommand,
+    },
+
+    /// Inspect and edit the local scope context file
+    Context {
+        #[command(subcommand)]
+        sub: ContextSubcommand,
+    },
+
+    /// List and resolve scoped-secret projects
+    Project {
+        #[command(subcommand)]
+        sub: ProjectSubcommand,
+    },
+
+    /// Manage scoped secrets (set, get, list, rotate)
+    Secret {
+        #[command(subcommand)]
+        sub: SecretSubcommand,
+    },
+
+    /// Migrate a legacy vault into scoped secrets (ledgered: plan, apply, verify, resolve, shred)
+    Migrate {
+        #[command(subcommand)]
+        sub: MigrateSubcommand,
     },
 
     /// Check for and install the latest signed GitHub release for this platform
@@ -804,6 +863,498 @@ enum VaultSubcommand {
 
     /// Remove the current local vault from the account registry
     Unlink,
+}
+
+#[derive(Subcommand)]
+enum RepoSubcommand {
+    /// Bind a VCS repository to a project by immutable provider id
+    Bind {
+        #[arg(long, help = "Project slug or ID")]
+        project: String,
+
+        #[arg(long, help = "VCS provider: github, gitlab, bitbucket, self-hosted")]
+        provider: String,
+
+        #[arg(
+            long,
+            help = "Immutable provider repository id (numeric for GitHub/GitLab)"
+        )]
+        repo_id: String,
+
+        #[arg(
+            long,
+            help = "Display name (org/repo); updated automatically on rename"
+        )]
+        name: String,
+
+        #[arg(long, help = "Repository URL")]
+        url: String,
+
+        #[arg(long, help = "Provider installation id (used for ownership proof)")]
+        installation_id: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// List a project's repository bindings
+    List {
+        #[arg(long, help = "Project slug or ID")]
+        project: String,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Suspend (default) or revoke a binding; secrets are kept
+    Unbind {
+        #[arg(long, help = "Project slug or ID")]
+        project: String,
+
+        #[arg(long, help = "Binding id (or resolve via --provider + --repo-id)")]
+        binding: Option<String>,
+
+        #[arg(long, help = "VCS provider (with --repo-id, resolves the binding id)")]
+        provider: Option<String>,
+
+        #[arg(long, help = "Provider repository id (with --provider)")]
+        repo_id: Option<String>,
+
+        #[arg(long, help = "Revoke terminally instead of suspending")]
+        revoke: bool,
+
+        #[arg(long, help = "Audit reason")]
+        reason: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContextSubcommand {
+    /// Show the current context file
+    Show,
+
+    /// Set context fields (merges with existing)
+    Set {
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+    },
+
+    /// Remove the context file
+    Clear,
+}
+
+#[derive(Subcommand)]
+enum ProjectSubcommand {
+    /// List your project memberships
+    List {
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Show one project (slug or ID) with its environments
+    Show {
+        #[arg(help = "Project slug or ID")]
+        project: String,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Pin the context file to a project (clears the environment)
+    Use {
+        #[arg(help = "Project slug or ID")]
+        project: String,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretSubcommand {
+    /// Create a secret and its first version
+    Set {
+        #[arg(help = "Secret name")]
+        name: String,
+
+        #[arg(long, help = "Secret value (prompts securely when absent)")]
+        value: Option<String>,
+
+        #[arg(long = "type", help = "Secret type label")]
+        secret_type: Option<String>,
+
+        #[arg(long, help = "Description")]
+        description: Option<String>,
+
+        #[arg(long, help = "Tag (repeatable)")]
+        tag: Vec<String>,
+
+        #[arg(long, help = "Confine to a repository binding id")]
+        repo_binding: Option<String>,
+
+        #[arg(long, help = "Confine to a service id")]
+        service: Option<String>,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Print a secret value (bare, for piping)
+    Get {
+        #[arg(help = "Secret name")]
+        name: String,
+
+        #[arg(long, help = "Print metadata JSON instead of the value")]
+        meta: bool,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// List secrets in scope
+    List {
+        #[arg(long, help = "Filter by tag (repeatable)")]
+        tag: Vec<String>,
+
+        #[arg(long, help = "Filter by status")]
+        status: Option<String>,
+
+        #[arg(long, help = "Maximum rows (default 100)")]
+        limit: Option<i64>,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Search secrets by name substring (metadata only, never values)
+    Find {
+        #[arg(help = "Case-insensitive name substring (max 128 chars)")]
+        query: String,
+
+        #[arg(long, help = "Maximum rows (default 100)")]
+        limit: Option<i64>,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Update secret metadata (values rotate, never patch)
+    Update {
+        #[arg(help = "Secret name (or pass --id)")]
+        name: Option<String>,
+
+        #[arg(long, help = "Secret id (skips name resolution)")]
+        id: Option<String>,
+
+        #[arg(long, help = "Description")]
+        description: Option<String>,
+
+        #[arg(long, help = "Tags, full replacement (repeatable)")]
+        tag: Option<Vec<String>>,
+
+        #[arg(long, help = "Status")]
+        status: Option<String>,
+
+        #[arg(long, help = "Expiry as RFC 3339 timestamp")]
+        expires_at: Option<String>,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Schedule a secret for deletion
+    Delete {
+        #[arg(help = "Secret name (or pass --id)")]
+        name: Option<String>,
+
+        #[arg(long, help = "Secret id (skips name resolution)")]
+        id: Option<String>,
+
+        #[arg(long, help = "Audit reason")]
+        reason: Option<String>,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Rotate a secret to a new value
+    Rotate {
+        #[arg(help = "Secret name (or pass --id)")]
+        name: Option<String>,
+
+        #[arg(long, help = "Secret id (skips name resolution)")]
+        id: Option<String>,
+
+        #[arg(long, help = "New value (prompts securely when absent)")]
+        value: Option<String>,
+
+        #[arg(long, help = "Audit reason")]
+        reason: Option<String>,
+
+        #[arg(long, help = "Idempotency key (random when absent)")]
+        idempotency_key: Option<String>,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateSubcommand {
+    /// Classify a legacy vault and submit a ledgered migration plan
+    Plan {
+        #[arg(long, default_value = ".", help = "Legacy vault directory")]
+        vault: String,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(
+            long,
+            help = "Default environment for .env and non-env files (default: development)"
+        )]
+        default_env: Option<String>,
+
+        #[arg(long, help = "Allow auto-assigning production scope")]
+        ack_production: bool,
+
+        #[arg(long, help = "Print the JSON diff without writing anything")]
+        dry_run: bool,
+
+        #[arg(long, help = "Snapshot ID (default: head)")]
+        snapshot: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Write VALIDATED entries through the secret API (resumable)
+    Apply {
+        #[arg(long, default_value = ".", help = "Legacy vault directory")]
+        vault: String,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Migration ID from plan")]
+        migration_id: String,
+
+        #[arg(long, help = "Snapshot ID (default: head)")]
+        snapshot: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Readback-verify applied values and flip cutover pointers
+    Verify {
+        #[arg(long, default_value = ".", help = "Legacy vault directory")]
+        vault: String,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Migration ID from plan")]
+        migration_id: String,
+
+        #[arg(long, help = "Snapshot ID (default: head)")]
+        snapshot: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Resolve a quarantined entry (rename and/or re-target)
+    Resolve {
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Migration ID from plan")]
+        migration_id: String,
+
+        #[arg(long, help = "Ledger entry ID")]
+        entry: String,
+
+        #[arg(long, help = "New secret name")]
+        rename: Option<String>,
+
+        #[arg(long, help = "New environment slug or ID")]
+        env: Option<String>,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
+
+    /// Shred the legacy vault after every ledgered secret is disabled
+    ShredLegacy {
+        #[arg(long, default_value = ".", help = "Legacy vault directory")]
+        vault: String,
+
+        #[arg(long, help = "Project slug or ID")]
+        project: Option<String>,
+
+        #[arg(long, help = "Type the project slug to confirm destruction")]
+        confirm: String,
+
+        #[arg(
+            long,
+            help = "Account server endpoint (or CIPHERVAULT_ACCOUNT_ENDPOINT)"
+        )]
+        endpoint: Option<String>,
+
+        #[arg(long, help = "Scope token (or CIPHERVAULT_SCOPE_TOKEN)")]
+        token: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1267,6 +1818,11 @@ async fn run(cli: Cli) -> Result<()> {
             VaultSubcommand::Link { alias } => cmd_vault_link(&alias),
             VaultSubcommand::Unlink => cmd_vault_unlink(),
         },
+        Commands::Repo { sub } => cmd_repo(sub).await,
+        Commands::Context { sub } => cmd_context(sub).await,
+        Commands::Project { sub } => cmd_project(sub).await,
+        Commands::Secret { sub } => cmd_secret(sub).await,
+        Commands::Migrate { sub } => cmd_migrate(sub).await,
         Commands::Init {
             force,
             operators,
@@ -1470,12 +2026,23 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Run {
             snapshot,
             env_file,
+            project,
+            env,
+            endpoint,
+            token,
+            legacy,
             no_inherit,
             dry_run,
             quiet,
             set,
             command,
-        } => cmd_run(snapshot, env_file, no_inherit, dry_run, quiet, set, command).await,
+        } => {
+            cmd_run(
+                snapshot, env_file, project, env, endpoint, token, legacy, no_inherit, dry_run,
+                quiet, set, command,
+            )
+            .await
+        }
         Commands::Diff {
             snapshot_a,
             snapshot_b,

@@ -109,6 +109,7 @@ impl LocalVaultStore {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
             "#,
         )?;
         conn.busy_handler(Some(counting_busy_handler))?;
@@ -116,6 +117,21 @@ impl LocalVaultStore {
         store.init_tables()?;
         store.run_migrations()?;
         Ok(store)
+    }
+
+    /// Opens an existing vault database strictly read-only (no WAL, no
+    /// migrations, no writes of any kind). Migration planning/apply/verify
+    /// use this so legacy vaults stay byte-identical until the explicit
+    /// shred step (§F-§3); any write attempt fails at the SQLite layer.
+    pub fn open_read_only<P: AsRef<Path>>(db_path: P) -> Result<Self, LocalStoreError> {
+        use rusqlite::OpenFlags;
+        let conn = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        conn.busy_handler(Some(counting_busy_handler))?;
+        Ok(Self { conn })
     }
 
     fn init_tables(&self) -> Result<(), LocalStoreError> {
@@ -216,6 +232,43 @@ impl LocalVaultStore {
                 recorded_at_utc INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_lease_expires ON lease_receipts(expires_at_utc ASC);
+
+            CREATE TABLE IF NOT EXISTS scoped_context (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL,
+                updated_at_utc INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scoped_secret_cache (
+                secret_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL,
+                repository_binding_id TEXT,
+                service_id TEXT,
+                name TEXT NOT NULL,
+                secret_type TEXT NOT NULL DEFAULT 'key_value',
+                current_version INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                updated_at_utc INTEGER NOT NULL,
+                UNIQUE (project_id, environment_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scoped_secret_cache_project ON scoped_secret_cache(project_id, environment_id);
+
+            CREATE TABLE IF NOT EXISTS scoped_binding_cache (
+                binding_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                external_repo_id TEXT NOT NULL,
+                repo_full_name TEXT NOT NULL,
+                repo_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                updated_at_utc INTEGER NOT NULL,
+                UNIQUE (project_id, provider, external_repo_id)
+            );
             "#,
         )?;
         Ok(())
@@ -264,6 +317,49 @@ impl LocalVaultStore {
                 );
                 CREATE INDEX IF NOT EXISTS idx_lease_expires ON lease_receipts(expires_at_utc ASC);
                 PRAGMA user_version = 4;
+                "#,
+            )?;
+        }
+        if version < 5 {
+            self.conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS scoped_context (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    tenant_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    environment_id TEXT NOT NULL,
+                    updated_at_utc INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scoped_secret_cache (
+                    secret_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    environment_id TEXT NOT NULL,
+                    repository_binding_id TEXT,
+                    service_id TEXT,
+                    name TEXT NOT NULL,
+                    secret_type TEXT NOT NULL DEFAULT 'key_value',
+                    current_version INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    updated_at_utc INTEGER NOT NULL,
+                    UNIQUE (project_id, environment_id, name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_scoped_secret_cache_project ON scoped_secret_cache(project_id, environment_id);
+
+                CREATE TABLE IF NOT EXISTS scoped_binding_cache (
+                    binding_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    external_repo_id TEXT NOT NULL,
+                    repo_full_name TEXT NOT NULL,
+                    repo_url TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    updated_at_utc INTEGER NOT NULL,
+                    UNIQUE (project_id, provider, external_repo_id)
+                );
+                PRAGMA user_version = 5;
                 "#,
             )?;
         }
@@ -1398,11 +1494,413 @@ impl LocalVaultStore {
     }
 }
 
+/// Active scoped context (single-row mirror of the server-side selection).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedContext {
+    pub tenant_id: String,
+    pub workspace_id: String,
+    pub project_id: String,
+    pub environment_id: String,
+    pub updated_at_utc: i64,
+}
+
+/// Cached secret metadata row. Values are never cached locally in schema v5;
+/// ciphertext caching arrives with offline bundles in Phase 7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedSecretMeta {
+    pub secret_id: String,
+    pub tenant_id: String,
+    pub project_id: String,
+    pub environment_id: String,
+    pub repository_binding_id: Option<String>,
+    pub service_id: Option<String>,
+    pub name: String,
+    pub secret_type: String,
+    pub current_version: i64,
+    pub status: String,
+    pub updated_at_utc: i64,
+}
+
+/// Cached repository-binding row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedBinding {
+    pub binding_id: String,
+    pub project_id: String,
+    pub provider: String,
+    pub external_repo_id: String,
+    pub repo_full_name: String,
+    pub repo_url: String,
+    pub status: String,
+    pub updated_at_utc: i64,
+}
+
+impl LocalVaultStore {
+    /// Stores the active scoped context (single row, id = 1).
+    pub fn set_scoped_context(
+        &self,
+        tenant_id: &str,
+        workspace_id: &str,
+        project_id: &str,
+        environment_id: &str,
+    ) -> Result<(), LocalStoreError> {
+        self.conn.execute(
+            "INSERT INTO scoped_context (id, tenant_id, workspace_id, project_id, environment_id, updated_at_utc)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET tenant_id = excluded.tenant_id,
+                workspace_id = excluded.workspace_id, project_id = excluded.project_id,
+                environment_id = excluded.environment_id, updated_at_utc = excluded.updated_at_utc",
+            params![
+                tenant_id,
+                workspace_id,
+                project_id,
+                environment_id,
+                unix_now() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns the active scoped context, if any.
+    pub fn get_scoped_context(&self) -> Result<Option<ScopedContext>, LocalStoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT tenant_id, workspace_id, project_id, environment_id, updated_at_utc
+                 FROM scoped_context WHERE id = 1",
+                [],
+                |row| {
+                    Ok(ScopedContext {
+                        tenant_id: row.get(0)?,
+                        workspace_id: row.get(1)?,
+                        project_id: row.get(2)?,
+                        environment_id: row.get(3)?,
+                        updated_at_utc: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Inserts or refreshes one cached secret metadata row, keyed by
+    /// `(project_id, environment_id, name)`.
+    pub fn upsert_cached_secret(&self, meta: &CachedSecretMeta) -> Result<(), LocalStoreError> {
+        self.conn.execute(
+            "INSERT INTO scoped_secret_cache (secret_id, tenant_id, project_id, environment_id,
+                 repository_binding_id, service_id, name, secret_type, current_version, status,
+                 updated_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(project_id, environment_id, name) DO UPDATE SET secret_id = excluded.secret_id,
+                tenant_id = excluded.tenant_id, repository_binding_id = excluded.repository_binding_id,
+                service_id = excluded.service_id, secret_type = excluded.secret_type,
+                current_version = excluded.current_version, status = excluded.status,
+                updated_at_utc = excluded.updated_at_utc",
+            params![
+                meta.secret_id,
+                meta.tenant_id,
+                meta.project_id,
+                meta.environment_id,
+                meta.repository_binding_id,
+                meta.service_id,
+                meta.name,
+                meta.secret_type,
+                meta.current_version,
+                meta.status,
+                unix_now() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Looks up one cached secret by scope and name.
+    pub fn get_cached_secret(
+        &self,
+        project_id: &str,
+        environment_id: &str,
+        name: &str,
+    ) -> Result<Option<CachedSecretMeta>, LocalStoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT secret_id, tenant_id, project_id, environment_id, repository_binding_id,
+                        service_id, name, secret_type, current_version, status, updated_at_utc
+                 FROM scoped_secret_cache
+                 WHERE project_id = ?1 AND environment_id = ?2 AND name = ?3",
+                params![project_id, environment_id, name],
+                |row| {
+                    Ok(CachedSecretMeta {
+                        secret_id: row.get(0)?,
+                        tenant_id: row.get(1)?,
+                        project_id: row.get(2)?,
+                        environment_id: row.get(3)?,
+                        repository_binding_id: row.get(4)?,
+                        service_id: row.get(5)?,
+                        name: row.get(6)?,
+                        secret_type: row.get(7)?,
+                        current_version: row.get(8)?,
+                        status: row.get(9)?,
+                        updated_at_utc: row.get(10)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Inserts or refreshes one cached repository binding.
+    pub fn upsert_cached_binding(&self, binding: &CachedBinding) -> Result<(), LocalStoreError> {
+        self.conn.execute(
+            "INSERT INTO scoped_binding_cache (binding_id, project_id, provider, external_repo_id,
+                 repo_full_name, repo_url, status, updated_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(project_id, provider, external_repo_id) DO UPDATE SET
+                binding_id = excluded.binding_id, repo_full_name = excluded.repo_full_name,
+                repo_url = excluded.repo_url, status = excluded.status,
+                updated_at_utc = excluded.updated_at_utc",
+            params![
+                binding.binding_id,
+                binding.project_id,
+                binding.provider,
+                binding.external_repo_id,
+                binding.repo_full_name,
+                binding.repo_url,
+                binding.status,
+                unix_now() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Looks up one cached binding by project and durable provider identity.
+    pub fn get_cached_binding(
+        &self,
+        project_id: &str,
+        provider: &str,
+        external_repo_id: &str,
+    ) -> Result<Option<CachedBinding>, LocalStoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT binding_id, project_id, provider, external_repo_id, repo_full_name,
+                        repo_url, status, updated_at_utc
+                 FROM scoped_binding_cache
+                 WHERE project_id = ?1 AND provider = ?2 AND external_repo_id = ?3",
+                params![project_id, provider, external_repo_id],
+                |row| {
+                    Ok(CachedBinding {
+                        binding_id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        provider: row.get(2)?,
+                        external_repo_id: row.get(3)?,
+                        repo_full_name: row.get(4)?,
+                        repo_url: row.get(5)?,
+                        status: row.get(6)?,
+                        updated_at_utc: row.get(7)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Drops cached secrets and bindings for one project (context-switch
+    /// cleanup). Returns the total rows removed.
+    pub fn clear_scoped_cache(&self, project_id: &str) -> Result<usize, LocalStoreError> {
+        self.conn.execute(
+            "DELETE FROM scoped_secret_cache WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        let secrets = self.conn.changes() as usize;
+        self.conn.execute(
+            "DELETE FROM scoped_binding_cache WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        let bindings = self.conn.changes() as usize;
+        Ok(secrets + bindings)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ciphervault_crypto::{generate_signing_key, RecoverySecret};
     use ciphervault_format::PROTOCOL_VERSION;
+
+    #[test]
+    fn test_scoped_schema_v5_on_fresh_open() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        let fks_on: bool = store
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert!(fks_on, "foreign_keys pragma must be ON");
+        for table in [
+            "scoped_context",
+            "scoped_secret_cache",
+            "scoped_binding_cache",
+        ] {
+            let exists: bool = store
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing table {table}");
+        }
+    }
+
+    #[test]
+    fn test_v4_to_v5_migration_recreates_scoped_tables() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        // Simulate a v4 database: drop the v5 tables, rewind the version.
+        store
+            .conn
+            .execute_batch(
+                "DROP TABLE scoped_secret_cache;
+                 DROP TABLE scoped_binding_cache;
+                 DROP TABLE scoped_context;
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        store.run_migrations().unwrap();
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        for table in [
+            "scoped_context",
+            "scoped_secret_cache",
+            "scoped_binding_cache",
+        ] {
+            let exists: bool = store
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "migration did not recreate {table}");
+        }
+        // Idempotent: a second run is a no-op.
+        store.run_migrations().unwrap();
+    }
+
+    #[test]
+    fn test_scoped_context_roundtrip() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        assert!(store.get_scoped_context().unwrap().is_none());
+        store.set_scoped_context("t1", "w1", "p1", "e1").unwrap();
+        let ctx = store.get_scoped_context().unwrap().unwrap();
+        assert_eq!(ctx.tenant_id, "t1");
+        assert_eq!(ctx.workspace_id, "w1");
+        assert_eq!(ctx.project_id, "p1");
+        assert_eq!(ctx.environment_id, "e1");
+        // Overwrite keeps a single row.
+        store.set_scoped_context("t1", "w1", "p2", "e9").unwrap();
+        let ctx = store.get_scoped_context().unwrap().unwrap();
+        assert_eq!(ctx.project_id, "p2");
+    }
+
+    fn cached_meta(secret_id: &str, project: &str, env: &str, name: &str) -> CachedSecretMeta {
+        CachedSecretMeta {
+            secret_id: secret_id.to_string(),
+            tenant_id: "t1".to_string(),
+            project_id: project.to_string(),
+            environment_id: env.to_string(),
+            repository_binding_id: None,
+            service_id: None,
+            name: name.to_string(),
+            secret_type: "key_value".to_string(),
+            current_version: 1,
+            status: "active".to_string(),
+            updated_at_utc: 0,
+        }
+    }
+
+    #[test]
+    fn test_cached_secret_upsert_and_scope_isolation() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        store
+            .upsert_cached_secret(&cached_meta("s1", "p1", "e1", "DATABASE_URL"))
+            .unwrap();
+        // Same scope+name upserts (version bump), no duplicate row.
+        let mut bumped = cached_meta("s1", "p1", "e1", "DATABASE_URL");
+        bumped.current_version = 2;
+        store.upsert_cached_secret(&bumped).unwrap();
+        let got = store
+            .get_cached_secret("p1", "e1", "DATABASE_URL")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.current_version, 2);
+        // Same name in another environment is a distinct row.
+        store
+            .upsert_cached_secret(&cached_meta("s2", "p1", "e2", "DATABASE_URL"))
+            .unwrap();
+        let other = store
+            .get_cached_secret("p1", "e2", "DATABASE_URL")
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.secret_id, "s2");
+        assert!(store
+            .get_cached_secret("p1", "e9", "DATABASE_URL")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_cached_binding_roundtrip() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let binding = CachedBinding {
+            binding_id: "b1".to_string(),
+            project_id: "p1".to_string(),
+            provider: "github".to_string(),
+            external_repo_id: "84920194".to_string(),
+            repo_full_name: "acme/pay".to_string(),
+            repo_url: "https://example.invalid/acme/pay".to_string(),
+            status: "active".to_string(),
+            updated_at_utc: 0,
+        };
+        store.upsert_cached_binding(&binding).unwrap();
+        let got = store
+            .get_cached_binding("p1", "github", "84920194")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.repo_full_name, "acme/pay");
+        // Rename updates display fields under the same durable id.
+        let mut renamed = binding;
+        renamed.repo_full_name = "acme/pay-v2".to_string();
+        store.upsert_cached_binding(&renamed).unwrap();
+        let got = store
+            .get_cached_binding("p1", "github", "84920194")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.repo_full_name, "acme/pay-v2");
+        assert!(store
+            .get_cached_binding("p1", "github", "00000000")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_clear_scoped_cache_is_project_scoped() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        store
+            .upsert_cached_secret(&cached_meta("s1", "p1", "e1", "A"))
+            .unwrap();
+        store
+            .upsert_cached_secret(&cached_meta("s2", "p2", "e1", "A"))
+            .unwrap();
+        let removed = store.clear_scoped_cache("p1").unwrap();
+        assert_eq!(removed, 1);
+        assert!(store.get_cached_secret("p1", "e1", "A").unwrap().is_none());
+        assert!(store.get_cached_secret("p2", "e1", "A").unwrap().is_some());
+    }
 
     #[test]
     fn test_lease_receipt_round_trip_and_renew_upsert() {
@@ -1870,9 +2368,40 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         let infos = store.list_epoch_keys().unwrap();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].created_at_utc, 0);
+    }
+
+    #[test]
+    fn test_open_read_only_never_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "cv-readonly-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(LocalVaultStore::open_read_only(&path).is_err());
+        {
+            let _rw = LocalVaultStore::open(&path).unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        {
+            let store = LocalVaultStore::open_read_only(&path).unwrap();
+            let version: u32 = store
+                .conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 5);
+            assert!(store
+                .conn
+                .execute("CREATE TABLE probe_readonly(x)", [])
+                .is_err());
+        }
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(before, after);
+        std::fs::remove_file(&path).ok();
     }
 }

@@ -7,6 +7,7 @@ members = [
     "crates/snapshot",
     "crates/local-store",
     "crates/recovery",
+    "crates/redact",
     "crates/storage",
     "services/operator",
     "services/account",
@@ -71,6 +72,7 @@ ciphervault-format = { path = "crates/format" }
 ciphervault-snapshot = { path = "crates/snapshot" }
 ciphervault-local-store = { path = "crates/local-store" }
 ciphervault-recovery = { path = "crates/recovery" }
+ciphervault-redact = { path = "crates/redact" }
 ciphervault-storage = { path = "crates/storage" }
 ciphervault-operator = { path = "services/operator" }
 ciphervault-maintenance = { path = "services/maintenance" }

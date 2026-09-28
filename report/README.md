@@ -18,3 +18,11 @@ This directory contains empirical verification reports, production readiness rev
 | [**`PROGRESS_RATING_2026-09-24.md`**](./PROGRESS_RATING_2026-09-24.md) | 2026-09-24 | Updated progress rating (9/10), verifying closure of all top-5 risks (rate limiting, quotas, GHCR promotion, release automation). |
 | [**`PRODUCTION_READINESS_2026-09-24.md`**](./PRODUCTION_READINESS_2026-09-24.md) | 2026-09-24 | Production readiness scorecard (10.0/10.0) across multi-region quorum, Caddy TLS, and automated rollback. |
 | [**`OPERATOR_NETWORK_2026-09-24.md`**](./OPERATOR_NETWORK_2026-09-24.md) | 2026-09-24 | Live snapshot of the federated operator cluster, latency metrics, and version distribution. |
+| [**`SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md`**](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) | 2026-09-27 | **Scoped-secret audit v2.5.0 (Deliverable B):** current-state verdict (no project/repo/env scoping), target architecture, 10 Mermaid diagrams, supplements S1–S7. |
+| [**`SCOPED_SECRETS_EXECUTIVE_FINDINGS.md`**](./SCOPED_SECRETS_EXECUTIVE_FINDINGS.md) | 2026-09-27 | Deliverable A: concise executive findings. |
+| [**`SCOPED_SECRETS_TARGET_ARCHITECTURE.md`**](./SCOPED_SECRETS_TARGET_ARCHITECTURE.md) | 2026-09-27 | Deliverable C: standalone target architecture specification. |
+| [**`SCOPED_SECRETS_DATABASE_SPEC.md`**](./SCOPED_SECRETS_DATABASE_SPEC.md) | 2026-09-27 | Deliverable D: schema, constraints, indexes, transactions. |
+| [**`SCOPED_SECRETS_API_SPEC.md`**](./SCOPED_SECRETS_API_SPEC.md) | 2026-09-27 | Deliverable E: REST endpoints, auth matrix, rate limits. |
+| [**`SCOPED_SECRETS_MIGRATION_PLAN.md`**](./SCOPED_SECRETS_MIGRATION_PLAN.md) | 2026-09-27 | Deliverable F: 7-stage migration with loss-prevention gates. |
+| [**`SCOPED_SECRETS_SECURITY_THREAT_MODEL.md`**](./SCOPED_SECRETS_SECURITY_THREAT_MODEL.md) | 2026-09-27 | Deliverable G: 20-threat catalogue, 12 invariants, test gates. |
+| [**`SCOPED_SECRETS_IMPLEMENTATION_TASKS.md`**](./SCOPED_SECRETS_IMPLEMENTATION_TASKS.md) | 2026-09-27 | Deliverable H: file-mapped implementation task breakdown. |

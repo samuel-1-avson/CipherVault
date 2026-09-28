@@ -4,6 +4,7 @@
 //! domain-separated KDF, sealed-box epoch key envelopes, and Ed25519 signatures.
 
 pub mod aead;
+pub mod envelope;
 pub mod error;
 pub mod hsm;
 pub mod kdf;
@@ -15,8 +16,12 @@ pub mod shamir;
 pub mod signatures;
 
 pub use aead::{
-    decrypt_chunk, encrypt_chunk, encrypt_chunk_with_nonce, encrypt_with_nonce, KEY_SIZE,
-    NONCE_SIZE, TAG_SIZE,
+    decrypt_chunk, decrypt_with_nonce, encrypt_chunk, encrypt_chunk_with_nonce, encrypt_with_nonce,
+    KEY_SIZE, NONCE_SIZE, TAG_SIZE,
+};
+pub use envelope::{
+    open_secret_value, scope_aad, seal_secret_value, DataEncryptionKey, KeyWrappingService,
+    LocalKekService, SealedSecret, WrappedDek, KEK_WRAP_DOMAIN, SCOPE_AAD_DOMAIN,
 };
 pub use error::CryptoError;
 pub use hsm::{

@@ -1,4 +1,4 @@
-use super::app::{StatusLevel, TuiApp, TuiTab};
+use super::app::{BoundaryKind, StatusLevel, TuiApp, TuiTab};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -210,10 +210,7 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Store Mode:      ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                "SQLite WAL (DPAPI Protected at rest)",
-                Style::default().fg(Color::LightGreen),
-            ),
+            Span::styled(store_mode_label(), Style::default().fg(Color::LightGreen)),
         ]),
     ];
 
@@ -229,6 +226,26 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     // Right Card: Quick Health & Capacity
     let total_size: u64 = app.tracked_files.iter().map(|f| f.size_bytes).sum();
     let online_ops = app.operators.iter().filter(|o| o.online).count();
+    let total_ops = app.operators.len();
+    let (operator_text, operator_color) = if total_ops == 0 {
+        ("No operators configured".to_string(), Color::DarkGray)
+    } else if online_ops == total_ops {
+        (format!("All {total_ops} responding"), Color::Green)
+    } else if online_ops == 0 {
+        (format!("0 of {total_ops} responding (dark)"), Color::Red)
+    } else {
+        (
+            format!("{online_ops} of {total_ops} responding (degraded)"),
+            Color::Yellow,
+        )
+    };
+    let (token_text, token_color) = if app.token_status.probing {
+        ("Probing…".to_string(), Color::Yellow)
+    } else if app.token_status.token_attached {
+        ("PIV token attached".to_string(), Color::Green)
+    } else {
+        ("No PIV token".to_string(), Color::DarkGray)
+    };
 
     let health_text = vec![
         Line::from(vec![
@@ -253,29 +270,11 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Operator Responses:", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{online_ops} of {} nodes online", app.operators.len()),
-                Style::default().fg(if online_ops == app.operators.len() {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                }),
-            ),
+            Span::styled(operator_text, Style::default().fg(operator_color)),
         ]),
         Line::from(vec![
             Span::styled("Hardware Token:   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                if app.token_status.token_attached {
-                    "YubiKey PIV Slot 9C Active"
-                } else {
-                    "No Physical Token"
-                },
-                Style::default().fg(if app.token_status.token_attached {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
-            ),
+            Span::styled(token_text, Style::default().fg(token_color)),
         ]),
         Line::from(vec![
             Span::styled("Account Session:  ", Style::default().fg(Color::Gray)),
@@ -315,7 +314,10 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let axioms = vec![
         Line::from(vec![
             Span::styled("• Zero Plaintext At Rest: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("Device keys and epoch secrets are locked via OS keyring (Windows DPAPI) and never stored unencrypted."),
+            Span::raw(format!(
+                "Device keys and epoch secrets are locked via {} and never stored unencrypted.",
+                os_keyring_label()
+            )),
         ]),
         Line::from(vec![
             Span::styled("• Zero-Disk Recovery Kit: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
@@ -341,7 +343,7 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     frame.render_widget(bottom_block, main_layout[1]);
 }
 
-fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
+fn render_files_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
     if app.tracked_files.is_empty() {
         let p = Paragraph::new(
             "No files tracked yet. Press [t] to track a file (e.g. .env or secrets/dev.key)",
@@ -357,10 +359,15 @@ fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         return;
     }
 
+    app.file_visible = table_page_height(area);
+    let (start, end) = window_range(app.file_scroll, app.tracked_files.len(), app.file_visible);
+
     let rows: Vec<Row> = app
         .tracked_files
         .iter()
         .enumerate()
+        .skip(start)
+        .take(end - start)
         .map(|(i, f)| {
             let status_span = if f.exists_on_disk {
                 Span::styled("✓ Present", Style::default().fg(Color::Green))
@@ -408,8 +415,9 @@ fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .block(
             Block::default()
                 .title(format!(
-                    " Tracked Confidential Files ({} files) - Press [t] to track new ",
-                    app.tracked_files.len()
+                    " Tracked Confidential Files ({} files{}) - [t] track new ",
+                    app.tracked_files.len(),
+                    window_label(start, end, app.tracked_files.len())
                 ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -420,7 +428,7 @@ fn render_files_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     frame.render_widget(table, area);
 }
 
-fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
+fn render_snapshots_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
     if app.snapshots.is_empty() {
         let p = Paragraph::new(
             "No snapshots committed yet. Press [p] to create and replicate your first snapshot!",
@@ -436,16 +444,25 @@ fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         return;
     }
 
+    app.snapshot_visible = table_page_height(area);
+    let (start, end) = window_range(
+        app.snapshot_scroll,
+        app.snapshots.len(),
+        app.snapshot_visible,
+    );
+
     let rows: Vec<Row> = app
         .snapshots
         .iter()
         .enumerate()
+        .skip(start)
+        .take(end - start)
         .map(|(i, s)| {
-            let cid_snippet = format!("{}...", &s.snapshot_id_hex[..8]);
+            let cid_snippet = format!("{}...", hex_head(&s.snapshot_id_hex, 8));
             let parent_snippet = if s.parent_id_hex == "Genesis" {
                 "Genesis".into()
             } else {
-                format!("{}...", &s.parent_id_hex[..8])
+                format!("{}...", hex_head(&s.parent_id_hex, 8))
             };
 
             let head_badge = if s.is_head {
@@ -514,7 +531,11 @@ fn render_snapshots_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         )
         .block(
             Block::default()
-                .title(" Immutable Snapshot History DAG (Replicated across Operators) ")
+                .title(format!(
+                    " Immutable Snapshot History DAG ({} commits{}) ",
+                    app.snapshots.len(),
+                    window_label(start, end, app.snapshots.len())
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan)),
@@ -613,11 +634,18 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     frame.render_widget(table, area);
 }
 
-fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
+fn render_fastcdc_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(8)])
         .split(area);
+
+    app.chunk_visible = table_page_height(chunks[1]);
+    let (start, end) = window_range(
+        app.chunk_scroll,
+        app.fastcdc_chunks.len(),
+        app.chunk_visible,
+    );
 
     if let Some(ref m) = app.fastcdc_metrics {
         let metrics_text = vec![
@@ -630,7 +658,11 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("  ({} total)", format_bytes(m.total_bytes as u64)),
+                    format!(
+                        "  ({} total · {} profile)",
+                        format_bytes(m.total_bytes as u64),
+                        m.profile
+                    ),
                     Style::default().fg(Color::Gray),
                 ),
             ]),
@@ -675,16 +707,26 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         );
         frame.render_widget(p, chunks[0]);
 
-        // Table of chunks
+        // Table of chunks (scrollable window into the full chunk list)
         let rows: Vec<Row> = app
             .fastcdc_chunks
             .iter()
-            .take(20) // Show first 20 chunks
-            .map(|c| {
+            .enumerate()
+            .skip(start)
+            .take(end - start)
+            .map(|(i, c)| {
                 let dup_span = if c.is_duplicate {
                     Span::styled("Duplicate", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("Unique", Style::default().fg(Color::Green))
+                };
+
+                let row_style = if i == app.chunk_table_index {
+                    Style::default()
+                        .bg(Color::Rgb(30, 58, 138))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
                 };
 
                 Row::new(vec![
@@ -696,23 +738,29 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     ),
                     Span::styled(&c.gear_fingerprint, Style::default().fg(Color::Magenta)),
                     Span::styled(
+                        c.boundary.label(),
+                        Style::default().fg(boundary_color(c.boundary)),
+                    ),
+                    Span::styled(
                         format!("{:.2}", c.entropy),
                         Style::default().fg(Color::White),
                     ),
                     dup_span,
                     Span::styled("Masked", Style::default().fg(Color::DarkGray)),
                 ])
+                .style(row_style)
             })
             .collect();
 
         let widths = [
             Constraint::Length(4),
             Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(20),
             Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(12),
+            Constraint::Length(18),
+            Constraint::Length(5),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Length(8),
         ];
 
         let table = Table::new(rows, widths)
@@ -721,9 +769,10 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     "#",
                     "Offset",
                     "Length",
-                    "Gear Rolling Hash",
+                    "Boundary Hash",
+                    "Cut",
                     "Entropy",
-                    "Deduplication",
+                    "Dedup",
                     "Content",
                 ])
                 .style(
@@ -735,18 +784,20 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             )
             .block(
                 Block::default()
-                    .title(" Content-Defined Chunk Slices (Gear SplitMix64) ")
+                    .title(format!(
+                        " Content-Defined Chunk Slices (Gear SplitMix64{}) ",
+                        window_label(start, end, app.fastcdc_chunks.len())
+                    ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Cyan)),
             );
         frame.render_widget(table, chunks[1]);
     } else {
-        let p = Paragraph::new(
+        let hint = app.fastcdc_notice.as_deref().unwrap_or(
             "No confidential files tracked or available to inspect. Press [t] to track a file.",
-        )
-        .alignment(Alignment::Center)
-        .block(
+        );
+        let p = Paragraph::new(hint).alignment(Alignment::Center).block(
             Block::default()
                 .title(" FastCDC Inspector ")
                 .borders(Borders::ALL)
@@ -759,25 +810,84 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(8)])
+        .constraints([Constraint::Length(9), Constraint::Min(8)])
         .split(area);
 
-    let (token_title, token_color) = if app.token_status.token_attached {
+    let status = &app.token_status;
+    let (token_title, token_color) = if status.token_attached {
         (
-            " Physical Smartcard / YubiKey Detected (Slot 9C/9D Ready) ",
+            " PIV Hardware Token Attached (slots probed live) ",
             Color::Green,
         )
+    } else if status.probing {
+        (" Probing PC/SC bus… ", Color::Yellow)
+    } else if status.last_error.is_some() {
+        (" Token Probe Failed ", Color::Red)
     } else {
-        (
-            " No Physical Smartcard Detected (PC/SC Bus Active) ",
-            Color::Yellow,
-        )
+        (" No PIV Token Detected ", Color::Yellow)
     };
 
-    let readers_str = if app.token_status.readers.is_empty() {
-        "None detected".into()
+    let readers_str = if status.readers.is_empty() {
+        "None detected".to_string()
     } else {
-        app.token_status.readers.join(", ")
+        status.readers.join(", ")
+    };
+
+    let hardware_line: String = if status.token_attached {
+        status
+            .token_label
+            .clone()
+            .unwrap_or_else(|| "PIV token attached".into())
+    } else if status.probing {
+        "Probing readers for a responsive PIV applet…".into()
+    } else if let Some(error) = status.last_error.as_deref() {
+        format!("Probe error: {error}")
+    } else if status.readers.is_empty() {
+        "Waiting for hardware insertion".into()
+    } else {
+        "Readers present; no responsive PIV applet".into()
+    };
+    let hardware_color = if status.token_attached {
+        Color::Green
+    } else if status.last_error.is_some() {
+        Color::Red
+    } else {
+        Color::Yellow
+    };
+
+    let slot_line = |ready: bool, detail: Option<&str>, purpose: &str| -> (String, Color) {
+        match (ready, detail) {
+            (true, Some(detail)) => (format!("✓ Ready ({detail})"), Color::Green),
+            (true, None) => ("✓ Ready".to_string(), Color::Green),
+            (false, Some(detail)) => (format!("✗ Not ready ({detail})"), Color::Yellow),
+            (false, None) => (format!("· {purpose} (not probed)"), Color::DarkGray),
+        }
+    };
+    let (slot_9c_text, slot_9c_color) = if status.token_attached || status.slot_9c_detail.is_some()
+    {
+        slot_line(
+            status.slot_9c_ready,
+            status.slot_9c_detail.as_deref(),
+            "Digital Signature",
+        )
+    } else {
+        (
+            "· Digital Signature (no token)".to_string(),
+            Color::DarkGray,
+        )
+    };
+    let (slot_9d_text, slot_9d_color) = if status.token_attached || status.slot_9d_detail.is_some()
+    {
+        slot_line(
+            status.slot_9d_ready,
+            status.slot_9d_detail.as_deref(),
+            "ECDH Key Management",
+        )
+    } else {
+        (
+            "· ECDH Key Management (no token)".to_string(),
+            Color::DarkGray,
+        )
     };
 
     let token_text = vec![
@@ -788,32 +898,25 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         Line::from(vec![
             Span::styled("Hardware Status:  ", Style::default().fg(Color::Gray)),
             Span::styled(
-                if app.token_status.token_attached {
-                    "YubiKey PIV Token Attached"
-                } else {
-                    "Waiting for hardware insertion"
-                },
+                hardware_line,
                 Style::default()
-                    .fg(if app.token_status.token_attached {
-                        Color::Green
-                    } else {
-                        Color::Yellow
-                    })
+                    .fg(hardware_color)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
             Span::styled("Slot 9C (Sign):   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                "Digital Signature with User Presence Touch Enforcement",
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(slot_9c_text, Style::default().fg(slot_9c_color)),
         ]),
         Line::from(vec![
             Span::styled("Slot 9D (KeyMgmt):", Style::default().fg(Color::Gray)),
+            Span::styled(slot_9d_text, Style::default().fg(slot_9d_color)),
+        ]),
+        Line::from(vec![
+            Span::styled("Refresh:          ", Style::default().fg(Color::Gray)),
             Span::styled(
-                "Hardware-isolated ECDH Key Agreement for clean recovery",
-                Style::default().fg(Color::Cyan),
+                "probed on this tab + every [r] refresh",
+                Style::default().fg(Color::DarkGray),
             ),
         ]),
     ];
@@ -836,7 +939,7 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         Line::from(Span::styled("   ciphervault init --hardware-token", Style::default().fg(Color::Yellow))),
         Line::from("2. To require touch confirmation before replicating a snapshot commit:"),
         Line::from(Span::styled("   ciphervault push --touch", Style::default().fg(Color::Yellow))),
-        Line::from("3. The YubiKey LED will flash; host execution pauses until the capacitive sensor is physically touched."),
+        Line::from("3. The token's touch indicator lights up; host execution pauses until the sensor is physically touched."),
         Line::from("4. Private keys never touch host RAM or swap memory."),
     ];
 
@@ -850,7 +953,7 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     frame.render_widget(guide, main_layout[1]);
 }
 
-fn render_explorer_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
+fn render_explorer_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1176,7 +1279,7 @@ fn render_explorer_operators_table(frame: &mut Frame, app: &TuiApp, area: Rect) 
     frame.render_widget(table, area);
 }
 
-fn render_explorer_checkpoints_table(frame: &mut Frame, app: &TuiApp, area: Rect) {
+fn render_explorer_checkpoints_table(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
     if app.explorer_checkpoints.is_empty() {
         let message = if app.explorer_feed_configured {
             "Feed configured; no checkpoints published yet."
@@ -1193,10 +1296,19 @@ fn render_explorer_checkpoints_table(frame: &mut Frame, app: &TuiApp, area: Rect
         return;
     }
 
+    app.explorer_checkpoint_visible = table_page_height(area);
+    let (start, end) = window_range(
+        app.explorer_checkpoint_scroll,
+        app.explorer_checkpoints.len(),
+        app.explorer_checkpoint_visible,
+    );
+
     let rows: Vec<Row> = app
         .explorer_checkpoints
         .iter()
         .enumerate()
+        .skip(start)
+        .take(end - start)
         .map(|(i, checkpoint)| {
             let row_style = if i == app.explorer_checkpoint_index {
                 Style::default()
@@ -1255,7 +1367,11 @@ fn render_explorer_checkpoints_table(frame: &mut Frame, app: &TuiApp, area: Rect
         )
         .block(
             Block::default()
-                .title(" Published Checkpoints ")
+                .title(format!(
+                    " Published Checkpoints ({} total{}) ",
+                    app.explorer_checkpoints.len(),
+                    window_label(start, end, app.explorer_checkpoints.len())
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Magenta)),
@@ -1349,11 +1465,11 @@ fn render_update_modal(frame: &mut Frame, app: &TuiApp) {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "Watch the status line for progress. The running TUI keeps",
+                "Watch the status line for the result. The running TUI",
                 Style::default().fg(Color::Gray),
             )),
             Line::from(Span::styled(
-                "the old version until you quit and relaunch.",
+                "keeps the old version until you quit and relaunch.",
                 Style::default().fg(Color::Gray),
             )),
         ]
@@ -1581,7 +1697,7 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("Up / Down  ", Style::default().fg(Color::Yellow)),
-            Span::raw("Select previous / next row in tables"),
+            Span::raw("Select previous / next row in tables (j / k work too)"),
         ]),
         Line::from(vec![
             Span::styled("?          ", Style::default().fg(Color::Yellow)),
@@ -1593,7 +1709,7 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Hosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nPress [Esc] or [?] to close this help overlay",
+            "Network, token, and inspection work runs in the background; input never blocks on it.\nHosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nPress [Esc] or [?] to close this help overlay",
             Style::default().fg(Color::Gray),
         )),
     ];
@@ -1628,6 +1744,79 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// Data rows that fit in a bordered table with a one-line header row and a
+/// one-line header margin.
+fn table_page_height(area: Rect) -> usize {
+    area.height.saturating_sub(4) as usize
+}
+
+/// Clamps a scroll offset into a renderable `[start, end)` window.
+fn window_range(offset: usize, len: usize, visible: usize) -> (usize, usize) {
+    if len == 0 {
+        return (0, 0);
+    }
+    let start = offset.min(len - 1);
+    let end = (start + visible.max(1)).min(len);
+    (start, end)
+}
+
+/// Appends "rows a–b of N" to a table title only when scrolling hides rows.
+fn window_label(start: usize, end: usize, len: usize) -> String {
+    if len > end - start {
+        format!(", rows {}–{} of {}", start + 1, end, len)
+    } else {
+        String::new()
+    }
+}
+
+/// First `n` bytes of an ASCII hex string without panicking on short input.
+fn hex_head(value: &str, n: usize) -> &str {
+    value.get(..n.min(value.len())).unwrap_or(value)
+}
+
+fn boundary_color(boundary: BoundaryKind) -> Color {
+    match boundary {
+        BoundaryKind::MaskS => Color::Cyan,
+        BoundaryKind::MaskL => Color::Blue,
+        BoundaryKind::ForcedMax => Color::Yellow,
+        BoundaryKind::Tail => Color::DarkGray,
+    }
+}
+
+fn store_mode_label() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "SQLite WAL (DPAPI protected at rest)"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "SQLite WAL (Keychain protected at rest)"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "SQLite WAL (OS keyring protected at rest)"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        "SQLite WAL (OS keyring protected at rest)"
+    }
+}
+
+fn os_keyring_label() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "Windows DPAPI"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macOS Keychain"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "the OS keyring"
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
@@ -1647,7 +1836,8 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::app::{
-        ExplorerCheckpointRow, ExplorerObjectResult, ExplorerOperatorRow, ExplorerReplicaRow,
+        BoundaryKind, ExplorerCheckpointRow, ExplorerObjectResult, ExplorerOperatorRow,
+        ExplorerReplicaRow, FastCdcTuiChunk, FastCdcTuiMetrics, TrackedFileItem,
     };
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
@@ -1769,5 +1959,92 @@ mod tests {
         let text = drawn_text(&mut app, 120, 40);
         assert!(text.contains("Installing Update"));
         assert!(text.contains("please wait"));
+    }
+
+    #[test]
+    fn files_table_scrolls_window_to_selection() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Files);
+        app.tracked_files = (0..30)
+            .map(|i| TrackedFileItem {
+                path: format!("tracked-file-{i:02}"),
+                size_bytes: 100,
+                file_id_hex: "aa".into(),
+                exists_on_disk: true,
+            })
+            .collect();
+        app.file_table_index = 25;
+        app.file_scroll = 20;
+        let text = drawn_text(&mut app, 120, 16);
+        assert!(text.contains("tracked-file-25"), "selected row visible");
+        assert!(text.contains("rows 21–26 of 30"), "window label shown");
+        assert!(!text.contains("tracked-file-00"), "off-window rows hidden");
+        assert!(!text.contains("tracked-file-29"), "trailing rows hidden");
+    }
+
+    #[test]
+    fn token_tab_reports_absent_token_honestly() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::HardwareToken);
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("No PIV Token"));
+        assert!(text.contains("not probed") || text.contains("no token"));
+        app.token_status.probing = true;
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("Probing PC/SC bus"));
+    }
+
+    #[test]
+    fn fastcdc_tab_renders_boundary_cut_column() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::FastCdc);
+        app.fastcdc_metrics = Some(FastCdcTuiMetrics {
+            source_name: "demo.bin".into(),
+            profile: "default".into(),
+            total_bytes: 5000,
+            total_chunks: 1,
+            unique_chunks: 1,
+            duplicate_chunks: 0,
+            saved_bytes: 0,
+            dedup_savings_pct: 0.0,
+        });
+        app.fastcdc_chunks = vec![FastCdcTuiChunk {
+            index: 0,
+            offset: 0,
+            length: 5000,
+            cid_hex: "ab".repeat(32),
+            gear_fingerprint: "0x0123456789abcdef".into(),
+            boundary: BoundaryKind::MaskS,
+            entropy: 7.99,
+            is_duplicate: false,
+        }];
+        let text = drawn_text(&mut app, 140, 44);
+        for needle in [
+            "Boundary Hash",
+            "Cut",
+            "0x0123456789abcdef",
+            "default profile",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?}");
+        }
+    }
+
+    #[test]
+    fn fastcdc_tab_explains_inspector_cap_skip() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::FastCdc);
+        app.fastcdc_notice = Some("Selected file is big (inspector cap 64): not loaded.".into());
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("inspector cap"));
+    }
+
+    #[test]
+    fn overview_reports_operator_health_honestly() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Overview);
+        app.operators.clear();
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("No operators configured"));
+        assert!(text.contains("No PIV token"));
     }
 }

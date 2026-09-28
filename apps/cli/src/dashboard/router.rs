@@ -27,11 +27,12 @@ use crate::{
     api_public_operators_handler, api_public_operators_history_handler,
     api_public_operators_jobs_handler, api_public_relayer_checkpoints_handler,
     api_public_status_handler, api_public_stream_handler, api_public_vault_handler,
-    api_relayer_anchor_handler, api_relayer_checkpoints_handler, api_snapshot_manifest_handler,
-    api_snapshots_handler, api_snapshots_restore_handler, api_stream_handler, api_token_handler,
-    api_vault_handler, api_workspaces_handler, api_workspaces_scan_handler,
-    api_workspaces_switch_handler, private_ui_request_guard, UI_APP_JS, UI_INDEX_HTML,
-    UI_STYLES_CSS,
+    api_relayer_anchor_handler, api_relayer_checkpoints_handler, api_scoped_context_handler,
+    api_scoped_project_handler, api_scoped_projects_handler, api_scoped_secrets_handler,
+    api_snapshot_manifest_handler, api_snapshots_handler, api_snapshots_restore_handler,
+    api_stream_handler, api_token_handler, api_vault_handler, api_workspaces_handler,
+    api_workspaces_scan_handler, api_workspaces_switch_handler, private_ui_request_guard,
+    UI_APP_JS, UI_INDEX_HTML, UI_STYLES_CSS,
 };
 
 /// Content-Security-Policy for the UI shell document. The bundle is a
@@ -280,6 +281,13 @@ pub(crate) fn private_ui_router() -> axum::Router {
             "/api/workspaces/scan",
             axum::routing::post(api_workspaces_scan_handler),
         )
+        .route("/api/scoped/context", get(api_scoped_context_handler))
+        .route("/api/scoped/projects", get(api_scoped_projects_handler))
+        .route(
+            "/api/scoped/projects/:project_ref",
+            get(api_scoped_project_handler),
+        )
+        .route("/api/scoped/secrets", get(api_scoped_secrets_handler))
         .route("/api/explorer/overview", get(api_explorer_overview_handler))
         .route(
             "/api/explorer/object/:cid",
@@ -1546,6 +1554,229 @@ mod tests {
             .unwrap_or("");
         assert!(alias_content_type.contains("text/plain"));
 
+        server.abort();
+        let _ = server.await;
+    }
+
+    /// Panic-safe scoped-env override (`CIPHERVAULT_ACCOUNT_ENDPOINT`,
+    /// `CIPHERVAULT_SCOPE_TOKEN`, `CIPHERVAULT_PROJECT`, `CIPHERVAULT_ENV`).
+    /// Held under the router serializer like `AccountPathGuard`.
+    struct ScopedEnvGuard {
+        prior: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl ScopedEnvGuard {
+        fn set(vars: &[(&'static str, &str)]) -> Self {
+            let mut prior = Vec::new();
+            for (key, value) in vars {
+                prior.push((*key, std::env::var_os(key)));
+                std::env::set_var(key, value);
+            }
+            Self { prior }
+        }
+
+        fn clear(keys: &[&'static str]) -> Self {
+            let mut prior = Vec::new();
+            for key in keys {
+                prior.push((*key, std::env::var_os(key)));
+                std::env::remove_var(key);
+            }
+            Self { prior }
+        }
+    }
+
+    impl Drop for ScopedEnvGuard {
+        fn drop(&mut self) {
+            for (key, prior) in self.prior.drain(..) {
+                match prior {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    async fn start_scoped_upstream_stub() -> (tokio::task::JoinHandle<()>, String) {
+        async fn projects() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({
+                "projects": [
+                    {"project_id": "proj-1", "slug": "shop", "role": "admin"},
+                ],
+            }))
+        }
+        async fn project(
+            axum::extract::Path(id): axum::extract::Path<String>,
+        ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+            if id != "proj-1" && id != "shop" {
+                return (
+                    axum::http::StatusCode::NOT_FOUND,
+                    axum::Json(serde_json::json!({
+                        "status": "error", "code": "NOT_FOUND", "error": "no such project",
+                    })),
+                );
+            }
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "project_id": "proj-1", "slug": "shop",
+                    "environments": [
+                        {"environment_id": "env-1", "slug": "staging", "tier": 1},
+                    ],
+                })),
+            )
+        }
+        async fn secrets(
+            axum::extract::Query(query): axum::extract::Query<
+                std::collections::HashMap<String, String>,
+            >,
+        ) -> axum::Json<serde_json::Value> {
+            let all = vec![
+                serde_json::json!({
+                    "secret_id": "sec-1", "name": "STRIPE_KEY",
+                    "secret_type": "key_value", "status": "active", "current_version": 2,
+                }),
+                serde_json::json!({
+                    "secret_id": "sec-2", "name": "DATABASE_URL",
+                    "secret_type": "key_value", "status": "active", "current_version": 1,
+                }),
+            ];
+            let filtered: Vec<_> = match query.get("q") {
+                Some(q) => all
+                    .into_iter()
+                    .filter(|entry| {
+                        entry["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                            .contains(&q.to_ascii_lowercase())
+                    })
+                    .collect(),
+                None => all,
+            };
+            axum::Json(serde_json::json!({ "secrets": filtered }))
+        }
+        let app = axum::Router::new()
+            .route("/v1/projects", axum::routing::get(projects))
+            .route("/v1/projects/:id", axum::routing::get(project))
+            .route("/v1/projects/:id/secrets", axum::routing::get(secrets));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (server, format!("http://{}", address))
+    }
+
+    #[tokio::test]
+    async fn private_scoped_context_reports_unconfigured_without_env() {
+        let (server, base_url, _serialized) = start_private_test_server().await;
+        let _account_isolation = AccountPathGuard::isolate();
+        let _scoped = ScopedEnvGuard::clear(&[
+            "CIPHERVAULT_ACCOUNT_ENDPOINT",
+            "CIPHERVAULT_SCOPE_TOKEN",
+            "CIPHERVAULT_PROJECT",
+            "CIPHERVAULT_ENV",
+        ]);
+        let client = reqwest::Client::new();
+        let session_token = private_ui_session_snapshot().token;
+        let response = client
+            .get(format!("{base_url}/api/scoped/context"))
+            .header(
+                "Cookie",
+                format!("ciphervault_private_session={session_token}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["status"], "unconfigured");
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn private_scoped_explorer_proxies_projects_search_and_validates() {
+        let (server, base_url, _serialized) = start_private_test_server().await;
+        let _account_isolation = AccountPathGuard::isolate();
+        let (upstream, upstream_url) = start_scoped_upstream_stub().await;
+        let _scoped = ScopedEnvGuard::set(&[
+            ("CIPHERVAULT_ACCOUNT_ENDPOINT", &upstream_url),
+            ("CIPHERVAULT_SCOPE_TOKEN", "operator-token"),
+            ("CIPHERVAULT_PROJECT", "shop"),
+            ("CIPHERVAULT_ENV", "staging"),
+        ]);
+        let client = reqwest::Client::new();
+        let session_token = private_ui_session_snapshot().token;
+        let cookie = format!("ciphervault_private_session={session_token}");
+        let authed_get = |url: String| {
+            let cookie = cookie.clone();
+            let client = &client;
+            async move {
+                client
+                    .get(url)
+                    .header("Cookie", cookie)
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Banner context resolves through the shared precedence.
+        let response = authed_get(format!("{base_url}/api/scoped/context")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["project_slug"], "shop");
+        assert_eq!(body["project_source"], "env");
+        assert_eq!(body["environment_slug"], "staging");
+
+        // Catalog + project passthrough.
+        let response = authed_get(format!("{base_url}/api/scoped/projects")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["projects"][0]["slug"], "shop");
+        let response = authed_get(format!("{base_url}/api/scoped/projects/shop")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Secrets resolve slug refs to IDs and filter server-side.
+        let response = authed_get(format!(
+            "{base_url}/api/scoped/secrets?project=shop&environment=staging&q=stripe"
+        ))
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        let names: Vec<&str> = body["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["STRIPE_KEY"]);
+        assert!(body["secrets"][0].get("value").is_none());
+
+        // Validation: smuggling refs, overlong q, bad limit, unknown env.
+        let response = authed_get(format!("{base_url}/api/scoped/projects/%2e%2e%2fsecrets")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = authed_get(format!(
+            "{base_url}/api/scoped/secrets?project=shop&environment=staging&q={}",
+            "x".repeat(129)
+        ))
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = authed_get(format!(
+            "{base_url}/api/scoped/secrets?project=shop&environment=staging&limit=many"
+        ))
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = authed_get(format!(
+            "{base_url}/api/scoped/secrets?project=shop&environment=ghost"
+        ))
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        upstream.abort();
+        let _ = upstream.await;
         server.abort();
         let _ = server.await;
     }

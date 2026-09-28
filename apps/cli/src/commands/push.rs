@@ -240,6 +240,17 @@ pub(crate) async fn cmd_push(
                 "Local only".yellow().bold(),
                 e
             );
+            if let ciphervault_storage::StorageError::QuorumDeficit { successful: 0, .. } = &e {
+                println!(
+                    "{}",
+                    "  Hint:           0 operators accepted the upload. When the warnings \
+                     above say 'not enrolled', this vault's device identity is unknown to \
+                     the fleet (closed permissioned fleet: ask the fleet operator to \
+                     enroll it, or point at your own operators). When they say 'connect \
+                     failed' or 'timeout', check network access first."
+                        .yellow()
+                );
+            }
             println!("  Trace ID:       {trace_id}");
             return Err(e.into());
         }

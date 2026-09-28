@@ -569,6 +569,41 @@ select {
   display: block;
 }
 
+/* Scoped explorer context banner (T-703) */
+.app-sidebar .scope-banner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--edge);
+  color: var(--ash);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.app-sidebar .scope-banner-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ash);
+  flex: none;
+}
+.app-sidebar .scope-banner.is-ok {
+  color: var(--bone);
+  border-color: var(--signal);
+}
+.app-sidebar .scope-banner.is-ok .scope-banner-dot {
+  background: var(--ok);
+}
+.app-sidebar .scope-banner-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* App Main Viewport */
 .app-main {
   flex: 1;

@@ -64,6 +64,32 @@ pub fn encrypt_chunk_with_nonce(
 }
 
 /// Decrypts a chunk payload formatted as [nonce (24 bytes) || ciphertext + tag] with AAD.
+/// Decrypts with an explicit detached 24-byte nonce and AAD.
+/// Complement to [`encrypt_with_nonce`]; short payloads fail closed.
+pub fn decrypt_with_nonce(
+    key: &[u8; KEY_SIZE],
+    nonce: &[u8; NONCE_SIZE],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if ciphertext.len() < TAG_SIZE {
+        return Err(CryptoError::AuthTagVerificationFailed);
+    }
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength {
+            expected: KEY_SIZE,
+            actual: key.len(),
+        })?;
+    let payload = Payload {
+        msg: ciphertext,
+        aad,
+    };
+    cipher
+        .decrypt(XNonce::from_slice(nonce), payload)
+        .map_err(|_| CryptoError::AuthTagVerificationFailed)
+}
+
+/// Decrypts a chunk payload formatted as [nonce (24 bytes) || ciphertext + tag] with AAD.
 pub fn decrypt_chunk(
     key: &[u8; KEY_SIZE],
     chunk_payload: &[u8],
@@ -96,6 +122,18 @@ pub fn decrypt_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detached_nonce_roundtrip() {
+        let key = [0x5au8; KEY_SIZE];
+        let nonce = [0x3cu8; NONCE_SIZE];
+        let aad = b"scope:test";
+        let ciphertext = encrypt_with_nonce(&key, &nonce, b"detached", aad).unwrap();
+        let plaintext = decrypt_with_nonce(&key, &nonce, &ciphertext, aad).unwrap();
+        assert_eq!(plaintext, b"detached");
+        assert!(decrypt_with_nonce(&key, &nonce, &[0u8; TAG_SIZE - 1], aad).is_err());
+        assert!(decrypt_with_nonce(&key, &nonce, &ciphertext, b"scope:other").is_err());
+    }
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {

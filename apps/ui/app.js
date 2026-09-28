@@ -119,7 +119,7 @@ async function fetchAllData() {
     if (canAccessPrivateFeature('snapshot_history')) requests.push(fetchSnapshots());
     if (canAccessPrivateFeature('my_data')) requests.push(fetchOverview());
     if (canAccessPrivateFeature('vault_workspace')) requests.push(fetchGuardians(), fetchActivity(), fetchFleet());
-    if (canAccessPrivateFeature('workspace_switching')) requests.push(fetchWorkspaces());
+    if (canAccessPrivateFeature('workspace_switching')) requests.push(fetchWorkspaces(), fetchScopeBanner());
 
     await Promise.all(requests);
   } catch (err) {
@@ -5426,6 +5426,39 @@ function initWorkspaceSwitcher() {
         showToast("Rescan failed: " + err.message, true);
       }
     });
+  }
+}
+
+// -------------------------------------------------------------
+// Scoped Explorer Context Banner (T-703)
+// -------------------------------------------------------------
+
+async function fetchScopeBanner() {
+  try {
+    const res = await fetch('/api/scoped/context', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`Scope context request failed (${res.status})`);
+    renderScopeBanner(await res.json());
+  } catch (err) {
+    renderScopeBanner({ status: 'unavailable' });
+    console.debug('Scope banner notice:', err);
+  }
+}
+
+function renderScopeBanner(data) {
+  const banner = document.getElementById('scope-banner');
+  const text = document.getElementById('scope-banner-text');
+  if (!banner || !text) return;
+  banner.classList.remove('is-ok');
+  banner.classList.remove('is-unset');
+  if (data && data.status === 'ok' && data.project_slug) {
+    const env = data.environment_slug ? `/${data.environment_slug}` : '';
+    text.textContent = `Scope: ${data.project_slug}${env}`;
+    banner.title = `Active scope ${data.project_slug}${env} (project via ${data.project_source || 'unknown'})`;
+    banner.classList.add('is-ok');
+  } else {
+    text.textContent = 'Scope: not configured';
+    banner.title = (data && data.hint) || 'Set CIPHERVAULT_PROJECT/CIPHERVAULT_ENV for the scoped explorer';
+    banner.classList.add('is-unset');
   }
 }
 
