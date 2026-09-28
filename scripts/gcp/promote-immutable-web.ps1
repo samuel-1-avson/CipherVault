@@ -42,6 +42,7 @@ param(
 
     [string]$ArbitrumRpcUrl = "",
     [string]$CosignCertificateIdentityRegex = "https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*",
+    [string]$CosignRollbackCertificateIdentityRegex = "",
     [switch]$Apply
 )
 
@@ -95,12 +96,12 @@ function Assert-MetadataValue {
 }
 
 function Verify-ImageSignature {
-    param([string]$Image)
+    param([string]$Image, [string]$IdentityRegex)
     # Routed through Invoke-NativeText: cosign prints its success banner
     # to stderr, which is terminating under $ErrorActionPreference = "Stop"
     # even when piped to $null. The exit code drives control flow.
     $result = Invoke-NativeText cosign verify `
-        --certificate-identity-regexp $CosignCertificateIdentityRegex `
+        --certificate-identity-regexp $IdentityRegex `
         --certificate-oidc-issuer https://token.actions.githubusercontent.com `
         $Image
     if ($result.ExitCode -ne 0) {
@@ -245,8 +246,13 @@ if ([string]::IsNullOrWhiteSpace($ExpectedBuildVersion) -or $ExpectedBuildVersio
 }
 
 Write-Host "Verifying signed image attestations..." -ForegroundColor Cyan
-foreach ($image in @($DashboardImage, $AccountImage, $RollbackDashboardImage, $RollbackAccountImage) | Select-Object -Unique) {
-    Verify-ImageSignature $image
+$rollbackIdentity = $CosignRollbackCertificateIdentityRegex
+if ([string]::IsNullOrWhiteSpace($rollbackIdentity)) { $rollbackIdentity = $CosignCertificateIdentityRegex }
+foreach ($image in @($DashboardImage, $AccountImage) | Select-Object -Unique) {
+    Verify-ImageSignature $image $CosignCertificateIdentityRegex
+}
+foreach ($image in @($RollbackDashboardImage, $RollbackAccountImage) | Select-Object -Unique) {
+    Verify-ImageSignature $image $rollbackIdentity
 }
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
