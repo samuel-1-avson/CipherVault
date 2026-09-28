@@ -4,6 +4,7 @@ use ciphervault_crypto::hsm::{
 };
 use ciphervault_local_store::AccountStore;
 use ciphervault_snapshot::fastcdc::{config_from_env, fastcdc_chunk, FastCdcConfig, GEAR_MATRIX};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -92,11 +93,20 @@ pub struct SnapshotItem {
     pub is_head: bool,
 }
 
+/// How many recent successful probes feed the displayed operator
+/// latency. Raw per-poll samples on long/lossy paths swing several
+/// hundred milliseconds poll to poll (retransmits, TLS re-handshakes);
+/// the median of this window is what the table shows.
+pub const LATENCY_WINDOW: usize = 5;
+
 #[derive(Debug, Clone)]
 pub struct OperatorHealthItem {
     pub endpoint: String,
     pub online: bool,
     pub latency_ms: u64,
+    /// Recent successful probe samples; `latency_ms` is their median.
+    /// Cleared on probe failure so recovery starts from a fresh baseline.
+    pub latency_window: VecDeque<u64>,
     pub operator_id: String,
     pub retention_policy: Option<String>,
     /// Short diagnostic retained for the operator table when a probe fails.
@@ -646,6 +656,7 @@ impl TuiApp {
                     endpoint,
                     online: false,
                     latency_ms: 0,
+                    latency_window: VecDeque::new(),
                     operator_id: "--".into(),
                     retention_policy: None,
                     last_error: None,
@@ -1173,7 +1184,16 @@ impl TuiApp {
                 let before: Vec<bool> = self.operators.iter().map(|op| op.online).collect();
                 for (op, probe) in self.operators.iter_mut().zip(probes) {
                     op.online = probe.online;
-                    op.latency_ms = probe.latency_ms;
+                    if probe.online {
+                        op.latency_window.push_back(probe.latency_ms);
+                        while op.latency_window.len() > LATENCY_WINDOW {
+                            op.latency_window.pop_front();
+                        }
+                        op.latency_ms = median_latency(&op.latency_window);
+                    } else {
+                        op.latency_window.clear();
+                        op.latency_ms = probe.latency_ms;
+                    }
                     op.last_error = probe.error;
                     if let Some(operator_id) = probe.operator_id {
                         op.operator_id = operator_id;
@@ -1595,6 +1615,15 @@ async fn probe_operator(client: reqwest::Client, endpoint: String) -> OperatorPr
         retention_policy,
         error: None,
     }
+}
+
+fn median_latency(window: &VecDeque<u64>) -> u64 {
+    if window.is_empty() {
+        return 0;
+    }
+    let mut sorted: Vec<u64> = window.iter().copied().collect();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
 }
 
 fn compute_entropy(data: &[u8]) -> f64 {
@@ -2187,6 +2216,7 @@ mod tests {
             endpoint: "https://a.example".into(),
             online: false,
             latency_ms: 0,
+            latency_window: VecDeque::new(),
             operator_id: "--".into(),
             retention_policy: None,
             last_error: None,
@@ -2205,6 +2235,62 @@ mod tests {
         assert!(!app.poll_in_flight);
         assert!(!app.operators[0].online);
         assert_eq!(app.operators[0].operator_id, "--");
+    }
+
+    fn polled(app: &mut TuiApp, endpoint: &str, online: bool, latency_ms: u64) {
+        app.poll_in_flight = true;
+        app.apply_task_out(TuiTaskOut::OperatorsPolled {
+            endpoints: vec![endpoint.into()],
+            probes: vec![OperatorProbeResult {
+                online,
+                latency_ms,
+                operator_id: Some("op-a".into()),
+                retention_policy: None,
+                error: None,
+            }],
+        });
+    }
+
+    fn single_operator_app() -> TuiApp {
+        let mut app = TuiApp::new(Duration::from_secs(30));
+        app.operators = vec![OperatorHealthItem {
+            endpoint: "https://a.example".into(),
+            online: false,
+            latency_ms: 0,
+            latency_window: VecDeque::new(),
+            operator_id: "--".into(),
+            retention_policy: None,
+            last_error: None,
+        }];
+        app
+    }
+
+    #[test]
+    fn operator_latency_reports_window_median() {
+        let mut app = single_operator_app();
+        // A lone retransmit spike must not dominate the displayed value.
+        for sample in [300, 310, 1900, 320, 305] {
+            polled(&mut app, "https://a.example", true, sample);
+        }
+        assert_eq!(app.operators[0].latency_ms, 310);
+        assert_eq!(app.operators[0].latency_window.len(), LATENCY_WINDOW);
+    }
+
+    #[test]
+    fn operator_latency_window_rolls_and_clears_on_failure() {
+        let mut app = single_operator_app();
+        for sample in [100, 110, 120, 130, 140, 150] {
+            polled(&mut app, "https://a.example", true, sample);
+        }
+        // Oldest sample (100) rolled out: median of [110..150] is 130.
+        assert_eq!(app.operators[0].latency_ms, 130);
+        polled(&mut app, "https://a.example", false, 999);
+        assert!(!app.operators[0].online);
+        assert_eq!(app.operators[0].latency_ms, 999);
+        assert!(app.operators[0].latency_window.is_empty());
+        // Recovery starts from a fresh baseline, not ancient samples.
+        polled(&mut app, "https://a.example", true, 400);
+        assert_eq!(app.operators[0].latency_ms, 400);
     }
 
     #[test]
