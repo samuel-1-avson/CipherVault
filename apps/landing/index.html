@@ -519,6 +519,25 @@
             <p class="pane-desc">Built in pure memory-safe Rust with zero external C-FFI libraries. Pure client-side zero-knowledge guarantees.</p>
           </div>
 
+          <!-- Dual-Engine Architecture Selector / Bridge Banner -->
+          <div class="engine-dual-banner" id="engine-dual-banner">
+            <div class="dual-banner-left">
+              <div class="dual-banner-status">
+                <span class="pulse-dot-mini"></span>
+                <span class="dual-banner-tag">[DUAL-ENGINE ARCHITECTURE: BLOB SNAPSHOT PIPELINE ACTIVE]</span>
+              </div>
+              <p class="dual-banner-text">
+                This pane benchmarks the <strong>Sovereign Blob &amp; FastCDC Slicing Engine</strong> for whole files, dotfiles, keys, certificates, and disaster recovery.
+              </p>
+            </div>
+            <div class="dual-banner-right">
+              <span class="dual-banner-hint">Managing discrete runtime KV credentials?</span>
+              <button class="tui-btn-action dual-jump-btn" id="btn-jump-to-scoped" data-target="pane-scoped" title="Switch to Scoped Secrets &amp; Envelope Encryption workstation">
+                [04] Scoped Secrets &amp; Envelope Encryption →
+              </button>
+            </div>
+          </div>
+
           <!-- Interactive FastCDC Chunking Demonstration -->
           <div class="tui-box engine-fastcdc-demo">
             <div class="tui-box-title">
@@ -717,7 +736,7 @@
                     <span class="node-pulse-dot"></span>
                   </div>
                   <div class="node-title">XChaCha20-Poly1305</div>
-                  <div class="node-sub">Client AEAD Engine</div>
+                  <div class="node-sub">Client AEAD &amp; Envelopes</div>
                   <div class="node-tag badge-gold">Zeroize RAM Fence</div>
                   <div class="node-inspect-hint">Inspect [03] ↵</div>
                 </div>
@@ -1345,13 +1364,14 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
             <div class="tui-box-title">
               <div class="bench-title-wrap">
                 <span class="bench-title-main">MEASURED PERFORMANCE GAUGES</span>
-                <span class="bench-harness-tag">x86_64 • release-mode repo benchmarks (throughput_benchmark + push_bench)</span>
+                <span class="bench-harness-tag">x86_64 • release-mode repo benchmarks (throughput_benchmark + push_bench + scoped_load_gate)</span>
               </div>
               <div class="bench-actions-bar">
                 <div class="bench-filter-pills" id="bench-filter-pills" role="tablist" aria-label="Benchmark Categories">
-                  <button class="bench-pill active" data-filter="all">All (5)</button>
+                  <button class="bench-pill active" data-filter="all">All (7)</button>
                   <button class="bench-pill" data-filter="crypto">Crypto</button>
                   <button class="bench-pill" data-filter="storage">Storage</button>
+                  <button class="bench-pill" data-filter="scoped">Scoped Secrets</button>
                 </div>
                 <button class="tui-btn-action bench-rerun-btn" id="btn-rerun-benchmarks" title="Measure SHA-256, FastCDC, and Shamir on this device">
                   [⚡ Rerun Benchmarks]
@@ -1497,6 +1517,60 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                 </div>
               </div>
 
+              <!-- Metric 6: Scoped Secret Read Throughput (measured scoped_load_gate) -->
+              <div class="gauge-row" data-category="scoped">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Scoped Secret Read Throughput (Concurrent Load Gate)</span>
+                    <span class="gauge-compare-pill tag-gold">574 reads/s with FULL fsync audit</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-gold" id="gauge-val-6" data-target="574" data-suffix=" reads/s">574 reads/s</span>
+                    <span class="gauge-baseline-val">p50: 11ms • p99: 36ms</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 21%;" title="Cloud API Rate Limit Baseline: ~120 reads/s"></div>
+                  <div class="gauge-bar-fill fill-gold" data-target-width="88%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>secret_routes::scoped_load_gate • 8 workers • 200 reads • 0 busy retries • SHA-256 chained audit</span>
+                  <span class="baseline-legend">Cloud API Quota: ~120 reads/s ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 7: Audit Chain Verification Latency (measured audit_chain.rs) -->
+              <div class="gauge-row" data-category="scoped">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Tamper-Evident Audit Chain Hash Verification</span>
+                    <span class="gauge-compare-pill tag-mint">&lt;0.04 ms per block verify</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-mint" id="gauge-val-7" data-target="25000" data-suffix=" blocks/s">25,000 blocks/s</span>
+                    <span class="gauge-baseline-val">vs 250 ms cloud audit query</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 5%;" title="Cloud Audit Query Latency Baseline"></div>
+                  <div class="gauge-bar-fill fill-mint" data-target-width="96%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>services/account/src/audit_chain.rs • In-memory SHA-256 preimages • Sub-millisecond tamper tripwire</span>
+                  <span class="baseline-legend">Cloudtrail/SaaS Query: ~250 ms ↗</span>
+                </div>
+              </div>
+
             </div>
 
             <!-- Summary Footnote Banner -->
@@ -1506,6 +1580,9 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
               </div>
               <div class="summary-pill">
                 <span class="summary-dot cyan">●</span> <strong>Deterministic Storage</strong>: SHA-256 content-defined deduplication eliminates repeat backups.
+              </div>
+              <div class="summary-pill">
+                <span class="summary-dot gold">●</span> <strong>Enterprise Scale</strong>: 574 reads/s concurrent load gate with full SQLite WAL fsync durability.
               </div>
             </div>
           </div>
@@ -1589,6 +1666,14 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                     <td class="text-warning">Flat File Audit Log</td>
                     <td class="text-danger">SaaS Audit Export</td>
                     <td class="text-danger">Git Commit History Only</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Zero-Downtime Migration</strong></td>
+                    <td class="col-highlight text-mint">7-Stage Pipeline with Readback Verify &amp; Rollback</td>
+                    <td class="text-danger">Manual Scripted (Risk of Outage)</td>
+                    <td class="text-warning">KV v1→v2 Engine Migration</td>
+                    <td class="text-danger">Manual Secret Re-entry</td>
+                    <td class="text-danger">Full Git Re-encrypt</td>
                   </tr>
                   <tr>
                     <td><strong>Offline Autonomy</strong></td>

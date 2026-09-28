@@ -1825,6 +1825,101 @@ html[data-theme="light"] .theme-pill-btn.active {
   margin: 0;
 }
 
+/* Dual-Engine Architecture Selector / Bridge Banner */
+.engine-dual-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  background: var(--term-surface-elev);
+  border: 1px solid var(--term-border);
+  border-left: 3px solid var(--term-cyan);
+  border-radius: var(--radius-sm);
+  padding: 12px 18px;
+  margin-bottom: 24px;
+}
+
+.engine-dual-banner .dual-banner-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.engine-dual-banner .dual-banner-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.engine-dual-banner .dual-banner-tag {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--term-cyan);
+  letter-spacing: 0.04em;
+}
+
+.engine-dual-banner .dual-banner-text {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.engine-dual-banner .dual-banner-text strong {
+  color: var(--text-main);
+}
+
+.engine-dual-banner .dual-banner-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.engine-dual-banner .dual-banner-hint {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.engine-dual-banner .dual-jump-btn {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--term-gold);
+  color: var(--term-gold);
+  background: rgba(255, 176, 0, 0.08);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--t-fast);
+}
+
+.engine-dual-banner .dual-jump-btn:hover {
+  background: var(--term-gold);
+  color: var(--term-bg);
+  box-shadow: 0 0 12px var(--term-gold-glow);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 900px) {
+  .engine-dual-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .engine-dual-banner .dual-banner-right {
+    align-items: flex-start;
+    width: 100%;
+  }
+  .engine-dual-banner .dual-jump-btn {
+    width: 100%;
+    text-align: center;
+  }
+}
+
 /* ==============================================================================
    Pane 3: FastCDC Simulator (Interactive Slicer & Metadata Inspector)
    ============================================================================== */
