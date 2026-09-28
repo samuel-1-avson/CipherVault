@@ -286,6 +286,7 @@ pub enum TuiTable {
     Snapshots,
     Chunks,
     Checkpoints,
+    Operators,
 }
 
 /// Cache key for the FastCDC inspector: same path, size, and mtime means the
@@ -375,6 +376,9 @@ pub struct TuiApp {
     pub operators: Vec<OperatorHealthItem>,
     pub operator_table_index: usize,
     operator_http: reqwest::Client,
+    /// Completed operator polls. Zero means no probe result has landed yet,
+    /// so the UI reports "probing" instead of mislabeling operators offline.
+    pub polls_completed: u64,
 
     // FastCDC inspector
     pub fastcdc_metrics: Option<FastCdcTuiMetrics>,
@@ -425,6 +429,7 @@ pub struct TuiApp {
     pub show_explorer_search_modal: bool,
     pub explorer_search_buffer: String,
     pub show_help: bool,
+    pub show_snapshot_modal: bool,
 
     // Background polling
     pub last_poll: Instant,
@@ -469,6 +474,7 @@ impl TuiApp {
             operators: Vec::new(),
             operator_table_index: 0,
             operator_http: build_operator_http_client(),
+            polls_completed: 0,
 
             fastcdc_metrics: None,
             fastcdc_chunks: Vec::new(),
@@ -519,6 +525,7 @@ impl TuiApp {
             show_explorer_search_modal: false,
             explorer_search_buffer: String::new(),
             show_help: false,
+            show_snapshot_modal: false,
 
             last_poll: Instant::now() - poll_interval, // trigger immediate poll
             poll_interval,
@@ -692,6 +699,9 @@ impl TuiApp {
         if self.explorer_checkpoint_index >= self.explorer_checkpoints.len() {
             self.explorer_checkpoint_index = 0;
         }
+        if self.operator_table_index >= self.operators.len() {
+            self.operator_table_index = 0;
+        }
         self.file_scroll = scroll_offset_for(
             self.file_scroll,
             self.file_table_index,
@@ -783,6 +793,41 @@ impl TuiApp {
         }
     }
 
+    /// Removes the selected file from vault tracking. Metadata-only SQLite
+    /// delete, cheap enough to run on the keypress; snapshots already taken
+    /// keep their chunks.
+    pub fn untrack_selected_file(&mut self) {
+        if self.tracked_files.is_empty() || self.file_table_index >= self.tracked_files.len() {
+            self.set_status("No tracked file selected.", StatusLevel::Warning);
+            return;
+        }
+        let path = self.tracked_files[self.file_table_index].path.clone();
+        match crate::get_vault_store().and_then(|store| {
+            store
+                .untrack_file(&path)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+        }) {
+            Ok(true) => {
+                self.set_status(
+                    format!("✓ Untracked '{path}' (existing snapshots keep their chunks)"),
+                    StatusLevel::Success,
+                );
+                self.refresh_local_state();
+            }
+            Ok(false) => {
+                self.set_status(
+                    format!("'{path}' is no longer tracked; refreshing."),
+                    StatusLevel::Warning,
+                );
+                self.refresh_local_state();
+            }
+            Err(error) => self.set_status(
+                format!("Failed to untrack '{path}': {error:#}"),
+                StatusLevel::Error,
+            ),
+        }
+    }
+
     /// Moves the selection one row down with wraparound, keeping the
     /// selected row inside the visible scroll window.
     pub fn select_next(&mut self, table: TuiTable) {
@@ -836,6 +881,12 @@ impl TuiApp {
                     self.explorer_checkpoints.len(),
                     self.explorer_checkpoint_visible,
                 );
+            }
+            TuiTable::Operators => {
+                if self.operators.is_empty() {
+                    return;
+                }
+                self.operator_table_index = (self.operator_table_index + 1) % self.operators.len();
             }
         }
     }
@@ -908,6 +959,107 @@ impl TuiApp {
                     self.explorer_checkpoints.len(),
                     self.explorer_checkpoint_visible,
                 );
+            }
+            TuiTable::Operators => {
+                if self.operators.is_empty() {
+                    return;
+                }
+                self.operator_table_index = if self.operator_table_index == 0 {
+                    self.operators.len() - 1
+                } else {
+                    self.operator_table_index - 1
+                };
+            }
+        }
+    }
+
+    /// Moves the selection by one visible page. The operators table always
+    /// fits, so paging there jumps to the first/last row instead.
+    pub fn select_page(&mut self, table: TuiTable, forward: bool) {
+        let (len, step) = match table {
+            TuiTable::Files => (self.tracked_files.len(), self.file_visible.max(1)),
+            TuiTable::Snapshots => (self.snapshots.len(), self.snapshot_visible.max(1)),
+            TuiTable::Chunks => (self.fastcdc_chunks.len(), self.chunk_visible.max(1)),
+            TuiTable::Checkpoints => (
+                self.explorer_checkpoints.len(),
+                self.explorer_checkpoint_visible.max(1),
+            ),
+            TuiTable::Operators => (self.operators.len(), self.operators.len().max(1)),
+        };
+        if len == 0 {
+            return;
+        }
+        let current = match table {
+            TuiTable::Files => self.file_table_index,
+            TuiTable::Snapshots => self.snapshot_table_index,
+            TuiTable::Chunks => self.chunk_table_index,
+            TuiTable::Checkpoints => self.explorer_checkpoint_index,
+            TuiTable::Operators => self.operator_table_index,
+        };
+        let next = if forward {
+            (current + step).min(len - 1)
+        } else {
+            current.saturating_sub(step)
+        };
+        self.set_table_index(table, next);
+    }
+
+    /// Jumps the selection to the first or last row.
+    pub fn select_edge(&mut self, table: TuiTable, first: bool) {
+        let len = match table {
+            TuiTable::Files => self.tracked_files.len(),
+            TuiTable::Snapshots => self.snapshots.len(),
+            TuiTable::Chunks => self.fastcdc_chunks.len(),
+            TuiTable::Checkpoints => self.explorer_checkpoints.len(),
+            TuiTable::Operators => self.operators.len(),
+        };
+        if len == 0 {
+            return;
+        }
+        self.set_table_index(table, if first { 0 } else { len - 1 });
+    }
+
+    fn set_table_index(&mut self, table: TuiTable, next: usize) {
+        match table {
+            TuiTable::Files => {
+                self.file_table_index = next;
+                self.file_scroll = scroll_offset_for(
+                    self.file_scroll,
+                    self.file_table_index,
+                    self.tracked_files.len(),
+                    self.file_visible,
+                );
+                self.request_inspection();
+            }
+            TuiTable::Snapshots => {
+                self.snapshot_table_index = next;
+                self.snapshot_scroll = scroll_offset_for(
+                    self.snapshot_scroll,
+                    self.snapshot_table_index,
+                    self.snapshots.len(),
+                    self.snapshot_visible,
+                );
+            }
+            TuiTable::Chunks => {
+                self.chunk_table_index = next;
+                self.chunk_scroll = scroll_offset_for(
+                    self.chunk_scroll,
+                    self.chunk_table_index,
+                    self.fastcdc_chunks.len(),
+                    self.chunk_visible,
+                );
+            }
+            TuiTable::Checkpoints => {
+                self.explorer_checkpoint_index = next;
+                self.explorer_checkpoint_scroll = scroll_offset_for(
+                    self.explorer_checkpoint_scroll,
+                    self.explorer_checkpoint_index,
+                    self.explorer_checkpoints.len(),
+                    self.explorer_checkpoint_visible,
+                );
+            }
+            TuiTable::Operators => {
+                self.operator_table_index = next;
             }
         }
     }
@@ -1181,6 +1333,7 @@ impl TuiApp {
                 if !fresh {
                     return;
                 }
+                self.polls_completed += 1;
                 let before: Vec<bool> = self.operators.iter().map(|op| op.online).collect();
                 for (op, probe) in self.operators.iter_mut().zip(probes) {
                     op.online = probe.online;
@@ -2387,5 +2540,117 @@ mod tests {
             Err(InspectError::TooLarge(_))
         ));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn file_list_app(count: usize) -> TuiApp {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.tracked_files = (0..count)
+            .map(|i| TrackedFileItem {
+                path: format!("secret-{i}.env"),
+                size_bytes: 10,
+                file_id_hex: format!("{:08x}", i),
+                exists_on_disk: true,
+            })
+            .collect();
+        app.file_visible = 4;
+        app
+    }
+
+    #[test]
+    fn select_page_moves_by_visible_window_and_clamps() {
+        let mut app = file_list_app(10);
+        app.select_page(TuiTable::Files, true);
+        assert_eq!(app.file_table_index, 4);
+        app.select_page(TuiTable::Files, true);
+        assert_eq!(app.file_table_index, 8);
+        app.select_page(TuiTable::Files, true);
+        assert_eq!(app.file_table_index, 9);
+        app.select_page(TuiTable::Files, false);
+        assert_eq!(app.file_table_index, 5);
+    }
+
+    #[test]
+    fn select_edge_jumps_to_first_and_last_row() {
+        let mut app = file_list_app(10);
+        app.select_edge(TuiTable::Files, false);
+        assert_eq!(app.file_table_index, 9);
+        app.select_edge(TuiTable::Files, true);
+        assert_eq!(app.file_table_index, 0);
+    }
+
+    #[test]
+    fn operator_selection_wraps_without_scrolling() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.operators = ["op1", "op2"]
+            .iter()
+            .map(|id| OperatorHealthItem {
+                endpoint: format!("https://{id}.example"),
+                operator_id: id.to_string(),
+                online: false,
+                latency_ms: 0,
+                latency_window: VecDeque::new(),
+                last_error: None,
+                retention_policy: None,
+            })
+            .collect();
+        app.select_next(TuiTable::Operators);
+        assert_eq!(app.operator_table_index, 1);
+        app.select_next(TuiTable::Operators);
+        assert_eq!(app.operator_table_index, 0);
+        app.select_prev(TuiTable::Operators);
+        assert_eq!(app.operator_table_index, 1);
+        app.select_edge(TuiTable::Operators, true);
+        assert_eq!(app.operator_table_index, 0);
+    }
+
+    #[test]
+    fn untrack_without_selection_warns_and_touches_nothing() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.untrack_selected_file();
+        assert!(app.status_message.contains("No tracked file selected"));
+    }
+
+    #[tokio::test]
+    async fn enter_opens_and_closes_snapshot_inspector() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use TuiTab::Snapshots;
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(Snapshots);
+        app.snapshots = vec![SnapshotItem {
+            snapshot_id_hex: "e63584c0".into(),
+            parent_id_hex: "Genesis".into(),
+            message: "Epoch #1".into(),
+            timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
+            files_count: 1,
+            is_head: true,
+        }];
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, enter).await;
+        assert!(app.show_snapshot_modal);
+        super::super::events::handle_key_event(&mut app, enter).await;
+        assert!(!app.show_snapshot_modal);
+    }
+
+    #[tokio::test]
+    async fn enter_on_files_jumps_to_chunk_inspector() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = file_list_app(2);
+        app.switch_tab(TuiTab::Files);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, enter).await;
+        assert_eq!(app.active_tab, TuiTab::FastCdc);
+    }
+
+    #[tokio::test]
+    async fn untrack_keybinding_warns_when_nothing_selected() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Files);
+        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, key).await;
+        assert!(app.status_message.contains("No tracked file selected"));
     }
 }

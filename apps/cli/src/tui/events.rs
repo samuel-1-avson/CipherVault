@@ -11,6 +11,14 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
+    // Snapshot inspector is display-only: any dismiss key closes it.
+    if app.show_snapshot_modal {
+        if let KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') = key.code {
+            app.show_snapshot_modal = false;
+        }
+        return;
+    }
+
     // If Track modal is open, handle text input
     if app.show_track_modal {
         match key.code {
@@ -157,6 +165,7 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             TuiTab::Snapshots => app.select_next(TuiTable::Snapshots),
             TuiTab::FastCdc => app.select_next(TuiTable::Chunks),
             TuiTab::Explorer => app.select_next(TuiTable::Checkpoints),
+            TuiTab::Operators => app.select_next(TuiTable::Operators),
             _ => {}
         },
 
@@ -165,6 +174,64 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             TuiTab::Snapshots => app.select_prev(TuiTable::Snapshots),
             TuiTab::FastCdc => app.select_prev(TuiTable::Chunks),
             TuiTab::Explorer => app.select_prev(TuiTable::Checkpoints),
+            TuiTab::Operators => app.select_prev(TuiTable::Operators),
+            _ => {}
+        },
+
+        // Page and edge jumps follow the active table's visible window.
+        KeyCode::PageDown => match app.active_tab {
+            TuiTab::Files => app.select_page(TuiTable::Files, true),
+            TuiTab::Snapshots => app.select_page(TuiTable::Snapshots, true),
+            TuiTab::FastCdc => app.select_page(TuiTable::Chunks, true),
+            TuiTab::Explorer => app.select_page(TuiTable::Checkpoints, true),
+            TuiTab::Operators => app.select_page(TuiTable::Operators, true),
+            _ => {}
+        },
+
+        KeyCode::PageUp => match app.active_tab {
+            TuiTab::Files => app.select_page(TuiTable::Files, false),
+            TuiTab::Snapshots => app.select_page(TuiTable::Snapshots, false),
+            TuiTab::FastCdc => app.select_page(TuiTable::Chunks, false),
+            TuiTab::Explorer => app.select_page(TuiTable::Checkpoints, false),
+            TuiTab::Operators => app.select_page(TuiTable::Operators, false),
+            _ => {}
+        },
+
+        KeyCode::Home => match app.active_tab {
+            TuiTab::Files => app.select_edge(TuiTable::Files, true),
+            TuiTab::Snapshots => app.select_edge(TuiTable::Snapshots, true),
+            TuiTab::FastCdc => app.select_edge(TuiTable::Chunks, true),
+            TuiTab::Explorer => app.select_edge(TuiTable::Checkpoints, true),
+            TuiTab::Operators => app.select_edge(TuiTable::Operators, true),
+            _ => {}
+        },
+
+        KeyCode::End => match app.active_tab {
+            TuiTab::Files => app.select_edge(TuiTable::Files, false),
+            TuiTab::Snapshots => app.select_edge(TuiTable::Snapshots, false),
+            TuiTab::FastCdc => app.select_edge(TuiTable::Chunks, false),
+            TuiTab::Explorer => app.select_edge(TuiTable::Checkpoints, false),
+            TuiTab::Operators => app.select_edge(TuiTable::Operators, false),
+            _ => {}
+        },
+
+        // Row actions: inspect a snapshot, or jump from a file to its chunks.
+        KeyCode::Enter => match app.active_tab {
+            TuiTab::Snapshots => {
+                if app.snapshots.is_empty() {
+                    app.set_status("No snapshots to inspect.", StatusLevel::Warning);
+                } else {
+                    app.show_snapshot_modal = true;
+                }
+            }
+            TuiTab::Files => {
+                if app.tracked_files.is_empty() {
+                    app.set_status("No tracked files to inspect.", StatusLevel::Warning);
+                } else {
+                    app.switch_tab(TuiTab::FastCdc);
+                    app.request_inspection();
+                }
+            }
             _ => {}
         },
 
@@ -193,6 +260,18 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         KeyCode::Char('t') => {
             app.show_track_modal = true;
             app.track_input_buffer.clear();
+        }
+
+        // Action: Untrack the selected file (Files tab only).
+        KeyCode::Char('x') => {
+            if app.active_tab == TuiTab::Files {
+                app.untrack_selected_file();
+            } else {
+                app.set_status(
+                    "Switch to the Files tab to untrack a file.",
+                    StatusLevel::Info,
+                );
+            }
         }
 
         // Action: Push snapshot (background task; completion lands on the
