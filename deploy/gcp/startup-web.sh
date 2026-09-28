@@ -80,6 +80,10 @@ fetch_hex_secret() {
     fi
     install -d -m 0700 "$SECRETS_DIR"
     install -o 10001 -g 10001 -m 0400 "$key_file" "$dest_file"
+    # The RETURN trap is function-global: without this clear it would
+    # re-fire on the *caller's* return, where these locals are out of
+    # scope and `set -u` would abort the boot.
+    trap - RETURN
 }
 
 fetch_totp_key() {
