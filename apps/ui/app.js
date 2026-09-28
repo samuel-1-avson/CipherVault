@@ -981,6 +981,16 @@ function applyAccessContext(context) {
   const publicNotice = document.getElementById('public-explorer-notice');
   if (publicNotice) publicNotice.hidden = !publicExplorer;
 
+  // The enrolled-device-key ceremony signs with this machine's local vault
+  // keystore, which a remote explorer cannot reach. Hide the option on the
+  // public explorer so visitors are never offered a sign-in that cannot
+  // succeed; local workspaces keep it.
+  const deviceSigninCard = document.getElementById('btn-signin-device');
+  if (deviceSigninCard) {
+    deviceSigninCard.hidden = publicExplorer;
+    deviceSigninCard.setAttribute('aria-hidden', publicExplorer ? 'true' : 'false');
+  }
+
   const vaultIdentityLabel = document.getElementById('vault-identity-label');
   if (vaultIdentityLabel) vaultIdentityLabel.textContent = publicExplorer ? 'EXPLORER' : 'VAULT';
   const copyVaultId = document.getElementById('btn-copy-vault-id');

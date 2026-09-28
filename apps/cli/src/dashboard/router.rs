@@ -532,6 +532,15 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             "/api/account/invitations/accept",
             axum::routing::post(api_account_invitation_accept_handler),
         )
+        // Local-device sign-in. On a loopback workspace this binds the
+        // local vault key; on the public explorer the handler reports that
+        // no local vault exists. Either way the route must exist: without
+        // it POSTs fall onto GET-only `/api/account/:account_id` and die
+        // with an empty 405.
+        .route(
+            "/api/account/login",
+            axum::routing::post(api_account_login_handler),
+        )
         .route(
             "/api/account/logout",
             axum::routing::post(api_account_logout_handler),
@@ -567,6 +576,18 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
         .route(
             "/api/account/totp/authentication/verify",
             axum::routing::post(api_account_totp_verify_handler),
+        )
+        .route(
+            "/api/account/:account_id/totp/enrollment",
+            axum::routing::post(api_account_totp_enrollment_handler),
+        )
+        .route(
+            "/api/account/:account_id/totp/enrollment/verify",
+            axum::routing::post(api_account_totp_enrollment_verify_handler),
+        )
+        .route(
+            "/api/account/:account_id/totp/revoke",
+            axum::routing::post(api_account_totp_revoke_handler),
         )
         .route("/api/vault", get(api_public_vault_handler))
         .route("/api/operators", get(api_public_operators_handler))
@@ -921,6 +942,76 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "ACCOUNT_SERVICE_NOT_CONFIGURED");
+        }
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    /// Regression: every `/api/account/*` path the explorer UI fetches must
+    /// exist on the public router. Device login and TOTP enrollment were
+    /// private-only, so the explorer offered flows that died with an empty
+    /// 405 (login shadowed by GET-only `:account_id`) or 403
+    /// `PRIVATE_API_DISABLED` (TOTP enrollment via the public fallback).
+    #[tokio::test]
+    async fn public_router_serves_every_explorer_account_path() {
+        struct EndpointGuard {
+            prior: Option<std::ffi::OsString>,
+        }
+
+        impl EndpointGuard {
+            fn clear() -> Self {
+                let prior = std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT");
+                std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", "");
+                Self { prior }
+            }
+        }
+
+        impl Drop for EndpointGuard {
+            fn drop(&mut self) {
+                match self.prior.take() {
+                    Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", value),
+                    None => std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT"),
+                }
+            }
+        }
+
+        let _serialized = serialized_router_test().await;
+        let _no_endpoint = EndpointGuard::clear();
+        // Isolate the local account store so device login deterministically
+        // reports "not configured" instead of reading the developer machine.
+        let _no_account = AccountPathGuard::isolate();
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        let account_id = format!("cvacct_{}", "ab".repeat(16));
+
+        // The static device-login route wins over `:account_id` for POST:
+        // the handler answers instead of Axum's empty 405.
+        let login = client
+            .post(format!("{base_url}/api/account/login"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = login.json().await.unwrap();
+        assert_eq!(body["code"], "ACCOUNT_NOT_CONFIGURED");
+
+        // TOTP enrollment routes reach the proxy (unconfigured here) instead
+        // of the public fallback's 403 PRIVATE_API_DISABLED.
+        for uri in [
+            format!("/api/account/{account_id}/totp/enrollment"),
+            format!("/api/account/{account_id}/totp/enrollment/verify"),
+            format!("/api/account/{account_id}/totp/revoke"),
+        ] {
+            let response = client
+                .post(format!("{base_url}{uri}"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "for {uri}");
             let body: serde_json::Value = response.json().await.unwrap();
             assert_eq!(body["code"], "ACCOUNT_SERVICE_NOT_CONFIGURED");
         }

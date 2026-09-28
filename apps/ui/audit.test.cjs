@@ -749,6 +749,16 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   await vm.runInContext('fetchScopeBanner()', context);
   assert.equal(getElementById('scope-banner-text').textContent, 'Scope: not configured');
 
+  // 22. The public explorer must not offer device-key sign-in: the ceremony
+  // signs with the local vault keystore, which a remote browser cannot
+  // reach. Local workspaces keep the option.
+  vm.runInContext(`applyAccessContext({ mode: 'public_explorer' })`, context);
+  assert.equal(getElementById('btn-signin-device').hidden, true);
+  assert.equal(getElementById('btn-signin-device').getAttribute('aria-hidden'), 'true');
+  vm.runInContext(`applyAccessContext({ mode: 'local_private' })`, context);
+  assert.equal(getElementById('btn-signin-device').hidden, false);
+  assert.equal(getElementById('btn-signin-device').getAttribute('aria-hidden'), 'false');
+
   console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
