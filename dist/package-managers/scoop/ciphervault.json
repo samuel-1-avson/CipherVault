@@ -1,12 +1,12 @@
 {
     "$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schema.json",
-    "version": "1.0.21",
+    "version": "1.0.22",
     "description": "Decentralized, zero-knowledge encrypted version control for confidential files with multi-operator storage, P2P discovery, and Arbitrum L2 anchoring.",
     "homepage": "https://github.com/samuel-1-avson/CipherVault",
     "license": "MIT OR Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.21/ciphervault-v1.0.21-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.22/ciphervault-v1.0.22-x86_64-pc-windows-msvc.zip",
             "hash": "d8ce40fda14a640889f6adef092e0b9510aacfe458a8652dae11b8144febee7e",
             "bin": [
                 "bin/ciphervault.exe",
