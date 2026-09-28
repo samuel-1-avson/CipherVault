@@ -1598,8 +1598,8 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault console (v1.0.20) — real CLI syntax, live where a browser can measure:',
-    '  Scoped secrets & enterprise management (NEW v1.0.20):',
+    'CipherVault console (v1.0.21) — real CLI syntax, live where a browser can measure:',
+    '  Scoped secrets & enterprise management (NEW v1.0.21):',
     '    project <list|show|use> - List and inspect scoped secret projects',
     '    secret <get|set|rotate> - Granular per-secret CRUD with envelope encryption',
     '    migrate <plan|apply...> - 7-stage zero-downtime migration from raw vaults',
@@ -1626,7 +1626,7 @@ const REPL_RESPONSES = {
     '    clear                - Clear terminal log drawer'
   ],
   secret: [
-    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.20):',
+    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.21):',
     '  ciphervault secret set <NAME> [--value <VAL>] [--env <ENV>] [--project <PROJ>]',
     '  ciphervault secret get <NAME> [--meta] [--env <ENV>] [--project <PROJ>]',
     '  ciphervault secret list [--tag <TAG>] [--status active] [--env <ENV>]',
@@ -1638,7 +1638,7 @@ const REPL_RESPONSES = {
     '  wraps DEK with project KEK, and appends a tamper-evident entry to audit_chain.'
   ],
   project: [
-    'Scoped project boundary management (v1.0.20):',
+    'Scoped project boundary management (v1.0.21):',
     '  ciphervault project list [--endpoint <URL>] [--token <TOKEN>]',
     '  ciphervault project show <PROJECT_SLUG>',
     '  ciphervault project use <PROJECT_SLUG>',
@@ -1647,14 +1647,14 @@ const REPL_RESPONSES = {
     '  are scoped strictly within their parent project to prevent cross-project disclosure.'
   ],
   scope: [
-    'Cryptographic scope tokens and DPoP authorization (v1.0.20):',
+    'Cryptographic scope tokens and DPoP authorization (v1.0.21):',
     '  ciphervault scope token [--env <ENV>] [--project <PROJ>] [--ttl <SECONDS>]',
     '  What it really does: Issues a signed HMAC scope token (cvst1...) with embedded',
     '  claims (tenant, project, environment, allowed repos). Client HTTP calls attach',
     '  asymmetric DPoP-Lite proofs so stolen tokens cannot be replayed from other hosts.'
   ],
   migrate: [
-    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.20):',
+    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.21):',
     '  ciphervault migrate plan [--vault <DIR>] [--project <PROJ>] [--default-env <ENV>]',
     '  ciphervault migrate apply --migration-id <ID> [--project <PROJ>]',
     '  ciphervault migrate verify --migration-id <ID> [--project <PROJ>]',
@@ -1664,7 +1664,7 @@ const REPL_RESPONSES = {
     '  credential before atomic pointer cutover, and crypto-shreds legacy plaintext.'
   ],
   repo: [
-    'Immutable VCS repository bindings (v1.0.20):',
+    'Immutable VCS repository bindings (v1.0.21):',
     '  ciphervault repo link --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID>',
     '  ciphervault repo list [--project <PROJ>]',
     '  What it really does: Binds projects to Git repositories by immutable numeric provider ID',
@@ -1672,7 +1672,7 @@ const REPL_RESPONSES = {
     '  without invalidating scoped secret bindings, verified by signed HMAC-SHA256 webhooks.'
   ],
   context: [
-    'Local developer workspace context pinning (v1.0.20):',
+    'Local developer workspace context pinning (v1.0.21):',
     '  ciphervault context show',
     '  ciphervault context set --project <PROJ> --env <ENV>',
     '  ciphervault context clear',
@@ -1986,12 +1986,12 @@ function closeReplDrawer() {
    10. Install Snippet Tabs & One-Click Copy
    ============================================================================== */
 const INSTALL_SNIPPETS = {
-  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.20)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.20)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
-  cargo: `# Build and install standalone CLI directly from Git source (v1.0.20)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
-  brew: `# Install CipherVault on macOS or Linux via Homebrew (Release v1.0.20)\nbrew tap samuel-1-avson/ciphervault https://github.com/samuel-1-avson/CipherVault\nbrew install ciphervault`,
-  scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.20)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
-  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.20)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
+  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.21)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.21)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  cargo: `# Build and install standalone CLI directly from Git source (v1.0.21)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  brew: `# Install CipherVault on macOS or Linux via Homebrew (Release v1.0.21)\nbrew tap samuel-1-avson/ciphervault https://github.com/samuel-1-avson/CipherVault\nbrew install ciphervault`,
+  scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.21)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
+  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.21)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
 function initInstallSnippets() {
