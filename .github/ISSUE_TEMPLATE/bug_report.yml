@@ -34,7 +34,7 @@ body:
     attributes:
       label: CipherVault Version
       description: What version of CipherVault or commit hash are you running? (Run `ciphervault --version` or check `git rev-parse HEAD`)
-      placeholder: "e.g., v1.0.23 or commit 5f7f984"
+      placeholder: "e.g., v1.0.24 or commit 5f7f984"
     validations:
       required: true
 
