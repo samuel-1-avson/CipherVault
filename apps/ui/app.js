@@ -680,11 +680,11 @@ function renderRoleMatrix() {
   if (!body) return;
   body.innerHTML = ROLE_MATRIX.map(row => {
     const cells = row.cells.map(cell => {
-      if (cell === true) return '<td>✓</td>';
-      if (cell === false) return '<td>—</td>';
-      return `<td>${escapeHtml(cell)}</td>`;
+      if (cell === true) return '<td class="matrix-cell check" title="Allowed"><span class="matrix-check">✓</span></td>';
+      if (cell === false) return '<td class="matrix-cell dash" title="Not permitted"><span class="matrix-dash">—</span></td>';
+      return `<td class="matrix-cell badge"><span class="matrix-pill">${escapeHtml(cell)}</span></td>`;
     }).join('');
-    return `<tr><td>${escapeHtml(row.capability)}</td>${cells}</tr>`;
+    return `<tr><td class="matrix-capability">${escapeHtml(row.capability)}</td>${cells}</tr>`;
   }).join('');
 }
 
@@ -720,23 +720,23 @@ function renderApprovalQueue(payload) {
         ? new Date(challenge.expires_at_utc * 1000).toLocaleString()
         : 'unknown';
       rows.push(
-        `<tr><td title="${escapeHtml(id)}">${escapeHtml(id.slice(0, 12))}…</td>` +
-        `<td>${escapeHtml(String(challenge.action || 'unknown'))}</td>` +
-        `<td title="${escapeHtml(vault)}">${escapeHtml(vault.slice(0, 12))}…</td>` +
-        `<td>${escapeHtml(expires)}</td>` +
-        `<td>${escapeHtml(String(operator.endpoint || 'operator'))}</td></tr>`
+        `<tr><td title="${escapeHtml(id)}"><code class="mono-id">${escapeHtml(id.slice(0, 12))}…</code></td>` +
+        `<td><span class="action-badge">${escapeHtml(String(challenge.action || 'unknown'))}</span></td>` +
+        `<td title="${escapeHtml(vault)}"><code class="mono-id">${escapeHtml(vault.slice(0, 12))}…</code></td>` +
+        `<td><span style="font-size:0.78rem; color:var(--fog);">${escapeHtml(expires)}</span></td>` +
+        `<td><span style="font-family:var(--font-mono); font-size:0.78rem; color:var(--bone);">${escapeHtml(String(operator.endpoint || 'operator'))}</span></td></tr>`
       );
     });
     if (operator.status && operator.status !== 'online') {
       rows.push(
-        `<tr><td colspan="5">${escapeHtml(String(operator.endpoint || 'operator'))} · ` +
+        `<tr><td colspan="5" style="color:var(--bad); font-size:0.8rem; padding:8px 12px; background:rgba(248,81,73,0.08);">${escapeHtml(String(operator.endpoint || 'operator'))} · ` +
         `${escapeHtml(String(operator.status))}</td></tr>`
       );
     }
   });
   body.innerHTML = rows.length
     ? rows.join('')
-    : '<tr><td colspan="5">No pending approval challenges.</td></tr>';
+    : '<tr><td colspan="5" class="empty-state-cell">No pending approval challenges.</td></tr>';
 }
 
 async function generateHostedRecoveryCodes() {

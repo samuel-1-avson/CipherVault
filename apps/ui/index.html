@@ -1621,34 +1621,55 @@
 
   <!-- Modal: Hosted account management -->
   <div class="modal-backdrop" id="modal-account-manage" role="dialog" aria-modal="true" aria-labelledby="modal-account-manage-title" hidden>
-    <div class="modal-card" style="max-width: 680px;">
+    <div class="modal-card modal-card-wide" style="max-width: 840px;">
       <div class="modal-header">
-        <h3 id="modal-account-manage-title" class="modal-title">Account management</h3>
+        <h3 id="modal-account-manage-title" class="modal-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Account Management
+        </h3>
         <button class="btn-modal-close" id="btn-close-modal-account-manage" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <div class="form-group">
-          <label class="form-label" for="input-invite-account-id">Invite an account</label>
-          <div style="display:flex; gap:8px;">
-            <input type="text" id="input-invite-account-id" class="form-input" placeholder="cvacct_…" autocomplete="off" spellcheck="false">
-            <select id="input-invite-role" class="form-input" style="max-width: 130px;" aria-label="Invitation role">
-              <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option><option value="recovery">Recovery</option>
-            </select>
-            <button class="btn-action primary" id="btn-submit-account-invite" type="button">Invite</button>
+        
+        <!-- Section: Team & Collaborators -->
+        <div class="modal-section">
+          <h4 class="modal-section-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><line x1="20" y1="8" x2="20" y2="14"/></svg>
+            Invite & Team Members
+          </h4>
+          <p class="modal-section-subtitle">Manage memberships and issue role-scoped workspace invitations.</p>
+
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label class="form-label" for="input-invite-account-id">Invite an account</label>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <input type="text" id="input-invite-account-id" class="form-input" placeholder="cvacct_…" autocomplete="off" spellcheck="false" style="flex:1; min-width:200px;">
+              <select id="input-invite-role" class="form-input" style="max-width: 140px;" aria-label="Invitation role">
+                <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option><option value="recovery">Recovery</option>
+              </select>
+              <button class="btn-action primary" id="btn-submit-account-invite" type="button">Invite</button>
+            </div>
+            <p class="form-help">The invitee must already have a CipherVault account. The generated invitation token is displayed once for secure delivery.</p>
           </div>
-          <p class="form-help">The invitee must already have a CipherVault account. The generated token is shown once for secure delivery.</p>
+
+          <div class="form-group" style="margin-bottom: 6px;">
+            <label class="form-label" for="account-membership-list">Active Memberships & Pending Invitations</label>
+            <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.82rem; background: var(--bg0); padding: 12px 14px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; max-height: 140px; overflow-y: auto; color: var(--bone);">Loading…</pre>
+          </div>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="account-membership-list">Memberships</label>
-          <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg0); padding: 12px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; max-height: 170px; overflow-y: auto; color: var(--signal);">Loading…</pre>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Role matrix</label>
-          <div class="table-card" style="margin-top: 4px;">
+
+        <!-- Section: Role Matrix -->
+        <div class="modal-section">
+          <h4 class="modal-section-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+            Role Permissions Matrix
+          </h4>
+          <p class="modal-section-subtitle">Minimum capabilities enforced cryptographically by the account service.</p>
+
+          <div class="table-card" style="margin-top: 6px;">
             <table class="data-table" id="table-role-matrix" aria-label="Membership role capabilities">
               <thead>
                 <tr>
-                  <th>Capability</th>
+                  <th style="text-align: left;">Capability</th>
                   <th>Owner</th>
                   <th>Admin</th>
                   <th>Editor</th>
@@ -1661,15 +1682,24 @@
               </tbody>
             </table>
           </div>
-          <p class="form-help">Minimum roles enforced by the account service. Recovery sessions must enroll a device before any change.</p>
+          <p class="form-help" style="margin-top: 8px;">Recovery sessions must enroll an authenticated hardware or device key before initiating any administrative changes.</p>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="table-approvals-body">Approval queue</label>
-          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-            <button class="btn-action secondary small" id="btn-refresh-approvals" type="button">Refresh queue</button>
-            <span id="approvals-status" class="form-help" style="margin:0;">Not loaded.</span>
+
+        <!-- Section: Approvals & Authorization Queue -->
+        <div class="modal-section">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:4px;">
+            <h4 class="modal-section-title" style="margin:0;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Dual-Admin Approval Queue
+            </h4>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button class="btn-action secondary small" id="btn-refresh-approvals" type="button">Refresh queue</button>
+              <span id="approvals-status" class="form-help" style="margin:0;">Not loaded.</span>
+            </div>
           </div>
-          <div class="table-card" style="margin-top: 4px;">
+          <p class="modal-section-subtitle">Pending dual-authorization challenges requiring multi-party signatures.</p>
+
+          <div class="table-card" style="margin-top: 6px;">
             <table class="data-table" id="table-approvals" aria-label="Pending approval challenges">
               <thead>
                 <tr>
@@ -1685,34 +1715,55 @@
               </tbody>
             </table>
           </div>
-          <p class="form-help">Out-of-band approvals are submitted with the CLI guardian ceremony; this view is read-only.</p>
+          <p class="form-help" style="margin-top: 8px;">Out-of-band approvals are confirmed with the CLI guardian ceremony (<code style="color:var(--signal); font-family:var(--font-mono);">ciphervault approve</code>); this view is read-only.</p>
         </div>
-        <div class="form-group">
-          <label class="form-label">Recovery codes</label>
-          <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
-          <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg0); padding: 12px; margin-top: 8px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; color: var(--signal);" hidden></pre>
-          <p class="form-help">Codes are displayed once. Store them offline; generating a new set invalidates unused codes.</p>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Authenticator app</label>
-          <div id="account-totp-status" class="form-help" aria-live="polite">Not enrolled</div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
-            <button class="btn-action secondary small" id="btn-start-totp-enrollment" type="button">Set up authenticator</button>
-            <button class="btn-action secondary small" id="btn-revoke-totp" type="button" hidden>Revoke authenticator</button>
+
+        <!-- Section: Security & Credentials -->
+        <div class="modal-section">
+          <h4 class="modal-section-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Security & Authentication Factors
+          </h4>
+          <p class="modal-section-subtitle">Emergency offline codes and two-factor authenticator enrollment.</p>
+
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:12px;">
+            <!-- Recovery codes card -->
+            <div style="background:var(--bg0); border:1px solid var(--line); border-radius:6px; padding:14px;">
+              <label class="form-label" style="font-weight:700; color:var(--bone); margin-bottom:6px;">Emergency Recovery Codes</label>
+              <p class="form-help" style="margin-top:0; margin-bottom:10px;">Offline single-use codes for account restoration.</p>
+              <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
+              <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.8rem; background: var(--bg1); padding: 10px; margin-top: 10px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; color: var(--bone);" hidden></pre>
+            </div>
+
+            <!-- Authenticator app card -->
+            <div style="background:var(--bg0); border:1px solid var(--line); border-radius:6px; padding:14px;">
+              <label class="form-label" style="font-weight:700; color:var(--bone); margin-bottom:6px;">Authenticator App (TOTP)</label>
+              <div id="account-totp-status" class="form-help" aria-live="polite" style="margin-top:0; margin-bottom:10px; color:var(--bone);">Not enrolled</div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn-action secondary small" id="btn-start-totp-enrollment" type="button">Set up authenticator</button>
+                <button class="btn-action secondary small" id="btn-revoke-totp" type="button" hidden>Revoke authenticator</button>
+              </div>
+            </div>
           </div>
-          <div id="totp-enrollment-panel" hidden style="margin-top:10px;">
-            <p class="form-help">Scan the setup URI or enter the secret manually in your authenticator app. The secret is shown only during enrollment.</p>
+
+          <div id="totp-enrollment-panel" hidden style="margin-top:14px; background:var(--bg0); border:1px solid var(--line); border-radius:6px; padding:16px;">
+            <p class="form-help" style="margin-top:0;">Scan the setup URI or enter the secret manually in your authenticator app (Google Authenticator, 1Password, etc.). The secret is shown only once.</p>
             <label class="form-label" for="totp-enrollment-uri">Setup URI</label>
-            <code id="totp-enrollment-uri" style="display:block; word-break:break-all; color:var(--signal); margin:8px 0;"></code>
+            <code id="totp-enrollment-uri" style="display:block; word-break:break-all; color:var(--signal); background:var(--bg1); padding:8px; border-radius:4px; border:1px solid var(--line); margin:6px 0 10px;"></code>
             <button class="btn-action secondary small" id="btn-copy-totp-uri" type="button">Copy setup URI</button>
-            <label class="form-label" for="totp-enrollment-secret" style="display:block; margin-top:10px;">Manual secret</label>
-            <code id="totp-enrollment-secret" style="display:block; word-break:break-all; color:var(--signal); margin:8px 0;"></code>
-            <input type="text" id="input-enrollment-totp-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter the six-digit code to confirm">
-            <button class="btn-action primary small" id="btn-confirm-totp-enrollment" type="button" style="margin-top:8px;">Confirm enrollment</button>
+            <label class="form-label" for="totp-enrollment-secret" style="display:block; margin-top:14px;">Manual secret key</label>
+            <code id="totp-enrollment-secret" style="display:block; word-break:break-all; color:var(--signal); background:var(--bg1); padding:8px; border-radius:4px; border:1px solid var(--line); margin:6px 0 10px;"></code>
+            <div style="display:flex; gap:8px; align-items:center; margin-top:10px; max-width:360px;">
+              <input type="text" id="input-enrollment-totp-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter 6-digit code">
+              <button class="btn-action primary small" id="btn-confirm-totp-enrollment" type="button" style="white-space:nowrap;">Confirm</button>
+            </div>
           </div>
         </div>
+
       </div>
-      <div class="modal-footer"><button class="btn-action secondary" id="btn-cancel-modal-account-manage">Close</button></div>
+      <div class="modal-footer">
+        <button class="btn-action secondary" id="btn-cancel-modal-account-manage">Close</button>
+      </div>
     </div>
   </div>
 
