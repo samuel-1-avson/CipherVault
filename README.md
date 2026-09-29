@@ -2,12 +2,12 @@
 
 <div align="center">
 
-[![Version: v1.0.17](https://img.shields.io/badge/Version-v1.0.17-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.25](https://img.shields.io/badge/Version-v1.0.25-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![Deduplication: FastCDC 96.15%](https://img.shields.io/badge/FastCDC%20Deduplication-96.15%25-brightgreen.svg)](#-performance-benchmarks)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens--yubikey-piv)
-[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(63%20Suites)-success.svg)](#-verification--quality-gates)
+[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(707%20tests)-success.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
 [![Contributing: DCO](https://img.shields.io/badge/Contributions-DCO%20Signed--off-blueviolet.svg)](CONTRIBUTING.md)
@@ -366,6 +366,8 @@ Every push performs a per-object **Proof-of-Storage** challenge readback, both a
 
 ### 4. Zero-Disk In-Memory Execution (`ciphervault run`)
 
+> **New projects start elsewhere:** bare snapshot-mode `run` (below) is legacy and prints a `LEGACY_PATH_DEPRECATED` warning. Run `ciphervault migrate plan` first to adopt scoped secrets, then `run` resolves from your project — or pass `--legacy` to keep the old behavior explicitly.
+
 Run your applications with secrets directly injected into their process environment in volatile RAM **without ever writing plaintext `.env` files to disk**:
 
 ```bash
@@ -631,7 +633,7 @@ Empirical performance metrics measured on x86_64 (release mode; your machine wil
 CipherVault enforces strict zero-warning compilation and comprehensive multi-layer testing across cryptography, networking, and UI:
 
 ```bash
-# Execute workspace test suite (63 suites, ~290 tests, all passing as of 2026-09-18)
+# Execute workspace test suite (707 Rust tests plus UI/landing/contract suites, all passing as of 2026-09-29)
 cargo test --workspace --locked
 
 # Strict static analysis & linter enforcement (zero warnings policy)

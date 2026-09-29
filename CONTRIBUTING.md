@@ -85,6 +85,14 @@ Ensure you have the following installed locally:
    cargo check --workspace
    ```
 
+### Disk Space & Build Artifacts
+
+Full workspace builds keep several gigabytes of incremental artifacts under the cargo target directory (debug + test profiles across 13 crates). On small system drives (notably Windows `C:`), a build can fail with `ENOSPC` during linking. This project has hit that: the fix is reclaiming build outputs, never touching source files.
+
+- Point `CARGO_TARGET_DIR` at a roomy volume before your first build (e.g. `$env:CARGO_TARGET_DIR = 'D:\cargo-target'` on Windows, `export CARGO_TARGET_DIR=/data/cargo-target` on Unix).
+- To reclaim space later, delete the target directory contents or run `cargo clean -p <crate>`; both are regenerable. Never delete `src/`, `Cargo.toml`, or `Cargo.lock` to free space.
+- CI runners are unaffected (each job provisions a fresh disk), so this guidance is for local development only.
+
 ---
 
 ## Development Workflow
