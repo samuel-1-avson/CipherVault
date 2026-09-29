@@ -18,10 +18,10 @@ concurrency:
 jobs:
   pre-release-gate:
     name: Mandatory Pre-Release Verification Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free runner disk space
         run: |
@@ -59,16 +59,16 @@ jobs:
             suffix: .exe
             archive: zip
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             suffix: ""
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             suffix: ""
             archive: tar.gz
             use_cross: true
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             suffix: ""
             archive: tar.gz
             use_cross: true
@@ -83,7 +83,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free runner disk space
         if: runner.os == 'Linux'
@@ -191,7 +191,7 @@ jobs:
           fi
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
@@ -202,13 +202,13 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     needs: build-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download All Build Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           # Only the six binary-target bundles. An unfiltered download
@@ -286,13 +286,13 @@ jobs:
   fill-manifest-hashes:
     name: Fill Package Manifest Hashes
     needs: publish-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
 
@@ -394,7 +394,7 @@ jobs:
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images
     needs: pre-release-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -414,7 +414,7 @@ jobs:
             dockerfile: deploy/docker/Dockerfile.account
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

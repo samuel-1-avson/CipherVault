@@ -20,13 +20,13 @@ concurrency:
 jobs:
   validate:
     name: Validate Landing Page Assets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
 
@@ -39,31 +39,33 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Artifact
+        # HELD at v3: v4+ excludes dotfiles from the artifact, which would
+        # drop apps/landing/.nojekyll and change Pages build behavior.
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'apps/landing'
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   deploy-cloudflare-pages:
     name: Deploy to Cloudflare Pages (Optional)
     needs: validate
     if: false # Enable when CLOUDFLARE_API_TOKEN & CLOUDFLARE_ACCOUNT_ID secrets are configured
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3

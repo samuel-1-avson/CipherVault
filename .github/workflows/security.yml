@@ -14,10 +14,10 @@ permissions:
 jobs:
   dependency-audit:
     name: Rust dependency audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -30,10 +30,10 @@ jobs:
 
   repository-scan:
     name: Repository vulnerability and secret scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Refuse a tracked local secret fixture
         shell: bash
