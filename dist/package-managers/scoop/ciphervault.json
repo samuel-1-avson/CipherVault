@@ -7,7 +7,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.25/ciphervault-v1.0.25-x86_64-pc-windows-msvc.zip",
-            "hash": "2c4b249da5ba584136c2e0240cc6b10e9f3db409d8758a42bf2caa3f32fcdefc",
+            "hash": "3f3a56a8701d3f20de52723dd9b78b2d11ff427b80a017a19efa971c67161406",
             "bin": [
                 "bin/ciphervault.exe",
                 "bin/ciphervault-operator.exe",
