@@ -131,6 +131,72 @@ pub(crate) fn current_account_context() -> serde_json::Value {
     context
 }
 
+/// Outcome of the best-effort startup sign-in for `ui --local`. The local
+/// dashboard is loopback-only and runs as the machine owner, so it unlocks
+/// the OS-protected account key itself instead of asking the browser to do
+/// a device-key ceremony on every fresh boot.
+pub(crate) enum LocalStartupSession {
+    /// No sign-in was needed: either a live session already exists or this
+    /// machine needs none (no account, no vault, or vault not linked).
+    AlreadyValid { summary: String },
+    /// A fresh device-bound session was established at startup.
+    Established { display_name: String },
+    /// Auto sign-in did not apply; the account panel's manual sign-in
+    /// remains available as a fallback.
+    NotApplicable { reason: String },
+}
+
+/// Best-effort account sign-in for `ui --local` startup so the dashboard
+/// opens already authenticated. This only ever *creates* a session when one
+/// is required-but-missing (a linked vault with no live device session);
+/// accountless machines, unlinked vaults, and explicit logouts are left
+/// untouched — logout must keep working, so this runs once at startup and
+/// never on a polled route.
+pub(crate) fn ensure_local_account_session() -> LocalStartupSession {
+    if private_account_session_valid() {
+        let summary = match AccountStore::open(None) {
+            Ok(account) if account.session_status().authenticated => {
+                format!("signed in as {}", account.record().display_name)
+            }
+            Ok(_) => "no active session required".to_string(),
+            Err(_) => "no local account configured".to_string(),
+        };
+        return LocalStartupSession::AlreadyValid { summary };
+    }
+    let account = match AccountStore::open(None) {
+        Ok(account) => account,
+        Err(_) => {
+            return LocalStartupSession::NotApplicable {
+                reason:
+                    "no local account is configured (run `ciphervault auth init` to create one)"
+                        .to_string(),
+            };
+        }
+    };
+    let (vault_id, device_id, _) = match current_device_identity() {
+        Ok(identity) => identity,
+        Err(_) => {
+            return LocalStartupSession::NotApplicable {
+                reason: "no local vault found (run `ciphervault init` first)".to_string(),
+            };
+        }
+    };
+    if !account.is_vault_linked(&vault_id) {
+        return LocalStartupSession::NotApplicable {
+            reason: "this vault is not linked to the account (run `ciphervault vault link`)"
+                .to_string(),
+        };
+    }
+    match account.login(Some(&device_id)) {
+        Ok(_) => LocalStartupSession::Established {
+            display_name: account.record().display_name.clone(),
+        },
+        Err(error) => LocalStartupSession::NotApplicable {
+            reason: format!("automatic sign-in failed: {error} (use the account panel to sign in)"),
+        },
+    }
+}
+
 /// Account authentication is optional. Once a vault is linked, private API
 /// calls require a live session bound to that vault's enrolled device.
 pub(crate) fn private_account_session_valid() -> bool {
@@ -184,4 +250,47 @@ pub(crate) fn ui_context(mode: UiServerMode) -> serde_json::Value {
         // deployed build without trusting route freshness alone.
         "build_version": env!("CARGO_PKG_VERSION"),
     })
+}
+
+#[cfg(test)]
+mod local_startup_session_tests {
+    use super::*;
+
+    #[test]
+    fn accountless_machine_is_already_valid_without_login_attempt() {
+        // Startup sign-in must be a silent no-op where no account exists: it
+        // must neither fail nor mint any session material.
+        let empty_dir = std::env::temp_dir().join(format!(
+            "cv_no_account_{}_{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        let saved_dir = std::env::var_os("CIPHERVAULT_ACCOUNT_DIR");
+        let saved_path = std::env::var_os("CIPHERVAULT_ACCOUNT_PATH");
+        std::env::set_var("CIPHERVAULT_ACCOUNT_DIR", &empty_dir);
+        std::env::remove_var("CIPHERVAULT_ACCOUNT_PATH");
+        let outcome = ensure_local_account_session();
+        match saved_dir {
+            Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_DIR", value),
+            None => std::env::remove_var("CIPHERVAULT_ACCOUNT_DIR"),
+        }
+        match saved_path {
+            Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_PATH", value),
+            None => std::env::remove_var("CIPHERVAULT_ACCOUNT_PATH"),
+        }
+        match outcome {
+            LocalStartupSession::AlreadyValid { summary } => {
+                assert!(summary.contains("no local account"), "{summary}");
+            }
+            LocalStartupSession::Established { .. } | LocalStartupSession::NotApplicable { .. } => {
+                panic!("accountless startup must not attempt a sign-in")
+            }
+        }
+        assert!(
+            std::fs::read_dir(&empty_dir).unwrap().next().is_none(),
+            "startup sign-in must not write into an empty account dir"
+        );
+        let _ = std::fs::remove_dir_all(&empty_dir);
+    }
 }

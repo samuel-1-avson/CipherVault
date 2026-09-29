@@ -1,8 +1,8 @@
 //! Dashboard server bring-up for the `ui` command.
 
 use crate::{
-    open_browser, parse_ui_host, spawn_public_operator_collector, ui_browser_url, ui_router,
-    UiServerMode,
+    ensure_local_account_session, open_browser, parse_ui_host, spawn_public_operator_collector,
+    ui_browser_url, ui_router, LocalStartupSession, UiServerMode,
 };
 use anyhow::{bail, Result};
 use colored::Colorize;
@@ -89,6 +89,20 @@ pub(crate) async fn cmd_ui(
         UiServerMode::LocalPrivate => {
             println!("  Serving Mode:   Private local workspace (loopback only)");
             println!("  Private APIs:   Enabled for this local process");
+            // Runs after a successful bind so a port conflict never mints a
+            // session pointlessly. Best-effort: any failure just prints the
+            // reason and the account panel's manual sign-in still works.
+            match ensure_local_account_session() {
+                LocalStartupSession::AlreadyValid { summary } => {
+                    println!("  Account:        {summary}");
+                }
+                LocalStartupSession::Established { display_name } => {
+                    println!("  Account:        {display_name} (signed in automatically)");
+                }
+                LocalStartupSession::NotApplicable { reason } => {
+                    println!("  Account:        {reason}");
+                }
+            }
         }
         UiServerMode::PublicExplorer => {
             println!("  Serving Mode:   Public read-only explorer");
