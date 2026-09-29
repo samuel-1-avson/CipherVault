@@ -1,0 +1,254 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" width="100%" height="100%" style="background:#090d16; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.98" />
+    </linearGradient>
+    <linearGradient id="clientGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#0369a1" stop-opacity="0.04" />
+    </linearGradient>
+    <linearGradient id="controlGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#6d28d9" stop-opacity="0.04" />
+    </linearGradient>
+    <linearGradient id="storageGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#047857" stop-opacity="0.04" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d97706" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#b45309" stop-opacity="0.04" />
+    </linearGradient>
+
+    <!-- Marker Arrows -->
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#c084fc" />
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#fbbf24" />
+    </marker>
+
+    <!-- Drop Shadow Filter -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Title Header -->
+  <text x="550" y="36" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="800" letter-spacing="0.5">CipherVault Network Topology &amp; Security Boundaries</text>
+  <text x="550" y="56" text-anchor="middle" fill="#94a3b8" font-size="13">Zero-Knowledge Isolation Between Sovereign Workstation, Identity Control Plane, and Storage Federation</text>
+
+  <!-- ========================================================================= -->
+  <!-- ZONE 1: SOVEREIGN DEVELOPER WORKSTATION (LEFT COLUMN)                     -->
+  <!-- ========================================================================= -->
+  <rect x="30" y="80" width="460" height="570" rx="14" fill="url(#clientGrad)" stroke="#0284c7" stroke-width="1.8" />
+  <rect x="50" y="68" width="280" height="24" rx="6" fill="#0284c7" />
+  <text x="190" y="84" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.6">1. DEVELOPER WORKSTATION (LOCAL)</text>
+
+  <!-- Card: Confidential Files -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="105" width="270" height="60" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="70" y="128" fill="#38bdf8" font-size="16">📄</text>
+    <text x="96" y="128" fill="#f8fafc" font-size="13" font-weight="600">Local Confidential Secrets</text>
+    <text x="96" y="146" fill="#94a3b8" font-size="11">.env, certs/server.key, credentials.json</text>
+  </g>
+
+  <!-- Arrow Files -> FastCDC -->
+  <line x1="185" y1="165" x2="185" y2="190" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- Card: FastCDC Engine -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="193" width="270" height="60" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="70" y="216" fill="#38bdf8" font-size="16">🧩</text>
+    <text x="96" y="216" fill="#f8fafc" font-size="13" font-weight="600">FastCDC Slicing Engine</text>
+    <text x="96" y="234" fill="#34d399" font-size="11">4 KiB - 64 KiB Chunks • 96.15% Dedup</text>
+  </g>
+
+  <!-- Arrow FastCDC -> Crypto -->
+  <line x1="185" y1="253" x2="185" y2="278" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- Card: Crypto Core -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="281" width="270" height="68" rx="8" fill="url(#cardGrad)" stroke="#0284c7" stroke-width="1.5" />
+    <text x="70" y="307" fill="#38bdf8" font-size="16">🔐</text>
+    <text x="96" y="307" fill="#f8fafc" font-size="13" font-weight="700">Crypto Core Engine</text>
+    <text x="96" y="324" fill="#94a3b8" font-size="11">XChaCha20-Poly1305 AEAD + Blake2b</text>
+    <text x="96" y="338" fill="#38bdf8" font-size="10">ZeroizeOnDrop Memory Scrubbing</text>
+  </g>
+
+  <!-- YubiKey Card (Side) -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="281" width="130" height="68" rx="8" fill="url(#cardGrad)" stroke="#818cf8" stroke-width="1.2" />
+    <text x="352" y="307" fill="#818cf8" font-size="14">🔑</text>
+    <text x="374" y="306" fill="#f8fafc" font-size="11" font-weight="600">YubiKey PIV</text>
+    <text x="352" y="323" fill="#a78bfa" font-size="10">Slot 9C Touch</text>
+    <text x="352" y="337" fill="#94a3b8" font-size="9">Native PC/SC</text>
+  </g>
+  <line x1="320" y1="315" x2="337" y2="315" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="3,3" />
+
+  <!-- Arrow Crypto -> Keystore & In-Memory -->
+  <line x1="185" y1="349" x2="185" y2="376" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- Card: Local Keystore -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="379" width="420" height="64" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="68" y="405" fill="#38bdf8" font-size="16">🛡️</text>
+    <text x="96" y="405" fill="#f8fafc" font-size="13" font-weight="600">Local OS Keystore &amp; SQLite WAL</text>
+    <text x="96" y="422" fill="#94a3b8" font-size="11">Windows DPAPI CryptProtectData &#8226; %APPDATA%\account.key &#8226; vault.db</text>
+    <text x="96" y="435" fill="#34d399" font-size="10">Private keys &amp; Master Secret R NEVER leave local hardware</text>
+  </g>
+
+  <!-- Card: In-Memory Zero-Disk Execution -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="460" width="420" height="60" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="68" y="486" fill="#34d399" font-size="16">⚡</text>
+    <text x="96" y="486" fill="#f8fafc" font-size="13" font-weight="600">Zero-Disk Runtime Execution (ciphervault run)</text>
+    <text x="96" y="504" fill="#94a3b8" font-size="11">Direct in-memory injection into child processes (npm start / docker compose)</text>
+  </g>
+
+  <!-- Card: Local UI & Dashboard -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="538" width="420" height="60" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1.2" />
+    <text x="68" y="564" fill="#38bdf8" font-size="16">🖥️</text>
+    <text x="96" y="564" fill="#f8fafc" font-size="13" font-weight="600">Local Web Dashboard &amp; TUI Host (:8080)</text>
+    <text x="96" y="582" fill="#38bdf8" font-size="11">http://127.0.0.1:8080 &#8226; Loopback Only &#8226; Shoulder-Surfing Secret Masking</text>
+  </g>
+
+  <!-- Workstation Security Badge -->
+  <rect x="50" y="612" width="420" height="24" rx="4" fill="#0369a1" fill-opacity="0.3" stroke="#0284c7" stroke-width="0.8" />
+  <text x="260" y="628" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="600">🔒 ALL ENCRYPTION &amp; DECRYPTION HAPPENS ONLY ON THIS WORKSTATION</text>
+
+  <!-- ========================================================================= -->
+  <!-- VERTICAL TRUST BOUNDARY DIVIDER                                           -->
+  <!-- ========================================================================= -->
+  <line x1="520" y1="80" x2="520" y2="650" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4" />
+  <g transform="translate(520, 365) rotate(-90)">
+    <rect x="-140" y="-12" width="280" height="24" rx="12" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.2" />
+    <text x="0" y="4" text-anchor="middle" fill="#f8fafc" font-size="10" font-weight="700" letter-spacing="1">CRYPTOGRAPHIC TRUST BOUNDARY</text>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- ZONE 2: IDENTITY CONTROL PLANE (TOP RIGHT)                               -->
+  <!-- ========================================================================= -->
+  <rect x="550" y="80" width="520" height="255" rx="14" fill="url(#controlGrad)" stroke="#7c3aed" stroke-width="1.8" />
+  <rect x="570" y="68" width="310" height="24" rx="6" fill="#6d28d9" />
+  <text x="725" y="84" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.6">2. IDENTITY CONTROL PLANE (:8300)</text>
+
+  <!-- Control Plane Detail Card -->
+  <g filter="url(#shadow)">
+    <rect x="570" y="105" width="480" height="155" rx="8" fill="url(#cardGrad)" stroke="#a78bfa" stroke-width="1.2" />
+    <text x="590" y="132" fill="#c084fc" font-size="16">🏢</text>
+    <text x="618" y="132" fill="#f8fafc" font-size="14" font-weight="700">ciphervault-account Service</text>
+    <text x="618" y="150" fill="#a78bfa" font-size="11">https://vault.cipherv.online/api/account &#8226; Port :8300</text>
+    
+    <!-- Subfeatures -->
+    <rect x="590" y="165" width="215" height="42" rx="6" fill="#1e1b4b" stroke="#4338ca" stroke-width="0.8" />
+    <text x="600" y="182" fill="#f8fafc" font-size="11" font-weight="600">WebAuthn &amp; TOTP</text>
+    <text x="600" y="197" fill="#94a3b8" font-size="10">Passkeys / Windows Hello</text>
+
+    <rect x="815" y="165" width="220" height="42" rx="6" fill="#1e1b4b" stroke="#4338ca" stroke-width="0.8" />
+    <text x="825" y="182" fill="#f8fafc" font-size="11" font-weight="600">Dual-Admin Quorum</text>
+    <text x="825" y="197" fill="#94a3b8" font-size="10">Four-Eyes 24h Approval Gate</text>
+
+    <rect x="590" y="215" width="445" height="36" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="600" y="231" fill="#f8fafc" font-size="10" font-weight="600">Immutable Merkle Audit Ledger: </text>
+    <text x="770" y="231" fill="#c084fc" font-size="10">Hash-chained cryptographic event proofs</text>
+    <text x="600" y="244" fill="#94a3b8" font-size="9">Stores Account IDs (cvacct_...) and public keys &#8226; NEVER stores vault keys</text>
+  </g>
+
+  <!-- Control Plane Security Callout -->
+  <rect x="570" y="272" width="480" height="48" rx="6" fill="#450a0a" fill-opacity="0.4" stroke="#ef4444" stroke-width="1" />
+  <text x="585" y="292" fill="#f87171" font-size="11" font-weight="700">❌ ZERO SECRET ACCESS:</text>
+  <text x="740" y="292" fill="#fca5a5" font-size="11">The Account Service CANNOT read your files or decrypt chunks.</text>
+  <text x="585" y="308" fill="#fca5a5" font-size="10">Even if this server is 100% breached, an attacker acquires zero secret plaintext.</text>
+
+  <!-- ========================================================================= -->
+  <!-- ZONE 3: DATA STORAGE PLANE (BOTTOM RIGHT)                                 -->
+  <!-- ========================================================================= -->
+  <rect x="550" y="355" width="520" height="295" rx="14" fill="url(#storageGrad)" stroke="#059669" stroke-width="1.8" />
+  <rect x="570" y="343" width="340" height="24" rx="6" fill="#047857" />
+  <text x="740" y="359" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700" letter-spacing="0.6">3. UNTRUSTED DATA STORAGE PLANE (:8201 - :8203)</text>
+
+  <!-- 3 Operator Nodes -->
+  <g filter="url(#shadow)">
+    <rect x="570" y="380" width="145" height="75" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="642" y="404" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">Storage Node 1</text>
+    <text x="642" y="422" text-anchor="middle" fill="#34d399" font-size="11">:8201</text>
+    <text x="642" y="438" text-anchor="middle" fill="#94a3b8" font-size="10">op1.cipherv.online</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="735" y="380" width="150" height="75" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="810" y="404" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">Storage Node 2</text>
+    <text x="810" y="422" text-anchor="middle" fill="#34d399" font-size="11">:8202</text>
+    <text x="810" y="438" text-anchor="middle" fill="#94a3b8" font-size="10">op2.cipherv.online</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="905" y="380" width="145" height="75" rx="8" fill="url(#cardGrad)" stroke="#34d399" stroke-width="1.2" />
+    <text x="977" y="404" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">Storage Node 3</text>
+    <text x="977" y="422" text-anchor="middle" fill="#34d399" font-size="11">:8203</text>
+    <text x="977" y="438" text-anchor="middle" fill="#94a3b8" font-size="10">op3.cipherv.online</text>
+  </g>
+
+  <!-- P2P Mesh Swarm Bar -->
+  <rect x="570" y="465" width="480" height="32" rx="6" fill="#022c22" stroke="#059669" stroke-width="0.8" />
+  <text x="810" y="485" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">🌐 P2P Mesh Swarm: libp2p Gossip &#8226; Kademlia DHT &#8226; DCUtR Direct Hole-Punching</text>
+
+  <!-- Durability Engine Bar -->
+  <g filter="url(#shadow)">
+    <rect x="570" y="508" width="480" height="62" rx="8" fill="url(#cardGrad)" stroke="#38bdf8" stroke-width="1" />
+    <text x="585" y="532" fill="#38bdf8" font-size="15">🩺</text>
+    <text x="610" y="532" fill="#f8fafc" font-size="12" font-weight="700">ciphervault-maintenance Daemon (Durability Engine)</text>
+    <text x="610" y="550" fill="#94a3b8" font-size="10">Cryptographic Proof-of-Storage (PoS): 461-byte challenge nonces replace 1MB payload audits (99.96% savings)</text>
+    <text x="610" y="562" fill="#34d399" font-size="10">Autonomous self-repair re-replicates chunks if any node drops offline</text>
+  </g>
+
+  <!-- Storage Security Callout -->
+  <rect x="570" y="582" width="480" height="52" rx="6" fill="#450a0a" fill-opacity="0.4" stroke="#ef4444" stroke-width="1" />
+  <text x="585" y="602" fill="#f87171" font-size="11" font-weight="700">❌ ZERO IDENTITY OR PLAINTEXT AWARENESS:</text>
+  <text x="850" y="602" fill="#fca5a5" font-size="11">Operators store opaque ciphertext only.</text>
+  <text x="585" y="618" fill="#fca5a5" font-size="10">Addressed exclusively by SHA-256 CID. Operators do not know filenames, users, or folder structures.</text>
+
+  <!-- ========================================================================= -->
+  <!-- CROSS-BOUNDARY DATA HIGHWAYS (ARROWS ACROSS THE MIDDLE)                   -->
+  <!-- ========================================================================= -->
+  
+  <!-- Arrow: Client -> Control Plane -->
+  <path d="M 470 550 Q 510 550 510 200 T 550 200" fill="none" stroke="#c084fc" stroke-width="2.5" marker-end="url(#arrowPurple)" />
+  <rect x="440" y="165" width="130" height="24" rx="4" fill="#1e1b4b" stroke="#7c3aed" stroke-width="0.8" />
+  <text x="505" y="181" text-anchor="middle" fill="#e9d5ff" font-size="9" font-weight="700">Passkey / Device Auth</text>
+
+  <!-- Arrow: Client -> Data Plane (Ciphertext) -->
+  <path d="M 320 315 L 550 415" fill="none" stroke="#34d399" stroke-width="3" marker-end="url(#arrowEmerald)" />
+  <rect x="360" y="350" width="140" height="24" rx="4" fill="#022c22" stroke="#059669" stroke-width="0.8" />
+  <text x="430" y="366" text-anchor="middle" fill="#6ee7b7" font-size="9" font-weight="700">Encrypted Chunks (CID)</text>
+
+  <!-- ========================================================================= -->
+  <!-- ZONE 4: SETTLEMENT & DISASTER RECOVERY (BOTTOM DECK)                      -->
+  <!-- ========================================================================= -->
+  <rect x="30" y="665" width="1040" height="75" rx="10" fill="url(#cardGrad)" stroke="#334155" stroke-width="1.2" />
+
+  <!-- L2 Rollup Anchor -->
+  <g transform="translate(50, 678)">
+    <text x="0" y="20" fill="#a78bfa" font-size="18">⛓️</text>
+    <text x="28" y="18" fill="#f8fafc" font-size="12" font-weight="700">Arbitrum One L2 Settlement (Chain ID: 42161)</text>
+    <text x="28" y="34" fill="#94a3b8" font-size="10">CipherVaultRegistry.sol &#8226; Salted EIP-712 Checkpoints &#8226; Immutable Sequencer Receipts prove historical head validity</text>
+  </g>
+
+  <!-- Disaster Recovery -->
+  <g transform="translate(600, 678)">
+    <text x="0" y="20" fill="#fbbf24" font-size="18">📜</text>
+    <text x="28" y="18" fill="#f8fafc" font-size="12" font-weight="700">Clean-Machine Sovereign Disaster Recovery</text>
+    <text x="28" y="34" fill="#94a3b8" font-size="10">Method A: Offline Paper Kit (Master Secret R) &#8226; Method B: M-of-N Shamir Guardians over GF(2^8) (No Cloud Required)</text>
+  </g>
+
+</svg>

@@ -1,0 +1,265 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" width="100%" height="100%" style="background:#090d16; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.98" />
+    </linearGradient>
+    <linearGradient id="step1Grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#0369a1" stop-opacity="0.05" />
+    </linearGradient>
+    <linearGradient id="step2Grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#6d28d9" stop-opacity="0.05" />
+    </linearGradient>
+    <linearGradient id="step3Grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#047857" stop-opacity="0.05" />
+    </linearGradient>
+    <linearGradient id="step4Grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d97706" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#b45309" stop-opacity="0.05" />
+    </linearGradient>
+    <linearGradient id="step5Grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#059669" stop-opacity="0.08" />
+    </linearGradient>
+
+    <!-- Marker Arrows -->
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#c084fc" />
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#fbbf24" />
+    </marker>
+
+    <!-- Drop Shadow Filter -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Title & Subtitle -->
+  <text x="550" y="34" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="800" letter-spacing="0.5">Zero-Knowledge Confidential Data Lifecycle</text>
+  <text x="550" y="54" text-anchor="middle" fill="#94a3b8" font-size="13">End-to-End Operational Lifecycle: From Local Edit to Quorum Gating, Replication &amp; Zero-Disk In-Memory Execution</text>
+
+  <!-- ========================================================================= -->
+  <!-- STEP 1: SLICE & ENCRYPT                                                   -->
+  <!-- ========================================================================= -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="80" width="195" height="520" rx="12" fill="url(#step1Grad)" stroke="#0284c7" stroke-width="1.6" />
+    <rect x="42" y="68" width="100" height="22" rx="5" fill="#0284c7" />
+    <text x="92" y="83" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">STAGE 01</text>
+    
+    <text x="45" y="112" fill="#38bdf8" font-size="14">🧩</text>
+    <text x="68" y="112" fill="#f8fafc" font-size="13" font-weight="700">Slice &amp; Encrypt</text>
+    <text x="45" y="130" fill="#94a3b8" font-size="10">Local Workstation</text>
+
+    <!-- Content cards -->
+    <rect x="42" y="145" width="170" height="70" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="52" y="165" fill="#f8fafc" font-size="11" font-weight="600">1. FastCDC Chunking</text>
+    <text x="52" y="180" fill="#94a3b8" font-size="9">Gear rolling hash window</text>
+    <text x="52" y="194" fill="#34d399" font-size="9" font-weight="600">4 / 16 / 64 KiB slices</text>
+    <text x="52" y="206" fill="#94a3b8" font-size="9">96.15% Dedup ratio</text>
+
+    <rect x="42" y="225" width="170" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="52" y="245" fill="#f8fafc" font-size="11" font-weight="600">2. AEAD Encryption</text>
+    <text x="52" y="260" fill="#94a3b8" font-size="9">XChaCha20-Poly1305</text>
+    <text x="52" y="274" fill="#94a3b8" font-size="9">Epoch Key via Blake2b</text>
+    <text x="52" y="288" fill="#38bdf8" font-size="9">Volatile buffer scrubbing</text>
+    <text x="52" y="300" fill="#38bdf8" font-size="8">(ZeroizeOnDrop)</text>
+
+    <rect x="42" y="320" width="170" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="52" y="340" fill="#f8fafc" font-size="11" font-weight="600">3. Content Hash</text>
+    <text x="52" y="355" fill="#94a3b8" font-size="9">Generates SHA-256</text>
+    <text x="52" y="369" fill="#c084fc" font-size="9">CID: fed13adb... (64 hex)</text>
+    <text x="52" y="384" fill="#94a3b8" font-size="9">Obscures all file paths</text>
+    <text x="52" y="396" fill="#94a3b8" font-size="8">&amp; file names completely</text>
+
+    <!-- Stage 1 Footer Badge -->
+    <rect x="42" y="545" width="170" height="42" rx="6" fill="#0369a1" fill-opacity="0.3" stroke="#0284c7" stroke-width="0.8" />
+    <text x="127" y="563" text-anchor="middle" fill="#38bdf8" font-size="9" font-weight="700">🔒 ZERO PLAINTEXT LEAKS</text>
+    <text x="127" y="577" text-anchor="middle" fill="#94a3b8" font-size="8">Keys never leave local RAM</text>
+  </g>
+
+  <!-- Arrow 1 -> 2 -->
+  <line x1="225" y1="340" x2="245" y2="340" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrowCyan)" />
+
+  <!-- ========================================================================= -->
+  <!-- STEP 2: QUORUM GOVERNANCE (DUAL-ADMIN)                                    -->
+  <!-- ========================================================================= -->
+  <g filter="url(#shadow)">
+    <rect x="250" y="80" width="190" height="520" rx="12" fill="url(#step2Grad)" stroke="#7c3aed" stroke-width="1.6" />
+    <rect x="262" y="68" width="100" height="22" rx="5" fill="#6d28d9" />
+    <text x="312" y="83" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">STAGE 02</text>
+    
+    <text x="265" y="112" fill="#c084fc" font-size="14">👥</text>
+    <text x="288" y="112" fill="#f8fafc" font-size="13" font-weight="700">Dual-Admin Gate</text>
+    <text x="265" y="130" fill="#94a3b8" font-size="10">Control Plane (:8300)</text>
+
+    <!-- Content cards -->
+    <rect x="260" y="145" width="170" height="70" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="270" y="165" fill="#f8fafc" font-size="11" font-weight="600">1. Scope Evaluation</text>
+    <text x="270" y="180" fill="#34d399" font-size="9">Dev / Stage: Fast-path</text>
+    <text x="270" y="195" fill="#fbbf24" font-size="9">Prod: Dual-admin gate</text>
+    <text x="270" y="207" fill="#94a3b8" font-size="8">enforced automatically</text>
+
+    <rect x="260" y="225" width="170" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="270" y="245" fill="#f8fafc" font-size="11" font-weight="600">2. Request Creation</text>
+    <text x="270" y="260" fill="#94a3b8" font-size="9">Admin A opens proposal</text>
+    <text x="270" y="274" fill="#c084fc" font-size="9">Status: 202 Accepted</text>
+    <text x="270" y="288" fill="#fbbf24" font-size="9">Strict 24h Quorum TTL</text>
+    <text x="270" y="300" fill="#ef4444" font-size="8">Self-approval returns 403</text>
+
+    <rect x="260" y="320" width="170" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="270" y="340" fill="#f8fafc" font-size="11" font-weight="600">3. Four-Eyes Signoff</text>
+    <text x="270" y="355" fill="#94a3b8" font-size="9">Admin B signs decision</text>
+    <text x="270" y="369" fill="#34d399" font-size="9">ciphervault approve</text>
+    <text x="270" y="384" fill="#94a3b8" font-size="9">Appended to immutable</text>
+    <text x="270" y="396" fill="#c084fc" font-size="8">Merkle audit ledger</text>
+
+    <!-- Stage 2 Footer Badge -->
+    <rect x="260" y="545" width="170" height="42" rx="6" fill="#4338ca" fill-opacity="0.3" stroke="#6d28d9" stroke-width="0.8" />
+    <text x="345" y="563" text-anchor="middle" fill="#c084fc" font-size="9" font-weight="700">🛡️ NO SINGLE ADMIN POWER</text>
+    <text x="345" y="577" text-anchor="middle" fill="#94a3b8" font-size="8">Compromised laptop blocked</text>
+  </g>
+
+  <!-- Arrow 2 -> 3 -->
+  <line x1="440" y1="340" x2="460" y2="340" stroke="#c084fc" stroke-width="2.5" marker-end="url(#arrowPurple)" />
+
+  <!-- ========================================================================= -->
+  <!-- STEP 3: ZERO-KNOWLEDGE REPLICATION                                        -->
+  <!-- ========================================================================= -->
+  <g filter="url(#shadow)">
+    <rect x="465" y="80" width="190" height="520" rx="12" fill="url(#step3Grad)" stroke="#059669" stroke-width="1.6" />
+    <rect x="477" y="68" width="100" height="22" rx="5" fill="#047857" />
+    <text x="527" y="83" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">STAGE 03</text>
+    
+    <text x="480" y="112" fill="#34d399" font-size="14">🗄️</text>
+    <text x="503" y="112" fill="#f8fafc" font-size="13" font-weight="700">ZK Replication</text>
+    <text x="480" y="130" fill="#94a3b8" font-size="10">Operator Mesh (:8201-:8203)</text>
+
+    <!-- Content cards -->
+    <rect x="475" y="145" width="170" height="70" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="485" y="165" fill="#f8fafc" font-size="11" font-weight="600">1. Concurrent Fanout</text>
+    <text x="485" y="180" fill="#94a3b8" font-size="9">Replicated concurrently</text>
+    <text x="485" y="195" fill="#34d399" font-size="9">across 3+ untrusted nodes</text>
+    <text x="485" y="207" fill="#94a3b8" font-size="8">over HTTP/TLS pools</text>
+
+    <rect x="475" y="225" width="170" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="485" y="245" fill="#f8fafc" font-size="11" font-weight="600">2. Blind Storage</text>
+    <text x="485" y="260" fill="#94a3b8" font-size="9">Operators only see raw</text>
+    <text x="485" y="274" fill="#34d399" font-size="9">opaque ciphertext slices</text>
+    <text x="485" y="288" fill="#94a3b8" font-size="9">Zero user accounts</text>
+    <text x="485" y="300" fill="#ef4444" font-size="8">Zero folder metadata</text>
+
+    <rect x="475" y="320" width="170" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="485" y="340" fill="#f8fafc" font-size="11" font-weight="600">3. PoS Durability</text>
+    <text x="485" y="355" fill="#94a3b8" font-size="9">Autonomous challenger</text>
+    <text x="485" y="369" fill="#38bdf8" font-size="9">461-byte PoS challenges</text>
+    <text x="485" y="384" fill="#94a3b8" font-size="9">Autonomous self-repair</text>
+    <text x="485" y="396" fill="#34d399" font-size="8">if node replica degrades</text>
+
+    <!-- Stage 3 Footer Badge -->
+    <rect x="475" y="545" width="170" height="42" rx="6" fill="#047857" fill-opacity="0.3" stroke="#059669" stroke-width="0.8" />
+    <text x="560" y="563" text-anchor="middle" fill="#34d399" font-size="9" font-weight="700">📦 UNTRUSTED NODES</text>
+    <text x="560" y="577" text-anchor="middle" fill="#94a3b8" font-size="8">Nodes cannot read secrets</text>
+  </g>
+
+  <!-- Arrow 3 -> 4 -->
+  <line x1="655" y1="340" x2="675" y2="340" stroke="#34d399" stroke-width="2.5" marker-end="url(#arrowEmerald)" />
+
+  <!-- ========================================================================= -->
+  <!-- STEP 4: L2 ARBITRUM ANCHORING                                             -->
+  <!-- ========================================================================= -->
+  <g filter="url(#shadow)">
+    <rect x="680" y="80" width="185" height="520" rx="12" fill="url(#step4Grad)" stroke="#d97706" stroke-width="1.6" />
+    <rect x="692" y="68" width="100" height="22" rx="5" fill="#b45309" />
+    <text x="742" y="83" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">STAGE 04</text>
+    
+    <text x="695" y="112" fill="#fbbf24" font-size="14">⛓️</text>
+    <text x="718" y="112" fill="#f8fafc" font-size="13" font-weight="700">L2 Settlement</text>
+    <text x="695" y="130" fill="#94a3b8" font-size="10">Arbitrum One (42161)</text>
+
+    <!-- Content cards -->
+    <rect x="688" y="145" width="168" height="70" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="698" y="165" fill="#f8fafc" font-size="11" font-weight="600">1. Salted EIP-712</text>
+    <text x="698" y="180" fill="#94a3b8" font-size="9">Head commitment salted</text>
+    <text x="698" y="195" fill="#fbbf24" font-size="9">Opaque commitment hash</text>
+    <text x="698" y="207" fill="#94a3b8" font-size="8">Zero vault details on-chain</text>
+
+    <rect x="688" y="225" width="168" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="698" y="245" fill="#f8fafc" font-size="11" font-weight="600">2. On-Chain Post</text>
+    <text x="698" y="260" fill="#94a3b8" font-size="9">CipherVaultRegistry.sol</text>
+    <text x="698" y="274" fill="#fbbf24" font-size="9">setCommitment() tx</text>
+    <text x="698" y="288" fill="#94a3b8" font-size="9">Automated L2 relayer</text>
+    <text x="698" y="300" fill="#38bdf8" font-size="8">mines transaction receipt</text>
+
+    <rect x="688" y="320" width="168" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="698" y="340" fill="#f8fafc" font-size="11" font-weight="600">3. Immutable Proof</text>
+    <text x="698" y="355" fill="#94a3b8" font-size="9">Sequencer receipt stored</text>
+    <text x="698" y="369" fill="#34d399" font-size="9">Locally verified receipt</text>
+    <text x="698" y="384" fill="#94a3b8" font-size="9">Mathematically proves</text>
+    <text x="698" y="396" fill="#fbbf24" font-size="8">vault history at timestamp</text>
+
+    <!-- Stage 4 Footer Badge -->
+    <rect x="688" y="545" width="168" height="42" rx="6" fill="#b45309" fill-opacity="0.3" stroke="#d97706" stroke-width="0.8" />
+    <text x="772" y="563" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="700">⛓️ TAMPER-EVIDENT</text>
+    <text x="772" y="577" text-anchor="middle" fill="#94a3b8" font-size="8">Cannot rewrite history</text>
+  </g>
+
+  <!-- Arrow 4 -> 5 -->
+  <line x1="865" y1="340" x2="885" y2="340" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arrowAmber)" />
+
+  <!-- ========================================================================= -->
+  <!-- STEP 5: ZERO-DISK RUNTIME EXECUTION                                       -->
+  <!-- ========================================================================= -->
+  <g filter="url(#shadow)">
+    <rect x="890" y="80" width="180" height="520" rx="12" fill="url(#step5Grad)" stroke="#0284c7" stroke-width="1.6" />
+    <rect x="902" y="68" width="100" height="22" rx="5" fill="#0284c7" />
+    <text x="952" y="83" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">STAGE 05</text>
+    
+    <text x="905" y="112" fill="#38bdf8" font-size="14">⚡</text>
+    <text x="928" y="112" fill="#f8fafc" font-size="13" font-weight="700">Zero-Disk Run</text>
+    <text x="905" y="130" fill="#94a3b8" font-size="10">In-Memory Execution</text>
+
+    <!-- Content cards -->
+    <rect x="898" y="145" width="162" height="70" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="908" y="165" fill="#f8fafc" font-size="11" font-weight="600">1. Fetch by CID</text>
+    <text x="908" y="180" fill="#38bdf8" font-size="9">ciphervault run</text>
+    <text x="908" y="195" fill="#94a3b8" font-size="9">Pulls required chunks</text>
+    <text x="908" y="207" fill="#94a3b8" font-size="8">directly into RAM cache</text>
+
+    <rect x="898" y="225" width="162" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="908" y="245" fill="#f8fafc" font-size="11" font-weight="600">2. In-Memory Decrypt</text>
+    <text x="908" y="260" fill="#34d399" font-size="9">Zero disk writes</text>
+    <text x="908" y="274" fill="#94a3b8" font-size="9">Decrypted environment</text>
+    <text x="908" y="288" fill="#38bdf8" font-size="9">injected directly into</text>
+    <text x="908" y="300" fill="#94a3b8" font-size="8">child process memory</text>
+
+    <rect x="898" y="320" width="162" height="85" rx="6" fill="#0f172a" stroke="#334155" stroke-width="0.8" />
+    <text x="908" y="340" fill="#f8fafc" font-size="11" font-weight="600">3. Memory Scrub</text>
+    <text x="908" y="355" fill="#94a3b8" font-size="9">Application exits</text>
+    <text x="908" y="369" fill="#34d399" font-size="9">ZeroizeOnDrop wipes</text>
+    <text x="908" y="384" fill="#94a3b8" font-size="9">RAM buffer completely</text>
+    <text x="908" y="396" fill="#38bdf8" font-size="8">Zero traces on physical disk</text>
+
+    <!-- Stage 5 Footer Badge -->
+    <rect x="898" y="545" width="162" height="42" rx="6" fill="#0369a1" fill-opacity="0.3" stroke="#0284c7" stroke-width="0.8" />
+    <text x="979" y="563" text-anchor="middle" fill="#38bdf8" font-size="9" font-weight="700">🔒 ZERO DISK FOOTPRINT</text>
+    <text x="979" y="577" text-anchor="middle" fill="#94a3b8" font-size="8">Malware cannot read .env</text>
+  </g>
+
+  <!-- Bottom Summary Bar -->
+  <rect x="30" y="618" width="1040" height="52" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.2" />
+  <text x="550" y="642" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="700">SOVEREIGN CLEAN-MACHINE DISASTER RECOVERY: 100% INDEPENDENT OF CLOUD ACCOUNTS</text>
+  <text x="550" y="658" text-anchor="middle" fill="#94a3b8" font-size="10">If your laptop is destroyed, Method A (Offline Paper Kit Root R) or Method B (M-of-N Shamir Guardians) restores every secret onto a blank machine.</text>
+
+</svg>
