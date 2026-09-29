@@ -379,6 +379,9 @@ jobs:
         # after CI green; the manifests are inert until then.
         uses: peter-evans/create-pull-request@v7
         with:
+          # Signed-off-by trailer keeps the DCO check green so the fill PR
+          # merges without an admin bypass.
+          signoff: true
           commit-message: "fix(release): fill ${{ github.ref_name }} winget/scoop/brew hashes from SHA256SUMS"
           title: "fix(release): fill ${{ github.ref_name }} manifest hashes"
           body: |
