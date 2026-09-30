@@ -72,15 +72,21 @@ jobs:
           node apps/ui/audit.test.cjs
           node tests/dashboard_container_contract.cjs
 
-      - name: Real Browser CSP Regressions
-        if: runner.os == 'Linux'
-        run: node apps/ui/csp.browser.test.cjs
-
       - name: Release packaging and hosted secret bootstrap regressions
         if: runner.os == 'Linux'
         run: |
           node tests/release_package_assets.cjs
           node tests/web_secret_bootstrap.cjs
+
+  browser:
+    name: Real Browser CSP Regressions
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Run actual Chromium dashboard regressions
+        run: node apps/ui/csp.browser.test.cjs
 
   msrv:
     name: Minimum Supported Rust (1.89)

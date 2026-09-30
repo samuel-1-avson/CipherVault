@@ -99,7 +99,7 @@ const server = http.createServer((request, response) => {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = 'http://127.0.0.1:' + server.address().port;
-    child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+    child = spawn(browser, ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
       '--disable-extensions', '--disable-background-networking', '--user-data-dir=' + profile,
       '--virtual-time-budget=2500', '--dump-dom', url], {windowsHide:true});
     let output = '', diagnostics = '';

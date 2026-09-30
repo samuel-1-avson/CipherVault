@@ -35,6 +35,7 @@ fn test_end_to_end_ciphervault_workflow() {
             .as_millis()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     // 1. Run ciphervault init
     let init_output = Command::new(&bin)

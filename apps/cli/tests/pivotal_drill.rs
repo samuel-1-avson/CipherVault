@@ -42,6 +42,7 @@ async fn test_pivotal_acceptance_drill() {
             .as_millis()
     ));
     fs::create_dir_all(&base_test_dir).unwrap();
+    let base_test_dir = fs::canonicalize(base_test_dir).unwrap();
 
     // 1. Spawn 3 independent operator servers
     let op1_dir = base_test_dir.join("op1_storage");
