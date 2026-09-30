@@ -62,6 +62,9 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
             .as_nanos()
     ));
     fs::create_dir_all(&base_test_dir).unwrap();
+    // Restore paths under macOS temp_dir otherwise retain the /var alias,
+    // which strict vault path checks correctly reject as a symlink ancestor.
+    let base_test_dir = fs::canonicalize(base_test_dir).unwrap();
 
     // =========================================================================
     // 1. CLUSTER DEPLOYMENT: Spawn 3 independent operator nodes
