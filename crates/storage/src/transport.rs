@@ -152,12 +152,21 @@ pub type SharedIdentity = Arc<Mutex<Option<(String, String)>>>;
 /// Shared staged write voucher (D4): attached as `X-CipherVault-Voucher`.
 pub type SharedVoucher = Arc<Mutex<Option<WriteVoucher>>>;
 
+/// HTTP object reads allow normal 4 MiB operator objects and custom manifests
+/// up to 16 MiB. Enforce this on received chunks, not just Content-Length.
+pub const HTTP_MAX_OBJECT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const HTTP_MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+const HTTP_MAX_RECOVERY_PAGE_BYTES: usize = 3 * 1024 * 1024;
+
 /// HTTP operator transport: the original `OperatorClient` wire logic, moved
 /// verbatim behind [`OperatorTransport`].
 #[derive(Clone)]
 pub struct HttpTransport {
     endpoint: String,
     http: Client,
+    /// Custom service-token headers must never follow a redirect to another
+    /// endpoint, including when callers supply a redirect-enabled public pool.
+    control_http: Client,
     vault_scope: SharedScope,
     account_identity: SharedIdentity,
     trace_id: SharedScope,
@@ -191,6 +200,11 @@ impl HttpTransport {
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             http,
+            control_http: Client::builder()
+                .timeout(Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("Cannot construct redirect-disabled operator control client"),
             vault_scope,
             account_identity,
             trace_id,
@@ -237,6 +251,13 @@ impl HttpTransport {
     }
 
     fn with_service_token(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let authorized_endpoint = std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN_ENDPOINTS")
+            .unwrap_or_default()
+            .split(',')
+            .any(|endpoint| endpoint.trim().trim_end_matches('/') == self.endpoint);
+        if !authorized_endpoint {
+            return request;
+        }
         match std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
             Ok(token) if !token.is_empty() => request.header("X-CipherVault-Service-Token", token),
             _ => request,
@@ -250,10 +271,46 @@ impl HttpTransport {
     async fn check_ok(resp: reqwest::Response) -> Result<reqwest::Response, StorageError> {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Self::server_error(status, Self::error_message(&body)));
+            let message = match Self::read_bounded_response(
+                resp,
+                HTTP_MAX_ERROR_RESPONSE_BYTES,
+                "Operator error response",
+            )
+            .await
+            {
+                Ok(body) => Self::error_message(&String::from_utf8_lossy(&body)),
+                Err(StorageError::ServerError { message, .. }) => message,
+                Err(_) => "Operator error response could not be read safely".into(),
+            };
+            return Err(Self::server_error(status, message));
         }
         Ok(resp)
+    }
+
+    async fn read_bounded_response(
+        mut response: reqwest::Response,
+        limit: usize,
+        label: &str,
+    ) -> Result<Vec<u8>, StorageError> {
+        let exceeded =
+            || Self::server_error(502, format!("{label} exceeds {limit} byte response limit"));
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit as u64)
+        {
+            return Err(exceeded());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            // Missing, chunked, inaccurate, or decoded length headers cannot
+            // bypass the actual byte limit. Dropping the response aborts the
+            // remaining body rather than reading an oversized stream to EOF.
+            if chunk.len() > limit.saturating_sub(bytes.len()) {
+                return Err(exceeded());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     /// Extracts the human message from an error body: prefers the JSON
@@ -284,7 +341,7 @@ impl HttpTransport {
                 GetAuth::Bearer(token) => self
                     .with_vault_scope(self.http.get(url))
                     .header(header::AUTHORIZATION, format!("Bearer {token}")),
-                GetAuth::ServiceToken => self.with_service_token(self.http.get(url)),
+                GetAuth::ServiceToken => self.with_service_token(self.control_http.get(url)),
             };
             match request.send().await {
                 Ok(resp)
@@ -317,6 +374,198 @@ const GET_RETRY_ATTEMPTS: u32 = 3;
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 429 | 502 | 503 | 504)
+}
+
+#[cfg(test)]
+mod http_response_limit_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Keep incomplete responses open after their payload. An unbounded client
+    /// would wait for EOF; a bounded client must abort and close the connection.
+    async fn response_fixture(
+        status: u16,
+        headers: &str,
+        payload: Vec<u8>,
+        chunked: bool,
+        complete: bool,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let header = format!("HTTP/1.1 {status} Test\r\nConnection: close\r\n{headers}\r\n");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0 && request.len() < 32 * 1024);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            if socket.write_all(header.as_bytes()).await.is_err() {
+                return;
+            }
+            for block in payload.chunks(32 * 1024) {
+                if chunked
+                    && socket
+                        .write_all(format!("{:x}\r\n", block.len()).as_bytes())
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
+                if socket.write_all(block).await.is_err() {
+                    return;
+                }
+                if chunked && socket.write_all(b"\r\n").await.is_err() {
+                    return;
+                }
+            }
+            if complete {
+                if chunked {
+                    let _ = socket.write_all(b"0\r\n\r\n").await;
+                }
+                return;
+            }
+            // Receiving EOF proves the reader discarded the remainder rather
+            // than keeping an oversized stream open in the connection pool.
+            assert_eq!(socket.read(&mut buffer).await.unwrap_or(0), 0);
+        });
+        (endpoint, server)
+    }
+
+    async fn closed(server: tokio::task::JoinHandle<()>) {
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_http_objects_abort_for_length_chunked_missing_and_spoofed_headers() {
+        for (headers, chunked, send_payload) in [
+            (
+                format!("Content-Length: {}\r\n", HTTP_MAX_OBJECT_RESPONSE_BYTES + 1),
+                false,
+                false,
+            ),
+            ("Transfer-Encoding: chunked\r\n".into(), true, true),
+            (String::new(), false, true),
+            (
+                "Content-Length: 1\r\nTransfer-Encoding: chunked\r\n".into(),
+                true,
+                true,
+            ),
+        ] {
+            let payload = if send_payload {
+                vec![0x55; HTTP_MAX_OBJECT_RESPONSE_BYTES + 1]
+            } else {
+                Vec::new()
+            };
+            let (endpoint, server) = response_fixture(200, &headers, payload, chunked, false).await;
+            let error = tokio::time::timeout(
+                Duration::from_secs(5),
+                HttpTransport::new(endpoint).fetch_object_bytes("synthetic-session", &[1; 32]),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("Operator object exceeds"),
+                "{headers:?}: {error}"
+            );
+            closed(server).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_http_objects_and_exact_client_limit_still_pass_digest_verification() {
+        for length in [4 * 1024 * 1024, HTTP_MAX_OBJECT_RESPONSE_BYTES] {
+            let payload = vec![0x66; length];
+            let digest = compute_digest(&payload);
+            let (endpoint, server) = response_fixture(
+                200,
+                "Transfer-Encoding: chunked\r\n",
+                payload.clone(),
+                true,
+                true,
+            )
+            .await;
+            let actual = crate::OperatorClient::new(endpoint)
+                .get_object("synthetic-session", &digest)
+                .await
+                .unwrap();
+            assert_eq!(actual, payload);
+            closed(server).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_http_errors_abort_before_text_decoding_and_preserve_status() {
+        for (headers, chunked, payload) in [
+            (
+                format!("Content-Length: {}\r\n", HTTP_MAX_ERROR_RESPONSE_BYTES + 1),
+                false,
+                Vec::new(),
+            ),
+            (
+                "Transfer-Encoding: chunked\r\n".into(),
+                true,
+                vec![0xff; HTTP_MAX_ERROR_RESPONSE_BYTES + 1],
+            ),
+        ] {
+            let (endpoint, server) = response_fixture(403, &headers, payload, chunked, false).await;
+            let error = tokio::time::timeout(
+                Duration::from_secs(5),
+                HttpTransport::new(endpoint).fetch_info(),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            match error {
+                StorageError::ServerError { status, message } => {
+                    assert_eq!(status, 403);
+                    assert!(message.contains("Operator error response exceeds"));
+                    assert!(message.len() < 256);
+                }
+                other => panic!("unexpected error: {other}"),
+            }
+            closed(server).await;
+        }
+        let payload = br#"{"code":403,"error":"synthetic permission denied"}"#.to_vec();
+        let headers = format!("Content-Length: {}\r\n", payload.len());
+        let (endpoint, server) = response_fixture(403, &headers, payload, false, true).await;
+        let error = HttpTransport::new(endpoint).fetch_info().await.unwrap_err();
+        assert!(
+            matches!(error, StorageError::ServerError { status: 403, message } if message == "synthetic permission denied")
+        );
+        closed(server).await;
+    }
+
+    #[tokio::test]
+    async fn recovery_json_uses_the_same_streaming_bound() {
+        let payload = vec![b' '; HTTP_MAX_RECOVERY_PAGE_BYTES + 1];
+        let (endpoint, server) =
+            response_fixture(200, "Transfer-Encoding: chunked\r\n", payload, true, false).await;
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            HttpTransport::new(endpoint).get_recovery_records(&[1; 32]),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error.to_string().contains("Recovery page exceeds"));
+        closed(server).await;
+        let payload = br#"{"records_hex":[],"truncated":false,"next_cursor":null}"#.to_vec();
+        let (endpoint, server) =
+            response_fixture(200, "Transfer-Encoding: chunked\r\n", payload, true, true).await;
+        assert!(HttpTransport::new(endpoint)
+            .get_recovery_records(&[1; 32])
+            .await
+            .unwrap()
+            .is_empty());
+        closed(server).await;
+    }
 }
 
 impl OperatorTransport for HttpTransport {
@@ -408,7 +657,8 @@ impl OperatorTransport for HttpTransport {
             let url = format!("{}/v1/objects/{}", self.endpoint, cid_hex);
             let resp =
                 Self::check_ok(self.get_with_retry(&url, GetAuth::Bearer(token)).await?).await?;
-            Ok(resp.bytes().await?.to_vec())
+            Self::read_bounded_response(resp, HTTP_MAX_OBJECT_RESPONSE_BYTES, "Operator object")
+                .await
         })
     }
 
@@ -531,16 +781,56 @@ impl OperatorTransport for HttpTransport {
     ) -> BoxFuture<'a, Result<Vec<Vec<u8>>, StorageError>> {
         Box::pin(async move {
             let locator_hex = hex::encode(locator);
-            let url = format!("{}/v1/recovery/{}/records", self.endpoint, locator_hex);
-            let resp = Self::check_ok(self.get_with_retry(&url, GetAuth::None).await?).await?;
-            let body = resp.json::<RecoveryRecordsResponse>().await?;
             let mut out = Vec::new();
-            for r_hex in body.records_hex {
-                let b = hex::decode(r_hex).map_err(|e| StorageError::ServerError {
-                    status: 500,
-                    message: e.to_string(),
-                })?;
-                out.push(b);
+            let mut cursor = 0u64;
+            let mut total_bytes = 0usize;
+            loop {
+                let url = format!(
+                    "{}/v1/recovery/{}/records?cursor={cursor}",
+                    self.endpoint, locator_hex
+                );
+                let resp = Self::check_ok(self.get_with_retry(&url, GetAuth::None).await?).await?;
+                let body_bytes = Self::read_bounded_response(
+                    resp,
+                    HTTP_MAX_RECOVERY_PAGE_BYTES,
+                    "Recovery page",
+                )
+                .await?;
+                let body: RecoveryRecordsResponse =
+                    serde_json::from_slice(&body_bytes).map_err(|e| StorageError::ServerError {
+                        status: 502,
+                        message: e.to_string(),
+                    })?;
+                for r_hex in body.records_hex {
+                    let b = hex::decode(r_hex).map_err(|e| StorageError::ServerError {
+                        status: 500,
+                        message: e.to_string(),
+                    })?;
+                    total_bytes = total_bytes.saturating_add(b.len());
+                    if total_bytes > 64 * 1024 * 1024 || out.len() >= 10_000 {
+                        return Err(StorageError::ServerError {
+                            status: 502,
+                            message: "Recovery log exceeds client limits".into(),
+                        });
+                    }
+                    out.push(b);
+                }
+                match body.next_cursor {
+                    Some(next) if next > cursor && next <= 64 * 1024 * 1024 => cursor = next,
+                    Some(_) => {
+                        return Err(StorageError::ServerError {
+                            status: 502,
+                            message: "Invalid recovery continuation cursor".into(),
+                        })
+                    }
+                    None if body.truncated => return Err(StorageError::ServerError {
+                        status: 502,
+                        message:
+                            "Incomplete legacy recovery response; upgrade operator for pagination"
+                                .into(),
+                    }),
+                    None => break,
+                }
             }
             Ok(out)
         })
@@ -553,7 +843,7 @@ impl OperatorTransport for HttpTransport {
         Box::pin(async move {
             let url = format!("{}/v1/peers/announce", self.endpoint);
             Self::check_ok(
-                self.with_service_token(self.http.post(&url))
+                self.with_service_token(self.control_http.post(&url))
                     .json(descriptor)
                     .send()
                     .await?,
@@ -634,7 +924,7 @@ impl OperatorTransport for HttpTransport {
         Box::pin(async move {
             let url = format!("{}/v1/vouchers", self.endpoint);
             let resp = Self::check_ok(
-                self.with_service_token(self.http.post(&url))
+                self.with_service_token(self.control_http.post(&url))
                     .json(&VoucherIssueRequest {
                         holder_pk_hex: holder_pk_hex.to_string(),
                         quota_bytes,

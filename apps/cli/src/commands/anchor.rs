@@ -452,20 +452,15 @@ mod tests {
     use serde_json::{json, Value};
     use tokio::net::TcpListener;
 
-    /// Fixed fixtures shared by both tests so the global vault-path override
-    /// cannot skew results if tests interleave: only the mock receipt differs.
+    /// Independent fixtures use immutable task-local workspace context.
     const SALT: [u8; 32] = [0x11u8; 32];
     const HEAD: [u8; 32] = [0x22u8; 32];
     const REGISTRY: [u8; 20] = [0x55u8; 20];
     const TX_HASH_HEX: &str = "0x9876543210987654321098765432109876543210987654321098765432109876";
 
-    /// Serializes vault-path override tests: `set_active_vault_path` is
-    /// process-global, so interleaved tests would otherwise write into
-    /// each other's temp vaults.
-    static VAULT_PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     struct Fixture {
         dir: std::path::PathBuf,
+        db_path: std::path::PathBuf,
         rpc_url: String,
     }
 
@@ -481,11 +476,11 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("vault.db");
+        std::fs::create_dir_all(dir.join(".ciphervault")).unwrap();
+        let db_path = dir.join(".ciphervault/vault.db");
         let store = LocalVaultStore::open(&db_path).unwrap();
         let seed = CheckpointEvidence::new(SALT, HEAD, 42161, REGISTRY, [0u8; 32], 0, 0);
         store.save_checkpoint_evidence(&seed).unwrap();
-        crate::util::set_active_vault_path(Some(db_path));
 
         let commitment = CheckpointEvidence::compute_commitment(&SALT, &HEAD);
         let commitment_topic = format!("0x{}", hex::encode(commitment));
@@ -550,30 +545,35 @@ mod tests {
 
         Fixture {
             dir,
+            db_path,
             rpc_url: format!("http://{}", addr),
         }
     }
 
     async fn invoke(fixture: &Fixture) -> Result<()> {
-        cmd_anchor(
-            Some(hex::encode(HEAD)),
-            Some(fixture.rpc_url.clone()),
-            Some(hex::encode(REGISTRY)),
-            Some(42161),
-            Some(TX_HASH_HEX.to_string()),
-            None,
-            false,
-            None,
-        )
-        .await
+        let context = crate::util::VaultContext::from_db_path(&fixture.db_path)?;
+        crate::util::REQUEST_VAULT_CONTEXT
+            .scope(
+                context,
+                cmd_anchor(
+                    Some(hex::encode(HEAD)),
+                    Some(fixture.rpc_url.clone()),
+                    Some(hex::encode(REGISTRY)),
+                    Some(42161),
+                    Some(TX_HASH_HEX.to_string()),
+                    None,
+                    false,
+                    None,
+                ),
+            )
+            .await
     }
 
     #[tokio::test]
     async fn test_anchor_tx_hash_records_bound_receipt() {
-        let _guard = VAULT_PATH_LOCK.lock().await;
         let fixture = setup(true).await;
         invoke(&fixture).await.unwrap();
-        let store = LocalVaultStore::open(fixture.dir.join("vault.db")).unwrap();
+        let store = LocalVaultStore::open(&fixture.db_path).unwrap();
         let saved = store.get_checkpoint_evidence(&HEAD).unwrap().unwrap();
         assert_eq!(
             saved.tx_hash,
@@ -584,7 +584,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_anchor_tx_hash_rejects_unbound_receipt() {
-        let _guard = VAULT_PATH_LOCK.lock().await;
         let fixture = setup(false).await;
         let err = invoke(&fixture).await.unwrap_err();
         assert!(

@@ -2,6 +2,7 @@
 name = "ciphervault-agent"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
@@ -12,6 +13,7 @@ ciphervault-snapshot = { path = "../../crates/snapshot" }
 ciphervault-local-store = { path = "../../crates/local-store" }
 ciphervault-storage = { path = "../../crates/storage" }
 ciphervault-recovery = { path = "../../crates/recovery" }
+ciphervault-file-lock.workspace = true
 
 tokio.workspace = true
 clap.workspace = true
@@ -22,5 +24,6 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+zeroize.workspace = true
 x25519-dalek.workspace = true
 notify = "6.1"

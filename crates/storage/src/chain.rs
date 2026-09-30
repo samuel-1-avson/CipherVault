@@ -566,8 +566,9 @@ impl AnchorRelayerClient {
     pub fn new(relayer_url: String) -> Self {
         let http = Client::builder()
             .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| Client::new());
+            .expect("Cannot construct redirect-disabled relayer client");
         Self {
             relayer_url: relayer_url.trim_end_matches('/').to_string(),
             http,
@@ -579,6 +580,13 @@ impl AnchorRelayerClient {
     }
 
     fn with_service_token(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let authorized_endpoint = std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN_ENDPOINTS")
+            .unwrap_or_default()
+            .split(',')
+            .any(|endpoint| endpoint.trim().trim_end_matches('/') == self.relayer_url);
+        if !authorized_endpoint {
+            return request;
+        }
         match std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
             Ok(token) if !token.is_empty() => request.header("X-CipherVault-Service-Token", token),
             _ => request,
@@ -657,7 +665,7 @@ fn relayer_auth_error(relayer_url: &str, status: u16, body: &str) -> Option<Stor
     Some(StorageError::ServerError {
         status,
         message: format!(
-            "Relayer at {relayer_url} rejected the request (HTTP {status}: {server_said}). This relayer requires operator credentials: set CIPHERVAULT_OPERATOR_SERVICE_TOKEN, anchor against your own node (http://127.0.0.1:8787), or broadcast the commitment yourself with `anchor --raw-tx` / `--tx-hash`."
+            "Relayer at {relayer_url} rejected the request (HTTP {status}: {server_said}). This relayer requires operator credentials: set CIPHERVAULT_OPERATOR_SERVICE_TOKEN and independently allow this URL in CIPHERVAULT_OPERATOR_SERVICE_TOKEN_ENDPOINTS, anchor against your own node (http://127.0.0.1:8787), or broadcast the commitment yourself with `anchor --raw-tx` / `--tx-hash`."
         ),
     })
 }

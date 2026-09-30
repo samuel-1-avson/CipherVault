@@ -211,27 +211,37 @@ impl HttpRateLimiter {
     }
 }
 
-/// Client key for HTTP rate limiting. The fleet runs behind Caddy on the
-/// same host, so the socket IP is always loopback: prefer the first
-/// `X-Forwarded-For` entry when present. Direct-exposure operators accept
-/// that clients can rotate that header; front with L7 if that matters
-/// (runbook §11).
+/// Connection identity for rate limiting. Only explicitly trusted proxies
+/// may supply forwarding information; direct callers cannot rotate XFF.
 fn http_client_key(request: &Request) -> String {
-    if let Some(forwarded) = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-    {
-        if let Some(first) = forwarded.split(',').next().map(str::trim) {
-            if !first.is_empty() {
-                return first.to_string();
+    let Some(ConnectInfo(addr)) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
+        return "unknown".to_string();
+    };
+    let trusted_proxies: Vec<std::net::IpAddr> =
+        std::env::var("CIPHERVAULT_OPERATOR_TRUSTED_PROXIES")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|entry| entry.trim().parse().ok())
+            .collect();
+    if trusted_proxies.contains(&addr.ip()) {
+        if let Some(forwarded) = request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+        {
+            // Walk from the immediate proxy toward the client. A caller-supplied
+            // leftmost address cannot bypass limits when a proxy appends its peer.
+            for value in forwarded.split(',').rev() {
+                let Ok(ip) = value.trim().parse::<std::net::IpAddr>() else {
+                    break;
+                };
+                if !trusted_proxies.contains(&ip) {
+                    return ip.to_string();
+                }
             }
         }
     }
-    if let Some(ConnectInfo(addr)) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
-        return addr.ip().to_string();
-    }
-    "unknown".to_string()
+    addr.ip().to_string()
 }
 
 /// HTTP flood guard: over-limit callers get a pre-shaped 429 JSON envelope
@@ -469,6 +479,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn direct_client_cannot_spoof_limit_identity_with_forwarding_headers() {
+        let request = Request::builder()
+            .uri("/v1/info")
+            .header("x-forwarded-for", "192.0.2.8")
+            .extension(ConnectInfo(
+                "198.51.100.9:12345".parse::<SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(http_client_key(&request), "198.51.100.9");
+    }
+
     /// End to end through the real router: with a tiny limit, the fourth
     /// same-key request gets a pre-shaped 429 JSON envelope while a
     /// different client key sails through.
@@ -486,6 +509,7 @@ mod tests {
             Request::builder()
                 .uri("/v1/info")
                 .header("x-forwarded-for", xff)
+                .extension(ConnectInfo(SocketAddr::new(xff.parse().unwrap(), 1234)))
                 .body(Body::empty())
                 .unwrap()
         };

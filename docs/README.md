@@ -1,6 +1,6 @@
 # 🛡️ CipherVault: Master Documentation Hub
 
-**Current Version:** `v1.0.17`  
+**Release track:** `v1.0.26`; see the [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) for publication and live verification.
 **Classification:** Enterprise System Architecture, Protocol Specification & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)  
 
@@ -8,9 +8,11 @@
 
 ## Overview
 
-Welcome to the **CipherVault** master documentation hub. CipherVault is a sovereign, zero-knowledge secret backup, version control, and clean-machine disaster recovery platform engineered in pure Rust and Solidity.
+CipherVault provides client-encrypted file backup and hosted scoped-secret management. Hosted secret values are decrypted by the account server; the two confidentiality models are described in [current security guarantees](CURRENT_SECURITY_GUARANTEES.md).
 
-This documentation suite is organized into focused, authoritative tracks designed for core protocol engineers, security auditors, site reliability operators, and application developers.
+Start with the [remediation ledger](../report/AUDIT_REMEDIATION_2026-09-30.md), [account service behavior](../services/account/README.md), [chunk v2 design](../crates/snapshot/CHUNK_PROTOCOL_V2.md), [installer signature requirements](../dist/INSTALLER_SIGNATURES.md), and [dependency audit policy](DEPENDENCY_AUDIT.md). Older design documents and deployment reports describe their recorded versions; these current behavior notes take precedence where they differ.
+
+This documentation suite is organized into tracks for core protocol engineers, security auditors, operators and application developers. Start with [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md): default v1 capture limitations, gated v2 writing, journaled restore, watcher retries, operator enrollment/pins and scoped batch execution. Older reports and diagrams preserve historical design context and are not current release certification.
 
 ```mermaid
 flowchart TB
@@ -198,8 +200,13 @@ CipherVault adheres to rigorous open-source governance and intellectual property
 
 ## 🛡️ Non-Negotiable Architectural Invariants
 
-1. **Zero Plaintext at Rest**: Decryption keys and device credentials are stored exclusively in OS credential vaults (Windows DPAPI or machine-entropy AEAD keyrings).
-2. **Zero Plaintext to Operators**: Storage operators only receive opaque ciphertext chunks addressed by SHA-256 content identifiers (CIDs). Operators cannot infer file names, directory hierarchies, or secret contents.
+1. **Protected Local Keys**: Windows uses DPAPI; other platforms use an AEAD envelope backed by a configured master key or private key file. Files and metadata still require separate disk protection.
+2. **Encrypted Operator Payloads**: File paths reside in encrypted manifests. Default v1 still permits public candidate-file confirmation; opt-in v2 hides public candidate hashes, while equality, lengths and traffic remain visible.
 3. **Zero-Disk Master Secret ($R$)**: The master recovery secret $R$ is never persisted unencrypted to physical disk. Memory buffers holding $R$ are explicitly zeroized on drop.
 4. **Autonomous Durability**: Replication requires real-time Proof-of-Storage verification (461-byte cryptographic challenge readback), and autonomous daemons maintain quorum across independent multi-region VPS nodes.
-5. **Clean-Machine Sovereign Recovery**: Any lost machine can be reconstructed without centralized SaaS access, blockchain wallets, or database accounts—requiring only the offline paper kit or $M$-of-$N$ guardian shares.
+5. **Clean-Machine Recovery**: Offline recovery material can reconstruct a complete remotely replicated recovery set while enough operators remain reachable. Certified incomparable branches require fork resolution; withholding newer history needs independent freshness evidence.
+
+## Operational verification additions
+
+- [Account backup and isolated restore rehearsal](ACCOUNT_BACKUP_AND_RECOVERY.md)
+- [Remote plaintext recovery drill](CURRENT_SECURITY_GUARANTEES.md#operator-authentication-and-pins)

@@ -57,29 +57,88 @@ install_docker() {
     fi
 }
 
+validate_local_kek_file() {
+    local key_file="$1"
+    local bytes
+    bytes=$(wc -c < "$key_file")
+    if (( bytes == 0 || bytes > 65536 )); then
+        return 1
+    fi
+    # Match VersionedKekService: legacy 32-byte hex, or a bounded keyring.
+    # Suppress jq parse errors because they can include secret input excerpts.
+    if jq -eRs 'gsub("^\\s+|\\s+$"; "") | test("^[0-9a-fA-F]{64}$")' \
+        "$key_file" >/dev/null 2>&1; then
+        return 0
+    fi
+    jq -es '
+        length == 1 and (.[0] as $ring |
+            ($ring | type) == "object" and
+            ($ring | keys | sort) == ["active_version", "keys"] and
+            ($ring.active_version | type) == "string" and
+            ($ring.keys | type) == "object" and
+            ($ring.keys | length) > 0 and ($ring.keys | length) <= 32 and
+            ($ring.keys | has($ring.active_version)) and
+            ($ring.keys | to_entries | all(
+                (.key | length) > 0 and (.key | length) <= 64 and
+                (.key | test("^[A-Za-z0-9_.-]+$")) and
+                (.value | type) == "string" and
+                (.value | gsub("^\\s+|\\s+$"; "") | test("^[0-9a-fA-F]{64}$"))
+            ))
+        )
+    ' "$key_file" >/dev/null 2>&1 || return 1
+    # jq normally keeps the last duplicate JSON field. Its streaming parser
+    # preserves duplicates: reject ambiguous root/key entries before install.
+    jq --stream -es '
+        ([.[] | select(length == 2) | .[0]]) as $leaves |
+        ($leaves | length) == ($leaves | unique | length) and
+        ($leaves | map(select(. == ["active_version"])) | length) == 1 and
+        ($leaves | all((length == 1 and .[0] == "active_version") or
+            (length == 2 and .[0] == "keys"))) and
+        ([.[] | select(length == 1 and (.[0] | length) == 2 and .[0][0] == "keys")] | length) == 1
+    ' "$key_file" >/dev/null 2>&1
+}
+
 fetch_hex_secret() {
     local project_id="$1"
     local secret_name="$2"
     local dest_file="$3"
     local label="$4"
+    local format="${5:-hex}"
     local token response_file key_file
     token=$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' \
         'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
         | jq -er '.access_token')
     response_file=$(mktemp)
     key_file=$(mktemp)
-    trap 'rm -f "$response_file" "$key_file"' RETURN
+    trap 'rm -f "$response_file" "$key_file"; trap - RETURN' RETURN
     curl --fail --silent --show-error \
         -H "Authorization: Bearer $token" \
         "https://secretmanager.googleapis.com/v1/projects/$project_id/secrets/$secret_name/versions/latest:access" \
         > "$response_file"
-    jq -er '.payload.data' "$response_file" | base64 --decode | tr -d '\r\n' > "$key_file"
-    if ! grep -Eq '^[[:xdigit:]]{64}$' "$key_file"; then
+    if [[ "$format" == local-kek ]]; then
+        # Preserve JSON exactly, including whitespace inside quoted values.
+        jq -er '.payload.data' "$response_file" | base64 --decode > "$key_file"
+        if ! validate_local_kek_file "$key_file"; then
+            echo "The $label secret must be 32-byte hex or a valid versioned keyring" >&2
+            return 1
+        fi
+    elif [[ "$format" == hex ]]; then
+        jq -er '.payload.data' "$response_file" | base64 --decode | tr -d '\r\n' > "$key_file"
+        if ! grep -Eq '^[[:xdigit:]]{64}$' "$key_file"; then
+            echo "The $label secret must contain exactly 32 hex bytes" >&2
+            return 1
+        fi
+    else
+        echo 'Unknown secret format; refusing to install a key' >&2
+        return 1
+    fi
+    if (( $(wc -c < "$key_file") > 65536 )); then
         echo "The $label secret must contain exactly 32 hex bytes" >&2
-        exit 1
+        return 1
     fi
     install -d -m 0700 "$SECRETS_DIR"
     install -o 10001 -g 10001 -m 0400 "$key_file" "$dest_file"
+    rm -f "$response_file" "$key_file"
     # The RETURN trap is function-global: without this clear it would
     # re-fire on the *caller's* return, where these locals are out of
     # scope and `set -u` would abort the boot.
@@ -102,6 +161,7 @@ readonly DASHBOARD_IMAGE="$(metadata_value ciphervault-dashboard-image)"
 readonly ACCOUNT_IMAGE="$(metadata_value ciphervault-account-image)"
 readonly OPERATORS="$(metadata_value operator-endpoints)"
 readonly TRUSTED_OPERATOR_IDENTITIES="$(metadata_value trusted-operator-identities | tr ';' ',')"
+readonly OPERATOR_PINS="$(metadata_value operator-pins | tr ';' ',')"
 readonly WEB_DOMAIN="$(metadata_value web-domain vault.example.com)"
 readonly ACME_EMAIL="$(metadata_value acme-email admin@example.com)"
 readonly WEBAUTHN_RP_ID="$(metadata_value webauthn-rp-id "$WEB_DOMAIN")"
@@ -136,7 +196,7 @@ done
 
 fetch_totp_key "$PROJECT_ID" "$TOTP_SECRET_NAME"
 fetch_hex_secret "$PROJECT_ID" "$SCOPE_TOKEN_SECRET_NAME" "$SCOPE_TOKEN_KEY_FILE" 'scope-token signing'
-fetch_hex_secret "$PROJECT_ID" "$LOCAL_KEK_SECRET_NAME" "$LOCAL_KEK_FILE" 'account local KEK'
+fetch_hex_secret "$PROJECT_ID" "$LOCAL_KEK_SECRET_NAME" "$LOCAL_KEK_FILE" 'account local KEK' local-kek
 fetch_hex_secret "$PROJECT_ID" "$VCS_WEBHOOK_SECRET_NAME" "$VCS_WEBHOOK_KEY_FILE" 'VCS webhook'
 install -o root -g root -m 0644 "$RELEASE_DIR/docker-compose.yml" "$APP_DIR/docker-compose.yml"
 install -o root -g root -m 0644 "$RELEASE_DIR/Caddyfile" "$APP_DIR/Caddyfile"
@@ -148,8 +208,13 @@ CIPHERVAULT_DASHBOARD_IMAGE=$DASHBOARD_IMAGE
 CIPHERVAULT_ACCOUNT_IMAGE=$ACCOUNT_IMAGE
 CIPHERVAULT_OPERATORS=$OPERATORS
 CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES=$TRUSTED_OPERATOR_IDENTITIES
+CIPHERVAULT_OPERATOR_PINS=$OPERATOR_PINS
+# The configured fleet is the only destination for a privileged service token.
+CIPHERVAULT_OPERATOR_SERVICE_TOKEN_ENDPOINTS=$(printf '%s' "$OPERATORS" | tr ' ' ',')
+CIPHERVAULT_OPERATOR_ENDPOINTS=$(printf '%s' "$OPERATORS" | tr ' ' ',')
 CIPHERVAULT_WEBAUTHN_RP_ID=$WEBAUTHN_RP_ID
 CIPHERVAULT_WEBAUTHN_ORIGIN=$WEBAUTHN_ORIGIN
+CIPHERVAULT_WEBAUTHN_REQUIRE_UV=true
 CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS=$ACCOUNT_ALLOWED_ORIGINS
 CIPHERVAULT_ACCOUNT_COOKIE_SECURE=true
 CIPHERVAULT_ACCOUNT_TOTP_KEY_FILE=$TOTP_KEY_FILE

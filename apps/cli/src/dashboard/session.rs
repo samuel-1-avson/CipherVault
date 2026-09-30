@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use ciphervault_local_store::AccountStore;
 
 use crate::hosted_account_endpoint;
-use crate::util::{current_device_identity, get_vault_store};
+use crate::util::current_device_identity;
 
 /// The embedded UI has two deliberately separate serving contexts. The local
 /// workspace has access to a vault's private data and actions, while the
@@ -45,51 +45,42 @@ pub(crate) struct PrivateUiSessionState {
 static PRIVATE_UI_SESSION: OnceLock<RwLock<PrivateUiSessionState>> = OnceLock::new();
 pub(crate) const PRIVATE_UI_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 
-pub(crate) fn current_private_vault_binding() -> Option<String> {
-    get_vault_store()
-        .ok()
-        .and_then(|store| store.get_vault_id().ok())
-        .map(hex::encode)
-}
-
-pub(crate) fn new_private_ui_session(vault_binding: Option<String>) -> PrivateUiSessionState {
+pub(crate) fn new_private_ui_session(_vault_binding: Option<String>) -> PrivateUiSessionState {
     let mut token_bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut token_bytes);
     PrivateUiSessionState {
         token: hex::encode(token_bytes),
-        vault_binding,
+        // This token protects the loopback browser session. Selected workspace
+        // authorization remains a separate account/device check per request.
+        vault_binding: None,
         issued_at: Instant::now(),
     }
 }
 
 pub(crate) fn private_ui_session_should_rotate(
     state: &PrivateUiSessionState,
-    current_binding: &Option<String>,
+    _current_binding: &Option<String>,
 ) -> bool {
-    state.vault_binding != *current_binding || state.issued_at.elapsed() >= PRIVATE_UI_SESSION_TTL
+    state.issued_at.elapsed() >= PRIVATE_UI_SESSION_TTL
 }
 
 pub(crate) fn private_ui_session_snapshot() -> PrivateUiSessionState {
-    let current_binding = current_private_vault_binding();
-    let session = PRIVATE_UI_SESSION
-        .get_or_init(|| RwLock::new(new_private_ui_session(current_binding.clone())));
+    let session = PRIVATE_UI_SESSION.get_or_init(|| RwLock::new(new_private_ui_session(None)));
     let mut state = session
         .write()
         .expect("private UI session lock must not be poisoned");
-    if private_ui_session_should_rotate(&state, &current_binding) {
-        *state = new_private_ui_session(current_binding);
+    if private_ui_session_should_rotate(&state, &None) {
+        *state = new_private_ui_session(None);
     }
     state.clone()
 }
 
 pub(crate) fn revoke_private_ui_session() {
-    let current_binding = current_private_vault_binding();
-    let session = PRIVATE_UI_SESSION
-        .get_or_init(|| RwLock::new(new_private_ui_session(current_binding.clone())));
+    let session = PRIVATE_UI_SESSION.get_or_init(|| RwLock::new(new_private_ui_session(None)));
     let mut state = session
         .write()
         .expect("private UI session lock must not be poisoned");
-    *state = new_private_ui_session(current_binding);
+    *state = new_private_ui_session(None);
 }
 
 pub(crate) fn current_account_context() -> serde_json::Value {
@@ -256,8 +247,9 @@ pub(crate) fn ui_context(mode: UiServerMode) -> serde_json::Value {
 mod local_startup_session_tests {
     use super::*;
 
-    #[test]
-    fn accountless_machine_is_already_valid_without_login_attempt() {
+    #[tokio::test]
+    async fn accountless_machine_is_already_valid_without_login_attempt() {
+        let _guard = crate::util::TEST_PROCESS_STATE.lock().await;
         // Startup sign-in must be a silent no-op where no account exists: it
         // must neither fail nor mint any session material.
         let empty_dir = std::env::temp_dir().join(format!(

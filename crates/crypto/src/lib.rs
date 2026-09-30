@@ -4,6 +4,7 @@
 //! domain-separated KDF, sealed-box epoch key envelopes, and Ed25519 signatures.
 
 pub mod aead;
+pub mod chunk_v2;
 pub mod envelope;
 pub mod error;
 pub mod hsm;
@@ -18,6 +19,10 @@ pub mod signatures;
 pub use aead::{
     decrypt_chunk, decrypt_with_nonce, encrypt_chunk, encrypt_chunk_with_nonce, encrypt_with_nonce,
     KEY_SIZE, NONCE_SIZE, TAG_SIZE,
+};
+pub use chunk_v2::{
+    derive_v2_chunk_domain_key, derive_v2_chunk_id, derive_v2_chunk_key_nonce,
+    derive_v2_file_version_id,
 };
 pub use envelope::{
     open_secret_value, scope_aad, seal_secret_value, DataEncryptionKey, KeyWrappingService,

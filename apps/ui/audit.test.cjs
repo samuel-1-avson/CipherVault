@@ -33,6 +33,7 @@ const context = vm.createContext({
   window: { addEventListener() {} },
   console: { warn() {}, error() {}, debug() {} },
   fetch: async () => response,
+  Headers, AbortController, DOMException,
 });
 vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
 (async () => {
@@ -129,7 +130,26 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert.equal(getElementById('sse-op1-lat').textContent, '12 ms');
   assert.equal(getElementById('sse-op2-lat').textContent, '18 ms');
   assert.equal(getElementById('sse-op3-lat').textContent, 'OFFLINE');
-  assert(getElementById('sse-token-status').textContent.includes('Slot 9C/9D Ready'));
+  assert.equal(getElementById('sse-token-status').textContent, 'PIV Smartcard Detected');
+  assert(!getElementById('sse-token-status').textContent.includes('Slot 9C/9D Ready'), 'presence alone does not establish slot readiness');
+  // A queued event from a previous workspace must not overwrite current telemetry.
+  const sources = [];
+  context.EventSource = class {
+    constructor(url) { this.url = url; this.listeners = new Map(); sources.push(this); }
+    addEventListener(name, callback) { this.listeners.set(name, callback); }
+    close() { this.closed = true; }
+  };
+  vm.runInContext('initSseStream()', context);
+  const previousSource = sources[0];
+  vm.runInContext('closeSseStream(); workspaceGeneration += 1; selectedWorkspace = "beta/vault.db"; initSseStream();', context);
+  const currentSource = sources[1];
+  currentSource.listeners.get('telemetry')({data: JSON.stringify({pending_uploads:{count:0, failed_count:0}})});
+  const currentBacklog = getElementById('pending-upload-status').textContent;
+  previousSource.listeners.get('telemetry')({data: JSON.stringify({pending_uploads:{count:99, failed_count:99}})});
+  previousSource.onerror();
+  assert.equal(getElementById('pending-upload-status').textContent, currentBacklog);
+  assert(!getElementById('sse-stream-text').textContent.includes('Reconnecting'));
+  vm.runInContext('closeSseStream()', context);
 
   // Regression tests for FastCDC Inspector & Slicing
   vm.runInContext(`renderFastCdcResults({
@@ -780,8 +800,14 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert.equal(getElementById('approvals-status').textContent, 'Approval queue is available only in a local private workspace.');
   context.fetch = stockFetch;
 
-  console.log('All Dashboard audit regressions, WCAG 2.1 AA accessibility checks, and 10x Web Enhancement tests passed!');
+  // These DOM contracts complement the actual browser CSP test; they are
+  // not a full accessibility certification.
+  assert(!/\bon\w+\s*=\s*["']/.test(shellHtml), 'HTML must not contain inline event attributes');
+  assert(!/\bstyle\s*=\s*["']/.test(shellHtml), 'HTML layouts must live in the stylesheet');
+  vm.runInContext(`openSnapshotInspector({ snapshot_id_hex: 'aa', parent_ids_hex: [], signature_verified: false })`, context);
+  assert(getElementById('modal-inspector-body').innerHTML.includes('Signature not verified'));
+  assert(!getElementById('modal-inspector-body').innerHTML.includes('Ed25519 signature verified'));
+  vm.runInContext(`openSnapshotInspector({ snapshot_id_hex: 'aa', parent_ids_hex: [], signature_verified: true })`, context);
+  assert(getElementById('modal-inspector-body').innerHTML.includes('Ed25519 signature verified'));
+  console.log('Dashboard behavior, DOM, and accessibility contract regressions passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
-
-
-

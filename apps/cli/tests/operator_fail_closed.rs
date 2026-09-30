@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use std::sync::Arc;
 
 use axum::{
@@ -12,10 +14,11 @@ use ciphervault_storage::MultiOperatorPool;
 #[tokio::test]
 async fn unavailable_operator_key_prevents_receipt_acceptance() {
     let root = std::env::temp_dir().join(format!("cv-key-failure-{}", rand::random::<u128>()));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         "test".into(),
         root.clone(),
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
     let app = Router::new()
         .route(

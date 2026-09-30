@@ -135,7 +135,7 @@ impl Harness {
             slot,
             operator_id,
         ));
-        let state = Arc::new(OperatorState::new(
+        let state = Arc::new(legacy_state(
             operator_id.to_string(),
             dir.clone(),
             generate_signing_key(),
@@ -241,7 +241,7 @@ impl Harness {
             slot,
             tag,
         ));
-        let state = Arc::new(OperatorState::new(
+        let state = Arc::new(legacy_state(
             operator_id.to_string(),
             dir.clone(),
             generate_signing_key(),
@@ -921,8 +921,9 @@ async fn case_peer_discovery_expands_pool(h: Harness) {
     let mut pool = MultiOperatorPool::from_clients(vec![client]);
     assert_eq!(pool.endpoints(), vec![endpoint]);
     let added = pool.discover_and_expand_peers().await.unwrap();
-    assert_eq!(added, 1);
-    assert_eq!(pool.clients().len(), 2);
+    // A self-signed announcement cannot enroll a new trust root.
+    assert_eq!(added, 0);
+    assert_eq!(pool.clients().len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -999,3 +1000,17 @@ all_transports!(
     pool_replicate_end_to_end_p2p,
     case_pool_replicate_end_to_end
 );
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
+}

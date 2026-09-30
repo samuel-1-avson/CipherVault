@@ -50,7 +50,7 @@ async fn boot_with(
     bootstrap_signer_hex: Option<String>,
 ) -> Result<TestNode, ciphervault_operator::swarm::SwarmError> {
     let dir = fresh_dir(tag);
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         format!("boot-{tag}"),
         dir.clone(),
         generate_signing_key(),
@@ -205,4 +205,18 @@ async fn half_configured_list_refuses_to_boot() {
         err.to_string().contains("together"),
         "unexpected error: {err}"
     );
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

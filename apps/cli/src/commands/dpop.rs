@@ -204,12 +204,10 @@ mod tests {
         assert!(now.abs_diff(timestamp) <= 5);
     }
 
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Sets `DPOP_KEY_ENV` for `f`, then restores the prior value.
     /// Serialized: parallel tests share one process environment.
     fn with_dpop_key<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _lock = ENV_GUARD.lock().unwrap();
+        let _lock = crate::util::TEST_PROCESS_STATE.blocking_lock();
         let prior = std::env::var(DPOP_KEY_ENV).ok();
         match value {
             Some(set) => std::env::set_var(DPOP_KEY_ENV, set),

@@ -76,6 +76,23 @@ pub async fn post_account(
 pub async fn get_capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "service": "ciphervault-account",
+        "scoped_auth": {
+            "credential_issuance_requires_recent_key_or_passkey": true,
+            "step_up_max_age_seconds": crate::guards::STEP_UP_MAX_AGE_SECONDS,
+            "workload_branch_attestation": false,
+            "explicit_human_production_elevation": true,
+            "session_bound_scope_tokens": true,
+            "strong_session_means_fresh_key_possession": true,
+            "strong_session_is_not_an_mfa_claim": true,
+        },
+        "rotation": { "manual_replacement": true, "provider_verification": false },
+        "repository_provider_verification": false,
+        "atomic_scope_materialization": {"max_names":100, "max_value_bytes":131072, "revision_pinning":true},
+        "versioned_local_kek": true,
+        "kek_rewrap": "audited_fresh_human_admin",
+        "external_kms": false,
+        "hosted_scoped_secrets_server_decrypted": true,
+        "totp_enforced_second_factor": false,
         "protocol_version": 1,
         "account_key_login": true,
         "account_signed_device_enrollment": true,

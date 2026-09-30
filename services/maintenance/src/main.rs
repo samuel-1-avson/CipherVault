@@ -1,10 +1,12 @@
 use anyhow::Result;
 use ciphervault_maintenance::db::MaintenanceDb;
+use ciphervault_maintenance::scheduler::{read_inventory, run_inventory_job};
 use ciphervault_storage::client::OperatorClient;
 use clap::Parser;
 use colored::*;
 use std::path::PathBuf;
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(name = "ciphervault-maintenance")]
@@ -45,12 +47,45 @@ struct Cli {
         help = "Print fleet metrics in Prometheus exposition format and exit"
     )]
     metrics: bool,
+
+    #[arg(
+        long,
+        help = "Register a trusted public recovery inventory JSON and exit"
+    )]
+    register_inventory: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Optional enrolled device signing key file (32 raw bytes) for repair and renewal"
+    )]
+    signing_key: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let db = MaintenanceDb::open(&cli.db)?;
+
+    if let Some(path) = &cli.register_inventory {
+        let inventory = read_inventory(path)?;
+        db.store_inventory(&inventory)?;
+        println!(
+            "Registered verified inventory for {}",
+            hex::encode(inventory.set.locator)
+        );
+        return Ok(());
+    }
+    let signing_key = cli
+        .signing_key
+        .as_ref()
+        .map(|path| -> Result<ed25519_dalek::SigningKey> {
+            let bytes = Zeroizing::new(std::fs::read(path)?);
+            let key: &[u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                anyhow::anyhow!("Signing key file must contain exactly 32 raw bytes")
+            })?;
+            Ok(ed25519_dalek::SigningKey::from_bytes(key))
+        })
+        .transpose()?;
 
     // Handle immediate CLI commands
     if let Some(locator) = cli.register_vault {
@@ -167,13 +202,16 @@ async fn main() -> Result<()> {
         "\nDaemon running. Press Ctrl+C to terminate.\n".dimmed()
     );
 
-    let clients: Vec<OperatorClient> = cli
+    let mut clients: Vec<OperatorClient> = cli
         .operators
         .iter()
         .map(|url| OperatorClient::new(url.clone()))
         .collect();
+    clients.sort_by(|a, b| a.endpoint().cmp(b.endpoint()));
+    clients.dedup_by(|a, b| a.endpoint() == b.endpoint());
 
-    let mut interval = tokio::time::interval(Duration::from_secs(cli.interval_secs));
+    let mut interval = tokio::time::interval(Duration::from_secs(cli.interval_secs.max(1)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -191,7 +229,7 @@ async fn main() -> Result<()> {
                             let _ = db.update_operator_health(client.endpoint(), latency, true);
                             println!(
                                 "  {} {} ({}) — {}ms — terms: '{}'",
-                                "[HEALTHY]".green(),
+                                "[REACHABLE]".green(),
                                 info.operator_id.yellow(),
                                 client.endpoint(),
                                 latency,
@@ -213,64 +251,27 @@ async fn main() -> Result<()> {
                 // Audit all tracked vaults from SQLite database
                 let tracked_vaults = db.list_vaults().unwrap_or_default();
                 for vault in &tracked_vaults {
-                    let mut locator_bytes = [0u8; 32];
-                    if let Ok(b) = hex::decode(&vault.locator_hex) {
-                        if b.len() == 32 {
-                            locator_bytes.copy_from_slice(&b);
-                        }
-                    }
-
-                    let mut copies_found = 0;
-                    for client in &clients {
-                        if let Ok(records) = client.get_recovery_records(&locator_bytes).await {
-                            if !records.is_empty() {
-                                copies_found += 1;
-                            }
-                        }
-                    }
-
-                    let is_healthy = !clients.is_empty()
-                        && reachable >= vault.replica_count
-                        && copies_found >= vault.replica_count;
-                    let details = format!(
-                        r#"{{"copies_found": {}, "target_replicas": {}, "operators_scanned": {}, "operators_online": {}}}"#,
-                        copies_found, vault.replica_count, clients.len(), reachable
-                    );
-                    let _ = db.record_audit(
-                        &vault.locator_hex,
-                        is_healthy,
-                        copies_found,
-                        0,
-                        &details,
-                    );
-
-                    if is_healthy {
-                        println!(
-                            "  {} Vault {} [{}] replicated on {}/{} operators",
-                            "[VAULT OK]".green(),
-                            vault.locator_hex[..12].yellow(),
-                            vault.label,
-                            copies_found,
-                            clients.len()
-                        );
-                    } else if clients.is_empty() || reachable == 0 {
-                        println!(
-                            "  {} Vault {} [{}] unreachable (no online operators)",
-                            "[VAULT OFFLINE]".red().bold(),
-                            vault.locator_hex[..12].yellow(),
-                            vault.label
-                        );
-                    } else {
-                        println!(
-                            "  {} Vault {} [{}] replication degraded ({}/{} copies on {}/{} online ops)",
-                            "[VAULT DEGRADED]".red().bold(),
-                            vault.locator_hex[..12].yellow(),
-                            vault.label,
-                            copies_found,
-                            vault.replica_count,
-                            reachable,
-                            clients.len()
-                        );
+                    let now = chrono::Utc::now().timestamp().max(0) as u64;
+                    if !db.job_due(&vault.locator_hex, now)? { continue; }
+                    let Some(mut inventory) = db.get_inventory(&vault.locator_hex)? else {
+                        db.record_unverified(&vault.locator_hex, r#"{"verification":"unverified","reason":"trusted recovery inventory required"}"#)?;
+                        db.record_job_result(&vault.locator_hex, cli.interval_secs, Some("Trusted recovery inventory required"))?;
+                        println!("  [UNVERIFIED] Vault {} [{}]: register a trusted inventory to verify recovery", &vault.locator_hex[..12], vault.label);
+                        continue;
+                    };
+                    match run_inventory_job(&db, &mut inventory, signing_key.as_ref()).await {
+                        Ok(report) => {
+                            let error = (!report.healthy).then_some("Recovery closure or discovery deficit remains");
+                            db.record_job_result(&vault.locator_hex, cli.interval_secs, error)?;
+                            println!("  [{}] Vault {} [{}]: {}/{} distinct complete replicas, {} lost objects",
+                                if report.healthy { "CLOSURE VERIFIED" } else { "DEGRADED" }, &vault.locator_hex[..12], vault.label,
+                                report.recoverable_operators.len(), report.required_replicas, report.objects.lost_count);
+                        },
+                        Err(error) => {
+                            db.record_unverified(&vault.locator_hex, &serde_json::json!({"verification":"unverified", "error":error.to_string()}).to_string())?;
+                            db.record_job_result(&vault.locator_hex, cli.interval_secs, Some(&error.to_string()))?;
+                            println!("  [UNVERIFIED] Vault {}: {}", &vault.locator_hex[..12], error);
+                        },
                     }
                 }
 
@@ -281,7 +282,7 @@ async fn main() -> Result<()> {
                     );
                 } else if reachable == clients.len() {
                     println!(
-                        "  {} Cluster quorum is 100% healthy ({}/{} online)\n",
+                        "  {} Cluster reachable ({}/{} online); vault recovery status is reported separately\n",
                         "[STATUS]".cyan(),
                         reachable,
                         clients.len()

@@ -1,26 +1,26 @@
 class Ciphervault < Formula
   desc "Decentralized, zero-knowledge encrypted version control for confidential files"
   homepage "https://github.com/samuel-1-avson/CipherVault"
-  version "1.0.25"
+  version "1.0.26"
   license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.25/ciphervault-v1.0.25-aarch64-apple-darwin.tar.gz"
-      sha256 "341242bb0c4a4a3af645af954dd8969ee73c988288f59ab880251477e5d8018f"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.26/ciphervault-v1.0.26-aarch64-apple-darwin.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.25/ciphervault-v1.0.25-x86_64-apple-darwin.tar.gz"
-      sha256 "2fe3bb734bb252243975fb3ca0c20a90d98e695a6aabfc9518be004d98436d84"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.26/ciphervault-v1.0.26-x86_64-apple-darwin.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.25/ciphervault-v1.0.25-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "57ea674802572421837c03384717633fd00cc56c1661da1a7be23be3a9d1b7db"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.26/ciphervault-v1.0.26-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.25/ciphervault-v1.0.25-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "f68fba1d772ab9fe0d554e3c5cdbba4163ce310a65c90bfd23be20888c71ab29"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.26/ciphervault-v1.0.26-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 

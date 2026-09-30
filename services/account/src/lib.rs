@@ -1,8 +1,9 @@
 //! Durable CipherVault control-plane account service.
 //!
 //! This service stores account metadata, enrolled device records, vault links,
-//! and revocable sessions. Vault plaintext and vault private keys never enter
-//! the service. Browser WebAuthn registration and assertion verification are
+//! and revocable sessions. Original file-backup vault plaintext and vault
+//! private keys stay on clients. The hosted scoped-secret plane receives and
+//! decrypts secret values under a server-held KEK. Browser WebAuthn registration and assertion verification are
 //! supported for `none` attestation with Ed25519 and ES256 credentials, and
 //! successful logins can use an HttpOnly managed-session cookie. The
 //! account-key ceremony remains the explicit bootstrap/recovery path.
@@ -20,12 +21,14 @@ mod accounts;
 mod audit_chain;
 mod db;
 mod devices;
+pub mod disaster_recovery;
 mod dpop;
 mod error;
 mod grants;
 mod grants_routes;
 mod guards;
 mod http;
+mod key_lifecycle;
 mod memberships;
 mod migration_ledger;
 mod migration_routes;
@@ -36,6 +39,7 @@ mod recovery;
 mod rotation;
 mod scope_tokens;
 mod scoped;
+mod scoped_enhancements;
 mod secret_routes;
 mod secrets;
 mod sessions;
@@ -58,6 +62,7 @@ use http::*;
 use memberships::*;
 use migration_routes::*;
 use recovery::*;
+use scoped_enhancements::*;
 use secret_routes::*;
 use sessions::*;
 use state::*;
@@ -110,7 +115,12 @@ pub fn create_router(state: AccountState) -> axum::Router {
         .map(|origins| {
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(origins))
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PATCH,
+                    axum::http::Method::DELETE,
+                ])
                 .allow_headers([
                     axum::http::header::AUTHORIZATION,
                     axum::http::header::CONTENT_TYPE,
@@ -210,6 +220,14 @@ pub fn create_router(state: AccountState) -> axum::Router {
         .route(
             "/v1/projects/:project_id/environments/:environment_id/secrets/:name",
             get(get_secret_value_route),
+        )
+        .route(
+            "/v1/projects/:project_id/environments/:environment_id/materialize",
+            post(post_materialize),
+        )
+        .route(
+            "/v1/projects/:project_id/keys/rewrap",
+            post(post_rewrap_keys),
         )
         .route("/v1/projects/:project_id/secrets", get(get_secrets))
         .route(
@@ -313,6 +331,7 @@ pub fn create_router(state: AccountState) -> axum::Router {
     router
         .layer(cors)
         .layer(axum::middleware::from_fn(csrf_origin_guard))
+        .layer(axum::middleware::from_fn(response_privacy_headers))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         // Outermost: added last so a panic anywhere below becomes a 500
         // envelope instead of a dropped connection.
@@ -378,6 +397,10 @@ mod tests {
                 (&outsider_token, &outsider, "device", Some("99".repeat(32))),
                 (&recovery_token, &owner, "recovery", None),
             ] {
+                if let Some(device_id) = device.as_deref() {
+                    db.execute("INSERT INTO devices(account_id, device_id_hex, label, public_key_hex, enrolled_at_utc)
+                        VALUES(?1, ?2, 'test', ?2, 1)", params![account_id, device_id]).unwrap();
+                }
                 db.execute(
                     "INSERT INTO sessions(token_hash_hex, account_id, device_id_hex, credential_id_hex, session_kind, issued_at_utc, expires_at_utc)
                      VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",

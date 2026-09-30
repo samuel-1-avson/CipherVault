@@ -1,6 +1,6 @@
 # CipherVault - verified Windows installer/updater
 # Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.25 (pin, skips the
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.26 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
 # node = CLI+operator+maintenance for guided `ciphervault node setup`),
@@ -9,6 +9,58 @@
 
 $ErrorActionPreference = "Stop"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+
+function Convert-ReleaseHexToBytes {
+    param([string]$Hex)
+    if ($Hex -cnotmatch '^[0-9a-f]+$' -or ($Hex.Length % 2) -ne 0) { throw "Malformed release signature hex." }
+    $decoded = New-Object byte[] ($Hex.Length / 2)
+    for ($index = 0; $index -lt $decoded.Length; $index++) { $decoded[$index] = [Convert]::ToByte($Hex.Substring($index * 2, 2), 16) }
+    return ,$decoded
+}
+
+function Assert-CipherVaultReleaseSignature {
+    param([string]$SumsPath, [string]$SignaturePath, [string]$ExpectedTag, [string]$Scratch)
+    $opensslCommand = Get-Command openssl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $opensslCommand) { throw "OpenSSL 3 with Ed25519 support is required. Install OpenSSL from a trusted package source, add it to PATH, and retry. Downloaded CipherVault binaries are never used to verify themselves." }
+    $opensslVersion = & $opensslCommand.Source version
+    if ($LASTEXITCODE -ne 0 -or $opensslVersion -cnotmatch '^OpenSSL ([3-9]|[1-9][0-9]+)\.') { throw "OpenSSL 3 or newer is required for Ed25519 release verification. Install it from a trusted package source, add it to PATH, and retry." }
+    if ($ExpectedTag -cnotmatch '^[A-Za-z0-9._-]{1,128}$') { throw "Invalid release tag." }
+    $lines = [System.IO.File]::ReadAllText($SignaturePath).TrimEnd([char[]]"`r`n").Split("`n")
+    if ($lines.Count -ne 4) { throw "Malformed release signature envelope." }
+    if ($lines[1] -cne "tag: $ExpectedTag") { throw "Release signature tag mismatch." }
+    if (-not $lines[2].StartsWith('key-id: ') -or -not $lines[3].StartsWith('signature: ')) { throw "Malformed release signature fields." }
+    $keyId = $lines[2].Substring(8)
+    $signatureHex = $lines[3].Substring(11)
+    if ($keyId -cnotmatch '^[0-9a-f]{16}$' -or $signatureHex -cnotmatch '^[0-9a-f]{128}$') { throw "Malformed release signature hex." }
+    # Independently pinned trust root; keep aligned with commands/update.rs.
+    $publicKey = switch -CaseSensitive ($keyId) {
+        'b625994c0c3f53a6' { 'b625994c0c3f53a6c40b0eadebe7ba1f5199e9f829a4bf20e064ae7aaab22c1e' }
+        default { throw "Untrusted release signing key." }
+    }
+    $sumsBytes = [System.IO.File]::ReadAllBytes($SumsPath)
+    if ($lines[0] -ceq 'CIPHERVAULT-RELEASE-SIG-V2') {
+        $prefix = [Text.Encoding]::UTF8.GetBytes("CIPHERVAULT-RELEASE-SIG-V2`ntag: $ExpectedTag`n")
+        $message = New-Object byte[] ($prefix.Length + $sumsBytes.Length)
+        [Array]::Copy($prefix, 0, $message, 0, $prefix.Length)
+        [Array]::Copy($sumsBytes, 0, $message, $prefix.Length, $sumsBytes.Length)
+    } elseif ($lines[0] -ceq 'CIPHERVAULT-RELEASE-SIG-V1') {
+        if ($env:CIPHERVAULT_ALLOW_LEGACY_RELEASE_SIGNATURE -ne '1' -or [string]::IsNullOrWhiteSpace($env:CIPHERVAULT_VERSION)) { throw "V1 signatures require an explicitly pinned historical CIPHERVAULT_VERSION and CIPHERVAULT_ALLOW_LEGACY_RELEASE_SIGNATURE=1." }
+        $message = $sumsBytes
+    } else { throw "Unsupported release signature version." }
+    $messagePath = Join-Path $Scratch 'release-message.bin'
+    $publicKeyPath = Join-Path $Scratch 'release-public-key.der'
+    $signatureBytesPath = Join-Path $Scratch 'release-signature.bin'
+    [System.IO.File]::WriteAllBytes($messagePath, $message)
+    [System.IO.File]::WriteAllBytes($publicKeyPath, (Convert-ReleaseHexToBytes "302a300506032b6570032100$publicKey"))
+    [System.IO.File]::WriteAllBytes($signatureBytesPath, (Convert-ReleaseHexToBytes $signatureHex))
+    & $opensslCommand.Source pkeyutl -verify -pubin -inkey $publicKeyPath -keyform DER -rawin -in $messagePath -sigfile $signatureBytesPath *> $null
+    if ($LASTEXITCODE -ne 0) { throw "Release signature verification failed; refusing installation." }
+}
+
+if ($env:CIPHERVAULT_INSTALLER_VERIFY_ONLY -eq '1') {
+    Assert-CipherVaultReleaseSignature -SumsPath $env:CIPHERVAULT_VERIFY_SUMS -SignaturePath $env:CIPHERVAULT_VERIFY_SIGNATURE -ExpectedTag $env:CIPHERVAULT_VERIFY_TAG -Scratch $env:CIPHERVAULT_VERIFY_SCRATCH
+    return
+}
 
 $Repo = "samuel-1-avson/CipherVault"
 $Target = "x86_64-pc-windows-msvc"
@@ -120,6 +172,7 @@ if ([string]::IsNullOrWhiteSpace($Tag)) {
         throw "Could not read release $Tag : $($_.Exception.Message). $PrivateHint"
     }
 }
+if ($Tag -cnotmatch '^[A-Za-z0-9._-]{1,128}$') { throw "Invalid release tag." }
 $PkgName = "ciphervault-$Tag-$Target.zip"
 $SumsName = "SHA256SUMS.txt"
 # Assets download through the API asset endpoint (Accept: octet-stream):
@@ -130,8 +183,11 @@ $pkgAsset = @($release.assets) | Where-Object { $_.name -eq $PkgName } | Select-
 if ($null -eq $pkgAsset) { throw "Release $Tag has no Windows x64 archive ($PkgName)." }
 $sumsAsset = @($release.assets) | Where-Object { $_.name -eq $SumsName } | Select-Object -First 1
 if ($null -eq $sumsAsset) { throw "Release $Tag has no $SumsName." }
+$signatureAsset = @($release.assets) | Where-Object { $_.name -eq 'SHA256SUMS.txt.sig' } | Select-Object -First 1
+if ($null -eq $signatureAsset) { throw "Release $Tag is unsigned (missing SHA256SUMS.txt.sig)." }
 $ArchiveUrl = "https://api.github.com/repos/$Repo/releases/assets/$($pkgAsset.id)"
 $SumsUrl = "https://api.github.com/repos/$Repo/releases/assets/$($sumsAsset.id)"
+$SignatureUrl = "https://api.github.com/repos/$Repo/releases/assets/$($signatureAsset.id)"
 
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host "  Installing CipherVault $Tag (Windows x64)" -ForegroundColor Green
@@ -148,11 +204,15 @@ try {
         throw "Could not download ${PkgName}: $($_.Exception.Message). $PrivateHint"
     }
     try {
-        $sumsResponse = Invoke-WebRequest -Headers $DlHeaders -Uri $SumsUrl -UseBasicParsing
+        $sumsPath = Join-Path $tempRoot 'SHA256SUMS.txt'
+        Invoke-WebRequest -Headers $DlHeaders -Uri $SumsUrl -OutFile $sumsPath -UseBasicParsing
     } catch {
         throw "Could not download SHA256SUMS.txt: $($_.Exception.Message). $PrivateHint"
     }
-    $sums = if ($sumsResponse.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($sumsResponse.Content) } else { [string]$sumsResponse.Content }
+    $signaturePath = Join-Path $tempRoot 'SHA256SUMS.txt.sig'
+    Invoke-WebRequest -Headers $DlHeaders -Uri $SignatureUrl -OutFile $signaturePath -UseBasicParsing
+    Assert-CipherVaultReleaseSignature -SumsPath $sumsPath -SignaturePath $signaturePath -ExpectedTag $Tag -Scratch $tempRoot
+    $sums = [System.IO.File]::ReadAllText($sumsPath)
     # Same rule as the in-app updater: first whitespace field is the hex
     # digest, second (minus an optional '*' binary marker) is the name.
     $expected = $null

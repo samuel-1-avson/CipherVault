@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_operator::{create_router, OperatorState};
 use ciphervault_recovery::{ApprovalAction, ApprovalChallenge, SignedApprovalReceipt};
@@ -6,10 +8,11 @@ use std::sync::Arc;
 async fn spawn_operator() -> (String, Arc<OperatorState>, tokio::task::JoinHandle<()>) {
     let dir = std::env::temp_dir().join(format!("cv-oob-auth-{}", rand::random::<u64>()));
     let signing_key = generate_signing_key();
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         "operator-gatekeeper".to_string(),
         dir,
         signing_key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

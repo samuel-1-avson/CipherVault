@@ -388,21 +388,32 @@ pub fn generate_diff_report(
 ) -> Result<DiffReport> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
-    let (_, _, _, epoch) = store.get_device_state()?;
-    let epoch_key = store.get_epoch_key(epoch)?;
+    let workspace_root = crate::util::get_workspace_root()?;
 
     // Helper to decrypt snapshot files into a map of (relative_path -> Vec<u8>)
-    let decrypt_snap = |snap_id: &[u8; 32]| -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+    let decrypt_snap = |snap_id: &[u8; 32]| -> Result<
+        std::collections::BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+    > {
         let (record, encrypted_manifest) = store.get_snapshot(snap_id)?;
-        let manifest_key = epoch_key.derive_manifest_key(record.epoch)?;
+        crate::util::verify_local_snapshot_record(&store, &record)?;
+        let epoch_key = store.get_epoch_key(record.epoch).with_context(|| {
+            format!(
+                "Epoch {} key is required for snapshot comparison",
+                record.epoch
+            )
+        })?;
+        let manifest_key = zeroize::Zeroizing::new(epoch_key.derive_manifest_key(record.epoch)?);
         let aad = [
             b"CipherVault-Manifest:",
             vault_id.as_slice(),
             &record.epoch.to_le_bytes(),
         ]
         .concat();
-        let manifest_bytes =
-            ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad)?;
+        let manifest_bytes = zeroize::Zeroizing::new(ciphervault_crypto::decrypt_chunk(
+            &manifest_key,
+            &encrypted_manifest,
+            &aad,
+        )?);
         let manifest: SnapshotManifest = from_canonical_cbor(&manifest_bytes)?;
 
         let mut needed_cids = Vec::new();
@@ -423,8 +434,11 @@ pub fn generate_diff_report(
         )?;
 
         let mut map = std::collections::BTreeMap::new();
-        for f in files {
-            map.insert(f.relative_path.replace('\\', "/"), f.plaintext);
+        for mut f in files {
+            map.insert(
+                f.relative_path.replace('\\', "/"),
+                zeroize::Zeroizing::new(std::mem::take(&mut f.plaintext)),
+            );
         }
         Ok(map)
     };
@@ -443,20 +457,22 @@ pub fn generate_diff_report(
         Ok(arr)
     };
 
-    let read_working_tree = || -> std::collections::BTreeMap<String, Vec<u8>> {
-        let mut map = std::collections::BTreeMap::new();
-        if let Ok(tracked) = store.list_tracked_files() {
-            for (p, _) in tracked {
-                let rel_str = p.display().to_string().replace('\\', "/");
-                if p.exists() {
-                    if let Ok(data) = fs::read(&p) {
-                        map.insert(rel_str, data);
+    let read_working_tree =
+        || -> std::collections::BTreeMap<String, zeroize::Zeroizing<Vec<u8>>> {
+            let mut map = std::collections::BTreeMap::new();
+            if let Ok(tracked) = store.list_tracked_files() {
+                for (p, _) in tracked {
+                    let rel_str = p.display().to_string().replace('\\', "/");
+                    let full_path = workspace_root.join(&p);
+                    if full_path.exists() {
+                        if let Ok(data) = fs::read(&full_path) {
+                            map.insert(rel_str, zeroize::Zeroizing::new(data));
+                        }
                     }
                 }
             }
-        }
-        map
-    };
+            map
+        };
 
     let get_head_cid = || -> Result<[u8; 32]> {
         let head = store.get_active_head()?.context(
@@ -595,10 +611,16 @@ pub fn generate_diff_report(
             }
         }
 
-        let old_bytes = old_files.get(&path).cloned().unwrap_or_default();
-        let new_bytes = new_files.get(&path).cloned().unwrap_or_default();
+        let old_bytes = old_files
+            .get(&path)
+            .map(|bytes| bytes.as_slice())
+            .unwrap_or_default();
+        let new_bytes = new_files
+            .get(&path)
+            .map(|bytes| bytes.as_slice())
+            .unwrap_or_default();
 
-        let file_rep = diff_file_bytes(&path, &old_bytes, &new_bytes, reveal);
+        let file_rep = diff_file_bytes(&path, old_bytes, new_bytes, reveal);
         report.add_file_report(file_rep);
     }
 

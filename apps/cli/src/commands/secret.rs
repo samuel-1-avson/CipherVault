@@ -8,7 +8,8 @@
 
 use anyhow::{bail, Context, Result};
 use rand::RngCore;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
+use zeroize::Zeroizing;
 
 use super::dpop::maybe_dpop;
 use super::scope::{
@@ -52,15 +53,26 @@ async fn session(
 
 /// Returns the flag value or securely prompts. Non-interactive callers
 /// must pass the flag (prompt failures name it).
-fn secret_value(flag: Option<&str>, what: &str) -> Result<String> {
+fn secret_value(flag: Option<&str>, stdin: bool, what: &str) -> Result<Zeroizing<String>> {
+    if stdin {
+        let mut value = Zeroizing::new(String::new());
+        std::io::stdin()
+            .take(65_537)
+            .read_to_string(&mut value)
+            .context("Secret stdin must be valid UTF-8")?;
+        if value.is_empty() || value.len() > 65_536 {
+            bail!("Secret stdin must contain 1 to 65536 bytes");
+        }
+        return Ok(value);
+    }
     if let Some(value) = flag.filter(|value| !value.is_empty()) {
-        return Ok(value.to_string());
+        return Ok(Zeroizing::new(value.to_string()));
     }
     // rpassword opens the console directly (CONIN$ on Windows), bypassing
     // stdin redirection: prompting without a terminal hangs instead of
     // failing, so refuse up front like `token pin` does.
     if !std::io::stdin().is_terminal() {
-        bail!("pass --value (no interactive prompt available)");
+        bail!("pass --value-stdin or --value (no interactive prompt available)");
     }
     rpassword::prompt_password(format!("{what}: "))
         .context("pass --value (no interactive prompt available)")
@@ -68,7 +80,7 @@ fn secret_value(flag: Option<&str>, what: &str) -> Result<String> {
             if value.is_empty() {
                 bail!("value must not be empty")
             } else {
-                Ok(value)
+                Ok(Zeroizing::new(value))
             }
         })
 }
@@ -126,6 +138,7 @@ pub(crate) async fn cmd_secret(sub: SecretSubcommand) -> Result<()> {
         SecretSubcommand::Set {
             name,
             value,
+            value_stdin,
             secret_type,
             description,
             tag,
@@ -143,10 +156,10 @@ pub(crate) async fn cmd_secret(sub: SecretSubcommand) -> Result<()> {
                 token.as_deref(),
             )
             .await?;
-            let value = secret_value(value.as_deref(), "Value")?;
+            let value = secret_value(value.as_deref(), value_stdin, "Value")?;
             let mut payload = serde_json::json!({
                 "name": name.trim(),
-                "value": value,
+                "value": value.as_str(),
             });
             if let Some(kind) = secret_type
                 .map(|kind| kind.trim().to_string())
@@ -464,6 +477,7 @@ pub(crate) async fn cmd_secret(sub: SecretSubcommand) -> Result<()> {
             name,
             id,
             value,
+            value_stdin,
             reason,
             idempotency_key,
             project,
@@ -480,9 +494,9 @@ pub(crate) async fn cmd_secret(sub: SecretSubcommand) -> Result<()> {
             .await?;
             let secret_id =
                 resolve_secret_id(&session, "secret list", name.as_deref(), id.as_deref()).await?;
-            let value = secret_value(value.as_deref(), "New value")?;
+            let value = secret_value(value.as_deref(), value_stdin, "New value")?;
             let payload = serde_json::json!({
-                "new_value": value,
+                "new_value": value.as_str(),
                 "idempotency_key": idempotency_key.unwrap_or_else(random_idempotency_key),
                 "reason": reason.unwrap_or_else(|| "operator rotate".to_string()),
             });

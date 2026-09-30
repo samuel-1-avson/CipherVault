@@ -570,6 +570,69 @@ async fn secret_crud_goldens() {
 }
 
 #[tokio::test]
+async fn secret_stdin_preserves_exact_bytes_and_rejects_oversized_input() {
+    use tokio::io::AsyncWriteExt;
+    let dir = fresh_dir("secret-stdin");
+    let (endpoint, stub) = start_stub().await;
+    let args = [
+        "secret",
+        "set",
+        "DATABASE_URL",
+        "--value-stdin",
+        "--project",
+        "shop",
+        "--env",
+        "staging",
+        "--token",
+        "t",
+    ];
+    for (input, accepted) in [
+        ("  synthetic stdin value\n".to_string(), true),
+        ("x".repeat(65_537), false),
+    ] {
+        let mut command = scoped_command(&dir, Some(&endpoint), &args, &[]);
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .await
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert_eq!(
+            output.status.success(),
+            accepted,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&input));
+        if accepted {
+            let request = last_target_containing(&stub, "/environments/env-1/secrets");
+            let body: serde_json::Value =
+                serde_json::from_str(request.body.as_deref().unwrap()).unwrap();
+            assert_eq!(body["value"], input);
+        } else {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("65536"));
+        }
+    }
+    assert_eq!(
+        stub.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == "POST" && request.target.ends_with("/secrets"))
+            .count(),
+        1
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn scope_precedence_flags_beat_env_beat_file() {
     let dir = fresh_dir("precedence");
     let (endpoint, stub) = start_stub().await;

@@ -20,6 +20,8 @@ pub struct OperatorClient {
     vault_scope: SharedScope,
     account_identity: SharedIdentity,
     trace_id: SharedScope,
+    pinned_key: Arc<Mutex<Option<[u8; 32]>>>,
+    pin_error: Arc<Mutex<Option<String>>>,
 }
 
 impl OperatorClient {
@@ -52,6 +54,8 @@ impl OperatorClient {
             vault_scope,
             account_identity,
             trace_id,
+            pinned_key: Arc::new(Mutex::new(None)),
+            pin_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -65,6 +69,8 @@ impl OperatorClient {
             vault_scope: Arc::new(Mutex::new(None)),
             account_identity: Arc::new(Mutex::new(None)),
             trace_id: Arc::new(Mutex::new(None)),
+            pinned_key: Arc::new(Mutex::new(None)),
+            pin_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -132,13 +138,58 @@ impl OperatorClient {
         &self.endpoint
     }
 
+    pub fn new_pinned(endpoint: String, signing_key: [u8; 32]) -> Self {
+        let client = Self::new(endpoint);
+        client.pin_signing_key(signing_key);
+        client
+    }
+
+    /// Pin an independently enrolled operator key before network operations.
+    pub fn pin_signing_key(&self, key: [u8; 32]) {
+        if let Ok(mut pinned) = self.pinned_key.lock() {
+            *pinned = Some(key);
+        }
+        if let Ok(mut error) = self.pin_error.lock() {
+            *error = None;
+        }
+    }
+
+    pub(crate) fn reject_identity_pin(&self, error: String) {
+        if let Ok(mut current) = self.pin_error.lock() {
+            *current = Some(error);
+        }
+    }
+
+    pub fn reject_configuration(&self, error: impl Into<String>) {
+        self.reject_identity_pin(error.into());
+    }
+
     pub async fn get_info(&self) -> Result<OperatorInfo, StorageError> {
+        if let Some(error) = self.pin_error.lock().ok().and_then(|error| error.clone()) {
+            return Err(StorageError::ServerError {
+                status: 502,
+                message: error,
+            });
+        }
         let info = self.transport.fetch_info().await?;
-        if !info.identity_signature_hex.is_empty() && !info.verify_identity_signature() {
+        if !info.verify_identity_signature()
+            || info.identity_expires_at_utc <= chrono::Utc::now().timestamp().max(0) as u64
+        {
             return Err(StorageError::ServerError {
                 status: 502,
                 message: "Operator identity signature verification failed".into(),
             });
+        }
+        if let Some(key) = self.pinned_key.lock().ok().and_then(|key| *key) {
+            if !info
+                .operator_signing_pk_hex
+                .eq_ignore_ascii_case(&hex::encode(key))
+            {
+                return Err(StorageError::ServerError {
+                    status: 502,
+                    message: "Operator identity differs from its enrolled key".into(),
+                });
+            }
         }
         Ok(info)
     }

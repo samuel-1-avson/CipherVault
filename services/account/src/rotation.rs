@@ -1,7 +1,7 @@
 //! Secret rotation core (Phase 4, T-402).
 //!
 //! Verify-before-commit rotation: the new credential passes liveness
-//! verification before any write transaction opens, so a failed rotation
+//! verification before version writes, so a failed rotation
 //! leaves the current version live (fail-safe). Concurrent rotates serialize
 //! on an IMMEDIATE write transaction; retries carry idempotency keys and
 //! replay the original outcome instead of minting duplicate versions.
@@ -20,20 +20,29 @@ use crate::state::now_utc;
 use crate::util::random_hex;
 
 /// Liveness check for a candidate credential (provider ping, login probe).
-/// Production callers must supply a real check; [`NoopVerifier`] exists for
-/// tests and for secret types with no live endpoint.
+/// Provider-verified rotation requires a real check. Manual replacement uses
+/// [`ManualReplacementVerifier`] and explicitly reports no provider evidence.
 pub trait RotationVerifier {
     fn verify(&self, plaintext: &[u8]) -> bool;
-}
-
-/// Always-true verifier for tests and unverifiable secret types.
-pub struct NoopVerifier;
-
-impl RotationVerifier for NoopVerifier {
-    fn verify(&self, _plaintext: &[u8]) -> bool {
+    fn provider_verified(&self) -> bool {
         true
     }
 }
+
+/// Explicit manual replacement. It provides no provider liveness evidence.
+pub struct ManualReplacementVerifier;
+
+impl RotationVerifier for ManualReplacementVerifier {
+    fn verify(&self, _plaintext: &[u8]) -> bool {
+        true
+    }
+    fn provider_verified(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+use ManualReplacementVerifier as NoopVerifier;
 
 /// Rotation request parameters.
 pub struct RotateSecret<'a> {
@@ -50,6 +59,7 @@ pub struct RotateOutcome {
     pub secret_id: String,
     pub previous_version: i64,
     pub current_version: i64,
+    pub provider_verified: bool,
 }
 
 /// Rotates a secret to a new verified value. Idempotent per
@@ -63,22 +73,37 @@ pub(crate) fn rotate_secret(
     attrs: &RequestAttributes,
     input: &RotateSecret<'_>,
 ) -> Result<RotateOutcome, SecretError> {
+    // Acquire the writer reservation before reading either the current
+    // version or the receipt; separate processes cannot plan the same version.
+    let txn = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let db = &txn;
     let view = resolve_secret(db, input.secret_id)?;
     let target = target_from_view(&view);
     authorize(db, claims, ScopedAction::RotateSecret, &target, attrs)
         .map_err(|_| SecretError::Denied)?;
-    if input.idempotency_key.trim().is_empty() {
+    if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 128 {
         return Err(SecretError::Invalid(
-            "idempotency_key must not be empty".to_string(),
+            "idempotency_key must be 1-128 characters".to_string(),
         ));
     }
-    if let Some(state) = existing_job_state(db, input.secret_id, input.idempotency_key)? {
-        if state == "committed" {
-            let current = resolve_secret(db, input.secret_id)?.current_version;
+    let request_digest = rotation_request_digest(claims, input, verifier.provider_verified());
+    if let Some(job) = existing_job(db, input.secret_id, input.idempotency_key)? {
+        if job.digest.as_deref() != Some(request_digest.as_slice()) {
+            return Err(SecretError::IdempotencyConflict);
+        }
+        if job.state == "committed" {
+            let (Some(previous_version), Some(current_version), Some(provider_verified)) = (
+                job.previous_version,
+                job.current_version,
+                job.provider_verified,
+            ) else {
+                return Err(SecretError::IdempotencyConflict);
+            };
             return Ok(RotateOutcome {
                 secret_id: input.secret_id.to_string(),
-                previous_version: current - 1,
-                current_version: current,
+                previous_version,
+                current_version,
+                provider_verified,
             });
         }
         db.execute(
@@ -87,14 +112,26 @@ pub(crate) fn rotate_secret(
         )?;
     }
     if !verifier.verify(input.new_value.expose()) {
-        record_job(db, input.secret_id, "rolled_back", input, now_utc())?;
+        record_job(
+            db,
+            input.secret_id,
+            "rolled_back",
+            input,
+            &request_digest,
+            now_utc(),
+        )?;
+        txn.commit()?;
         return Err(SecretError::VerificationFailed);
     }
     let tenant_raw = id16(&view.tenant_id, "tenant")?;
     let project_raw = id16(&view.project_id, "project")?;
     let env_raw = id16(&view.environment_id, "environment")?;
     let secret_raw = id16(&view.secret_id, "secret")?;
-    let next_version = view.current_version + 1;
+    let next_version = view
+        .current_version
+        .checked_add(1)
+        .filter(|version| u32::try_from(*version).is_ok())
+        .ok_or_else(|| SecretError::Invalid("secret version limit reached".into()))?;
     let aad = scope_aad(
         &tenant_raw,
         &project_raw,
@@ -110,7 +147,7 @@ pub(crate) fn rotate_secret(
     wrapped_blob.extend_from_slice(&wrapped.blob);
     let digest = input.new_value.sha256().to_vec();
     let now = now_utc();
-    let txn = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::secrets::ensure_kek_row(&txn, kek_id, &view.tenant_id, &view.project_id, now)?;
     txn.execute(
         "INSERT INTO secret_versions(version_id, secret_id, version, encryption_key_id, nonce,
              ciphertext, value_sha256, wrapped_dek, created_by, created_at_utc)
@@ -135,14 +172,18 @@ pub(crate) fn rotate_secret(
     )?;
     txn.execute(
         "INSERT INTO secret_rotation_jobs(job_id, secret_id, state, idempotency_key, reason,
-                                           created_at_utc, updated_at_utc)
-         VALUES(?1, ?2, 'committed', ?3, ?4, ?5, ?5)",
+                                           created_at_utc, updated_at_utc, request_digest, previous_version, committed_version, provider_verified)
+         VALUES(?1, ?2, 'committed', ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9)",
         params![
             random_hex(16),
             input.secret_id,
             input.idempotency_key,
             input.reason,
             now,
+            request_digest,
+            view.current_version,
+            next_version,
+            verifier.provider_verified(),
         ],
     )?;
     audit_secret_event(
@@ -167,6 +208,7 @@ pub(crate) fn rotate_secret(
         secret_id: input.secret_id.to_string(),
         previous_version: view.current_version,
         current_version: next_version,
+        provider_verified: verifier.provider_verified(),
     })
 }
 
@@ -178,18 +220,51 @@ fn id16(hex_str: &str, what: &str) -> Result<[u8; 16], SecretError> {
     })
 }
 
-fn existing_job_state(
+struct RotationJob {
+    state: String,
+    digest: Option<Vec<u8>>,
+    previous_version: Option<i64>,
+    current_version: Option<i64>,
+    provider_verified: Option<bool>,
+}
+
+fn existing_job(
     db: &Connection,
     secret_id: &str,
     idempotency_key: &str,
-) -> Result<Option<String>, SecretError> {
+) -> Result<Option<RotationJob>, SecretError> {
     db.query_row(
-        "SELECT state FROM secret_rotation_jobs WHERE secret_id = ?1 AND idempotency_key = ?2",
+        "SELECT state, request_digest, previous_version, committed_version, provider_verified
+         FROM secret_rotation_jobs WHERE secret_id = ?1 AND idempotency_key = ?2",
         params![secret_id, idempotency_key],
-        |row| row.get(0),
+        |row| {
+            Ok(RotationJob {
+                state: row.get(0)?,
+                digest: row.get(1)?,
+                previous_version: row.get(2)?,
+                current_version: row.get(3)?,
+                provider_verified: row.get(4)?,
+            })
+        },
     )
     .optional()
     .map_err(SecretError::Db)
+}
+
+fn rotation_request_digest(
+    claims: &ScopeClaims,
+    input: &RotateSecret<'_>,
+    verified: bool,
+) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    // Encode with field boundaries; never persist a raw candidate value.
+    let encoded = serde_json::json!([
+        claims.principal_id,
+        input.new_value.sha256(),
+        input.reason,
+        verified
+    ]);
+    Sha256::digest(encoded.to_string().as_bytes()).to_vec()
 }
 
 fn record_job(
@@ -197,12 +272,13 @@ fn record_job(
     secret_id: &str,
     state: &str,
     input: &RotateSecret<'_>,
+    digest: &[u8],
     now: u64,
 ) -> Result<(), SecretError> {
     db.execute(
         "INSERT INTO secret_rotation_jobs(job_id, secret_id, state, idempotency_key, reason,
-                                           created_at_utc, updated_at_utc)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                                           created_at_utc, updated_at_utc, request_digest)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
         params![
             random_hex(16),
             secret_id,
@@ -210,6 +286,7 @@ fn record_job(
             input.idempotency_key,
             input.reason,
             now,
+            digest,
         ],
     )
     .map_err(SecretError::Db)?;
@@ -447,6 +524,27 @@ mod tests {
             },
         )
         .unwrap();
+        // A different rotation must never rewrite an earlier request receipt.
+        let later = rotate_secret(
+            &mut db,
+            &wrap,
+            KEK_ID,
+            &NoopVerifier,
+            &fixture.claims,
+            &RequestAttributes::default(),
+            &RotateSecret {
+                secret_id: &secret_id,
+                new_value: &SecretValue::from("v3"),
+                idempotency_key: "idem-8",
+                reason: "scheduled",
+                request_id: "req-later",
+            },
+        )
+        .unwrap();
+        assert_eq!(later.current_version, 3);
+        drop(db);
+        let reopened = crate::state::AccountState::open(&root).unwrap();
+        let mut db = reopened.connection().unwrap();
         let replay = rotate_secret(
             &mut db,
             &wrap,
@@ -456,7 +554,7 @@ mod tests {
             &RequestAttributes::default(),
             &RotateSecret {
                 secret_id: &secret_id,
-                new_value: &SecretValue::from("v2-other"),
+                new_value: &SecretValue::from("v2"),
                 idempotency_key: "idem-7",
                 reason: "scheduled",
                 request_id: "req-3",
@@ -471,7 +569,25 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(versions, 2);
+        assert_eq!(versions, 3);
+        let err = rotate_secret(
+            &mut db,
+            &wrap,
+            KEK_ID,
+            &NoopVerifier,
+            &fixture.claims,
+            &RequestAttributes::default(),
+            &RotateSecret {
+                secret_id: &secret_id,
+                new_value: &SecretValue::from("changed-request"),
+                idempotency_key: "idem-7",
+                reason: "scheduled",
+                request_id: "req-conflict",
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, SecretError::IdempotencyConflict));
+        assert_eq!(resolve_secret(&db, &secret_id).unwrap().current_version, 3);
         cleanup(root);
     }
 }

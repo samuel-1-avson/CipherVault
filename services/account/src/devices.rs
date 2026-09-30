@@ -24,6 +24,7 @@ use crate::{
 
 pub async fn post_device_challenge(
     State(state): State<AccountState>,
+    headers: HeaderMap,
     Path(account_id): Path<String>,
     Json(request): Json<DeviceChallengeRequest>,
 ) -> Response {
@@ -56,6 +57,10 @@ pub async fn post_device_challenge(
         }
         Err(error) => return service_error(error.into()),
         Ok(true) => {}
+    }
+    if let Err(failure) = crate::abuse::check_challenge_quota(&db, &headers, &account_id, now_utc())
+    {
+        return crate::abuse::quota_failure_response(failure);
     }
     if let Err(error) = db.execute(
         "INSERT INTO challenges(challenge_id, kind, account_id, device_id_hex, public_key_hex, nonce_hex, expires_at_utc)
@@ -235,6 +240,29 @@ pub async fn post_device_enrollment(
         enrolled_via_recovery = true;
     }
     let now = now_utc();
+    let previous_key: Option<String> = match db
+        .query_row(
+            "SELECT public_key_hex FROM devices
+        WHERE account_id = ?1 AND device_id_hex = ?2",
+            params![account_id, request.device_id_hex.to_ascii_lowercase()],
+            |row| row.get(0),
+        )
+        .optional()
+    {
+        Ok(value) => value,
+        Err(error) => return service_error(error.into()),
+    };
+    if previous_key.is_some_and(|key| !key.eq_ignore_ascii_case(&request.public_key_hex)) {
+        // Replacing an enrolled key must invalidate proof issued under the old
+        // key, including tokens and browser sessions tied to that device ID.
+        if let Err(error) = db.execute(
+            "UPDATE sessions SET revoked_at_utc = ?1
+            WHERE account_id = ?2 AND device_id_hex = ?3 AND revoked_at_utc IS NULL",
+            params![now, account_id, request.device_id_hex.to_ascii_lowercase()],
+        ) {
+            return service_error(error.into());
+        }
+    }
     if let Err(error) = db.execute(
         "INSERT INTO devices(account_id, device_id_hex, public_key_hex, label, enrolled_at_utc, last_seen_at_utc, revoked_at_utc)
          VALUES(?1, ?2, ?3, ?4, ?5, ?5, NULL)
@@ -309,6 +337,9 @@ pub async fn post_device_revoke(
         Ok(session) => session,
         Err(response) => return response,
     };
+    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     if session.account_id != account_id {
         return error_response(
             StatusCode::FORBIDDEN,

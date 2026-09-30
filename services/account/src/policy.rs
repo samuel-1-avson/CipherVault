@@ -91,6 +91,13 @@ pub struct RequestAttributes {
     pub branch: Option<String>,
     /// Step-up elevation obtained out-of-band (dual control / device auth).
     pub elevated: bool,
+    /// Branch evidence verified by a trusted workload identity adapter.
+    /// A caller-provided branch or a legacy branch-only token never sets this.
+    pub trusted_branch: bool,
+    /// Synthesized by the server after account-session authentication.
+    pub human_session: bool,
+    /// Fresh signing-key/passkey authentication for sensitive human actions.
+    pub recent_strong_auth: bool,
 }
 
 /// Machine-readable denial reasons. Server-side only — never serialized to
@@ -105,6 +112,7 @@ pub enum PolicyDenial {
     RoleInsufficient,
     ProductionGate,
     UnknownEnvironment,
+    AuthenticationStrength,
 }
 
 /// Explicit role→action permission table. Deliberately not a rank ladder:
@@ -181,10 +189,14 @@ pub(crate) fn revoke_project_role(
     Ok(())
 }
 
-fn environment_tier(db: &Connection, environment_id: &str) -> Result<Option<i64>, rusqlite::Error> {
+fn environment_tier(
+    db: &Connection,
+    target: &AuthTarget<'_>,
+    environment_id: &str,
+) -> Result<Option<i64>, rusqlite::Error> {
     db.query_row(
-        "SELECT tier FROM environments WHERE environment_id = ?1",
-        params![environment_id],
+        "SELECT tier FROM environments WHERE environment_id = ?1 AND project_id = ?2 AND tenant_id = ?3",
+        params![environment_id, target.project_id, target.tenant_id],
         |row| row.get(0),
     )
     .optional()
@@ -199,23 +211,39 @@ pub(crate) fn authorize(
     target: &AuthTarget<'_>,
     attrs: &RequestAttributes,
 ) -> Result<ProjectRole, PolicyDenial> {
+    if !crate::scope_tokens::scope_origin_active(
+        db,
+        claims,
+        crate::state::now_utc(),
+        !attrs.human_session,
+    )
+    .map_err(|_| PolicyDenial::AuthenticationStrength)?
+    {
+        return Err(PolicyDenial::AuthenticationStrength);
+    }
     if claims.tenant_id != target.tenant_id || claims.project_id != target.project_id {
         return Err(PolicyDenial::ScopeMismatch);
     }
-    match (claims.environment_id.as_deref(), target.environment_id) {
-        (_, None) => {}
-        (Some(have), Some(want)) if have == want => {}
-        _ => return Err(PolicyDenial::EnvironmentMismatch),
+    if !attrs.human_session {
+        match (claims.environment_id.as_deref(), target.environment_id) {
+            (None, None) => {}
+            (Some(have), Some(want)) if have == want => {}
+            _ => return Err(PolicyDenial::EnvironmentMismatch),
+        }
     }
-    if let Some(want) = target.repository_binding_id {
-        if claims.repository_binding_id.as_deref() != Some(want) {
+    // Workload credentials cannot widen into a target that omits a
+    // restriction. Human sessions derive their scope from the target and may
+    // administer bound resources after role and step-up checks below.
+    if !attrs.human_session {
+        if claims.repository_binding_id.as_deref() != target.repository_binding_id {
             return Err(PolicyDenial::BindingMismatch);
         }
-    }
-    if let Some(want) = target.service_id {
-        if claims.service_id.as_deref() != Some(want) {
+        if claims.service_id.as_deref() != target.service_id {
             return Err(PolicyDenial::ServiceMismatch);
         }
+    }
+    if attrs.human_session && action != ScopedAction::ReadMetadata && !attrs.recent_strong_auth {
+        return Err(PolicyDenial::AuthenticationStrength);
     }
     let role = project_role_of(db, target.project_id, &claims.principal_id)
         .map_err(|_| PolicyDenial::NoGrant)?;
@@ -226,11 +254,12 @@ pub(crate) fn authorize(
         return Err(PolicyDenial::RoleInsufficient);
     }
     if let Some(env_id) = target.environment_id {
-        let tier = environment_tier(db, env_id).map_err(|_| PolicyDenial::UnknownEnvironment)?;
+        let tier =
+            environment_tier(db, target, env_id).map_err(|_| PolicyDenial::UnknownEnvironment)?;
         match tier {
             None => return Err(PolicyDenial::UnknownEnvironment),
             Some(tier) if tier >= 2 => {
-                let on_main = attrs.branch.as_deref() == Some("main");
+                let on_main = attrs.trusted_branch && attrs.branch.as_deref() == Some("main");
                 if !(on_main || attrs.elevated) {
                     return Err(PolicyDenial::ProductionGate);
                 }
@@ -521,6 +550,7 @@ mod tests {
         let feature = RequestAttributes {
             branch: Some("feature/x".to_string()),
             elevated: false,
+            ..RequestAttributes::default()
         };
         assert!(authorize(
             &db,
@@ -541,23 +571,40 @@ mod tests {
             ),
             Err(PolicyDenial::ProductionGate)
         );
-        // Prod tier + main: allowed.
+        // An unverified main branch cannot satisfy the production gate.
         let main = RequestAttributes {
             branch: Some("main".to_string()),
             elevated: false,
+            ..RequestAttributes::default()
+        };
+        assert_eq!(
+            authorize(
+                &db,
+                &claims,
+                ScopedAction::ReadValue,
+                &target(Some("e-prod")),
+                &main
+            ),
+            Err(PolicyDenial::ProductionGate)
+        );
+        let verified_main = RequestAttributes {
+            branch: Some("main".into()),
+            trusted_branch: true,
+            ..RequestAttributes::default()
         };
         assert!(authorize(
             &db,
             &claims,
             ScopedAction::ReadValue,
             &target(Some("e-prod")),
-            &main
+            &verified_main
         )
         .is_ok());
         // Prod tier + elevation (human step-up): allowed.
         let elevated = RequestAttributes {
             branch: None,
             elevated: true,
+            ..RequestAttributes::default()
         };
         assert!(authorize(
             &db,
@@ -576,7 +623,7 @@ mod tests {
                 &aud,
                 ScopedAction::ReadValue,
                 &target(Some("e-prod")),
-                &main
+                &verified_main
             ),
             Err(PolicyDenial::RoleInsufficient)
         );
@@ -585,7 +632,7 @@ mod tests {
             &aud,
             ScopedAction::ReadMetadata,
             &target(Some("e-prod")),
-            &main
+            &verified_main
         )
         .is_ok());
         cleanup(root);
@@ -595,5 +642,123 @@ mod tests {
     fn denial_response_is_uniform_404() {
         let response = scoped_denial_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    #[test]
+    fn narrowed_tokens_cannot_authorize_broader_administration() {
+        let (root, state, _) = test_app("policy-narrow-admin");
+        let db = state.connection().unwrap();
+        seed_project(&db);
+        grant_project_role(&db, "p1", "account:alice", ProjectRole::Admin, "root", 1).unwrap();
+        let management = claims_for("account:alice", None);
+        let restrictions = [
+            management.clone().with_environment("e-dev"),
+            management.clone().with_repository_binding("r1"),
+            management.clone().with_service("s1"),
+        ];
+        let actions = [
+            ScopedAction::ManageMembers,
+            ScopedAction::ManageBindings,
+            ScopedAction::ManagePolicies,
+            ScopedAction::ManageMigrations,
+            ScopedAction::ViewAudit,
+        ];
+        for action in actions {
+            assert!(authorize(
+                &db,
+                &management,
+                action,
+                &target(None),
+                &RequestAttributes::default()
+            )
+            .is_ok());
+            for narrow in &restrictions {
+                assert!(
+                    authorize(
+                        &db,
+                        narrow,
+                        action,
+                        &target(None),
+                        &RequestAttributes::default()
+                    )
+                    .is_err(),
+                    "{action:?}"
+                );
+            }
+        }
+        // A binding/service restriction cannot be dropped even at the same environment.
+        let env = claims_for("account:alice", Some("e-dev"));
+        for narrow in [
+            env.clone().with_repository_binding("r1"),
+            env.clone().with_service("s1"),
+        ] {
+            assert!(authorize(
+                &db,
+                &narrow,
+                ScopedAction::ReadValue,
+                &target(Some("e-dev")),
+                &RequestAttributes::default()
+            )
+            .is_err());
+        }
+        cleanup(root);
+    }
+    #[test]
+    fn issuer_revocation_is_checked_at_the_storage_authorization_boundary() {
+        let (root, state, _) = test_app("policy-source-revocation");
+        let db = state.connection().unwrap();
+        seed_project(&db);
+        grant_project_role(&db, "p1", "account:alice", ProjectRole::Admin, "root", 1).unwrap();
+        db.execute(
+            "INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc)
+            VALUES('alice', 'Alice', 'aa', 1)",
+            [],
+        )
+        .unwrap();
+        let hash = crate::util::hash_token("source");
+        db.execute("INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc, expires_at_utc)
+            VALUES(?1, 'alice', 'device', ?2, ?3)", rusqlite::params![hash, crate::state::now_utc(), crate::state::now_utc() + 900]).unwrap();
+        let mut claims = claims_for("account:alice", Some("e-dev"));
+        claims.origin_session_hash = Some(hash.clone());
+        assert!(authorize(
+            &db,
+            &claims,
+            ScopedAction::ReadValue,
+            &target(Some("e-dev")),
+            &RequestAttributes::default()
+        )
+        .is_ok());
+        // Simulate revocation after HTTP authentication returned these claims.
+        db.execute(
+            "UPDATE sessions SET revoked_at_utc = ?1 WHERE token_hash_hex = ?2",
+            rusqlite::params![crate::state::now_utc(), hash],
+        )
+        .unwrap();
+        assert_eq!(
+            authorize(
+                &db,
+                &claims,
+                ScopedAction::ReadValue,
+                &target(Some("e-dev")),
+                &RequestAttributes::default()
+            ),
+            Err(PolicyDenial::AuthenticationStrength)
+        );
+        let human = RequestAttributes {
+            human_session: true,
+            recent_strong_auth: true,
+            elevated: true,
+            ..RequestAttributes::default()
+        };
+        assert_eq!(
+            authorize(
+                &db,
+                &claims,
+                ScopedAction::ReadValue,
+                &target(Some("e-dev")),
+                &human
+            ),
+            Err(PolicyDenial::AuthenticationStrength)
+        );
+        cleanup(root);
     }
 }

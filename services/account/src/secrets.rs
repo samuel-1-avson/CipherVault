@@ -43,6 +43,12 @@ pub enum SecretError {
     Invalid(String),
     #[error("new credential failed liveness verification")]
     VerificationFailed,
+    #[error("idempotency key belongs to a different request or an unverifiable legacy receipt")]
+    IdempotencyConflict,
+    #[error("scope revision changed")]
+    RevisionMismatch,
+    #[error("materialized values exceed the batch byte limit")]
+    MaterializationTooLarge,
     #[error("secret crypto error: {0}")]
     Crypto(#[from] ciphervault_crypto::CryptoError),
     #[error("secret database error: {0}")]
@@ -310,7 +316,29 @@ pub(crate) fn audit_secret_event(
     Ok(())
 }
 
-fn ensure_kek_row(
+fn require_scoped_row(
+    db: &Connection,
+    table: &str,
+    column: &str,
+    value: &str,
+    tenant: &str,
+    project: &str,
+) -> Result<(), SecretError> {
+    let exists: bool = db.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ?1
+        AND tenant_id = ?2 AND project_id = ?3)"
+        ),
+        params![value, tenant, project],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(SecretError::Denied);
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_kek_row(
     db: &Connection,
     kek_id: &str,
     tenant_id: &str,
@@ -410,7 +438,14 @@ pub(crate) fn create_secret(
             .map_err(map_binding_error)?;
     }
     if let Some(service) = input.service_id {
-        require_row(db, "services", "service_id", service, "service")?;
+        require_scoped_row(
+            db,
+            "services",
+            "service_id",
+            service,
+            target.tenant_id,
+            target.project_id,
+        )?;
     }
     let tenant_raw = id16(&claims.tenant_id, "tenant")?;
     let project_raw = id16(input.project_id, "project")?;
@@ -514,7 +549,7 @@ pub(crate) fn get_secret_metadata(
 }
 
 /// Opens the current version's plaintext (shared by read and move).
-fn open_current_version(
+pub(crate) fn open_current_version(
     db: &Connection,
     wrap: &dyn KeyWrappingService,
     view: &SecretView,
@@ -632,8 +667,8 @@ pub(crate) fn list_secrets(
         tenant_id: project_tenant.as_deref().unwrap_or(""),
         project_id: filter.project_id,
         environment_id: Some(filter.environment_id),
-        repository_binding_id: None,
-        service_id: None,
+        repository_binding_id: claims.repository_binding_id.as_deref(),
+        service_id: claims.service_id.as_deref(),
     };
     authorize(db, claims, ScopedAction::ReadMetadata, &target, attrs)
         .map_err(|_| SecretError::Denied)?;
@@ -658,6 +693,8 @@ pub(crate) fn list_secrets(
              WHERE project_id = ?1 AND environment_id = ?2 AND deleted_at_utc IS NULL
              AND (?3 IS NULL OR status = ?3)
              AND (?5 IS NULL OR name LIKE ?5 ESCAPE '\\')
+             AND (?8 = 1 OR repository_binding_id IS ?6)
+             AND (?8 = 1 OR service_id IS ?7)
              ORDER BY name ASC LIMIT ?4"
         ))
         .map_err(SecretError::Db)?;
@@ -668,7 +705,10 @@ pub(crate) fn list_secrets(
                 filter.environment_id,
                 filter.status,
                 limit,
-                like_pattern
+                like_pattern,
+                claims.repository_binding_id,
+                claims.service_id,
+                attrs.human_session,
             ],
             secret_view_from_row,
         )
@@ -676,6 +716,17 @@ pub(crate) fn list_secrets(
     let mut out = Vec::new();
     for view in views {
         let view = view.map_err(SecretError::Db)?;
+        if authorize(
+            db,
+            claims,
+            ScopedAction::ReadMetadata,
+            &target_from_view(&view),
+            attrs,
+        )
+        .is_err()
+        {
+            continue;
+        }
         if let Some(tag) = filter.tag {
             if !view.tags.iter().any(|candidate| candidate == tag) {
                 continue;
@@ -832,7 +883,14 @@ pub(crate) fn move_secret(
         validate_secret_name(name).map_err(|err| SecretError::Invalid(err.to_string()))?;
     }
     if let Some(env) = input.new_environment_id {
-        require_row(db, "environments", "environment_id", env, "environment")?;
+        require_scoped_row(
+            db,
+            "environments",
+            "environment_id",
+            env,
+            &view.tenant_id,
+            &view.project_id,
+        )?;
     }
     if input.new_name.is_none() && input.new_environment_id.is_none() {
         return Err(SecretError::Invalid(
@@ -844,9 +902,16 @@ pub(crate) fn move_secret(
         .new_environment_id
         .unwrap_or(&view.environment_id)
         .to_string();
+    let destination = AuthTarget {
+        environment_id: Some(&final_env),
+        ..target_from_view(&view)
+    };
+    authorize(db, claims, ScopedAction::MoveSecret, &destination, attrs)
+        .map_err(|_| SecretError::Denied)?;
     let rescope = final_env != view.environment_id;
     let now = now_utc();
     let txn = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    ensure_kek_row(&txn, kek_id, &view.tenant_id, &view.project_id, now)?;
     if rescope {
         let plaintext = open_current_version(&txn, wrap, &view)?;
         let next_version = view.current_version + 1;
@@ -942,7 +1007,14 @@ pub(crate) fn rebind_secret(
             .map_err(map_binding_error)?;
     }
     if let Some(Some(service)) = input.service_id {
-        require_row(db, "services", "service_id", service, "service")?;
+        require_scoped_row(
+            db,
+            "services",
+            "service_id",
+            service,
+            &view.tenant_id,
+            &view.project_id,
+        )?;
     }
     let binding = match input.repository_binding_id {
         None => view.repository_binding_id.clone(),
@@ -952,6 +1024,13 @@ pub(crate) fn rebind_secret(
         None => view.service_id.clone(),
         Some(value) => value.map(str::to_string),
     };
+    let destination = AuthTarget {
+        repository_binding_id: binding.as_deref(),
+        service_id: service.as_deref(),
+        ..target_from_view(&view)
+    };
+    authorize(db, claims, ScopedAction::RebindSecret, &destination, attrs)
+        .map_err(|_| SecretError::Denied)?;
     let now = now_utc();
     let txn = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     txn.execute(
@@ -1724,7 +1803,12 @@ mod tests {
             &wrap,
             KEK_ID,
             &fixture.claims,
-            &RequestAttributes::default(),
+            &RequestAttributes {
+                human_session: true,
+                recent_strong_auth: true,
+                elevated: true,
+                ..RequestAttributes::default()
+            },
             &view.secret_id,
             &MoveSecret {
                 new_name: None,
@@ -1748,7 +1832,12 @@ mod tests {
             &mut db,
             &wrap,
             &claims,
-            &RequestAttributes::default(),
+            &RequestAttributes {
+                human_session: true,
+                recent_strong_auth: true,
+                elevated: true,
+                ..RequestAttributes::default()
+            },
             &view.secret_id,
             "r",
         )
@@ -1889,7 +1978,12 @@ mod tests {
         rebind_secret(
             &mut db,
             &fixture.claims,
-            &RequestAttributes::default(),
+            &RequestAttributes {
+                human_session: true,
+                recent_strong_auth: true,
+                elevated: true,
+                ..RequestAttributes::default()
+            },
             &view.secret_id,
             &RebindSecret {
                 repository_binding_id: Some(Some("b1")),
@@ -1931,12 +2025,17 @@ mod tests {
             "r"
         )
         .is_ok());
-        // Clearing restores project-wide access (confinement binds admins too:
-        // the clear itself requires bound claims).
+        // A fresh human admin may clear confinement; workload credentials
+        // cannot remove their restrictions (covered by scope-boundary tests).
         rebind_secret(
             &mut db,
             &bound,
-            &RequestAttributes::default(),
+            &RequestAttributes {
+                human_session: true,
+                recent_strong_auth: true,
+                elevated: true,
+                ..RequestAttributes::default()
+            },
             &view.secret_id,
             &RebindSecret {
                 repository_binding_id: Some(None),
@@ -1960,7 +2059,12 @@ mod tests {
             rebind_secret(
                 &mut db,
                 &fixture.claims,
-                &RequestAttributes::default(),
+                &RequestAttributes {
+                    human_session: true,
+                    recent_strong_auth: true,
+                    elevated: true,
+                    ..RequestAttributes::default()
+                },
                 &view.secret_id,
                 &RebindSecret {
                     repository_binding_id: Some(Some("b-ghost")),

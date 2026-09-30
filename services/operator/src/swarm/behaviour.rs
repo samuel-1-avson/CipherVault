@@ -110,6 +110,10 @@ pub enum OperatorRpcBody {
     GetRecovery {
         locator: [u8; 32],
     },
+    GetRecoveryPage {
+        locator: [u8; 32],
+        cursor: u64,
+    },
     AnnouncePeer {
         descriptor: PeerDescriptor,
     },
@@ -156,6 +160,10 @@ pub enum OperatorRpcResponse {
     },
     RecoveryRecords {
         records: Vec<Vec<u8>>,
+    },
+    RecoveryPage {
+        records: Vec<Vec<u8>>,
+        next_cursor: Option<u64>,
     },
     PeerAnnounced,
     Peers {

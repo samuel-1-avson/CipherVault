@@ -2,6 +2,7 @@
 
 pub(crate) mod anchor;
 pub(crate) mod approvals;
+pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod context;
 pub(crate) mod dpop;
@@ -29,6 +30,7 @@ pub(crate) mod update;
 
 pub(crate) use anchor::*;
 pub(crate) use approvals::*;
+pub(crate) use audit::*;
 pub(crate) use auth::*;
 pub(crate) use context::*;
 pub(crate) use feed::*;

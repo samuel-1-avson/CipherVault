@@ -26,7 +26,15 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Audit Rust dependencies
-        run: cargo audit
+        shell: bash
+        run: |
+          # One time-limited maintenance exception; vulnerabilities remain errors.
+          # See docs/DEPENDENCY_AUDIT.md for the Linux libp2p dependency path.
+          if [[ "$(date -u +%F)" > "2026-12-31" ]]; then
+            echo "Review the expired RUSTSEC-2024-0436 maintenance exception before continuing."
+            exit 1
+          fi
+          cargo audit --deny unsound --deny unmaintained --ignore RUSTSEC-2024-0436
 
   repository-scan:
     name: Repository vulnerability and secret scan

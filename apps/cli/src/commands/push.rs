@@ -1,6 +1,7 @@
 //! Snapshot push command.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use ciphervault_crypto::HardwareSecurityModule;
 use colored::Colorize;
 
 use ciphervault_format::{to_canonical_cbor, HeadRecord, PROTOCOL_VERSION};
@@ -50,10 +51,9 @@ pub(crate) async fn cmd_push(
     };
 
     let certs = store.list_device_certificates()?;
-    let is_hardware_bound = certs
-        .first()
-        .map(|c| c.device_signing_pk != device_sk.verifying_key().to_bytes())
-        .unwrap_or(false);
+    let is_hardware_bound = !certs
+        .iter()
+        .any(|certificate| certificate.device_signing_pk == device_sk.verifying_key().to_bytes());
 
     let maybe_token = if touch || is_hardware_bound {
         if touch {
@@ -79,9 +79,31 @@ pub(crate) async fn cmd_push(
         None
     };
 
+    let signing_key: [u8; 32] = match &maybe_token {
+        Some(token) => token
+            .get_public_key(ciphervault_crypto::HsmSlot::DigitalSignature)?
+            .as_slice()
+            .try_into()
+            .context("Hardware signing key must be Ed25519")?,
+        None => device_sk.verifying_key().to_bytes(),
+    };
+    let (recovery_root, _, _) = store.get_recovery_descriptors()?;
+    let authority_generation = certs
+        .iter()
+        .filter(|certificate| {
+            certificate.vault_id == vault_id
+                && certificate.device_signing_pk == signing_key
+                && certificate.permissions & 1 != 0
+                && certificate.verify(&recovery_root).is_ok()
+        })
+        .map(|certificate| certificate.authority_generation)
+        .max()
+        .context("No trusted signing authority; local snapshot state was not advanced")?;
+    store.validate_capture_authority_for_key(&signing_key, authority_generation)?;
+
     println!("{}", "Capturing and encrypting snapshot...".bold());
 
-    let current_dir = std::env::current_dir()?;
+    let current_dir = crate::util::get_workspace_root()?;
     let output = match &maybe_token {
         Some(token) => create_snapshot_with_signer(
             &current_dir,
@@ -92,7 +114,7 @@ pub(crate) async fn cmd_push(
             parent_ids.clone(),
             &device_id,
             counter + 1,
-            1, // authority generation
+            authority_generation,
             &DeviceSigner::Hardware(token, ciphervault_crypto::HsmSlot::DigitalSignature),
         )?,
         None => create_snapshot(
@@ -104,7 +126,7 @@ pub(crate) async fn cmd_push(
             parent_ids.clone(),
             &device_id,
             counter + 1,
-            1, // authority generation
+            authority_generation,
             &device_sk,
         )?,
     };
@@ -113,7 +135,14 @@ pub(crate) async fn cmd_push(
     store.save_snapshot(&output.record, &output.encrypted_manifest, &output.chunks)?;
     store.increment_device_counter()?;
 
-    let recovery_set = store.prepare_recovery_set(&output.record)?;
+    let recovery_set = match &maybe_token {
+        Some(token) => store.prepare_recovery_set_with_hsm(
+            &output.record,
+            token,
+            ciphervault_crypto::HsmSlot::DigitalSignature,
+        )?,
+        None => store.prepare_recovery_set(&output.record)?,
+    };
     let record_cid = output.record.compute_record_cid()?;
 
     // Create and sign updated HeadRecord pointing to snapshot-record CID

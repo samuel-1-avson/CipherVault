@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_operator::{create_router, OperatorState};
 use ciphervault_storage::{MultiOperatorPool, OperatorClient, PeerDescriptor};
@@ -9,10 +11,11 @@ async fn spawn_operator(
     let dir =
         std::env::temp_dir().join(format!("cv-p2p-{}-{}", operator_id, rand::random::<u64>()));
     let signing_key = generate_signing_key();
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         operator_id.to_string(),
         dir,
         signing_key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -29,9 +32,6 @@ async fn spawn_operator(
 
 #[tokio::test]
 async fn test_p2p_gossip_and_pool_peer_expansion() {
-    // Ephemeral test operators use the migration mode; production control
-    // routes default to strict authorization when unset.
-    std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
     // 1. Spawn three operator nodes
     let (ep1, state1, _h1) = spawn_operator("operator-alpha").await;
     let (ep2, state2, _h2) = spawn_operator("operator-beta").await;
@@ -47,6 +47,16 @@ async fn test_p2p_gossip_and_pool_peer_expansion() {
         "operator-gamma".to_string(),
         ep3.clone(),
         &state3.signing_key,
+    );
+    // Enrollment comes from the test administrator, independently of gossip.
+    // A peer signing its own descriptor cannot grant itself membership.
+    std::env::set_var(
+        "CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES",
+        format!(
+            "operator-beta={},operator-gamma={}",
+            hex::encode(state2.signing_key.verifying_key().as_bytes()),
+            hex::encode(state3.signing_key.verifying_key().as_bytes()),
+        ),
     );
 
     // 3. Announce peer2 and peer3 to operator 1
@@ -94,9 +104,13 @@ async fn test_p2p_gossip_and_pool_peer_expansion() {
         "Operator 1 should reject tampered peer descriptor signature"
     );
 
-    // Clean up temporary operator dirs
+    // Stop servers before removing their disposable fixture directories.
+    _h1.abort();
+    _h2.abort();
+    _h3.abort();
+    let _ = tokio::join!(_h1, _h2, _h3);
     let _ = std::fs::remove_dir_all(&state1.data_dir);
     let _ = std::fs::remove_dir_all(&state2.data_dir);
     let _ = std::fs::remove_dir_all(&state3.data_dir);
-    std::env::remove_var("CIPHERVAULT_OPERATOR_STRICT_AUTH");
+    std::env::remove_var("CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES");
 }

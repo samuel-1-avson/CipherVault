@@ -9,8 +9,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::{
     audit_event,
     guards::{
-        account_role_for, normalize_account_id, normalize_vault_role, require_strong_session,
-        role_rank,
+        account_role_for, normalize_account_id, normalize_vault_role,
+        require_recent_strong_session, role_rank,
     },
     hash_token,
     http::{authenticated_session, error_response, service_error},
@@ -65,7 +65,7 @@ pub async fn post_invitation(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    if let Err(response) = require_strong_session(&session) {
+    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
         return *response;
     }
     let invitee = match normalize_account_id(&request.invitee_account_id) {
@@ -325,7 +325,7 @@ pub async fn post_membership_revoke(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    if let Err(response) = require_strong_session(&session) {
+    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
         return *response;
     }
     if session.account_id == member_account_id {

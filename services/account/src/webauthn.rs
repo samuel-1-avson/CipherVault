@@ -49,6 +49,9 @@ pub async fn post_webauthn_revoke(
         Ok(session) => session,
         Err(response) => return response,
     };
+    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     if session.account_id != account_id {
         return error_response(
             StatusCode::FORBIDDEN,
@@ -112,6 +115,9 @@ pub async fn post_webauthn_registration_options(
         Ok(session) => session,
         Err(response) => return response,
     };
+    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     if session.account_id != account_id {
         return error_response(
             StatusCode::FORBIDDEN,
@@ -136,6 +142,10 @@ pub async fn post_webauthn_registration_options(
     let challenge_id = random_hex(16);
     let nonce_hex = random_hex(32);
     let expires_at = now_utc() + CHALLENGE_TTL_SECONDS;
+    if let Err(failure) = crate::abuse::check_challenge_quota(&db, &headers, &account_id, now_utc())
+    {
+        return crate::abuse::quota_failure_response(failure);
+    }
     if let Err(error) = db.execute(
         "INSERT INTO challenges(challenge_id, kind, account_id, device_id_hex, nonce_hex, expires_at_utc)
          VALUES(?1, 'webauthn_registration', ?2, ?3, ?4, ?5)",
@@ -168,6 +178,9 @@ pub async fn post_webauthn_registration_verify(
         Ok(session) => session,
         Err(response) => return response,
     };
+    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     if session.account_id != account_id {
         return error_response(
             StatusCode::FORBIDDEN,
@@ -338,6 +351,7 @@ pub async fn post_webauthn_registration_verify(
 
 pub async fn post_webauthn_authentication_options(
     State(state): State<AccountState>,
+    headers: HeaderMap,
     Json(request): Json<WebAuthnAuthenticationOptionsRequest>,
 ) -> Response {
     let account_id = match normalize_account_id(&request.account_id) {
@@ -375,6 +389,10 @@ pub async fn post_webauthn_authentication_options(
     let challenge_id = random_hex(16);
     let nonce_hex = random_hex(32);
     let expires_at = now_utc() + CHALLENGE_TTL_SECONDS;
+    if let Err(failure) = crate::abuse::check_challenge_quota(&db, &headers, &account_id, now_utc())
+    {
+        return crate::abuse::quota_failure_response(failure);
+    }
     if let Err(error) = db.execute(
         "INSERT INTO challenges(challenge_id, kind, account_id, nonce_hex, expires_at_utc)
          VALUES(?1, 'webauthn_login', ?2, ?3, ?4)",

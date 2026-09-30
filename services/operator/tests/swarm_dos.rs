@@ -53,7 +53,7 @@ async fn boot_node(operator_id: &str, dos: DosConfig) -> (TestNode, Arc<Operator
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -333,6 +333,65 @@ async fn rpc_rate_limit_answers_429_then_recovers() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_state_work_does_not_stall_swarm_network_or_commands() {
+    let (node_b, state_b) = boot_node("slow-rpc-b", DosConfig::default()).await;
+    let (node_a, _state_a) = boot_node("slow-rpc-a", DosConfig::default()).await;
+    dial(&node_a, &node_b).await;
+    wait_connected(&node_a, &node_b).await;
+
+    // Hold the real state lock used by GetPeers on an ordinary thread. This
+    // models blocked state/disk work without relying on filesystem timing.
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _guard = state_b.peer_routing_table.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+    });
+    locked_rx.await.unwrap();
+    let client = node_a.handle.clone();
+    let peer = node_b.handle.peer_id;
+    let blocked = tokio::spawn(async move {
+        client
+            .rpc_request(
+                peer,
+                OperatorRpcRequest {
+                    auth: P2pAuth::default(),
+                    body: OperatorRpcBody::GetPeers,
+                },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !blocked.is_finished(),
+        "GetPeers must wait on the held state lock"
+    );
+
+    let listeners = tokio::time::timeout(Duration::from_secs(2), node_b.handle.listeners())
+        .await
+        .expect("a blocked RPC must not stop swarm commands")
+        .unwrap();
+    assert!(!listeners.is_empty());
+    let info = tokio::time::timeout(
+        Duration::from_secs(2),
+        rpc(&node_a, peer, OperatorRpcBody::GetInfo),
+    )
+    .await
+    .expect("an unrelated RPC must retain network progress");
+    assert!(matches!(info, OperatorRpcResponse::Info(_)));
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), blocked)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(response, OperatorRpcResponse::Peers { .. }));
+}
+
 #[tokio::test]
 async fn gossip_oversize_publish_rejected() {
     let (node_a, _state_a) = boot_node("dos-a", DosConfig::default()).await;
@@ -377,4 +436,18 @@ async fn gossip_oversize_publish_rejected() {
         ),
         Ok(id) => panic!("oversize publish must be rejected, got id {id}"),
     }
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

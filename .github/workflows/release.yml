@@ -6,8 +6,12 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
 
 # Same-tag re-runs supersede each other so a re-pushed tag cannot
 # double-publish or burn a second full matrix.
@@ -45,6 +49,15 @@ jobs:
 
       - name: Execute Full Workspace Test Suite
         run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Verify independent bootstrap signature contracts
+        run: node tests/release_installer_signatures.cjs
+
+      - name: Verify release packaging rejects incomplete assets
+        run: node tests/release_package_assets.cjs
+
+      - name: Verify hosted key bootstrap
+        run: node tests/web_secret_bootstrap.cjs
 
   build-release:
     name: Build ${{ matrix.target }}
@@ -91,6 +104,10 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
           df -h /
+
+      - name: Verify Windows bootstrap signature contracts
+        if: runner.os == 'Windows'
+        run: node tests/release_installer_signatures.cjs
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -203,6 +220,8 @@ jobs:
     name: Publish GitHub Release
     needs: build-release
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -220,6 +239,7 @@ jobs:
       - name: Compute SHA256 Checksums
         shell: bash
         run: |
+          TAG="${{ github.ref_name }}"
           mkdir -p dist-release
           if [ ! -d release-assets ]; then
             echo "release-assets directory missing; no artifacts were downloaded"
@@ -229,29 +249,22 @@ jobs:
           if ! compgen -G "dist-release/*" > /dev/null; then echo "ERROR: no release archives were downloaded" >&2; exit 1; fi
           # Extract standalone executables for direct downloads and the
           # in-app updater (one single-file binary per target, no extraction).
-          if compgen -G "dist-release/ciphervault-*-x86_64-pc-windows-msvc.zip" > /dev/null; then
-            unzip -j dist-release/ciphervault-*-x86_64-pc-windows-msvc.zip "*/bin/ciphervault.exe" -d dist-release/ 2>/dev/null || true
-          fi
-          if compgen -G "dist-release/ciphervault-*-x86_64-unknown-linux-gnu.tar.gz" > /dev/null; then
-            tar -xzf dist-release/ciphervault-*-x86_64-unknown-linux-gnu.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-linux-amd64 2>/dev/null || true
-            chmod +x dist-release/ciphervault-linux-amd64 2>/dev/null || true
-          fi
-          if compgen -G "dist-release/ciphervault-*-aarch64-unknown-linux-gnu.tar.gz" > /dev/null; then
-            tar -xzf dist-release/ciphervault-*-aarch64-unknown-linux-gnu.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-linux-arm64 2>/dev/null || true
-            chmod +x dist-release/ciphervault-linux-arm64 2>/dev/null || true
-          fi
-          if compgen -G "dist-release/ciphervault-*-x86_64-unknown-linux-musl.tar.gz" > /dev/null; then
-            tar -xzf dist-release/ciphervault-*-x86_64-unknown-linux-musl.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-linux-amd64-musl 2>/dev/null || true
-            chmod +x dist-release/ciphervault-linux-amd64-musl 2>/dev/null || true
-          fi
-          if compgen -G "dist-release/ciphervault-*-x86_64-apple-darwin.tar.gz" > /dev/null; then
-            tar -xzf dist-release/ciphervault-*-x86_64-apple-darwin.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-macos-amd64 2>/dev/null || true
-            chmod +x dist-release/ciphervault-macos-amd64 2>/dev/null || true
-          fi
-          if compgen -G "dist-release/ciphervault-*-aarch64-apple-darwin.tar.gz" > /dev/null; then
-            tar -xzf dist-release/ciphervault-*-aarch64-apple-darwin.tar.gz --wildcards "*/bin/ciphervault" -O > dist-release/ciphervault-macos-arm64 2>/dev/null || true
-            chmod +x dist-release/ciphervault-macos-arm64 2>/dev/null || true
-          fi
+          # Role bundles also contain the CLI. Select the full bundle exactly:
+          # a wildcard here expands to three archives and can publish an empty
+          # executable when tar mistakes the extra archives for member names.
+          unzip -j "dist-release/ciphervault-${TAG}-x86_64-pc-windows-msvc.zip" \
+            "ciphervault-${TAG}-x86_64-pc-windows-msvc/bin/ciphervault.exe" -d dist-release/
+          for entry in 'x86_64-unknown-linux-gnu:amd64' 'aarch64-unknown-linux-gnu:arm64' 'x86_64-unknown-linux-musl:amd64-musl' 'x86_64-apple-darwin:amd64' 'aarch64-apple-darwin:arm64'; do
+            TARGET="${entry%%:*}"
+            ARCH="${entry#*:}"
+            PLATFORM=linux
+            if [[ "$TARGET" == *apple-darwin ]]; then PLATFORM=macos; fi
+            tar -xzf "dist-release/ciphervault-${TAG}-${TARGET}.tar.gz" \
+              "ciphervault-${TAG}-${TARGET}/bin/ciphervault" -O > "dist-release/ciphervault-${PLATFORM}-${ARCH}"
+            test -s "dist-release/ciphervault-${PLATFORM}-${ARCH}"
+            chmod +x "dist-release/ciphervault-${PLATFORM}-${ARCH}"
+          done
+          test -s dist-release/ciphervault.exe
           cd dist-release
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
@@ -271,6 +284,7 @@ jobs:
           tar -xzf "dist-release/ciphervault-${TAG}-x86_64-unknown-linux-gnu.tar.gz" --wildcards "*/bin/ciphervault" -O > ./ciphervault-signer
           chmod +x ./ciphervault-signer
           ./ciphervault-signer release sign --tag "$TAG" --sums dist-release/SHA256SUMS.txt --out dist-release/SHA256SUMS.txt.sig
+          test "$(head -n 1 dist-release/SHA256SUMS.txt.sig)" = "CIPHERVAULT-RELEASE-SIG-V2" || { echo "ERROR: release signer must emit V2 authenticated tags" >&2; exit 1; }
           ./ciphervault-signer release verify --tag "$TAG" --sums dist-release/SHA256SUMS.txt --sig dist-release/SHA256SUMS.txt.sig
           rm -f ./ciphervault-signer
 
@@ -296,17 +310,25 @@ jobs:
         with:
           ref: main
 
-      - name: Download published SHA256SUMS
+      - name: Download and authenticate published SHA256SUMS
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           for i in 1 2 3 4 5 6; do
-            if curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS.txt" -o SHA256SUMS.txt; then
+            if curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/SHA256SUMS.txt" -o SHA256SUMS.txt; then
               break
             fi
             echo "SHA256SUMS not yet served (attempt $i); waiting 20s"
             sleep 20
           done
           test -s SHA256SUMS.txt || { echo "ERROR: SHA256SUMS.txt missing after retries" >&2; exit 1; }
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/SHA256SUMS.txt.sig" -o SHA256SUMS.txt.sig
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          CIPHERVAULT_INSTALLER_VERIFY_ONLY=1 CIPHERVAULT_VERIFY_SUMS="$(pwd)/SHA256SUMS.txt" \
+            CIPHERVAULT_VERIFY_SIGNATURE="$(pwd)/SHA256SUMS.txt.sig" CIPHERVAULT_VERIFY_TAG="$RELEASE_TAG" \
+            CIPHERVAULT_VERIFY_SCRATCH="$VERIFY_DIR" bash dist/scripts/install.sh
           cat SHA256SUMS.txt
 
       - name: Fill winget/scoop/brew hashes

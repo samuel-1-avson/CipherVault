@@ -8,6 +8,9 @@ This directory contains empirical verification reports, production readiness rev
 
 | Report | Date | Scope & Key Findings |
 |---|---|---|
+| [**`DEPLOYMENT_2026-09-30.md`**](./DEPLOYMENT_2026-09-30.md) | 2026-09-30 | 1.0.26 release, deployment evidence, backups, rollout gates and remaining limitations. |
+| [**`AUDIT_REMEDIATION_2026-09-30.md`**](./AUDIT_REMEDIATION_2026-09-30.md) | 2026-09-30 | Implementation and verification ledger for audit fixes, added features, rollout requirements, and outstanding assurance. |
+| [**`PROJECT_AUDIT_2026-09-30.md`**](./PROJECT_AUDIT_2026-09-30.md) | 2026-09-30 | Current whole-project audit: 6.3/10 engineering score, authorization/recovery findings, bottlenecks, feature recommendations, and local verification. |
 | [**`CIPHERVAULT_DEEP_DIVE_REPORT.md`**](./CIPHERVAULT_DEEP_DIVE_REPORT.md) | 2026-09-17 | Comprehensive architectural deep dive, trust boundaries, crate-by-crate audit, and cryptographic invariants. |
 | [**`SYSTEM_AUDIT_RATING_2026-09-18.md`**](./SYSTEM_AUDIT_RATING_2026-09-18.md) | 2026-09-18 | System audit rating (7.5/10), threat model review, transport conformance evaluation, and remediation roadmap. |
 | [**`SYSTEM_AUDIT_RATING_2026-09-19.md`**](./SYSTEM_AUDIT_RATING_2026-09-19.md) | 2026-09-19 | Follow-up system rating (8/10), verifying libp2p transport, capability vouchers, and redb selection. |

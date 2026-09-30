@@ -5,6 +5,7 @@
 
 pub mod db;
 pub mod engine;
+pub mod scheduler;
 
 pub use db::{
     sqlite_busy_retries, AuditRecord, FleetSummary, MaintenanceDb, OperatorNodeRecord, TrackedVault,

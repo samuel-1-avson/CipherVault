@@ -1,8 +1,6 @@
 # Updater Signature Verification (Blocker 4)
 
-**Status:** implementation + tests + CI wiring complete and verified.
-Enforcement activates on the first release published with a
-`SHA256SUMS.txt.sig` asset; that requires the one-time secret setup below.
+**Current source policy (30 September 2026):** updater and bootstrap installers require V2 signatures by default. V2 signs the release tag together with the exact checksums. The activation records below describe earlier V1 releases and are historical evidence. No release was published as part of this remediation. Bootstrap verifiers were exercised locally in 14 synthetic shell/PowerShell cases; workspace Rust verification is recorded in the remediation report.
 
 ## Problem
 
@@ -14,7 +12,7 @@ binary updater had no equivalent.
 
 ## Design (chosen)
 
-Ed25519 detached signature over the exact `SHA256SUMS.txt` bytes, verified
+Ed25519 detached signature over the canonical V2 domain and tag followed by the exact `SHA256SUMS.txt` bytes, verified
 against pubkeys pinned in the updater binary. This is the "cryptographically
 strong, independently verifiable mechanism consistent with the repository
 architecture" option: the repo already uses Ed25519 for join tickets, the
@@ -34,10 +32,10 @@ the two mechanisms are complementary, not substitutes.
 | Trusted issuer | CipherVault release engineering (offline seed holder) |
 | Trusted identity | Release key id `b625994c0c3f53a6` (first 16 hex of pubkey) |
 | Trust root | Pinned pubkey in `apps/cli/src/commands/update.rs` (`RELEASE_SIGNING_KEYS`): `b625994c…22c1e` (full value in code) |
-| Artifact identity | Exact `SHA256SUMS.txt` bytes of release tag T |
-| Signature format | `CIPHERVAULT-RELEASE-SIG-V1` 4-line envelope (`tag`, `key-id`, `signature`; lowercase-canonical hex) |
-| Signed message | Raw `SHA256SUMS.txt` bytes |
-| Replay/version protection | Envelope binds the release tag; a signature cut from any other tag is rejected. Archive names inside the sums additionally bind the tag. Downgrades are refused by the existing version comparison. |
+| Artifact identity | Authenticated release tag T and the exact `SHA256SUMS.txt` bytes |
+| Signature format | `CIPHERVAULT-RELEASE-SIG-V2` four-line envelope (`tag`, `key-id`, `signature`; lowercase-canonical hex) |
+| Signed message | UTF-8 `CIPHERVAULT-RELEASE-SIG-V2\ntag: T\n` followed by raw `SHA256SUMS.txt` bytes |
+| Replay/version protection | V2 cryptographically binds the tag. Archive names inside the checksums also bind version and target. The updater refuses downgrades and permits an explicit same-version repair. |
 | Key-based vs keyless | Key-based (offline seed). No Dritten network trust lookups at install time. |
 | Failure behavior | Fail closed: missing/invalid/untrusted signature aborts before checksum, extract, and install. SHA-256 verification is kept and runs after signature verification. |
 
@@ -46,9 +44,11 @@ the two mechanisms are complementary, not substitutes.
 `Artifact → Signature Verification → Integrity Verification → Trust Policy → Install`
 
 1. Download archive + `SHA256SUMS.txt` + `SHA256SUMS.txt.sig` (all required assets of the release).
-2. `verify_release_signature`: envelope shape → version → tag binding → key-id is pinned → Ed25519 `verify_strict` over the sums bytes.
+2. `verify_release_signature`: envelope shape → version → tag binding → key-id is pinned → Ed25519 `verify_strict` over the V2 domain, tag, and unchanged sums bytes. Bootstrap installers use independently installed OpenSSL 3 against the same pinned public key.
 3. `find_checksum`: the sums must name the exact archive under install; `SHA256` of the downloaded bytes must match.
 4. Existing archive-confinement checks (no symlinks, no traversal, unique binaries), then install.
+
+V1 compatibility is explicit: set `CIPHERVAULT_ALLOW_LEGACY_RELEASE_SIGNATURE=1` and `CIPHERVAULT_VERSION=vEXACT_TAG` only when deliberately selecting a historical V1 release. V1 authenticates raw checksums and does not authenticate the tag itself. Unsigned/untrusted artifacts remain rejected. See [bootstrap requirements](../dist/INSTALLER_SIGNATURES.md).
 
 ## Key management and rotation
 
@@ -60,8 +60,7 @@ the two mechanisms are complementary, not substitutes.
   signing time, not at users' updaters.
 - Rotation: append the successor `(key-id, pubkey)` to
   `RELEASE_SIGNING_KEYS` and ship it BEFORE the successor signs anything;
-  remove the predecessor only after every supported updater carries the
-  successor. No envelope change is needed.
+  remove the predecessor only after every supported updater and bootstrap installer carries the successor. The shell and PowerShell roots must be updated in the same reviewed release.
 
 ## CI / release wiring
 
@@ -77,7 +76,7 @@ the two mechanisms are complementary, not substitutes.
   `ciphervault release sign --tag <tag> --sums SHA256SUMS.txt` and upload
   the `.sig`; unsigned manual releases are rejected by new updaters.
 
-## Tests (all executed 2026-09-26, `cargo test -p ciphervault-cli --bin ciphervault`: 136 passed, 0 failed)
+## Historical V1 tests (executed 2026-09-26, `cargo test -p ciphervault-cli --bin ciphervault`: 136 passed, 0 failed)
 
 Positive:
 

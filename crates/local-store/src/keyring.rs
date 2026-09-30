@@ -117,6 +117,8 @@ mod platform {
         };
 
         unsafe {
+            use zeroize::Zeroize;
+            std::slice::from_raw_parts_mut(out_blob.pb_data, out_blob.cb_data as usize).zeroize();
             LocalFree(out_blob.pb_data as *mut _);
         }
 
@@ -128,7 +130,10 @@ pub mod portable_keystore {
     use super::*;
     use ciphervault_crypto::{decrypt_chunk, encrypt_chunk};
     use sha2::{Digest, Sha256};
+    use std::io::Write;
+    use std::path::Path;
     use std::path::PathBuf;
+    use zeroize::Zeroizing;
 
     pub const MAGIC_KEYSTORE_V2: &[u8; 4] = b"CVK2";
 
@@ -136,9 +141,21 @@ pub mod portable_keystore {
     /// Fails closed if neither an explicit env var nor a valid key file exists.
     pub fn resolve_key() -> Result<[u8; 32], LocalStoreError> {
         // 1. Check CIPHERVAULT_MASTER_KEY env var
-        if let Ok(val) = std::env::var("CIPHERVAULT_MASTER_KEY") {
+        if let Some(value) = std::env::var_os("CIPHERVAULT_MASTER_KEY") {
+            let val = value.into_string().map_err(|_| {
+                LocalStoreError::KeyProtectionError(
+                    "CIPHERVAULT_MASTER_KEY is not valid Unicode".into(),
+                )
+            })?;
+            let val = Zeroizing::new(val);
             let val = val.trim();
+            if val.is_empty() {
+                return Err(LocalStoreError::KeyProtectionError(
+                    "CIPHERVAULT_MASTER_KEY cannot be empty".into(),
+                ));
+            }
             if let Ok(bytes) = hex::decode(val) {
+                let bytes = Zeroizing::new(bytes);
                 if bytes.len() == 32 {
                     let mut key = [0u8; 32];
                     key.copy_from_slice(&bytes);
@@ -162,25 +179,82 @@ pub mod portable_keystore {
 
         // 2. Check key file from CIPHERVAULT_KEYSTORE_PATH or ~/.config/ciphervault/keystore.key
         let key_path = get_default_keyfile_path()?;
-        if key_path.exists() {
-            let content = std::fs::read(&key_path).map_err(|e| {
-                LocalStoreError::KeyProtectionError(format!(
-                    "Failed to read keystore file at {}: {}",
-                    key_path.display(),
-                    e
-                ))
-            })?;
-            if content.len() >= 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&content[0..32]);
-                return Ok(key);
-            }
-        }
+        read_key_file(&key_path).map_err(|error| {
+            LocalStoreError::KeyProtectionError(format!(
+                "Failed to read provisioned keystore at {}: {error}",
+                key_path.display()
+            ))
+        })
+    }
 
-        // Fail closed: Guessable environment variables (USER, HOME) are rejected.
-        Err(LocalStoreError::KeyProtectionError(
-            "Non-Windows keystore requires provisioned CIPHERVAULT_MASTER_KEY or valid keystore file (~/.config/ciphervault/keystore.key). Guessable environment credentials rejected.".into(),
-        ))
+    fn read_key_file(path: &Path) -> std::io::Result<[u8; 32]> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(std::io::Error::other(
+                "keystore must be a regular, non-symlink file",
+            ));
+        }
+        let mut file = ciphervault_file_lock::open_regular_file(path)?;
+        if file.metadata()?.len() != 32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "keystore key must contain exactly 32 bytes; refusing replacement",
+            ));
+        }
+        let mut content = Zeroizing::new(Vec::with_capacity(32));
+        use std::io::Read;
+        (&mut file).take(33).read_to_end(&mut content)?;
+        if content.len() != 32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "keystore key must contain exactly 32 bytes; refusing replacement",
+            ));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&content);
+        Ok(key)
+    }
+
+    /// Provision only a genuinely missing key, never an invalid or inaccessible one.
+    /// A complete key is published with an exclusive hard link, so concurrent readers
+    /// cannot observe partial bytes and a competing provisioner cannot overwrite it.
+    pub fn provision_key_file(path: &Path) -> Result<[u8; 32], LocalStoreError> {
+        let result = (|| -> std::io::Result<[u8; 32]> {
+            match read_key_file(path) {
+                Ok(key) => return Ok(key),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            std::fs::create_dir_all(parent)?;
+            let temporary = parent.join(format!(
+                ".keystore-{}-{:032x}",
+                std::process::id(),
+                rand::random::<u128>()
+            ));
+            let mut key = Zeroizing::new([0u8; 32]);
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, key.as_mut());
+            let publication = (|| -> std::io::Result<()> {
+                let mut file = ciphervault_file_lock::create_secret_file(&temporary)?;
+                file.write_all(key.as_ref())?;
+                file.sync_all()?;
+                drop(file);
+                match std::fs::hard_link(&temporary, path) {
+                    Ok(()) => ciphervault_file_lock::sync_directory(parent),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                    Err(error) => Err(error),
+                }
+            })();
+            let _ = std::fs::remove_file(&temporary);
+            publication?;
+            read_key_file(path)
+        })();
+        result.map_err(|error| {
+            LocalStoreError::KeyProtectionError(format!(
+                "Keystore provisioning failed at {}: {error}",
+                path.display()
+            ))
+        })
     }
 
     fn passphrase_salt() -> Result<[u8; 16], LocalStoreError> {
@@ -256,47 +330,16 @@ pub mod portable_keystore {
     }
 
     pub fn protect(bytes: &[u8]) -> Result<Vec<u8>, LocalStoreError> {
-        let key = match resolve_key() {
-            Ok(k) => k,
-            Err(_) => {
-                let path = get_default_keyfile_path()?;
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let mut new_key = [0u8; 32];
-                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut new_key);
-                #[cfg(unix)]
-                {
-                    use std::io::Write;
-                    use std::os::unix::fs::OpenOptionsExt;
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .mode(0o600)
-                        .open(&path)
-                        .map_err(|e| {
-                            LocalStoreError::KeyProtectionError(format!(
-                                "Failed to create keystore file: {}",
-                                e
-                            ))
-                        })?;
-                    file.write_all(&new_key)
-                        .map_err(|e| LocalStoreError::KeyProtectionError(e.to_string()))?;
-                }
-                #[cfg(not(unix))]
-                {
-                    std::fs::write(&path, new_key)
-                        .map_err(|e| LocalStoreError::KeyProtectionError(e.to_string()))?;
-                }
-                new_key
-            }
-        };
+        let key = Zeroizing::new(if std::env::var_os("CIPHERVAULT_MASTER_KEY").is_some() {
+            resolve_key()?
+        } else {
+            provision_key_file(&get_default_keyfile_path()?)?
+        });
         protect_with_key(&key, bytes)
     }
 
     pub fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, LocalStoreError> {
-        let key = resolve_key()?;
+        let key = Zeroizing::new(resolve_key()?);
         unprotect_with_key(&key, ciphertext)
     }
 }
@@ -319,6 +362,56 @@ pub fn unprotect_secret(ciphertext: &[u8]) -> Result<Vec<u8>, LocalStoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_provisioners_all_use_the_same_durable_key() {
+        let root =
+            std::env::temp_dir().join(format!("cv-key-race-{:032x}", rand::random::<u128>()));
+        let path = root.join("master.key");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
+        let threads: Vec<_> = (0..12)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    portable_keystore::provision_key_file(&path).unwrap()
+                })
+            })
+            .collect();
+        let keys: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert!(keys.iter().all(|key| key == &keys[0]));
+        assert_eq!(std::fs::read(&path).unwrap(), keys[0]);
+        let encrypted = portable_keystore::protect_with_key(&keys[0], b"synthetic secret").unwrap();
+        for key in keys {
+            assert_eq!(
+                portable_keystore::unprotect_with_key(&key, &encrypted).unwrap(),
+                b"synthetic secret"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_existing_key_is_never_replaced() {
+        let root =
+            std::env::temp_dir().join(format!("cv-key-invalid-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("master.key");
+        for bytes in [vec![7; 7], vec![8; 33]] {
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(portable_keystore::provision_key_file(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(portable_keystore::provision_key_file(&path).is_err());
+        assert!(path.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn test_protect_and_unprotect_roundtrip() {

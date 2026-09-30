@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -20,10 +22,11 @@ async fn spawn_test_operator(
     data_dir: PathBuf,
     operator_id: &str,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         operator_id.to_string(),
         data_dir,
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
     let app = create_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -351,7 +354,12 @@ fn test_operator_boundary_and_dos_limits() {
     ));
     fs::create_dir_all(&test_dir).unwrap();
 
-    let state = OperatorState::new("op_test".to_string(), test_dir, generate_signing_key());
+    let state = OperatorState::new_with_security(
+        "op_test".to_string(),
+        test_dir,
+        generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    );
 
     let valid_cid = "a".repeat(64);
 
@@ -509,10 +517,11 @@ async fn test_unauthorized_caller_cannot_append_to_existing_vault_log() {
     ));
     fs::create_dir_all(&test_dir).unwrap();
 
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         "op_f02".to_string(),
         test_dir.clone(),
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
 
     let locator_hex = "42".repeat(32);

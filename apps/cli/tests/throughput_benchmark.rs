@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use ciphervault_crypto::{decrypt_chunk, VaultEpochKey};
 use ciphervault_format::compute_digest;
 use ciphervault_snapshot::{chunk_and_encrypt_file, CHUNK_SIZE};
@@ -175,10 +177,11 @@ async fn test_proof_of_storage_readback_bandwidth_reduction() {
     let op_sk = generate_signing_key();
     let op_pk: [u8; 32] = op_sk.verifying_key().to_bytes();
     let temp_dir = std::env::temp_dir().join(format!("cv-pos-bench-{}", rand::random::<u128>()));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         "bench_op".into(),
         temp_dir.clone(),
         op_sk,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
     let app = create_router(state);
 

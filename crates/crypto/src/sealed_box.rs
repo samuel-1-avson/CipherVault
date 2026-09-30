@@ -3,6 +3,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::CryptoError;
 
@@ -20,12 +21,13 @@ fn derive_box_seal_key_and_nonce(
     hasher.update(ephemeral_pk.as_bytes());
     hasher.update(recipient_pk.as_bytes());
     hasher.update(shared_secret);
-    let hash = hasher.finalize();
+    let mut hash = hasher.finalize();
 
     let mut key = [0u8; 32];
     let mut nonce = [0u8; 24];
     key.copy_from_slice(&hash[0..32]);
     nonce.copy_from_slice(&hash[32..56]);
+    hash[..].zeroize();
     (key, nonce)
 }
 
@@ -33,20 +35,22 @@ fn derive_box_seal_key_and_nonce(
 /// The sender does NOT need a persistent private key.
 /// Output: `[ephemeral_public_key (32 bytes) || ciphertext + tag]`.
 pub fn seal_box(recipient_pk: &X25519PublicKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    let mut ephemeral_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut ephemeral_bytes);
-    let ephemeral_sk = X25519StaticSecret::from(ephemeral_bytes);
+    let mut ephemeral_bytes = Zeroizing::new([0u8; 32]);
+    rand::thread_rng().fill_bytes(ephemeral_bytes.as_mut());
+    let ephemeral_sk = X25519StaticSecret::from(*ephemeral_bytes);
     let ephemeral_pk = X25519PublicKey::from(&ephemeral_sk);
 
     let shared_point = ephemeral_sk.diffie_hellman(recipient_pk);
     let (key, nonce) =
         derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
+    let key = Zeroizing::new(key);
 
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| CryptoError::InvalidKeyLength {
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| {
+        CryptoError::InvalidKeyLength {
             expected: 32,
             actual: 32,
-        })?;
+        }
+    })?;
     let xnonce = XNonce::from_slice(&nonce);
 
     let ciphertext = cipher
@@ -85,12 +89,14 @@ pub fn open_sealed_box(
     let shared_point = recipient_sk.diffie_hellman(&ephemeral_pk);
     let (key, nonce) =
         derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
+    let key = Zeroizing::new(key);
 
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(&key).map_err(|_| CryptoError::InvalidKeyLength {
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| {
+        CryptoError::InvalidKeyLength {
             expected: 32,
             actual: 32,
-        })?;
+        }
+    })?;
     let xnonce = XNonce::from_slice(&nonce);
 
     let plaintext = cipher

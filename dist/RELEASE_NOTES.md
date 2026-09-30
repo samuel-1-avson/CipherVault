@@ -1,3 +1,38 @@
+# CipherVault 1.0.26
+
+This release hardens authorization, workspace isolation, recovery, persistent quotas,
+watcher retry behavior, restore publication, and signed installer verification.
+It also adds hosted account backup/restore rehearsal and shared dashboard telemetry.
+
+## Upgrade notes
+
+- New default captures retain v1 compatibility. V2 readers are included, but v2
+  writing requires `CIPHERVAULT_CHUNK_V2_WRITE=1`, upgraded readers, and independent
+  cryptographic review before production use. Default v1 retains the known public
+  complete-file candidate-confirmation limitation; no dedup percentage is promised.
+- Storage read/write capability no longer grants fleet administration. Strict
+  authentication and device enrollment default on. Configure independent operator
+  pins and explicit service-token endpoint/peer allowlists.
+- Sensitive hosted account operations require a signing-key or passkey login from
+  the last five minutes. TOTP/recovery login alone cannot issue production authority.
+  CI branch attestations and external provider verification remain unavailable and
+  fail explicitly. Key login alone is not enforced two-factor authentication.
+- V2 checksum signatures bind the release tag. Older V1-only updaters need a verified
+  bootstrap reinstall. Historical V1 install requires an exact version and explicit
+  compatibility opt-in. Install OpenSSL 3 through a trusted system package manager.
+- `restore --dry-run` validates plaintext recovery without writing files.
+  Restore remains a journaled merge; unrelated destination files are retained.
+- Preserve old epoch keys, protected account backups, historical KEKs, and operator
+  identities. Reauthentication is required when scope-token signing material rotates.
+
+See [remediation evidence](../report/AUDIT_REMEDIATION_2026-09-30.md) and
+[current security guarantees](../docs/CURRENT_SECURITY_GUARANTEES.md) for exact
+validation and remaining limits. Independent audit, physical hardware ceremonies,
+managed provider/KMS adapters, enforced MFA, and production capacity measurements
+remain open; this release does not certify those properties.
+
+---
+
 # CipherVault v1.0.0 (Hardened Production Release)
 
 **CipherVault** is a zero-knowledge, developer-first secret backup and disaster recovery system written in Rust and Solidity. It guarantees that secrets (such as `.env`, API keys, TLS certificates, and database credentials) can be reliably recovered on a clean replacement machine using only an offline paper recovery kit or distributed threshold shares and direct storage operators, without depending on centralized coordinators, SaaS databases, or blockchain wallets.

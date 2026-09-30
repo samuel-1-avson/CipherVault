@@ -2,17 +2,21 @@
 
 <div align="center">
 
-[![Version: v1.0.25](https://img.shields.io/badge/Version-v1.0.25-blue.svg)](dist/RELEASE_NOTES.md)
-[![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Deduplication: FastCDC 96.15%](https://img.shields.io/badge/FastCDC%20Deduplication-96.15%25-brightgreen.svg)](#-performance-benchmarks)
+[![Version: v1.0.26](https://img.shields.io/badge/Version-v1.0.26-blue.svg)](dist/RELEASE_NOTES.md)
+[![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
+[![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens--yubikey-piv)
-[![Tests: Passing](https://img.shields.io/badge/Tests-Passing%20(707%20tests)-success.svg)](#-verification--quality-gates)
+[![Verification](https://img.shields.io/badge/Verification-Quality%20Gates-blue.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
 [![Contributing: DCO](https://img.shields.io/badge/Contributions-DCO%20Signed--off-blueviolet.svg)](CONTRIBUTING.md)
 
-**Decentralized, zero-knowledge secret backup, version control, and clean-machine disaster recovery for confidential development files.**
+**Client-encrypted secret backup, version control, and clean-machine disaster recovery for confidential development files.**
+
+Captures default to legacy chunk v1. [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) requires explicit `CIPHERVAULT_CHUNK_V2_WRITE=1` opt-in pending independent cryptographic review; both versions remain readable. Default v1 and old history retain public candidate-file confirmation and lack encrypted chunk reuse across edits. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
+
+Use version 1.0.26 or newer for the 30 September remediation. Older 1.0.25 binaries do not contain these fixes. Upgrade every reader before enabling v2 writers; older binaries cannot read new v2 chunks.
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
@@ -60,11 +64,11 @@ Developers are taught from day one: **never commit secrets to Git**. We dutifull
 
 Think of CipherVault as a **sovereign, decentralized safety deposit box and time machine for confidential files**:
 
-1. **Military-Grade Local Encryption**: Before any file leaves your computer, CipherVault encrypts it using state-of-the-art cryptography (`XChaCha20-Poly1305`). Your encryption keys never leave your device.
-2. **Smart Puzzle Slicing (FastCDC)**: Instead of re-uploading entire files when you change a single line, CipherVault chops files into content-defined chunks. Changing one API key only touches a tiny 4 KiB slice, achieving a **96.15% deduplication ratio**.
-3. **Untrusted Storage Operators**: Encrypted chunks are replicated across a federated network of independent storage nodes. The nodes only see opaque random-looking ciphertext addressed by cryptographic content hashes (SHA-256). They cannot read your file names, folder structures, or secrets.
-4. **Sovereign Clean-Machine Disaster Recovery**: If your computer is destroyed tomorrow, you can reconstruct every single secret file onto a virgin machine using **only an offline paper recovery kit** or **$M$-of-$N$ team guardian shares** (e.g., any 2 of 3 team leads). No cloud logins, no blockchain wallets, and zero external trust required.
-5. **Zero-Disk Execution**: You never need to keep plaintext `.env` files sitting on your disk. CipherVault can decrypt secrets directly into the memory of your running application (`npm start`, `python main.py`, `docker compose up`) and immediately zeroize them when finished.
+1. **Client Encryption**: CipherVault encrypts tracked file content using `XChaCha20-Poly1305` before uploading it. Epoch keys leave the device only inside encrypted recovery envelopes.
+2. **Content-Defined Chunks (FastCDC)**: Opt-in v2 captures reuse the same encrypted object when padded chunk content is unchanged within a vault and epoch. Reuse depends on the edit and chunk boundaries; small files may fit in a single chunk. Default v1 reuses unchanged whole-file versions.
+3. **Storage Operators**: Encrypted chunks are replicated across configured storage nodes. Paths and contents stay encrypted. Operators can observe public vault/epoch headers, chunk equality, object sizes, counts and access patterns; a node count alone does not establish independent failure domains.
+4. **Clean-Machine Disaster Recovery**: An offline recovery kit or enough matching guardian shares can reconstruct a remotely replicated snapshot, provided its operators remain reachable and hold the complete recovery set. Signed device authority and ancestry are checked before selecting a recovery head.
+5. **Environment Injection**: `ciphervault run` supplies decrypted values to the child process without creating a plaintext secrets file. The child, operating system, crash dumps and swap remain outside this file-writing guarantee.
 
 ---
 
@@ -78,7 +82,7 @@ flowchart TB
         direction TB
         Files["Local Confidential Files\n(.env, certs/server.key, config/credentials.json)"]
         FastCDC["FastCDC Slicing Engine\n(4 KiB min / 16 KiB avg / 64 KiB max)"]
-        Crypto["Crypto Core Engine\n(XChaCha20-Poly1305 AEAD + Blake2b KDF)"]
+        Crypto["Crypto Core Engine\n(XChaCha20-Poly1305 AEAD + versioned KDFs)"]
         Keyring[("OS Keyring & Local Store\nWindows DPAPI / Machine AEAD (vault.db)")]
         ZeroDisk["In-Memory Process Execution\n(ciphervault run -- npm start)"]
         
@@ -108,7 +112,7 @@ flowchart TB
     end
 
     subgraph Settlement ["Immutable Settlement & Anchoring"]
-        Arbitrum["Arbitrum One (L2 Rollup)\nCipherVaultRegistry.sol (EIP-712 Checkpoints)"]
+        Arbitrum["Arbitrum One (L2 Rollup)\nCipherVaultRegistry.sol (Salted Commitments)"]
     end
 
     subgraph Recovery ["Sovereign Clean-Machine Recovery"]
@@ -140,17 +144,17 @@ flowchart TB
 
 ### Core Security Invariants
 
-* **Zero-Plaintext at Rest**: Local keys and database credentials are sealed with hardware-backed or operating system keyrings (Windows DPAPI `CryptProtectData` or machine-entropy AEAD on Linux/macOS).
+* **Protected Local Keys**: Windows protects local device and epoch keys with DPAPI. Other platforms use an authenticated envelope backed by an explicitly configured master key or a private persistent key file. Missing key files are provisioned without overwriting existing or malformed files. Tracked working files, restore backups, paths and database metadata still require disk and account protection.
 * **Zero-Plaintext to Storage Operators**: All chunk slicing, manifest generation, and encryption happen strictly on the client workstation. Storage operators receive opaque ciphertext blobs addressed by SHA-256 content identifiers (CIDs).
 * **Zero-Disk Master Secret ($R$)**: The 256-bit root recovery secret $R$ is printed exclusively to your terminal upon initialization, requires interactive acknowledgement, and is immediately purged from RAM using memory-zeroizing fences (`ZeroizeOnDrop`).
 * **Cryptographic Proof-of-Storage (PoS)**: Remote replica durability is verified using domain-separated nonce challenge-response protocols (`"CIPHERVAULT-POS-V1"`), slashing verification bandwidth by **99.96%** (461 bytes instead of 1 MiB per chunk).
-* **Deterministic Key Hierarchy**: All operational keys (epoch encryption keys, device identity keys, operator authentication tokens, and content locators) are cryptographically derived from Master Secret $R$ via the custom domain-separated Blake2b KDF (ADR-001).
+* **Versioned Key Hierarchy**: Recovery descriptors and legacy manifest/file derivations retain the custom Blake2b v1 KDF. Random epoch and device keys are separate. New v2 opaque identifiers and chunk key/nonces use HKDF-SHA256 with explicit vault, epoch and domain bindings.
 
 ---
 
 ### Workspace Component Anatomy
 
-CipherVault is engineered as a high-performance modular Rust workspace (11 crates and services) with zero external C FFI dependencies:
+CipherVault is a modular Rust workspace with operating system cryptography, SQLite and optional smartcard integrations:
 
 | Component | Path | Language / Tech | Primary Responsibility |
 |---|---|---|---|
@@ -159,27 +163,27 @@ CipherVault is engineered as a high-performance modular Rust workspace (11 crate
 | **Web Dashboard** | `apps/ui` | HTML5, CSS3, Vanilla JS | Embedded visual secrets explorer, telemetry viewer, diff viewer, and Shamir simulator. |
 | **Crypto Core** | `crates/crypto` | Rust (XChaCha20, Ed25519, Dalek) | AEAD primitives, custom Blake2b KDF, constant-time $\text{GF}(2^8)$ Shamir, sealed boxes, PC/SC PIV driver. |
 | **Wire Format** | `crates/format` | Rust (Canonical CBOR) | Canonical deterministic serialization for Genesis, Head, Snapshot, and Manifest records. |
-| **Snapshot Engine** | `crates/snapshot` | Rust (FastCDC, Gear Hash) | Content-defined chunking (4/16/64 KiB), deduplication, encryption, and atomic restores. |
+| **Snapshot Engine** | `crates/snapshot` | Rust (FastCDC, Gear Hash) | Versioned chunk encryption, reusable v2 objects, and journaled restore with rollback. |
 | **Local Store** | `crates/local-store` | Rust (Rusqlite WAL, DPAPI) | Local SQLite state, tracked file registry, snapshot DAG, and device keyrings. |
 | **Recovery Primitives** | `crates/recovery` | Rust (Shamir, CRC32) | Paper kit derivation, threshold guardian generation, and out-of-band challenge approval. |
 | **Storage Client** | `crates/storage` | Rust (Reqwest, Futures) | Concurrent multi-operator replication pool, PoS verification, and relayer clients. |
 | **Storage Operator** | `services/operator` | Rust (Axum, Tokio) | Zero-knowledge chunk store, PoS challenge responder, P2P peer gossip, and relayer proxy. |
 | **Maintenance Fleet** | `services/maintenance` | Rust (Tokio, Rusqlite) | Periodic replication auditor, node latency monitor, and autonomous self-repair scheduler. |
-| **Account Service** | `services/account` | Rust (Axum, WebAuthn) | Optional self-hosted multi-device synchronization, passkey enrollment, and TOTP MFA. |
-| **L2 Registry** | `contracts/` | Solidity 0.8.28 (Foundry) | Immutable EIP-712 state commitment anchor contract deployed on Arbitrum One. |
+| **Account Service** | `services/account` | Rust (Axum, WebAuthn) | Optional self-hosted multi-device synchronization, passkey enrollment, and TOTP alternate login. |
+| **L2 Registry** | `contracts/` | Solidity 0.8.28 (Foundry) | Immutable opaque commitment registry contract deployed on Arbitrum One. |
 
 ---
 
 ## ✨ Important Features
 
 ### 🔐 Cryptographic Sovereignty
-* **Authenticated Client Encryption**: All confidential payloads are encrypted using `XChaCha20-Poly1305` (256-bit key, 192-bit nonce) with domain-separated custom Blake2b key derivation (ADR-001).
-* **Deterministic Content Addressing**: Chunks are addressed exclusively by their SHA-256 content hashes, completely obscuring original file names, directory paths, and file sizes from storage operators.
-* **Volatile Memory Scrubbing**: Sensitive cryptographic key buffers implement `Zeroize` and `ZeroizeOnDrop` compiler fences to prevent plaintext leaks in core dumps or swap memory.
+* **Authenticated Client Encryption**: File payloads use `XChaCha20-Poly1305` (256-bit key, 192-bit nonce); header fields are authenticated and whole-file digest/order/length checks precede restore.
+* **Opaque v2 Identifiers (Opt-In)**: Operators address encrypted CBOR objects by SHA-256 CID. Keyed v2 identifiers prevent public candidate-file hashing from matching v2 metadata; deterministic equality, object lengths, epoch/vault and access patterns remain visible. Default v1 and old snapshots retain their public candidate-confirmation limitation; enabling v2 does not erase history.
+* **Memory Scrubbing**: Sensitive owned buffers use zeroization on release and error paths. This reduces retention; it does not prevent the OS or child processes from copying secrets.
 
 ### 🧩 Content-Defined Chunking (FastCDC)
 * **Gear Rolling Hash**: Byte-level sliding window with compile-time `SplitMix64` lookup tables dynamically determines chunk boundaries (4 KiB min, 16 KiB avg, 64 KiB max).
-* **96.15% Deduplication**: Local edits to a single credential or environment variable only modify the containing chunk; all other chunks remain identical, drastically slashing network traffic and storage overhead.
+* **Encrypted Chunk Reuse**: Unchanged v2 chunks retain their CIDs across edits and moves within the same vault and epoch, including repeated chunks in one file. Changing epochs or vaults deliberately changes their addresses. Historical v1 chunks bind the entire file version and do not provide this edit reuse.
 
 ### 📜 Clean-Machine Disaster Recovery
 * **Emergency Offline Paper Recovery Kit**: Generates an interactive terminal recovery sheet containing Master Secret $R$ and a CRC32 checksum. Print or write this down once to restore your entire secret vault onto any new computer.
@@ -208,13 +212,15 @@ CipherVault is engineered as a high-performance modular Rust workspace (11 crate
 ### ⏱️ Autonomous File Watcher Daemon (`ciphervault watch`)
 * **OS-Level File Event Hook**: Listens to native filesystem change notifications using the `notify` crate.
 * **Intelligent Debouncing & Coherent Reads**: Waits for writes to settle (default: 2 seconds) and verifies coherent reads before automatically creating FastCDC snapshots and replicating them to operators.
+* **Missed-Event Recovery**: A three-second fallback scan compares tracked content with the committed manifest. Detection never acknowledges uncaptured bytes; failed captures remain dirty. Native events and queued capture jobs are bounded/coalesced, while a separate worker handles uploads and allows shutdown cancellation.
+* **Historical Epochs and Restore**: Restore, diff and legacy run load each snapshot's recorded epoch key. Restores stage all verified files and backups in a private journal directory, then publish with per-file atomic replacement and rollback on failure. See the [transaction limits](docs/CURRENT_SECURITY_GUARANTEES.md#capture-restore-and-execution).
 
 ### 🚫 Git Leak Prevention Hook (`ciphervault hook`)
 * **Automated `.gitignore` Sync**: Adding confidential files via `ciphervault track` automatically ensures they are excluded in `.gitignore`.
 * **Pre-Commit Enforcement**: Installable Git pre-commit hook blocks accidental staging or committing of confidential files.
 
 ### ⛓️ Tamper-Evident L2 State Anchoring
-* **Arbitrum One Rollup Commitments**: Anchor cryptographic state commitments to an on-chain Solidity registry contract using salted EIP-712 hashes.
+* **Arbitrum One Rollup Commitments**: Anchor cryptographic state commitments to an on-chain Solidity registry contract using salted state commitments; the contract does not validate EIP-712 signatures.
 * **Immutable Sequencer Receipts**: Persist on-chain transaction receipts locally to mathematically prove vault state integrity at any historical point in time.
 
 ---
@@ -223,7 +229,7 @@ CipherVault is engineered as a high-performance modular Rust workspace (11 crate
 
 ### Prerequisites
 * **Operating System**: Windows 10/11, macOS (Apple Silicon or Intel), or Linux (Ubuntu, Debian, Fedora, Arch).
-* **Rust Toolchain**: Rust `1.80.0` or newer (if building from source).
+* **Rust Toolchain**: Rust `1.89.0` or newer (if building from source).
 * **PC/SC Smartcard Service**: (Optional, only for YubiKey PIV hardware token features). Enabled by default on Windows (`winscard`); install `pcscd` on Linux.
 
 ---
@@ -547,7 +553,7 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault history` | *None* | Displays the snapshot commit DAG history. |
 | `ciphervault run` | `[-s/--snapshot <HEX>] [-e/--env-file <FILE>] [--no-inherit] [--dry-run] [--set <K=V...>] -- <CMD...>` | Injects decrypted secrets directly into child process environment in volatile RAM (zero disk exposure). |
 | `ciphervault diff` | `[<SNAPSHOT_A>] [<SNAPSHOT_B>] [-f/--file <PATH>] [--reveal] [--json]` | Compares confidential file changes with shoulder-surfing masking enabled by default. |
-| `ciphervault restore` | `[-s/--snapshot <HEX>] [--to <DIR>] [--hardware-token]` | Restores confidential files from a historical snapshot to disk. |
+| `ciphervault restore` | `[-s/--snapshot <HEX>] [--to <DIR>] [--dry-run] [--hardware-token]` | Verifies a historical snapshot, previews without writes or publishes a journaled merge restore. |
 | `ciphervault recover` | `[--kit <PATH>] [--shares <PATH...>] --to <DIR> [--require-approval]` | Reconstructs confidential files on a clean machine using a paper kit or $M$-of-$N$ threshold guardian shares. |
 | `ciphervault recovery split` | `-t/--threshold <M> -s/--shares <N> [--kit <PATH>] [-o/--out-dir <DIR>]` | Splits master recovery secret $R$ into printable Shamir paper guardian sheets. |
 | `ciphervault recovery export` | *None* | Displays public descriptors (signing PK, encryption PK, locator) without exposing secret $R$. |
@@ -558,10 +564,10 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive full-screen Terminal User Interface dashboard. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser] [--local]` | Launches embedded Web Dashboard and Visual Secrets Explorer. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
-| `ciphervault anchor` | `[--head <CID>] [--auto-relay] [--relayer-url <URL>] [--daemon]` | Computes EIP-712 state commitment and submits to Arbitrum One L2 rollup. |
+| `ciphervault anchor` | `[--head <CID>] [--auto-relay] [--relayer-url <URL>] [--daemon]` | Computes a salted state commitment and submits to Arbitrum One L2 rollup. |
 | `ciphervault verify-anchor` | `[--head <CID>] [--rpc <URL>]` | Verifies on-chain commitment and finality on Arbitrum One. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
-| `ciphervault audit` | `[-o/--operators <URL...>]` | Performs remote replication quorum and CID closure audit across operators. |
+| `ciphervault audit` | `[-o/--operators <URL...>] [--recovery-drill] [--operator-pin <URL=64hex>]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
 | `ciphervault repair` | `[-o/--operators <URL...>] [--replicas <N>]` | Detects degraded replicas and self-heals by streaming missing chunks from surviving operators. |
 | `ciphervault peers` | `[--discover] [--mesh]` | Queries operators to inspect active nodes, dynamically discover peers via P2P gossip, or mesh routing tables via announce. |
 | `ciphervault lease create/renew` | `<CLOSURE|LEASE_ID> [--operator <URL>]` | Commits or renews a storage lease on one operator (device session auth). |
@@ -581,7 +587,7 @@ ciphervault approve sign <CHALLENGE_ID>
 
 ## 🐳 Docker Compose & Self-Hosting
 
-CipherVault includes production container configurations for running a fully self-hosted, sovereign storage federation:
+CipherVault includes container configurations for a self-hosted storage federation. Strict operator enrollment and independently obtained identity pins must be configured; see [security and deployment guarantees](docs/CURRENT_SECURITY_GUARANTEES.md#operator-authentication-and-pins).
 
 ```bash
 # Start 3-node storage federation, maintenance scheduler, and dashboard
@@ -602,7 +608,7 @@ open http://localhost:8080
 | `operator-2` | `ciphervault-operator-2` | `8202` | Secondary zero-knowledge storage operator |
 | `operator-3` | `ciphervault-operator-3` | `8203` | Tertiary zero-knowledge storage operator |
 | `maintenance` | `ciphervault-maintenance` | Internal | Periodic replication auditor & SQLite `fleet.db` self-repair daemon |
-| `account` | `ciphervault-account` | `8300` | Optional self-hosted account plane with WebAuthn passkeys & TOTP MFA |
+| `account` | `ciphervault-account` | `8300` | Optional self-hosted account plane with WebAuthn passkeys & TOTP alternate login |
 | `dashboard` | `ciphervault-dashboard` | `8080` | Self-contained visual explorer & dashboard |
 
 ### Self-Hosted Multi-Server Deployment
@@ -615,13 +621,13 @@ New operators start with the guided wizard (`ciphervault node setup` answers thr
 
 ## 📊 Performance Benchmarks
 
-Empirical performance metrics measured on x86_64 (release mode; your machine will differ):
+Historical x86_64 release measurements below describe the earlier implementation. They are workload examples, not v2 performance or universal deduplication guarantees; remeasure after protocol changes:
 
 | Metric | Measured Value | Benchmark Description / Comparison |
 |---|---|---|
 | **Chunk+Encrypt Pipeline** | **362.21 MiB/s** | End-to-end FastCDC chunking + `XChaCha20-Poly1305` AEAD (`throughput_benchmark`) |
 | **Decryption Throughput** | **669.74 MiB/s** | Streaming in-memory decrypt + reassembly, byte-identical round-trip |
-| **FastCDC Deduplication Ratio** | **96.15%** | 25/26 chunks preserved upon localized secret edit |
+| **FastCDC Boundary Reuse** | **96.15%** | Historical fixture preserved 25/26 plaintext chunks; v2 encrypted reuse is tested separately |
 | **PoS Readback Wire Reduction** | **99.956%** | Reduced from 1,048,576 bytes to 461 bytes per 1 MiB chunk |
 | **Concurrent Push Speedup** | **3.17x** | 8-way vs sequential replication, 48 x 16 KiB objects on 3 loopback operators (`push_bench`) |
 | **Integrity Fidelity** | **100.00%** | Zero bitflips across all chaos failure and recovery drills |
@@ -633,7 +639,7 @@ Empirical performance metrics measured on x86_64 (release mode; your machine wil
 CipherVault enforces strict zero-warning compilation and comprehensive multi-layer testing across cryptography, networking, and UI:
 
 ```bash
-# Execute workspace test suite (707 Rust tests plus UI/landing/contract suites, all passing as of 2026-09-29)
+# Execute the current workspace test suite; consult CI for the actual result
 cargo test --workspace --locked
 
 # Strict static analysis & linter enforcement (zero warnings policy)
@@ -644,6 +650,9 @@ cargo fmt --all -- --check
 
 # Single-page UI headless regression suite
 node apps/ui/audit.test.cjs
+
+# Real Chrome/Edge CSP regression (browser required; override CIPHERVAULT_TEST_BROWSER)
+node apps/ui/csp.browser.test.cjs
 
 # Solidity L2 registry test suite (Foundry)
 forge test

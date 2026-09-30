@@ -240,8 +240,22 @@ const RELEASE_SIGNING_KEYS: &[(&str, &str)] = &[(
 /// Detached-signature asset published next to every release archive set.
 const RELEASE_SIG_ASSET: &str = "SHA256SUMS.txt.sig";
 
-/// Only this signature envelope version is accepted; bump on format change.
-const RELEASE_SIG_VERSION: &str = "CIPHERVAULT-RELEASE-SIG-V1";
+const RELEASE_SIG_VERSION: &str = "CIPHERVAULT-RELEASE-SIG-V2";
+const LEGACY_RELEASE_SIG_VERSION: &str = "CIPHERVAULT-RELEASE-SIG-V1";
+
+pub(crate) fn release_signing_message(tag: &str, sums: &[u8]) -> Result<Vec<u8>> {
+    if tag.is_empty()
+        || tag.len() > 128
+        || !tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        bail!("release tag must be 1-128 ASCII letters, digits, dots, underscores, or hyphens");
+    }
+    let mut message = format!("{RELEASE_SIG_VERSION}\ntag: {tag}\n").into_bytes();
+    message.extend_from_slice(sums);
+    Ok(message)
+}
 
 /// Key id for a validated 64-char lowercase pubkey hex string.
 pub(crate) fn release_key_id_of_pubkey(pubkey_hex: &str) -> String {
@@ -274,25 +288,45 @@ fn decode_canonical_hex(field: &str, what: &str, len: usize) -> Result<Vec<u8>> 
     Ok(bytes)
 }
 
-/// Verifies a detached Ed25519 release signature over the exact
-/// `SHA256SUMS.txt` bytes. The envelope binds the release tag, so a
-/// signature cut from any other release is rejected even though the raw
-/// Ed25519 message is the sums file alone. Returns the signing key id.
+/// V2 authenticates the domain, release tag, and exact checksum bytes.
+/// Historical V1 is accepted only by an explicit compatibility policy.
 pub(crate) fn verify_release_signature(
     sums_bytes: &[u8],
     sig_text: &str,
     expected_tag: &str,
+) -> Result<String> {
+    let legacy_allowed =
+        std::env::var("CIPHERVAULT_ALLOW_LEGACY_RELEASE_SIGNATURE").as_deref() == Ok("1");
+    verify_release_signature_with_keys(
+        sums_bytes,
+        sig_text,
+        expected_tag,
+        RELEASE_SIGNING_KEYS,
+        legacy_allowed,
+    )
+}
+
+fn verify_release_signature_with_keys(
+    sums_bytes: &[u8],
+    sig_text: &str,
+    expected_tag: &str,
+    trusted_keys: &[(&str, &str)],
+    legacy_allowed: bool,
 ) -> Result<String> {
     let normalized = sig_text.trim_end_matches(['\r', '\n']);
     let lines: Vec<&str> = normalized.split('\n').collect();
     if lines.len() != 4 {
         bail!("release signature is malformed (expected a 4-line envelope)");
     }
-    if lines[0] != RELEASE_SIG_VERSION {
+    let legacy = lines[0] == LEGACY_RELEASE_SIG_VERSION;
+    if lines[0] != RELEASE_SIG_VERSION && !legacy {
         bail!(
             "release signature has unsupported version '{}' (expected {RELEASE_SIG_VERSION})",
             lines[0]
         );
+    }
+    if legacy && !legacy_allowed {
+        bail!("legacy V1 release signatures do not authenticate the tag; set CIPHERVAULT_ALLOW_LEGACY_RELEASE_SIGNATURE=1 only to install an explicitly selected historical release");
     }
     let tag = lines[1]
         .strip_prefix("tag: ")
@@ -307,7 +341,7 @@ pub(crate) fn verify_release_signature(
         .strip_prefix("key-id: ")
         .context("release signature is malformed (key-id line)")?;
     decode_canonical_hex(key_id, "key id", 8)?;
-    let (_, pubkey_hex) = RELEASE_SIGNING_KEYS
+    let (_, pubkey_hex) = trusted_keys
         .iter()
         .find(|(id, _)| *id == key_id)
         .with_context(|| {
@@ -331,8 +365,13 @@ pub(crate) fn verify_release_signature(
             .try_into()
             .context("release signature is not 64 bytes")?,
     );
+    let message = if legacy {
+        sums_bytes.to_vec()
+    } else {
+        release_signing_message(tag, sums_bytes)?
+    };
     verifying_key
-        .verify_strict(sums_bytes, &signature)
+        .verify_strict(&message, &signature)
         .map_err(|_| {
             anyhow::anyhow!(
                 "release signature verification failed (SHA256SUMS.txt is not signed by key '{key_id}')"
@@ -401,26 +440,43 @@ pub(crate) async fn check_for_updates() -> Result<ReleaseCheck> {
         .timeout(Duration::from_secs(20))
         .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let release: serde_json::Value = authed_request(
-        &client,
-        "https://api.github.com/repos/samuel-1-avson/CipherVault/releases/latest".to_string(),
-    )
-    .header("Accept", "application/vnd.github+json")
-    .send()
-    .await
-    .context("checking the CipherVault release feed")?
-    .error_for_status()
-    .with_context(|| {
-        format!("GitHub did not return the latest CipherVault release ({PRIVATE_REPO_HINT})")
-    })?
-    .json()
-    .await
-    .context("decoding the CipherVault release feed")?;
+    let selected_tag = std::env::var("CIPHERVAULT_VERSION")
+        .ok()
+        .filter(|tag| !tag.trim().is_empty());
+    if let Some(tag) = &selected_tag {
+        release_signing_message(tag, &[])?;
+    }
+    let feed_url = selected_tag
+        .as_ref()
+        .map(|tag| {
+            format!("https://api.github.com/repos/samuel-1-avson/CipherVault/releases/tags/{tag}")
+        })
+        .unwrap_or_else(|| {
+            "https://api.github.com/repos/samuel-1-avson/CipherVault/releases/latest".into()
+        });
+    let release: serde_json::Value = authed_request(&client, feed_url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .context("checking the CipherVault release feed")?
+        .error_for_status()
+        .with_context(|| {
+            format!("GitHub did not return the latest CipherVault release ({PRIVATE_REPO_HINT})")
+        })?
+        .json()
+        .await
+        .context("decoding the CipherVault release feed")?;
     let tag = release
         .get("tag_name")
         .and_then(serde_json::Value::as_str)
         .context("latest release did not include a tag")?;
     let current = env!("CARGO_PKG_VERSION");
+    if selected_tag
+        .as_deref()
+        .is_some_and(|selected| selected != tag)
+    {
+        bail!("Release feed tag does not match the explicitly selected version");
+    }
     let current_version = ReleaseVersion::parse(current);
     let latest_version = ReleaseVersion::parse(tag);
     let pending = latest_version
@@ -457,6 +513,10 @@ pub(crate) async fn apply_update(
         .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let tag = &pending.tag;
+    release_signing_message(tag, &[])?;
+    if ReleaseVersion::parse(env!("CARGO_PKG_VERSION")).is_newer_than(&ReleaseVersion::parse(tag)) {
+        bail!("Refusing to downgrade the installed version");
+    }
     let archive_name = format!(
         "ciphervault-{tag}-{}.{}",
         pending.target, pending.archive_suffix
@@ -502,7 +562,7 @@ pub(crate) async fn apply_update(
         .await
         .context("reading the latest CipherVault archive")?;
     on_stage("Downloading checksums...");
-    let sums = authed_request(&client, sums_url)
+    let sums_bytes = authed_request(&client, sums_url)
         .header("Accept", "application/octet-stream")
         .send()
         .await
@@ -511,7 +571,7 @@ pub(crate) async fn apply_update(
         .with_context(|| {
             format!("latest CipherVault checksum is unavailable ({PRIVATE_REPO_HINT})")
         })?
-        .text()
+        .bytes()
         .await
         .context("reading the CipherVault release checksum")?;
     on_stage("Downloading release signature...");
@@ -528,10 +588,16 @@ pub(crate) async fn apply_update(
         .await
         .context("reading the CipherVault release signature")?;
     on_stage("Verifying release signature...");
-    let signer = verify_release_signature(sums.as_bytes(), &sig_text, tag)?;
+    if sig_text.starts_with(LEGACY_RELEASE_SIG_VERSION)
+        && std::env::var("CIPHERVAULT_VERSION").as_deref() != Ok(tag.as_str())
+    {
+        bail!("Legacy release update requires CIPHERVAULT_VERSION to explicitly select its historical tag");
+    }
+    let signer = verify_release_signature(&sums_bytes, &sig_text, tag)?;
     on_stage(&format!("Release signature valid (key {signer})."));
     on_stage("Verifying checksum...");
-    let expected = find_checksum(&sums, &archive_name)
+    let sums = std::str::from_utf8(&sums_bytes).context("release checksum file must be UTF-8")?;
+    let expected = find_checksum(sums, &archive_name)
         .context("release checksum does not contain the selected archive")?;
     let actual = hex::encode(Sha256::digest(&archive));
     if expected != actual {
@@ -705,6 +771,9 @@ pub(crate) async fn cmd_update(check_only: bool, reinstall: bool) -> Result<()> 
 #[cfg(test)]
 mod update_version_tests {
     use super::*;
+    fn verify_legacy_fixture_signature(sums: &[u8], signature: &str, tag: &str) -> Result<String> {
+        verify_release_signature_with_keys(sums, signature, tag, RELEASE_SIGNING_KEYS, true)
+    }
 
     fn offers_update(current: &str, latest_tag: &str) -> bool {
         ReleaseVersion::parse(latest_tag).is_newer_than(&ReleaseVersion::parse(current))
@@ -911,7 +980,11 @@ mod update_version_tests {
     const FIXTURE_SIG_HEX: &str = "ed0b77b87e8194636f04dcf90268a0142f1c6380bc4bbb58ba7f84592019d8e8d4699befb5ea2bd09f76badfeeea33a0fbec7522fd1e760e22bd93a47d72c303";
 
     fn fixture_envelope() -> String {
-        render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", FIXTURE_SIG_HEX)
+        render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", FIXTURE_SIG_HEX).replacen(
+            RELEASE_SIG_VERSION,
+            LEGACY_RELEASE_SIG_VERSION,
+            1,
+        )
     }
 
     #[test]
@@ -932,17 +1005,21 @@ mod update_version_tests {
 
     #[test]
     fn genuine_release_signature_verifies() {
-        let key_id =
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &fixture_envelope(), FIXTURE_TAG)
-                .unwrap();
+        let key_id = verify_legacy_fixture_signature(
+            FIXTURE_SUMS.as_bytes(),
+            &fixture_envelope(),
+            FIXTURE_TAG,
+        )
+        .unwrap();
         assert_eq!(key_id, "b625994c0c3f53a6");
     }
 
     #[test]
     fn tampered_sums_rejected() {
         let tampered = FIXTURE_SUMS.replacen("9f86", "9f87", 1);
-        let err = verify_release_signature(tampered.as_bytes(), &fixture_envelope(), FIXTURE_TAG)
-            .unwrap_err();
+        let err =
+            verify_legacy_fixture_signature(tampered.as_bytes(), &fixture_envelope(), FIXTURE_TAG)
+                .unwrap_err();
         assert!(err.to_string().contains("verification failed"), "{err:#}");
     }
 
@@ -951,8 +1028,8 @@ mod update_version_tests {
         let mut bad_sig = FIXTURE_SIG_HEX.to_string();
         bad_sig.replace_range(0..1, if bad_sig.starts_with('e') { "f" } else { "e" });
         let envelope = render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", &bad_sig);
-        let err =
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG).unwrap_err();
+        let err = verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG)
+            .unwrap_err();
         assert!(err.to_string().contains("verification failed"), "{err:#}");
     }
 
@@ -965,8 +1042,8 @@ mod update_version_tests {
         let forged = hex::encode(attacker.sign(FIXTURE_SUMS.as_bytes()).to_bytes());
         assert_ne!(forged, FIXTURE_SIG_HEX);
         let envelope = render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", &forged);
-        let err =
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG).unwrap_err();
+        let err = verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG)
+            .unwrap_err();
         assert!(err.to_string().contains("verification failed"), "{err:#}");
     }
 
@@ -981,8 +1058,8 @@ mod update_version_tests {
         assert!(!is_pinned_release_key(&attacker_pub));
         let forged = hex::encode(attacker.sign(FIXTURE_SUMS.as_bytes()).to_bytes());
         let envelope = render_release_signature(FIXTURE_TAG, &attacker_id, &forged);
-        let err =
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG).unwrap_err();
+        let err = verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &envelope, FIXTURE_TAG)
+            .unwrap_err();
         assert!(
             err.to_string().contains("not a trusted release signer"),
             "{err:#}"
@@ -993,8 +1070,12 @@ mod update_version_tests {
     fn cross_tag_signature_rejected() {
         // A genuine signature cut from another release does not verify for
         // this tag, even though the raw sums bytes are identical.
-        let err = verify_release_signature(FIXTURE_SUMS.as_bytes(), &fixture_envelope(), "v9.9.10")
-            .unwrap_err();
+        let err = verify_legacy_fixture_signature(
+            FIXTURE_SUMS.as_bytes(),
+            &fixture_envelope(),
+            "v9.9.10",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not expected"), "{err:#}");
     }
 
@@ -1005,38 +1086,47 @@ mod update_version_tests {
             "CIPHERVAULT-RELEASE-SIG-V9",
             1,
         );
-        assert!(
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &bad_version, FIXTURE_TAG)
-                .unwrap_err()
-                .to_string()
-                .contains("unsupported version")
-        );
+        assert!(verify_legacy_fixture_signature(
+            FIXTURE_SUMS.as_bytes(),
+            &bad_version,
+            FIXTURE_TAG
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported version"));
         // Truncated envelope.
-        assert!(
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), "tag: v9.9.9\n", FIXTURE_TAG)
-                .is_err()
-        );
+        assert!(verify_legacy_fixture_signature(
+            FIXTURE_SUMS.as_bytes(),
+            "tag: v9.9.9\n",
+            FIXTURE_TAG
+        )
+        .is_err());
         // Empty document / unsigned artifact.
-        assert!(verify_release_signature(FIXTURE_SUMS.as_bytes(), "", FIXTURE_TAG).is_err());
+        assert!(verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), "", FIXTURE_TAG).is_err());
         // Extra trailing line.
         let extra = fixture_envelope() + "note: hello\n";
-        assert!(verify_release_signature(FIXTURE_SUMS.as_bytes(), &extra, FIXTURE_TAG).is_err());
+        assert!(
+            verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &extra, FIXTURE_TAG).is_err()
+        );
         // Uppercase hex is not canonical.
         let upper =
             fixture_envelope().replacen(FIXTURE_SIG_HEX, &FIXTURE_SIG_HEX.to_uppercase(), 1);
         assert!(
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &upper, FIXTURE_TAG)
+            verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &upper, FIXTURE_TAG)
                 .unwrap_err()
                 .to_string()
                 .contains("lowercase hex")
         );
         // Short signature.
         let short = render_release_signature(FIXTURE_TAG, "b625994c0c3f53a6", "ab");
-        assert!(verify_release_signature(FIXTURE_SUMS.as_bytes(), &short, FIXTURE_TAG).is_err());
+        assert!(
+            verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &short, FIXTURE_TAG).is_err()
+        );
         // Missing tag prefix.
         let no_prefix = fixture_envelope().replacen("tag: ", "", 1);
         assert!(
-            verify_release_signature(FIXTURE_SUMS.as_bytes(), &no_prefix, FIXTURE_TAG).is_err()
+            verify_legacy_fixture_signature(FIXTURE_SUMS.as_bytes(), &no_prefix, FIXTURE_TAG)
+                .is_err()
         );
     }
 
@@ -1059,6 +1149,78 @@ mod update_version_tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn v2_signatures_authenticate_tag_domain_and_exact_manifest_bytes() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[0x31; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let id = release_key_id_of_pubkey(&pk);
+        let trusted = [(id.as_str(), pk.as_str())];
+        let signature = hex::encode(
+            key.sign(&release_signing_message(FIXTURE_TAG, FIXTURE_SUMS.as_bytes()).unwrap())
+                .to_bytes(),
+        );
+        let envelope = render_release_signature(FIXTURE_TAG, &id, &signature);
+        assert!(verify_release_signature_with_keys(
+            FIXTURE_SUMS.as_bytes(),
+            &envelope,
+            FIXTURE_TAG,
+            &trusted,
+            false
+        )
+        .is_ok());
+        let swapped_tag = envelope.replace(FIXTURE_TAG, "v9.9.10");
+        assert!(verify_release_signature_with_keys(
+            FIXTURE_SUMS.as_bytes(),
+            &swapped_tag,
+            "v9.9.10",
+            &trusted,
+            false
+        )
+        .is_err());
+        assert!(verify_release_signature_with_keys(
+            b"tampered checksums",
+            &envelope,
+            FIXTURE_TAG,
+            &trusted,
+            false
+        )
+        .is_err());
+        assert!(verify_release_signature_with_keys(
+            FIXTURE_SUMS.as_bytes(),
+            &envelope,
+            FIXTURE_TAG,
+            RELEASE_SIGNING_KEYS,
+            false
+        )
+        .is_err());
+        assert!(verify_release_signature_with_keys(
+            FIXTURE_SUMS.as_bytes(),
+            "",
+            FIXTURE_TAG,
+            &trusted,
+            false
+        )
+        .is_err());
+        assert!(verify_release_signature_with_keys(
+            FIXTURE_SUMS.as_bytes(),
+            &fixture_envelope(),
+            FIXTURE_TAG,
+            RELEASE_SIGNING_KEYS,
+            false
+        )
+        .is_err());
+        assert!(verify_release_signature_with_keys(
+            FIXTURE_SUMS.as_bytes(),
+            &fixture_envelope(),
+            FIXTURE_TAG,
+            RELEASE_SIGNING_KEYS,
+            true
+        )
+        .is_ok());
+        assert!(release_signing_message("v1\ninjected", b"checksums").is_err());
     }
 
     #[test]

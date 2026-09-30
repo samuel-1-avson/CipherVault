@@ -11,6 +11,7 @@ pub(crate) mod router;
 pub(crate) mod scoped_api;
 pub(crate) mod server;
 pub(crate) mod session;
+pub(crate) mod telemetry;
 
 pub(crate) use account_proxy::*;
 pub(crate) use collectors::*;

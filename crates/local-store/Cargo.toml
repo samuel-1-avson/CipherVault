@@ -2,6 +2,7 @@
 name = "ciphervault-local-store"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
@@ -19,3 +20,5 @@ x25519-dalek.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ciphervault-file-lock.workspace = true
+zeroize.workspace = true

@@ -9,6 +9,7 @@ use ciphervault_format::{
     from_canonical_cbor, to_canonical_cbor, CheckpointEvidence, ChunkWireObject, DeviceCertificate,
     GenesisRecord, HeadRecord, SnapshotRecord,
 };
+use zeroize::Zeroizing;
 
 use crate::error::LocalStoreError;
 
@@ -59,6 +60,14 @@ pub struct PendingUpload {
     pub attempts: u32,
     pub last_error: Option<String>,
     pub created_at_utc: i64,
+}
+
+/// Aggregate durable replication backlog without loading snapshot rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUploadSummary {
+    pub count: u64,
+    pub failed_count: u64,
+    pub oldest_created_at_utc: Option<i64>,
 }
 
 /// Outcome of one retention prune sweep.
@@ -527,13 +536,13 @@ impl LocalVaultStore {
                 )));
             }
 
-            let decrypted_sk = crate::keyring::unprotect_secret(&dev_sk_blob)?;
+            let decrypted_sk = Zeroizing::new(crate::keyring::unprotect_secret(&dev_sk_blob)?);
             if decrypted_sk.len() != 32 {
                 return Err(LocalStoreError::KeyProtectionError(
                     "Decrypted device signing key has invalid length".into(),
                 ));
             }
-            let mut sk_bytes = [0u8; 32];
+            let mut sk_bytes = Zeroizing::new([0u8; 32]);
             sk_bytes.copy_from_slice(&decrypted_sk);
             let sk = SigningKey::from_bytes(&sk_bytes);
 
@@ -623,15 +632,15 @@ impl LocalVaultStore {
         let mut rows = stmt.query(params![epoch])?;
         if let Some(row) = rows.next()? {
             let blob: Vec<u8> = row.get(0)?;
-            let decrypted = crate::keyring::unprotect_secret(&blob)?;
+            let decrypted = Zeroizing::new(crate::keyring::unprotect_secret(&blob)?);
             if decrypted.len() != 32 {
                 return Err(LocalStoreError::KeyProtectionError(
                     "Decrypted epoch key has invalid length".into(),
                 ));
             }
-            let mut arr = [0u8; 32];
+            let mut arr = Zeroizing::new([0u8; 32]);
             arr.copy_from_slice(&decrypted);
-            Ok(VaultEpochKey::from_bytes(arr))
+            Ok(VaultEpochKey::from_bytes(*arr))
         } else {
             Err(LocalStoreError::NotFound(format!(
                 "Epoch key for epoch {}",
@@ -778,45 +787,157 @@ impl LocalVaultStore {
         Ok(())
     }
 
-    /// Retrieves a snapshot record by snapshot_id.
+    /// Validate certified signing authority before persisting a new snapshot/counter.
+    pub fn validate_capture_authority(
+        &self,
+        device_key: &SigningKey,
+        authority_generation: u64,
+    ) -> anyhow::Result<DeviceCertificate> {
+        self.validate_capture_authority_for_key(
+            device_key.verifying_key().as_bytes(),
+            authority_generation,
+        )
+    }
+
+    /// Select the latest root-certified generation for a signing key.
+    pub fn latest_capture_authority_for_key(
+        &self,
+        public_key: &[u8; 32],
+    ) -> anyhow::Result<DeviceCertificate> {
+        use anyhow::Context;
+        let vault_id = self.get_vault_id()?;
+        let (root, _, _) = self.get_recovery_descriptors()?;
+        let generation = self
+            .list_device_certificates()?
+            .iter()
+            .filter(|certificate| {
+                certificate.vault_id == vault_id
+                    && certificate.device_signing_pk == public_key
+                    && certificate.permissions & 1 != 0
+                    && certificate.verify(&root).is_ok()
+            })
+            .map(|certificate| certificate.authority_generation)
+            .max()
+            .context("No trusted capture authority for this signing key")?;
+        self.validate_capture_authority_for_key(public_key, generation)
+    }
+
+    pub fn validate_capture_authority_for_key(
+        &self,
+        public_key: &[u8; 32],
+        authority_generation: u64,
+    ) -> anyhow::Result<DeviceCertificate> {
+        use anyhow::Context;
+        let vault = self.get_vault_id()?;
+        let (recovery_root, _, _) = self.get_recovery_descriptors()?;
+        self.list_device_certificates()?
+            .into_iter()
+            .find(|certificate| {
+                certificate.version == ciphervault_format::PROTOCOL_VERSION
+                    && certificate.vault_id == vault
+                    && certificate.device_signing_pk == *public_key
+                    && certificate.authority_generation == authority_generation
+                    && certificate.permissions & 1 != 0
+                    && certificate.verify(&recovery_root).is_ok()
+            })
+            .context("No trusted signing certificate; capture must not advance local state")
+    }
+
+    /// Build and persist the authenticated recovery inventory of a saved snapshot.
     pub fn prepare_recovery_set(
         &self,
         record: &SnapshotRecord,
     ) -> anyhow::Result<ciphervault_format::RecoverySet> {
+        let (_, device_sk, _, _) = self.get_device_state()?;
+        self.prepare_recovery_set_signed(record, device_sk.verifying_key().as_bytes(), |envelope| {
+            envelope.sign(&device_sk)
+        })
+    }
+
+    /// Build an inventory using the hardware authority that signed the snapshot.
+    /// Existing inventories are immutable: retries return their exact original bytes.
+    pub fn prepare_recovery_set_with_hsm(
+        &self,
+        record: &SnapshotRecord,
+        hsm: &dyn ciphervault_crypto::HardwareSecurityModule,
+        slot: ciphervault_crypto::HsmSlot,
+    ) -> anyhow::Result<ciphervault_format::RecoverySet> {
         use anyhow::Context;
+        let public_key: [u8; 32] = hsm
+            .get_public_key(slot)?
+            .as_slice()
+            .try_into()
+            .context("Hardware signing key must be a 32-byte Ed25519 key")?;
+        self.prepare_recovery_set_signed(record, &public_key, |envelope| {
+            envelope.sign_with_hsm(hsm, slot)
+        })
+    }
+
+    fn prepare_recovery_set_signed(
+        &self,
+        record: &SnapshotRecord,
+        public_key: &[u8; 32],
+        sign_envelope: impl FnOnce(
+            &mut ciphervault_format::EpochEnvelope,
+        ) -> Result<(), ciphervault_format::FormatError>,
+    ) -> anyhow::Result<ciphervault_format::RecoverySet> {
         use ciphervault_format::{
             compute_digest, EpochEnvelope, RecoveryClosure, RecoverySet, SnapshotManifest,
         };
         use x25519_dalek::PublicKey as X25519PublicKey;
 
-        let (recovery_pk, encryption_pk_bytes, locator) = self.get_recovery_descriptors()?;
+        let record_cid = record.compute_record_cid()?;
+        let existing: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT set_cbor FROM recovery_sets WHERE head_cid = ?1",
+                params![record_cid.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(bytes) = existing {
+            let set: RecoverySet = from_canonical_cbor(&bytes)?;
+            anyhow::ensure!(
+                set.closure.snapshot_record_cid == record_cid
+                    && set.closure.snapshot_id == record.snapshot_id
+                    && set.closure.manifest_cid == record.encrypted_manifest_cid,
+                "Stored recovery set does not match its snapshot"
+            );
+            return Ok(set);
+        }
+        anyhow::ensure!(
+            record.version == ciphervault_format::PROTOCOL_VERSION
+                && record.vault_id == self.get_vault_id()?,
+            "Snapshot version/vault mismatch"
+        );
+        record.verify(public_key)?;
+        let (_, encryption_pk_bytes, locator) = self.get_recovery_descriptors()?;
         let encryption_pk = X25519PublicKey::from(encryption_pk_bytes);
 
-        let (device_id, device_sk, _, _) = self.get_device_state()?;
-        let cert = self
-            .list_device_certificates()?
-            .into_iter()
-            .find(|c| {
-                c.vault_id == record.vault_id
-                    && c.device_signing_pk == device_sk.verifying_key().to_bytes()
-                    && c.authority_generation == record.authority_generation
-                    && c.permissions & 1 != 0
-                    && c.verify(&recovery_pk).is_ok()
-            })
-            .context(
-                "No trusted signing certificate for snapshot; cannot publish recoverable backup",
-            )?;
+        let cert =
+            self.validate_capture_authority_for_key(public_key, record.authority_generation)?;
         let epoch_key = self.get_epoch_key(record.epoch)?;
         let (_, encrypted_manifest) = self.get_snapshot(&record.compute_record_cid()?)?;
-        let key = epoch_key.derive_manifest_key(record.epoch)?;
+        let key = Zeroizing::new(epoch_key.derive_manifest_key(record.epoch)?);
         let aad = [
             b"CipherVault-Manifest:".as_slice(),
             &record.vault_id,
             &record.epoch.to_le_bytes(),
         ]
         .concat();
-        let plaintext = ciphervault_crypto::decrypt_chunk(&key, &encrypted_manifest, &aad)?;
+        let plaintext = Zeroizing::new(ciphervault_crypto::decrypt_chunk(
+            &key,
+            &encrypted_manifest,
+            &aad,
+        )?);
         let manifest: SnapshotManifest = from_canonical_cbor(&plaintext)?;
+        anyhow::ensure!(
+            manifest.version == ciphervault_format::PROTOCOL_VERSION
+                && manifest.vault_id == record.vault_id
+                && manifest.epoch == record.epoch
+                && manifest.snapshot_id == record.snapshot_id,
+            "Snapshot manifest binding mismatch"
+        );
         let mut envelope = EpochEnvelope {
             version: ciphervault_format::PROTOCOL_VERSION,
             vault_id: record.vault_id.clone(),
@@ -824,10 +945,11 @@ impl LocalVaultStore {
             recipient_fingerprint: encryption_pk.as_bytes().to_vec(),
             sealed_epoch_key: ciphervault_crypto::seal_box(&encryption_pk, epoch_key.as_bytes())?,
             created_at_utc: record.advisory_timestamp_utc,
-            signer_device_id: device_id.to_vec(),
+            signer_device_id: record.device_id.clone(),
             signature: Vec::new(),
         };
-        envelope.sign(&device_sk)?;
+        sign_envelope(&mut envelope)?;
+        envelope.verify(public_key)?;
         let genesis = self.get_genesis_record()?;
         let records = vec![
             to_canonical_cbor(&genesis)?,
@@ -856,13 +978,14 @@ impl LocalVaultStore {
             records,
         };
         self.conn.execute(
-            "INSERT OR REPLACE INTO recovery_sets (head_cid, set_cbor) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO recovery_sets (head_cid, set_cbor) VALUES (?1, ?2)",
             params![
                 record.compute_record_cid()?.as_slice(),
                 to_canonical_cbor(&set)?
             ],
         )?;
-        Ok(set)
+        // Concurrent preparers converge on the first complete durable inventory.
+        self.get_recovery_set(&record_cid)
     }
 
     pub fn get_recovery_set(
@@ -1164,6 +1287,24 @@ impl LocalVaultStore {
         }
     }
 
+    /// Gets the retained signed head bound to a snapshot record CID, including
+    /// inactive snapshots awaiting replication after a newer capture.
+    pub fn get_head_for_snapshot(
+        &self,
+        record_cid: &[u8; 32],
+    ) -> Result<Option<HeadRecord>, LocalStoreError> {
+        let cbor: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT head_cbor FROM heads WHERE snapshot_id = ?1",
+                params![record_cid.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        cbor.map(|bytes| from_canonical_cbor(&bytes).map_err(LocalStoreError::from))
+            .transpose()
+    }
+
     /// Stores verified on-chain checkpoint evidence.
     pub fn save_checkpoint_evidence(
         &self,
@@ -1454,6 +1595,19 @@ impl LocalVaultStore {
             params![snapshot_id.as_slice(), error],
         )?;
         Ok(())
+    }
+
+    /// Summarizes the durable replication backlog in constant output space.
+    pub fn pending_upload_summary(&self) -> Result<PendingUploadSummary, LocalStoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN attempts > 0 THEN 1 ELSE 0 END), 0), MIN(created_at_utc) FROM pending_uploads",
+            [],
+            |row| Ok(PendingUploadSummary {
+                count: row.get(0)?,
+                failed_count: row.get(1)?,
+                oldest_created_at_utc: row.get(2)?,
+            }),
+        )?)
     }
 
     /// Lists all snapshots currently awaiting replication in the pending queue.
@@ -2081,6 +2235,48 @@ mod tests {
     }
 
     #[test]
+    fn pending_upload_summary_tracks_failure_and_completion_without_loading_rows() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        assert_eq!(
+            store.pending_upload_summary().unwrap(),
+            PendingUploadSummary {
+                count: 0,
+                failed_count: 0,
+                oldest_created_at_utc: None,
+            }
+        );
+        for (id, timestamp) in [(1u8, 300i64), (2, 100), (3, 200)] {
+            store.conn.execute(
+                "INSERT INTO pending_uploads(snapshot_id, record_cid, created_at_utc) VALUES(?1, ?2, ?3)",
+                params![[id; 32].as_slice(), [id + 10; 32].as_slice(), timestamp],
+            ).unwrap();
+        }
+        store
+            .record_upload_failure(&[2; 32], "synthetic retry failure")
+            .unwrap();
+        store
+            .record_upload_failure(&[2; 32], "synthetic second failure")
+            .unwrap();
+        assert_eq!(
+            store.pending_upload_summary().unwrap(),
+            PendingUploadSummary {
+                count: 3,
+                failed_count: 1,
+                oldest_created_at_utc: Some(100),
+            }
+        );
+        store.mark_upload_completed(&[2; 32]).unwrap();
+        assert_eq!(
+            store.pending_upload_summary().unwrap(),
+            PendingUploadSummary {
+                count: 2,
+                failed_count: 0,
+                oldest_created_at_utc: Some(200),
+            }
+        );
+    }
+
+    #[test]
     fn test_checkpoint_evidence_storage() {
         let store = LocalVaultStore::open(":memory:").unwrap();
         let salt = [1u8; 32];
@@ -2198,6 +2394,14 @@ mod tests {
             store.get_active_head().unwrap().unwrap().snapshot_id,
             vec![0xBBu8; 32]
         );
+        let older = store.get_head_for_snapshot(&[0xAA; 32]).unwrap().unwrap();
+        assert_eq!(older.device_counter, 1);
+        older.verify(dev_sk.verifying_key().as_bytes()).unwrap();
+        assert_eq!(
+            store.get_head_for_snapshot(&[0xBB; 32]).unwrap().unwrap(),
+            head2
+        );
+        assert!(store.get_head_for_snapshot(&[0xCC; 32]).unwrap().is_none());
     }
 
     #[test]
@@ -2305,6 +2509,160 @@ mod tests {
         assert!(remaining.contains(&shared_cid));
         assert!(remaining.contains(&new_only_cid));
         assert!(!remaining.contains(&old_only_cid));
+    }
+
+    #[test]
+    fn certified_hardware_recovery_set_is_valid_and_immutable() {
+        use ciphervault_crypto::{HardwareSecurityModule, HsmSlot, SoftwareHsmSimulator};
+        use ciphervault_format::{compute_digest, EpochEnvelope, SnapshotManifest};
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let recovery = RecoverySecret::generate();
+        let root_signer = recovery.derive_recovery_signing_key().unwrap();
+        let (recovery_enc_sk, recovery_enc_pk) =
+            recovery.derive_recovery_encryption_keys().unwrap();
+        let vault = [41; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.to_vec(),
+            recovery_signing_pk: root_signer.verifying_key().to_bytes().to_vec(),
+            recovery_encryption_pk: recovery_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0; 32],
+            created_at_utc: 1,
+            creation_nonce: vec![0; 32],
+            signature: vec![],
+        };
+        genesis.sign(&root_signer).unwrap();
+        let epoch_key = VaultEpochKey::generate();
+        store
+            .init_vault(
+                &vault,
+                &genesis,
+                &generate_signing_key(),
+                &[42; 32],
+                &epoch_key,
+                &recovery.derive_recovery_locator().unwrap(),
+            )
+            .unwrap();
+        let hsm = SoftwareHsmSimulator::from_seeds(&[43; 32], &[44; 32]);
+        let public_key: [u8; 32] = hsm
+            .get_public_key(HsmSlot::DigitalSignature)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert!(store
+            .validate_capture_authority_for_key(&public_key, 3)
+            .is_err());
+        assert!(store.list_snapshots().unwrap().is_empty());
+        let mut certificate = DeviceCertificate {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.to_vec(),
+            certificate_id: vec![45; 32],
+            device_signing_pk: public_key.to_vec(),
+            permissions: 1,
+            authority_generation: 3,
+            issued_at_utc: 1,
+            signature: vec![],
+        };
+        certificate.sign(&root_signer).unwrap();
+        store.save_device_certificate(&certificate).unwrap();
+        store
+            .validate_capture_authority_for_key(&public_key, 3)
+            .unwrap();
+        let manifest = SnapshotManifest {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.to_vec(),
+            epoch: 1,
+            snapshot_id: vec![46; 32],
+            files: vec![],
+        };
+        let aad = [
+            b"CipherVault-Manifest:".as_slice(),
+            vault.as_slice(),
+            &1u64.to_le_bytes(),
+        ]
+        .concat();
+        let encrypted = ciphervault_crypto::encrypt_chunk(
+            &epoch_key.derive_manifest_key(1).unwrap(),
+            &to_canonical_cbor(&manifest).unwrap(),
+            &aad,
+        )
+        .unwrap();
+        let mut record = SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.to_vec(),
+            snapshot_id: manifest.snapshot_id.clone(),
+            parent_snapshot_ids: vec![],
+            device_id: vec![42; 32],
+            device_counter: 1,
+            authority_generation: 3,
+            epoch: 1,
+            encrypted_manifest_cid: compute_digest(&encrypted).to_vec(),
+            encrypted_manifest_len: encrypted.len() as u64,
+            advisory_timestamp_utc: 1,
+            signature: vec![],
+        };
+        record
+            .sign_with_hsm(&hsm, HsmSlot::DigitalSignature)
+            .unwrap();
+        store.save_snapshot(&record, &encrypted, &[]).unwrap();
+        assert!(
+            store.prepare_recovery_set(&record).is_err(),
+            "Software key must not authorize a hardware record"
+        );
+        let set = store
+            .prepare_recovery_set_with_hsm(&record, &hsm, HsmSlot::DigitalSignature)
+            .unwrap();
+        let envelope: EpochEnvelope = from_canonical_cbor(&set.records[2]).unwrap();
+        envelope.verify(&public_key).unwrap();
+        assert_eq!(
+            ciphervault_crypto::open_sealed_box(
+                &recovery_enc_sk,
+                &recovery_enc_pk,
+                &envelope.sealed_epoch_key
+            )
+            .unwrap(),
+            epoch_key.as_bytes()
+        );
+        let mut head = HeadRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.to_vec(),
+            snapshot_id: record.compute_record_cid().unwrap().to_vec(),
+            parent_snapshot_ids: vec![],
+            closure_digest: set.closure.compute_base_closure_digest().unwrap().to_vec(),
+            device_id: vec![42; 32],
+            device_counter: 1,
+            signature: vec![],
+        };
+        head.sign_with_hsm(&hsm, HsmSlot::DigitalSignature).unwrap();
+        let mut discovery = set.records.clone();
+        discovery.push(to_canonical_cbor(&head).unwrap());
+        let (selected, cert) = ciphervault_recovery::trust::select_head(
+            &discovery,
+            &vault,
+            root_signer.verifying_key().as_bytes(),
+        )
+        .unwrap();
+        ciphervault_recovery::trust::verify_snapshot(&record, &selected, &cert).unwrap();
+        ciphervault_recovery::trust::select_envelope(
+            &discovery,
+            &record,
+            &cert,
+            recovery_enc_pk.as_bytes(),
+        )
+        .unwrap();
+        let again = store
+            .prepare_recovery_set_with_hsm(&record, &hsm, HsmSlot::DigitalSignature)
+            .unwrap();
+        let legacy_retry = store.prepare_recovery_set(&record).unwrap();
+        assert_eq!(
+            to_canonical_cbor(&set).unwrap(),
+            to_canonical_cbor(&again).unwrap()
+        );
+        assert_eq!(
+            to_canonical_cbor(&set).unwrap(),
+            to_canonical_cbor(&legacy_retry).unwrap()
+        );
+        assert_eq!(store.recovery_objects(&set).unwrap().len(), 5);
     }
 
     #[test]

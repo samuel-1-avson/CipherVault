@@ -4,7 +4,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -32,6 +32,14 @@ pub const MAX_ACTIVE_CHALLENGES: usize = 5_000;
 pub const MAX_ACTIVE_SESSIONS: usize = 5_000;
 pub const MAX_RECORDS_PER_LOCATOR: usize = 10_000;
 pub const MAX_RECOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_RECOVERY_LOG_BYTES: u64 = 64 * 1024 * 1024;
+pub const RECOVERY_PAGE_BYTES: usize = 1024 * 1024;
+
+pub struct RecoveryPage {
+    pub records: Vec<Vec<u8>>,
+    /// Byte offset of the next complete frame, scoped to this append-only locator.
+    pub next_cursor: Option<u64>,
+}
 pub const MAX_RELAYED_CHECKPOINTS: usize = 5_000;
 pub const MAX_ACTIVE_PEERS: usize = 128;
 /// Peer announces older than this are rejected at registration (replay
@@ -222,6 +230,62 @@ struct PersistedSession {
     expires_at_utc: u64,
     public_key_hex: String,
     vault_id_hex: String,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    device_id_hex: Option<String>,
+}
+
+pub const PERMISSION_READ: u32 = 1;
+pub const PERMISSION_WRITE: u32 = 2;
+pub const PERMISSION_FLEET_ADMIN: u32 = 1 << 16;
+pub const PERMISSION_VAULT_DEFAULT: u32 = PERMISSION_READ | PERMISSION_WRITE;
+
+/// One immutable policy shared by startup, HTTP, P2P, and persisted sessions.
+#[derive(Clone, Debug)]
+pub struct OperatorSecurityConfig {
+    pub strict_auth: bool,
+    pub require_enrollment: bool,
+}
+
+impl OperatorSecurityConfig {
+    pub fn from_env() -> Self {
+        Self::from_flags(
+            std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
+                .ok()
+                .as_deref(),
+            std::env::var("CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    pub fn from_flags(strict: Option<&str>, enrollment: Option<&str>) -> Self {
+        let enabled = |value: Option<&str>, default: bool| {
+            value
+                .map(|value| {
+                    // Invalid values fail closed. Only an explicit false disables a guard.
+                    !matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no"
+                    )
+                })
+                .unwrap_or(default)
+        };
+        let strict_auth = enabled(strict, true);
+        Self {
+            strict_auth,
+            require_enrollment: strict_auth || enabled(enrollment, false),
+        }
+    }
+
+    /// Explicit compatibility policy for isolated tests or migration deployments.
+    pub fn legacy() -> Self {
+        Self {
+            strict_auth: false,
+            require_enrollment: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -309,10 +373,13 @@ enum JoinAuth {
     Quorum { set: Vec<String>, threshold: usize },
 }
 
+type AccountDeviceBinding = (Option<String>, Option<String>);
+
 pub struct OperatorState {
     pub operator_id: String,
     pub signing_key: SigningKey,
     pub data_dir: PathBuf,
+    pub security: OperatorSecurityConfig,
     // Serializes the single identities.json store (fixed temp-file persist).
     identity_lock: Mutex<()>,
     // Leaf lock serializing appends to events.log; never held while
@@ -330,6 +397,7 @@ pub struct OperatorState {
     pub session_keys: Mutex<HashMap<String, [u8; 32]>>,
     // Vault scope for each authenticated session: token -> vault id hex.
     session_vaults: Mutex<HashMap<String, String>>,
+    session_bindings: Mutex<HashMap<String, AccountDeviceBinding>>,
     // Explicitly enrolled device identities, persisted across restarts.
     pub enrolled_identities: Mutex<Vec<EnrolledIdentity>>,
     // Relayed L2 checkpoints: commitment_hex -> RelayerReceipt
@@ -357,6 +425,7 @@ pub struct OperatorState {
     // starts empty (vouchers re-pin terms on next use). Vouchers are
     // opt-in (`vouchers_required`, default false).
     voucher_ledger: Mutex<VoucherLedger>,
+    voucher_ledger_failed: AtomicBool,
     // When true, writes without a voucher are rejected before persistence.
     // Default false: static mode keeps working byte-for-byte; mesh/testnet
     // operators opt in via `--require-write-vouchers`.
@@ -386,6 +455,20 @@ pub struct OperatorState {
 
 impl OperatorState {
     pub fn new(operator_id: String, data_dir: PathBuf, signing_key: SigningKey) -> Self {
+        Self::new_with_security(
+            operator_id,
+            data_dir,
+            signing_key,
+            OperatorSecurityConfig::from_env(),
+        )
+    }
+
+    pub fn new_with_security(
+        operator_id: String,
+        data_dir: PathBuf,
+        signing_key: SigningKey,
+        security: OperatorSecurityConfig,
+    ) -> Self {
         fs::create_dir_all(data_dir.join("objects")).unwrap();
         fs::create_dir_all(data_dir.join("recovery")).unwrap();
         fs::create_dir_all(data_dir.join("leases")).unwrap();
@@ -394,6 +477,7 @@ impl OperatorState {
             operator_id,
             signing_key,
             data_dir,
+            security,
             identity_lock: Mutex::new(()),
             event_lock: Mutex::new(()),
             io_stripes: (0..IO_STRIPE_COUNT)
@@ -405,6 +489,7 @@ impl OperatorState {
             sessions: Mutex::new(HashMap::new()),
             session_keys: Mutex::new(HashMap::new()),
             session_vaults: Mutex::new(HashMap::new()),
+            session_bindings: Mutex::new(HashMap::new()),
             enrolled_identities: Mutex::new(Vec::new()),
             relayed_checkpoints: Mutex::new(HashMap::new()),
             peer_routing_table: Mutex::new(HashMap::new()),
@@ -413,6 +498,7 @@ impl OperatorState {
             admissions: Mutex::new(Vec::new()),
             approval_challenges: Mutex::new(HashMap::new()),
             voucher_ledger: Mutex::new(VoucherLedger::new(u64::MAX)),
+            voucher_ledger_failed: AtomicBool::new(false),
             vouchers_required: AtomicBool::new(false),
             repair_budget: Mutex::new(TokenBucket::new(DEFAULT_REPAIR_BUDGET_PER_SEC)),
             swarm_handle: Mutex::new(None),
@@ -464,40 +550,32 @@ impl OperatorState {
             return;
         };
         let mut identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities");
-        identities.extend(records.into_iter().filter(|record| {
-            hex::decode(&record.vault_id_hex).map(|b| b.len()) == Ok(32)
-                && hex::decode(&record.public_key_hex).map(|b| b.len()) == Ok(32)
-                && record.vault_id_hex == record.vault_id_hex.to_ascii_lowercase()
-                && record.public_key_hex == record.public_key_hex.to_ascii_lowercase()
-                && record.account_id.as_deref().is_none_or(valid_account_id)
-                && record.device_id_hex.as_deref().is_none_or(valid_device_id)
-                && record.account_id.is_some() == record.device_id_hex.is_some()
-        }));
+        identities.extend(
+            records
+                .into_iter()
+                .map(|mut record| {
+                    // Historical all-bits defaults granted storage access, not fleet control.
+                    if record.permissions == u32::MAX {
+                        record.permissions = PERMISSION_VAULT_DEFAULT;
+                    }
+                    record
+                })
+                .filter(|record| {
+                    hex::decode(&record.vault_id_hex).map(|b| b.len()) == Ok(32)
+                        && hex::decode(&record.public_key_hex).map(|b| b.len()) == Ok(32)
+                        && record.vault_id_hex == record.vault_id_hex.to_ascii_lowercase()
+                        && record.public_key_hex == record.public_key_hex.to_ascii_lowercase()
+                        && record.account_id.as_deref().is_none_or(valid_account_id)
+                        && record.device_id_hex.as_deref().is_none_or(valid_device_id)
+                        && record.account_id.is_some() == record.device_id_hex.is_some()
+                }),
+        );
     }
 
     fn persist_enrolled_identities(&self) -> Result<(), String> {
         let identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities").clone();
         let encoded = serde_json::to_vec_pretty(&identities).map_err(|e| e.to_string())?;
         self.persist_atomic_secure(&self.identity_store_path(), &encoded)
-    }
-
-    fn enrollment_required() -> bool {
-        std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
-            .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes"
-                )
-            })
-            || std::env::var("CIPHERVAULT_OPERATOR_REQUIRE_ENROLLMENT")
-                .ok()
-                .is_some_and(|value| {
-                    matches!(
-                        value.trim().to_ascii_lowercase().as_str(),
-                        "1" | "true" | "yes"
-                    )
-                })
     }
 
     pub fn is_identity_enrolled(&self, vault_id_hex: &str, public_key_hex: &str) -> bool {
@@ -551,6 +629,11 @@ impl OperatorState {
         account_id: Option<&str>,
         device_id_hex: Option<&str>,
     ) -> Result<(), String> {
+        let permissions = if permissions == u32::MAX {
+            PERMISSION_VAULT_DEFAULT
+        } else {
+            permissions
+        };
         let vault_id_hex = vault_id_hex.trim().to_ascii_lowercase();
         let public_key_hex = public_key_hex.trim().to_ascii_lowercase();
         if hex::decode(&vault_id_hex).map(|b| b.len()) != Ok(32) {
@@ -708,6 +791,7 @@ impl OperatorState {
         let mut sessions = lock_or_recover(&self.sessions, "sessions");
         let mut keys = lock_or_recover(&self.session_keys, "session_keys");
         let mut vaults = lock_or_recover(&self.session_vaults, "session_vaults");
+        let mut bindings = lock_or_recover(&self.session_bindings, "session_bindings");
         for record in records {
             if record.expires_at_utc <= now || record.token.is_empty() {
                 continue;
@@ -721,6 +805,13 @@ impl OperatorState {
             }
             let mut key = [0u8; 32];
             key.copy_from_slice(&key_bytes);
+            let Ok(binding) = normalize_identity_binding(
+                record.account_id.as_deref(),
+                record.device_id_hex.as_deref(),
+            ) else {
+                continue;
+            };
+            bindings.insert(record.token.clone(), binding);
             sessions.insert(record.token.clone(), record.expires_at_utc);
             keys.insert(record.token.clone(), key);
             vaults.insert(record.token, record.vault_id_hex);
@@ -968,19 +1059,8 @@ impl OperatorState {
         };
         let mut ledger = lock_or_recover(&self.voucher_ledger, "voucher_ledger");
         if let Err(error) = ledger.decode_into(&bytes) {
-            drop(ledger);
-            // Accident recovery, not a trust boundary: an attacker with
-            // disk write could delete the file anyway. Back the corrupt
-            // file up for forensics, start empty, and log loudly.
-            let backup = path.with_extension(format!(
-                "corrupt-{}-{:x}",
-                Utc::now().timestamp().max(0),
-                rand::random::<u32>()
-            ));
-            let _ = fs::rename(&path, &backup);
-            eprintln!(
-                "operator voucher ledger {path:?} is corrupt ({error}); moved to {backup:?}, starting empty"
-            );
+            self.voucher_ledger_failed.store(true, Ordering::SeqCst);
+            eprintln!("operator voucher ledger {path:?} is corrupt ({error}); voucher writes disabled until the ledger is repaired");
         }
     }
 
@@ -994,6 +1074,7 @@ impl OperatorState {
         let sessions = lock_or_recover(&self.sessions, "sessions");
         let keys = lock_or_recover(&self.session_keys, "session_keys");
         let vaults = lock_or_recover(&self.session_vaults, "session_vaults");
+        let bindings = lock_or_recover(&self.session_bindings, "session_bindings");
         let records: Vec<PersistedSession> = sessions
             .iter()
             .filter_map(|(token, expires_at_utc)| {
@@ -1002,6 +1083,8 @@ impl OperatorState {
                     expires_at_utc: *expires_at_utc,
                     public_key_hex: hex::encode(keys.get(token)?),
                     vault_id_hex: vaults.get(token)?.clone(),
+                    account_id: bindings.get(token).and_then(|b| b.0.clone()),
+                    device_id_hex: bindings.get(token).and_then(|b| b.1.clone()),
                 })
             })
             .collect();
@@ -1071,7 +1154,7 @@ impl OperatorState {
         let (account_id, device_id_hex) = normalize_identity_binding(account_id, device_id_hex)?;
         let vault_id_hex = vault_id_hex.to_ascii_lowercase();
         let public_key_hex = public_key_hex.to_ascii_lowercase();
-        if Self::enrollment_required()
+        if self.security.require_enrollment
             && !self.is_identity_enrolled_with_binding(
                 &vault_id_hex,
                 &public_key_hex,
@@ -1160,7 +1243,7 @@ impl OperatorState {
         {
             return Ok(None);
         }
-        if Self::enrollment_required()
+        if self.security.require_enrollment
             && !self.is_identity_enrolled_with_binding(
                 &challenge.vault_id_hex,
                 &challenge.public_key_hex,
@@ -1214,6 +1297,12 @@ impl OperatorState {
         let mut lock = lock_or_recover(&self.sessions, "sessions");
         // TTL eviction: remove expired sessions
         lock.retain(|_, exp| *exp > now);
+        lock_or_recover(&self.session_keys, "session_keys")
+            .retain(|token, _| lock.contains_key(token));
+        lock_or_recover(&self.session_vaults, "session_vaults")
+            .retain(|token, _| lock.contains_key(token));
+        lock_or_recover(&self.session_bindings, "session_bindings")
+            .retain(|token, _| lock.contains_key(token));
         if lock.len() >= MAX_ACTIVE_SESSIONS {
             if let Some(oldest_token) = lock
                 .iter()
@@ -1223,6 +1312,7 @@ impl OperatorState {
                 lock.remove(&oldest_token);
                 lock_or_recover(&self.session_keys, "session_keys").remove(&oldest_token);
                 lock_or_recover(&self.session_vaults, "session_vaults").remove(&oldest_token);
+                lock_or_recover(&self.session_bindings, "session_bindings").remove(&oldest_token);
             }
         }
         lock.insert(token.clone(), token_exp);
@@ -1233,6 +1323,10 @@ impl OperatorState {
 
         let mut vault_lock = lock_or_recover(&self.session_vaults, "session_vaults");
         vault_lock.insert(token.clone(), challenge.vault_id_hex);
+        lock_or_recover(&self.session_bindings, "session_bindings").insert(
+            token.clone(),
+            (challenge.account_id, challenge.device_id_hex),
+        );
 
         drop(vault_lock);
         drop(key_lock);
@@ -1242,6 +1336,7 @@ impl OperatorState {
             lock_or_recover(&self.sessions, "sessions").remove(&token);
             lock_or_recover(&self.session_keys, "session_keys").remove(&token);
             lock_or_recover(&self.session_vaults, "session_vaults").remove(&token);
+            lock_or_recover(&self.session_bindings, "session_bindings").remove(&token);
             return Err(format!("Unable to persist session: {error}"));
         }
         self.audit_event(
@@ -1260,6 +1355,8 @@ impl OperatorState {
         let removed_expires_at = lock_or_recover(&self.sessions, "sessions").remove(token);
         let removed_key = lock_or_recover(&self.session_keys, "session_keys").remove(token);
         let removed_vault = lock_or_recover(&self.session_vaults, "session_vaults").remove(token);
+        let removed_binding =
+            lock_or_recover(&self.session_bindings, "session_bindings").remove(token);
         let removed = removed_expires_at.is_some();
         if removed {
             if let Err(error) = self.persist_sessions() {
@@ -1275,6 +1372,10 @@ impl OperatorState {
                 if let Some(vault) = removed_vault {
                     lock_or_recover(&self.session_vaults, "session_vaults")
                         .insert(token.to_string(), vault);
+                }
+                if let Some(binding) = removed_binding {
+                    lock_or_recover(&self.session_bindings, "session_bindings")
+                        .insert(token.to_string(), binding);
                 }
                 return Err(format!("Unable to persist session revocation: {error}"));
             }
@@ -1317,13 +1418,42 @@ impl OperatorState {
         if !scope.eq_ignore_ascii_case(vault_id_hex) {
             return false;
         }
-        if Self::enrollment_required() {
+        if self.security.require_enrollment {
             let Some(public_key) = self.get_session_public_key(token) else {
                 return false;
             };
-            return self.is_identity_enrolled(&scope, &hex::encode(public_key));
+            let binding = lock_or_recover(&self.session_bindings, "session_bindings")
+                .get(token)
+                .cloned()
+                .unwrap_or_default();
+            return self.is_identity_enrolled_with_binding(
+                &scope,
+                &hex::encode(public_key),
+                binding.0.as_deref(),
+                binding.1.as_deref(),
+            );
         }
         true
+    }
+
+    /// Revalidate the enrolled principal and current capability on every request.
+    pub fn session_has_permission(&self, token: &str, vault_id_hex: &str, permission: u32) -> bool {
+        if !self.validate_session_for_vault(token, vault_id_hex) {
+            return false;
+        }
+        let Some(key) = self.get_session_public_key(token) else {
+            return false;
+        };
+        let key_hex = hex::encode(key);
+        let identities = lock_or_recover(&self.enrolled_identities, "enrolled_identities");
+        if let Some(identity) = identities.iter().find(|identity| {
+            identity.vault_id_hex.eq_ignore_ascii_case(vault_id_hex)
+                && identity.public_key_hex == key_hex
+        }) {
+            return identity.revoked_at_utc.is_none()
+                && identity.permissions & permission == permission;
+        }
+        !self.security.require_enrollment && permission != PERMISSION_FLEET_ADMIN
     }
 
     /// Validates a session token for read-only object operations.
@@ -1404,6 +1534,12 @@ impl OperatorState {
         voucher: Option<&WriteVoucher>,
         bytes: u64,
     ) -> Result<Option<(String, u64)>, StorageError> {
+        if self.voucher_ledger_failed.load(Ordering::SeqCst) {
+            return Err(StorageError::ServerError {
+                status: 503,
+                message: "Voucher accounting unavailable; repair the persisted ledger".into(),
+            });
+        }
         match voucher {
             Some(voucher) => {
                 let mut ledger = lock_or_recover(&self.voucher_ledger, "voucher_ledger");
@@ -1814,7 +1950,7 @@ impl OperatorState {
         bytes: u64,
     ) -> Result<LeaseReceipt, String> {
         self.require_voucher_legacy()?;
-        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes);
+        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes, None);
         self.metrics.observe_lease_renew(outcome.is_ok());
         outcome
     }
@@ -1829,7 +1965,7 @@ impl OperatorState {
         voucher: Option<&WriteVoucher>,
     ) -> Result<LeaseReceipt, StorageError> {
         self.authorize_write(voucher, 0)?;
-        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes);
+        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes, None);
         self.metrics.observe_lease_renew(outcome.is_ok());
         outcome.map_err(|e| StorageError::ServerError {
             status: 400,
@@ -1842,11 +1978,21 @@ impl OperatorState {
         lease_id: &str,
         additional_days: u32,
         bytes: u64,
+        caller_vault: Option<&str>,
     ) -> Result<LeaseReceipt, String> {
         if lease_id.len() != 32 || hex::decode(lease_id).is_err() || additional_days == 0 {
             return Err("Invalid lease ID or retention term".into());
         }
         let _stripe_guard = lock_or_recover(self.io_stripe(lease_id), "io_stripe");
+        let owner_path = self
+            .data_dir
+            .join("leases")
+            .join(format!("{lease_id}.owner"));
+        match (caller_vault, fs::read_to_string(&owner_path)) {
+            (Some(vault), Ok(owner)) if owner.trim().eq_ignore_ascii_case(vault) => {}
+            (None, Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err("Lease ownership does not match caller vault".into()),
+        }
         let path = self
             .data_dir
             .join("leases")
@@ -1885,7 +2031,42 @@ impl OperatorState {
             .data_dir
             .join("leases")
             .join(format!("{}.owner", lease_id));
-        self.persist_atomic(&path, vault_id_hex.as_bytes())
+        let _stripe_guard = lock_or_recover(self.io_stripe(lease_id), "io_stripe");
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => file
+                .write_all(vault_id_hex.to_ascii_lowercase().as_bytes())
+                .and_then(|_| file.sync_all())
+                .map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())?
+                    .trim()
+                    .eq_ignore_ascii_case(vault_id_hex)
+                {
+                    Ok(())
+                } else {
+                    Err("Lease already belongs to another vault".into())
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub fn renew_owned_lease_with_voucher(
+        &self,
+        lease_id: &str,
+        additional_days: u32,
+        bytes: u64,
+        vault_id_hex: &str,
+        voucher: Option<&WriteVoucher>,
+    ) -> Result<LeaseReceipt, StorageError> {
+        self.authorize_write(voucher, 0)?;
+        let outcome = self.renew_lease_inner(lease_id, additional_days, bytes, Some(vault_id_hex));
+        self.metrics.observe_lease_renew(outcome.is_ok());
+        outcome.map_err(|message| StorageError::ServerError {
+            status: 403,
+            message,
+        })
     }
 
     /// Lists this vault's leases, soonest-expiring first. Legacy leases
@@ -1996,20 +2177,17 @@ impl OperatorState {
             ));
         }
 
+        // The locator lock covers authority/capacity validation and durable append.
+        let _stripe_guard = lock_or_recover(self.io_stripe(locator_hex), "io_stripe");
+        let log_path = self
+            .data_dir
+            .join("recovery")
+            .join(format!("{}.log", locator_hex));
         // Cryptographic Authorization Check
         // Inspect existing records to find registered recovery_signing_pk and authorized device public keys.
-        let existing = self.get_recovery_records_inner(locator_hex);
-        if existing.len() >= MAX_RECORDS_PER_LOCATOR {
-            return Err(format!(
-                "Locator recovery log capacity limit of {} records exceeded",
-                MAX_RECORDS_PER_LOCATOR
-            ));
-        }
-
         let mut registered_recovery_pk: Option<[u8; 32]> = None;
         let mut authorized_device_pks: Vec<[u8; 32]> = Vec::new();
-
-        for r in &existing {
+        let (record_count, committed_offset) = Self::scan_recovery_log(&log_path, |r| {
             if let Ok(genesis) = from_canonical_cbor::<GenesisRecord>(r) {
                 if genesis.verify().is_ok() && genesis.recovery_signing_pk.len() == 32 {
                     let mut pk = [0u8; 32];
@@ -2017,9 +2195,6 @@ impl OperatorState {
                     registered_recovery_pk = Some(pk);
                 }
             }
-        }
-
-        for r in &existing {
             if let Ok(cert) = from_canonical_cbor::<DeviceCertificate>(r) {
                 if let Some(r_pk) = registered_recovery_pk {
                     if cert.verify(&r_pk).is_ok() && cert.device_signing_pk.len() == 32 {
@@ -2031,6 +2206,11 @@ impl OperatorState {
                     }
                 }
             }
+        })?;
+        if record_count >= MAX_RECORDS_PER_LOCATOR
+            || committed_offset.saturating_add(4 + record.len() as u64) > MAX_RECOVERY_LOG_BYTES
+        {
+            return Err("Locator recovery log capacity exceeded".into());
         }
 
         // Verify incoming record against authority
@@ -2165,16 +2345,22 @@ impl OperatorState {
             }
         }
 
-        let _stripe_guard = lock_or_recover(self.io_stripe(locator_hex), "io_stripe");
-        let log_path = self
-            .data_dir
-            .join("recovery")
-            .join(format!("{}.log", locator_hex));
         let mut file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
             .open(&log_path)
             .map_err(|e| e.to_string())?;
+
+        // Discard only the incomplete final frame left by an interrupted write.
+        // Valid acknowledged frames are kept; oversized/corrupt frames fail closed.
+        if file.metadata().map_err(|e| e.to_string())?.len() != committed_offset {
+            file.set_len(committed_offset)
+                .and_then(|_| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        file.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
 
         // Format: [4 bytes length prefix in big endian][record bytes]
         let len = (record.len() as u32).to_be_bytes();
@@ -2189,7 +2375,7 @@ impl OperatorState {
             return Err(e.to_string());
         }
 
-        Ok(1)
+        Ok(record_count as u64 + 1)
     }
 
     pub fn append_recovery_record(&self, locator_hex: &str, record: &[u8]) -> Result<u64, String> {
@@ -2211,33 +2397,114 @@ impl OperatorState {
             .data_dir
             .join("recovery")
             .join(format!("{}.log", locator_hex));
-        if !log_path.exists() {
+        let mut out = Vec::new();
+        if Self::scan_recovery_log(&log_path, |record| out.push(record.to_vec())).is_err() {
             return Vec::new();
         }
+        out
+    }
 
-        let data = match fs::read(log_path) {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
+    /// Read one frame at a time; callers hold the locator stripe. An incomplete
+    /// tail returns the last committed offset for append-time crash recovery.
+    fn scan_recovery_log(
+        path: &std::path::Path,
+        mut visit: impl FnMut(&[u8]),
+    ) -> Result<(usize, u64), String> {
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => return Err(e.to_string()),
         };
-
-        let mut out = Vec::new();
-        let mut cursor = 0;
-        while cursor + 4 <= data.len() {
-            let len = u32::from_be_bytes([
-                data[cursor],
-                data[cursor + 1],
-                data[cursor + 2],
-                data[cursor + 3],
-            ]) as usize;
-            cursor += 4;
-            if cursor + len <= data.len() {
-                out.push(data[cursor..cursor + len].to_vec());
-                cursor += len;
-            } else {
-                break;
+        if file.metadata().map_err(|e| e.to_string())?.len() > MAX_RECOVERY_LOG_BYTES {
+            return Err("Recovery log exceeds byte limit".into());
+        }
+        let mut reader = std::io::BufReader::new(file);
+        let mut count = 0;
+        let mut offset = 0;
+        loop {
+            let mut prefix = [0u8; 4];
+            match reader.read_exact(&mut prefix) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok((count, offset))
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+            let len = u32::from_be_bytes(prefix) as usize;
+            if len == 0 || len > max_recovery_record_size() {
+                return Err("Invalid recovery record length".into());
+            }
+            let mut record = vec![0; len];
+            match reader.read_exact(&mut record) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok((count, offset))
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+            visit(&record);
+            count += 1;
+            offset += 4 + len as u64;
+            if count > MAX_RECORDS_PER_LOCATOR {
+                return Err("Recovery log exceeds record limit".into());
             }
         }
-        out
+    }
+
+    pub fn get_recovery_page(
+        &self,
+        locator_hex: &str,
+        cursor: u64,
+    ) -> Result<RecoveryPage, String> {
+        if hex::decode(locator_hex).map(|bytes| bytes.len()) != Ok(32) {
+            return Err("Invalid recovery locator".into());
+        }
+        let _stripe_guard = lock_or_recover(self.io_stripe(locator_hex), "io_stripe");
+        let path = self
+            .data_dir
+            .join("recovery")
+            .join(format!("{locator_hex}.log"));
+        let mut file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && cursor == 0 => {
+                return Ok(RecoveryPage {
+                    records: Vec::new(),
+                    next_cursor: None,
+                })
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        let end = file.metadata().map_err(|e| e.to_string())?.len();
+        if end > MAX_RECOVERY_LOG_BYTES || cursor > end {
+            return Err("Invalid recovery cursor or oversized log".into());
+        }
+        file.seek(SeekFrom::Start(cursor))
+            .map_err(|e| e.to_string())?;
+        let mut offset = cursor;
+        let mut bytes = 0;
+        let mut records = Vec::new();
+        while offset < end {
+            let mut prefix = [0u8; 4];
+            file.read_exact(&mut prefix)
+                .map_err(|_| "Incomplete recovery log tail; repair required")?;
+            let len = u32::from_be_bytes(prefix) as usize;
+            if len == 0 || len > max_recovery_record_size() || offset + 4 + len as u64 > end {
+                return Err("Invalid or incomplete recovery record".into());
+            }
+            if bytes + len > RECOVERY_PAGE_BYTES && !records.is_empty() {
+                break;
+            }
+            let mut record = vec![0; len];
+            file.read_exact(&mut record).map_err(|e| e.to_string())?;
+            offset += 4 + len as u64;
+            bytes += len;
+            records.push(record);
+        }
+        self.metrics.observe_recovery_read(&records);
+        Ok(RecoveryPage {
+            records,
+            next_cursor: (offset < end).then_some(offset),
+        })
     }
 
     /// Submits and registers an L2 commitment checkpoint through the relayer.
@@ -3072,12 +3339,15 @@ impl OperatorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn legacy_state(id: String, dir: PathBuf, key: SigningKey) -> OperatorState {
+        OperatorState::new_with_security(id, dir, key, OperatorSecurityConfig::legacy())
+    }
 
     #[test]
     fn lease_persistence_renewal_and_signed_fields() {
         let root = std::env::temp_dir().join(format!("cv-lease-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test".into(), root.clone(), key.clone());
+        let state = legacy_state("test".into(), root.clone(), key.clone());
         let receipt = state.create_lease(&"a".repeat(64), 100, 90).unwrap();
         let pk = key.verifying_key().to_bytes();
         receipt.verify(&pk).unwrap();
@@ -3085,7 +3355,7 @@ mod tests {
         tampered.bytes += 1;
         assert!(tampered.verify(&pk).is_err());
         drop(state);
-        let restarted = OperatorState::new("test".into(), root.clone(), key);
+        let restarted = legacy_state("test".into(), root.clone(), key);
         let renewed = restarted.renew_lease(&receipt.lease_id, 30, 100).unwrap();
         assert_eq!(renewed.closure_digest_hex, receipt.closure_digest_hex);
         assert_eq!(renewed.expires_at_utc, receipt.expires_at_utc + 30 * 86400);
@@ -3100,7 +3370,7 @@ mod tests {
     fn lease_listing_is_vault_scoped_and_skips_legacy() {
         let root = std::env::temp_dir().join(format!("cv-leaselist-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test".into(), root.clone(), key);
+        let state = legacy_state("test".into(), root.clone(), key);
         let vault_a = "a".repeat(64);
         let vault_b = "b".repeat(64);
         let first = state.create_lease(&"c".repeat(64), 100, 90).unwrap();
@@ -3138,7 +3408,7 @@ mod tests {
     #[test]
     fn rejects_failed_persistence_and_anonymous_writes() {
         let root = std::env::temp_dir().join(format!("cv-write-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3157,7 +3427,7 @@ mod tests {
         std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
         let root = std::env::temp_dir().join(format!("cv-session-{}", rand::random::<u128>()));
         let operator_key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test-auth".into(), root.clone(), operator_key);
+        let state = legacy_state("test-auth".into(), root.clone(), operator_key);
         let device_key = ciphervault_crypto::generate_signing_key();
         let other_key = ciphervault_crypto::generate_signing_key();
         let vault_id = "11".repeat(32);
@@ -3199,7 +3469,7 @@ mod tests {
         assert!(!state.validate_session_for_vault(&token, &other_vault));
 
         drop(state);
-        let restarted = OperatorState::new(
+        let restarted = legacy_state(
             "test-auth".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3219,7 +3489,7 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("cv-auth-{}", rand::random::<u128>()));
         let op_key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test".into(), root.clone(), op_key);
+        let state = legacy_state("test".into(), root.clone(), op_key);
 
         let vault_id = vec![0x42u8; 32];
         let locator_hex = "a".repeat(64);
@@ -3326,7 +3596,7 @@ mod tests {
     fn test_operator_l2_relayer_checkpoint() {
         let root = std::env::temp_dir().join(format!("cv-relayer-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test-relayer".into(), root.clone(), key);
+        let state = legacy_state("test-relayer".into(), root.clone(), key);
 
         let salt = [0x11u8; 32];
         let head_cid = [0x22u8; 32];
@@ -3380,7 +3650,7 @@ mod tests {
         // The relay receipt survives an operator restart so clients can
         // continue polling settlement progress after a process crash.
         drop(state);
-        let restarted = OperatorState::new(
+        let restarted = legacy_state(
             "test-relayer".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3406,7 +3676,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cv-pos-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
         let operator_pk = key.verifying_key().to_bytes();
-        let state = OperatorState::new("test-pos-operator".into(), root.clone(), key);
+        let state = legacy_state("test-pos-operator".into(), root.clone(), key);
 
         let data = b"encrypted-blob-for-proof-of-storage-challenge";
         let cid = ciphervault_format::compute_digest(data);
@@ -3442,7 +3712,7 @@ mod tests {
     fn test_peer_gossip_registry() {
         let root = std::env::temp_dir().join(format!("cv-peer-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test-op".into(), root.clone(), key);
+        let state = legacy_state("test-op".into(), root.clone(), key);
 
         let peer_key = ciphervault_crypto::generate_signing_key();
         let peer_pk = peer_key.verifying_key().to_bytes();
@@ -3486,7 +3756,7 @@ mod tests {
 
         // Routing state survives an operator restart.
         drop(state);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3529,7 +3799,7 @@ mod tests {
     fn test_approval_challenge_registry() {
         let root = std::env::temp_dir().join(format!("cv-appr-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test-op".into(), root.clone(), key);
+        let state = legacy_state("test-op".into(), root.clone(), key);
 
         let vault_id = [0xAAu8; 32];
         let device_id = [0xBBu8; 32];
@@ -3563,7 +3833,7 @@ mod tests {
 
         // Challenge + receipts survive an operator restart.
         drop(state);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3581,7 +3851,7 @@ mod tests {
     #[test]
     fn io_stripes_shard_by_key() {
         let root = std::env::temp_dir().join(format!("cv-stripes-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3608,7 +3878,7 @@ mod tests {
     #[test]
     fn metrics_count_operations_and_render_prometheus() {
         let root = std::env::temp_dir().join(format!("cv-metrics-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3647,7 +3917,7 @@ mod tests {
     #[test]
     fn poisoned_locks_recover_with_prior_state() {
         let root = std::env::temp_dir().join(format!("cv-poison-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3678,7 +3948,7 @@ mod tests {
     #[test]
     fn session_persist_failure_rolls_back_and_errors() {
         let root = std::env::temp_dir().join(format!("cv-sessfail-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3705,7 +3975,7 @@ mod tests {
     fn challenge_persist_failure_rolls_back_and_errors() {
         std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
         let root = std::env::temp_dir().join(format!("cv-chalfail-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3745,7 +4015,7 @@ mod tests {
     fn session_issue_persist_failure_rolls_back_login() {
         std::env::set_var("CIPHERVAULT_OPERATOR_STRICT_AUTH", "false");
         let root = std::env::temp_dir().join(format!("cv-loginfail-{}", rand::random::<u128>()));
-        let state = OperatorState::new(
+        let state = legacy_state(
             "test".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -3795,7 +4065,7 @@ mod tests {
         let payload = vec![0xABu8; 64];
         let cid_hex = hex::encode(compute_digest(&payload));
         let voucher = {
-            let state = OperatorState::new("test".into(), root.clone(), key.clone());
+            let state = legacy_state("test".into(), root.clone(), key.clone());
             let voucher = state.issue_voucher(holder, 64, 3600).expect("issue");
             state
                 .put_object_with_voucher(&cid_hex, &payload, Some(&voucher))
@@ -3810,7 +4080,7 @@ mod tests {
             assert!(root.join("voucher-ledger.json").is_file());
             voucher
         };
-        let restarted = OperatorState::new("test".into(), root.clone(), key);
+        let restarted = legacy_state("test".into(), root.clone(), key);
         let extra = vec![0xCDu8; 1];
         let extra_cid = hex::encode(compute_digest(&extra));
         assert_quota_exhausted(
@@ -3822,13 +4092,13 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_voucher_ledger_starts_empty_with_backup() {
+    fn corrupt_voucher_ledger_preserves_evidence_and_disables_writes() {
         let root =
             std::env::temp_dir().join(format!("cv-vouchercorrupt-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        drop(OperatorState::new("test".into(), root.clone(), key.clone()));
+        drop(legacy_state("test".into(), root.clone(), key.clone()));
         fs::write(root.join("voucher-ledger.json"), b"{oops").unwrap();
-        let reopened = OperatorState::new("test".into(), root.clone(), key);
+        let reopened = legacy_state("test".into(), root.clone(), key);
         let backups: Vec<_> = fs::read_dir(&root)
             .unwrap()
             .filter_map(|entry| entry.ok())
@@ -3839,9 +4109,11 @@ mod tests {
                     .starts_with("voucher-ledger.corrupt-")
             })
             .collect();
-        assert_eq!(backups.len(), 1);
-        assert!(!root.join("voucher-ledger.json").exists());
-        // The ledger starts empty and accounts from zero.
+        assert!(backups.is_empty());
+        assert_eq!(
+            fs::read(root.join("voucher-ledger.json")).unwrap(),
+            b"{oops"
+        );
         let holder = hex::encode(
             ciphervault_crypto::generate_signing_key()
                 .verifying_key()
@@ -3850,15 +4122,10 @@ mod tests {
         let voucher = reopened.issue_voucher(holder, 10, 3600).expect("issue");
         let payload = b"0123456789".to_vec();
         let cid_hex = hex::encode(compute_digest(&payload));
-        assert!(reopened
-            .put_object_with_voucher(&cid_hex, &payload, Some(&voucher))
-            .is_ok());
-        let extra = b"x".to_vec();
-        let extra_cid = hex::encode(compute_digest(&extra));
-        assert_quota_exhausted(
-            reopened.put_object_with_voucher(&extra_cid, &extra, Some(&voucher)),
-            "post-recovery over-quota write",
-        );
+        assert!(matches!(
+            reopened.put_object_with_voucher(&cid_hex, &payload, Some(&voucher)),
+            Err(StorageError::ServerError { status: 503, .. })
+        ));
         drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
@@ -3877,7 +4144,7 @@ mod tests {
     fn join_test_state(tag: &str) -> (OperatorState, PathBuf) {
         let root = std::env::temp_dir().join(format!("cv-{tag}-{}", rand::random::<u128>()));
         let key = ciphervault_crypto::generate_signing_key();
-        let state = OperatorState::new("test-op".into(), root.clone(), key);
+        let state = legacy_state("test-op".into(), root.clone(), key);
         (state, root)
     }
 
@@ -3968,7 +4235,7 @@ mod tests {
         assert!(root.join("join-admissions.json").is_file());
         // Evidence survives restarts.
         drop(state);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -4198,7 +4465,7 @@ mod tests {
         assert_eq!(err, "Join invite was already spent");
         // Grace survives restarts: membership + spend both persist.
         drop(state);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -4225,7 +4492,7 @@ mod tests {
         drop(state);
         // 25 h pass with no refresh: served time, but lapsed.
         backdate_membership(&root, "joiner-1", 90_000, 90_000);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -4303,7 +4570,7 @@ mod tests {
         drop(state);
         // Time served but silent beyond the grace window: no graduation.
         backdate_membership(&root, "joiner-1", 61, 61);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),
@@ -4347,7 +4614,7 @@ mod tests {
         assert!(state.is_probationary("joiner-1"));
         drop(state);
         backdate_membership(&root, "joiner-1", 61, 61);
-        let reopened = OperatorState::new(
+        let reopened = legacy_state(
             "test-op".into(),
             root.clone(),
             ciphervault_crypto::generate_signing_key(),

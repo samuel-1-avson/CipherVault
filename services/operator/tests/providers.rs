@@ -43,7 +43,7 @@ async fn boot_node(operator_id: &str) -> TestNode {
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -169,4 +169,18 @@ async fn unprovided_chunk_resolves_no_providers() {
         .expect("empty provider lookup terminates")
         .expect("lookup channel open");
     assert!(providers.is_empty(), "nothing provides it: {providers:?}");
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

@@ -1,5 +1,49 @@
 // CipherVault Web Dashboard & Visual Vault Inspector Client Logic
 
+// Tab-local selection is sent on every request; the server never changes a
+// process-wide workspace in response to a browser switch.
+let selectedWorkspace = '';
+try { selectedWorkspace = sessionStorage.getItem('ciphervault.workspace') || ''; } catch (_) {}
+let workspaceGeneration = 0;
+let workspaceRequests = new AbortController();
+async function workspaceFetch(url, options = {}) {
+  const generation = workspaceGeneration;
+  const headers = new Headers(options.headers || {});
+  if (selectedWorkspace && String(url).startsWith('/api/')) {
+    headers.set('X-CipherVault-Workspace', encodeURIComponent(selectedWorkspace));
+  }
+  const response = await fetch(url, { ...options, headers, signal: options.signal || workspaceRequests.signal });
+  if (generation !== workspaceGeneration) throw new DOMException('Workspace changed', 'AbortError');
+  const readJson = response.json.bind(response);
+  response.json = async () => {
+    const data = await readJson();
+    if (generation !== workspaceGeneration) throw new DOMException('Workspace changed', 'AbortError');
+    return data;
+  };
+  return response;
+}
+
+// Dynamic telemetry chooses known theme classes; values never become CSS text.
+function toneClass(value, property = 'color') {
+  const tones = {
+    'var(--ok)': 'ok', 'var(--bad)': 'bad', 'var(--signal)': 'signal',
+    'var(--ash)': 'ash', 'var(--fog)': 'fog', 'var(--chain)': 'chain', 'var(--bone)': 'bone',
+  };
+  return `cv-${property === 'background' ? 'background' : 'color'}-${tones[value] || 'ash'}`;
+}
+
+// CSSOM properties allow measured sizes under style-src-attr 'none'.
+function applyMeasuredWidths(container) {
+  container.querySelectorAll('[data-width-percent], [data-width-px]').forEach(element => {
+    const percent = element.getAttribute('data-width-percent');
+    const pixels = element.getAttribute('data-width-px');
+    const value = Number(percent === null ? pixels : percent);
+    if (Number.isFinite(value)) {
+      element.style.width = `${Math.max(0, Math.min(percent === null ? 180 : 100, value))}${percent === null ? 'px' : '%'}`;
+    }
+  });
+}
+
 const state = {
   vault: null,
   audit: null,
@@ -46,6 +90,12 @@ const state = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('click', event => {
+    const control = event.target.closest('[data-click-target]');
+    if (!control) return;
+    const target = document.getElementById(control.getAttribute('data-click-target'));
+    if (target && target !== control && !target.disabled) target.click();
+  });
   applyAccessContext({ mode: state.accessMode });
   initTabs();
   initSidebar();
@@ -135,14 +185,14 @@ async function fetchAllData() {
 
 async function fetchHostedAccountState() {
   try {
-    const capabilitiesResponse = await fetch('/api/account/capabilities', { credentials: 'same-origin' });
+    const capabilitiesResponse = await workspaceFetch('/api/account/capabilities', { credentials: 'same-origin' });
     if (!capabilitiesResponse.ok) {
       state.accountService = null;
       renderAccountStatus(state.account);
       return;
     }
     const capabilities = await capabilitiesResponse.json().catch(() => ({}));
-    const sessionResponse = await fetch('/api/account/session', { credentials: 'same-origin' });
+    const sessionResponse = await workspaceFetch('/api/account/session', { credentials: 'same-origin' });
     const session = sessionResponse.ok ? await sessionResponse.json().catch(() => null) : null;
     state.accountService = {
       configured: true,
@@ -178,7 +228,7 @@ async function fetchHostedAccountState() {
 
 async function fetchOperatorHistory() {
   try {
-    const res = await fetch('/api/operators/history');
+    const res = await workspaceFetch('/api/operators/history');
     if (!res.ok) throw new Error(`Operator telemetry history request failed (${res.status})`);
     const payload = await res.json();
     state.operatorHistory = payload && Array.isArray(payload.samples) ? payload.samples : [];
@@ -191,7 +241,7 @@ async function fetchOperatorHistory() {
 
 async function fetchOperatorJobs() {
   try {
-    const res = await fetch('/api/operators/jobs');
+    const res = await workspaceFetch('/api/operators/jobs');
     if (!res.ok) throw new Error(`Operator collector job request failed (${res.status})`);
     const payload = await res.json();
     state.operatorJobs = payload && Array.isArray(payload.jobs) ? payload.jobs : [];
@@ -204,7 +254,7 @@ async function fetchOperatorJobs() {
 
 async function fetchContext() {
   try {
-    const response = await fetch('/api/context');
+    const response = await workspaceFetch('/api/context');
     if (!response.ok) return;
     const context = await response.json();
     if (!context || typeof context !== 'object') return;
@@ -376,7 +426,7 @@ function initAccountControls() {
     loginButton.addEventListener('click', async () => {
       loginButton.disabled = true;
       try {
-        const response = await fetch('/api/account/login', { method: 'POST' });
+        const response = await workspaceFetch('/api/account/login', { method: 'POST' });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.status === 'error') {
           throw new Error(payload.error || `Sign-in failed (${response.status})`);
@@ -462,13 +512,13 @@ function initAccountControls() {
     }
     totpSubmit.disabled = true;
     try {
-      const optionsResponse = await fetch('/api/account/totp/authentication/options', {
+      const optionsResponse = await workspaceFetch('/api/account/totp/authentication/options', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account_id: accountId }),
       });
       const options = await optionsResponse.json().catch(() => ({}));
       if (!optionsResponse.ok) throw new Error(options.error || `Authenticator challenge failed (${optionsResponse.status})`);
-      const verifyResponse = await fetch('/api/account/totp/authentication/verify', {
+      const verifyResponse = await workspaceFetch('/api/account/totp/authentication/verify', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account_id: accountId, challenge_id: options.challenge_id, code }),
       });
@@ -524,7 +574,7 @@ function initAccountControls() {
     logoutButton.addEventListener('click', async () => {
       logoutButton.disabled = true;
       try {
-        const response = await fetch('/api/account/logout', { method: 'POST' });
+        const response = await workspaceFetch('/api/account/logout', { method: 'POST' });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.status === 'error') {
           throw new Error(payload.error || `Sign-out failed (${response.status})`);
@@ -544,7 +594,7 @@ async function consumeHostedBrowserHandoff() {
   const handoffCode = url.searchParams.get('ciphervault_handoff');
   if (!handoffCode) return;
   try {
-    const response = await fetch('/api/account/session/handoff', {
+    const response = await workspaceFetch('/api/account/session/handoff', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ handoff_code: handoffCode }),
@@ -598,9 +648,9 @@ async function refreshAccountManagement(accountId) {
   if (list) list.textContent = 'Loading…';
   try {
     const [accountResponse, membershipResponse, invitationResponse] = await Promise.all([
-      fetch(`/api/account/${encodeURIComponent(accountId)}`, { credentials: 'same-origin' }),
-      fetch(`/api/account/${encodeURIComponent(accountId)}/memberships`, { credentials: 'same-origin' }),
-      fetch(`/api/account/${encodeURIComponent(accountId)}/invitations`, { credentials: 'same-origin' }),
+      workspaceFetch(`/api/account/${encodeURIComponent(accountId)}`, { credentials: 'same-origin' }),
+      workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/memberships`, { credentials: 'same-origin' }),
+      workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/invitations`, { credentials: 'same-origin' }),
     ]);
     if (!accountResponse.ok) throw new Error(`Account details unavailable (${accountResponse.status})`);
     const account = await accountResponse.json();
@@ -644,7 +694,7 @@ async function submitAccountInvitation() {
   const button = document.getElementById('btn-submit-account-invite');
   if (button) button.disabled = true;
   try {
-    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/invitations`, {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/invitations`, {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ invitee_account_id: invitee, role: roleInput?.value || 'viewer' }),
     });
@@ -698,7 +748,7 @@ async function fetchApprovals() {
   const status = document.getElementById('approvals-status');
   if (status) status.textContent = 'Loading…';
   try {
-    const response = await fetch('/api/approvals', { credentials: 'same-origin' });
+    const response = await workspaceFetch('/api/approvals', { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`Approval queue unavailable (${response.status})`);
     renderApprovalQueue(await response.json());
     if (status) status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -723,13 +773,13 @@ function renderApprovalQueue(payload) {
         `<tr><td title="${escapeHtml(id)}"><code class="mono-id">${escapeHtml(id.slice(0, 12))}…</code></td>` +
         `<td><span class="action-badge">${escapeHtml(String(challenge.action || 'unknown'))}</span></td>` +
         `<td title="${escapeHtml(vault)}"><code class="mono-id">${escapeHtml(vault.slice(0, 12))}…</code></td>` +
-        `<td><span style="font-size:0.78rem; color:var(--fog);">${escapeHtml(expires)}</span></td>` +
-        `<td><span style="font-family:var(--font-mono); font-size:0.78rem; color:var(--bone);">${escapeHtml(String(operator.endpoint || 'operator'))}</span></td></tr>`
+        `<td><span class="cv-layout-30f80f4ca2">${escapeHtml(expires)}</span></td>` +
+        `<td><span class="cv-layout-cfe1034493">${escapeHtml(String(operator.endpoint || 'operator'))}</span></td></tr>`
       );
     });
     if (operator.status && operator.status !== 'online') {
       rows.push(
-        `<tr><td colspan="5" style="color:var(--bad); font-size:0.8rem; padding:8px 12px; background:rgba(248,81,73,0.08);">${escapeHtml(String(operator.endpoint || 'operator'))} · ` +
+        `<tr><td colspan="5" class="cv-layout-8f99869eca">${escapeHtml(String(operator.endpoint || 'operator'))} · ` +
         `${escapeHtml(String(operator.status))}</td></tr>`
       );
     }
@@ -746,7 +796,7 @@ async function generateHostedRecoveryCodes() {
   if (!accountId) return;
   if (button) button.disabled = true;
   try {
-    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/recovery/codes`, {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/recovery/codes`, {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ count: 8 }),
     });
@@ -830,7 +880,7 @@ async function startTotpEnrollment() {
   const button = document.getElementById('btn-start-totp-enrollment');
   if (button) button.disabled = true;
   try {
-    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/totp/enrollment`, {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/totp/enrollment`, {
       method: 'POST', credentials: 'same-origin',
     });
     const result = await response.json().catch(() => ({}));
@@ -855,7 +905,7 @@ async function confirmTotpEnrollment() {
   const button = document.getElementById('btn-confirm-totp-enrollment');
   if (button) button.disabled = true;
   try {
-    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/totp/enrollment/verify`, {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/totp/enrollment/verify`, {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
@@ -879,7 +929,7 @@ async function revokeTotpEnrollment() {
   const button = document.getElementById('btn-revoke-totp');
   if (button) button.disabled = true;
   try {
-    const response = await fetch(`/api/account/${encodeURIComponent(accountId)}/totp/revoke`, {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/totp/revoke`, {
       method: 'POST', credentials: 'same-origin',
     });
     const result = await response.json().catch(() => ({}));
@@ -897,7 +947,7 @@ async function runHostedPasskeyAuthentication(accountId) {
   if (!window.PublicKeyCredential || !navigator.credentials) {
     throw new Error('This browser does not support passkeys.');
   }
-  const optionsResponse = await fetch('/api/account/webauthn/authentication/options', {
+  const optionsResponse = await workspaceFetch('/api/account/webauthn/authentication/options', {
     method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ account_id: accountId }),
   });
@@ -911,7 +961,7 @@ async function runHostedPasskeyAuthentication(accountId) {
   }});
   if (!credential || !credential.response) throw new Error('No passkey assertion was returned.');
   const assertion = credential.response;
-  const verifyResponse = await fetch('/api/account/webauthn/authentication/verify', {
+  const verifyResponse = await workspaceFetch('/api/account/webauthn/authentication/verify', {
     method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       challenge_id: options.challenge_id,
@@ -931,7 +981,7 @@ async function runHostedPasskeyRegistration() {
   const accountId = state.account && state.account.account_id;
   if (!accountId) throw new Error('Sign in to the hosted account before registering a passkey.');
   if (!window.PublicKeyCredential || !navigator.credentials) throw new Error('This browser does not support passkeys.');
-  const optionsResponse = await fetch(`/api/account/${encodeURIComponent(accountId)}/webauthn/registration/options`, {
+  const optionsResponse = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/webauthn/registration/options`, {
     method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
   });
   const options = await optionsResponse.json().catch(() => ({}));
@@ -947,7 +997,7 @@ async function runHostedPasskeyRegistration() {
   }});
   if (!credential || !credential.response) throw new Error('No passkey credential was returned.');
   const attestation = credential.response;
-  const verifyResponse = await fetch(`/api/account/${encodeURIComponent(accountId)}/webauthn/registration/verify`, {
+  const verifyResponse = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/webauthn/registration/verify`, {
     method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       challenge_id: options.challenge_id,
@@ -1060,7 +1110,7 @@ function restoreSearchFilters() {
 
 async function fetchVault() {
   try {
-    const res = await fetch('/api/vault');
+    const res = await workspaceFetch('/api/vault');
     if (!res.ok) throw new Error(`Vault request failed (${res.status})`);
     const data = await res.json();
     state.vault = data;
@@ -1107,7 +1157,7 @@ async function fetchVault() {
     if (modalFilesList) {
       modalFilesList.innerHTML = (data.tracked_files || []).map(f => 
         `<span class="file-tag">${escapeHtml(f.path)}</span>`
-      ).join('') || '<span style="color: var(--ash); font-size: 0.8rem;">No files currently tracked</span>';
+      ).join('') || '<span class="cv-layout-ecc6a8eb47">No files currently tracked</span>';
     }
   } catch (e) {
     state.vault = null;
@@ -1127,7 +1177,7 @@ async function fetchVault() {
 
 async function fetchOperators() {
   try {
-    const res = await fetch('/api/operators');
+    const res = await workspaceFetch('/api/operators');
     if (!res.ok) throw new Error(`Operator telemetry request failed (${res.status})`);
     const payload = await res.json();
     const data = Array.isArray(payload)
@@ -1204,7 +1254,7 @@ async function fetchAudit() {
   state.audit = null;
   renderAudit(null);
   try {
-    const response = await fetch('/api/audit', { method: 'POST' });
+    const response = await workspaceFetch('/api/audit', { method: 'POST' });
     if (!response.ok) throw new Error('Audit unavailable');
     const data = await response.json();
     state.audit = data.report || null;
@@ -1243,7 +1293,7 @@ function renderAudit(audit) {
 
 async function fetchSnapshots() {
   try {
-    const res = await fetch('/api/snapshots');
+    const res = await workspaceFetch('/api/snapshots');
     if (!res.ok) throw new Error(`Snapshot request failed (${res.status})`);
     const data = await res.json();
     const snapshots = dedupeSnapshots(Array.isArray(data) ? data : (data && data.snapshots));
@@ -1264,7 +1314,7 @@ async function fetchSnapshots() {
 
 async function fetchOverview() {
   try {
-    const res = await fetch('/api/overview');
+    const res = await workspaceFetch('/api/overview');
     if (!res.ok) throw new Error(`Overview request failed (${res.status})`);
     const data = await res.json();
     state.overview = data;
@@ -1284,7 +1334,7 @@ async function fetchOverview() {
 
 async function fetchAnchors() {
   try {
-    const res = await fetch('/api/anchors');
+    const res = await workspaceFetch('/api/anchors');
     if (!res.ok) throw new Error(`Anchor telemetry request failed (${res.status})`);
     const data = await res.json();
     state.anchors = data;
@@ -1299,7 +1349,7 @@ async function fetchAnchors() {
 
 async function fetchGuardians() {
   try {
-    const res = await fetch('/api/guardians');
+    const res = await workspaceFetch('/api/guardians');
     if (!res.ok) throw new Error(`Guardian request failed (${res.status})`);
     const data = await res.json();
     state.guardians = data;
@@ -1322,7 +1372,7 @@ async function fetchGuardians() {
 
 async function fetchRelayerCheckpoints() {
   try {
-    const res = await fetch('/api/relayer/checkpoints');
+    const res = await workspaceFetch('/api/relayer/checkpoints');
     if (!res.ok) throw new Error(`Checkpoint telemetry request failed (${res.status})`);
     const data = await res.json();
     state.relayerCheckpoints = data.checkpoints || [];
@@ -1342,7 +1392,7 @@ async function fetchRelayerCheckpoints() {
 
 async function fetchFleet() {
   try {
-    const res = await fetch('/api/fleet');
+    const res = await workspaceFetch('/api/fleet');
     if (!res.ok) throw new Error(`Fleet request failed (${res.status})`);
     const data = await res.json();
     state.fleet = data;
@@ -1453,12 +1503,12 @@ function renderOperators(operators) {
               <span class="op-id">${escapeHtml(opId)}</span>
               <span class="${isOnline ? 'badge-online' : 'badge-offline'}">${statusLabel}</span>
             </div>
-            <span style="font-size: 0.8rem; color: ${isOnline ? 'var(--signal)' : 'var(--bad)'}; font-family: var(--font-mono);">${latencyDisplay}</span>
+            <span class="cv-layout-cc9dfbdaeb ${toneClass(isOnline ? 'var(--signal)' : 'var(--bad)')}">${latencyDisplay}</span>
           </div>
 
           <div class="op-meta-row">
             <span class="op-meta-label">Endpoint</span>
-            <span class="op-meta-val">${escapeHtml(op.endpoint || 'Not reported')}${op.transport_security === 'https' ? ' <span class="shield-badge" style="color:var(--signal); font-size:0.75rem; margin-left:6px;">🔒 HTTPS configured</span>' : ''}</span>
+            <span class="op-meta-val">${escapeHtml(op.endpoint || 'Not reported')}${op.transport_security === 'https' ? ' <span class="shield-badge cv-layout-640b2caab8">🔒 HTTPS configured</span>' : ''}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Public Key</span>
@@ -1476,27 +1526,27 @@ function renderOperators(operators) {
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Retention Policy</span>
-            <span class="op-meta-val" style="color: ${op.retention_terms ? 'var(--fog)' : 'var(--ash)'};">${escapeHtml(retentionTerms)}</span>
+            <span class="op-meta-val ${toneClass(op.retention_terms ? 'var(--fog)' : 'var(--ash)')}">${escapeHtml(retentionTerms)}</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Identity</span>
-            <span class="op-meta-val" style="color: ${identityLabel === 'Verified' ? 'var(--ok)' : identityLabel === 'Expiring soon' ? 'var(--signal)' : 'var(--bad)'};">${identityLabel}</span>
+            <span class="op-meta-val ${toneClass(identityLabel === 'Verified' ? 'var(--ok)' : identityLabel === 'Expiring soon' ? 'var(--signal)' : 'var(--bad)')}">${identityLabel}</span>
           </div>
           ${(op.location && op.location !== 'Not reported') || (op.region && op.region !== 'Not reported') ? `
           <div class="op-meta-row">
             <span class="op-meta-label">Location</span>
-            <span class="op-meta-val" style="color: var(--signal); font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(op.location || `${op.region} (${op.zone || 'zone not reported'})`)}</span>
+            <span class="op-meta-val cv-layout-4fc8ffd65f">${escapeHtml(op.location || `${op.region} (${op.zone || 'zone not reported'})`)}</span>
           </div>` : ''}
           ${op.quorum_role && op.quorum_role !== 'Policy not reported' ? `
           <div class="op-meta-row">
             <span class="op-meta-label">Quorum Role</span>
-            <span class="op-meta-val" style="color: var(--chain); font-size: 0.78rem;">${escapeHtml(op.quorum_role)}</span>
+            <span class="op-meta-val cv-layout-7c7c7dc76b">${escapeHtml(op.quorum_role)}</span>
           </div>` : ''}
         </div>
-        <div class="op-card-footer" style="margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.72rem; color: var(--ash); font-family: var(--font-mono);">Quorum Replica</span>
-          <span style="font-size: 0.72rem; color: ${isOnline ? 'var(--ok)' : 'var(--ash)'}; font-weight: 600; display: inline-flex; align-items: center; gap: 5px;">
-            <span style="width: 5px; height: 5px; border-radius: 50%; background: ${isOnline ? 'var(--ok)' : 'var(--ash)'}; display: inline-block;"></span>
+        <div class="op-card-footer cv-layout-fadc95c8c3">
+          <span class="cv-layout-9cfd05b5c1">Quorum Replica</span>
+          <span class="cv-layout-1f69ac58e2 ${toneClass(isOnline ? 'var(--ok)' : 'var(--ash)')}">
+            <span class="cv-layout-0f4e11e6ac ${toneClass(isOnline ? 'var(--ok)' : 'var(--ash)', 'background')}"></span>
             ${isOnline ? 'Mesh Synchronized' : 'Standby'}
           </span>
         </div>
@@ -1568,7 +1618,7 @@ function renderLatencyBars(operators) {
     && o.latency_ms >= 0
   ));
   if (onlineOps.length === 0) {
-    container.innerHTML = `<div style="font-size: 0.8rem; color: var(--ash);">No operator response latency is reported.</div>`;
+    container.innerHTML = `<div class="cv-layout-53c01802a1">No operator response latency is reported.</div>`;
     return;
   }
 
@@ -1581,14 +1631,15 @@ function renderLatencyBars(operators) {
 
     return `
       <div class="latency-bar-row">
-        <span class="latency-op-name" style="font-family: var(--font-mono); color: var(--bone); font-weight: 600; font-size: 0.8rem;">${escapeHtml(op.operator_id || 'op')}</span>
+        <span class="latency-op-name cv-layout-b926090671">${escapeHtml(op.operator_id || 'op')}</span>
         <div class="latency-bar-track">
-          <div class="latency-bar-fill" style="width: ${pct}%; background: ${color}; height: 100%; border-radius: 3px; transition: width 0.3s ease;"></div>
+          <div class="latency-bar-fill cv-layout-65d3c50bd4 ${toneClass(color, 'background')}" data-width-percent="${pct}"></div>
         </div>
-        <span class="latency-val-badge" style="font-family: var(--font-mono); color: ${color}; text-align: right; font-weight: 600; font-size: 0.78rem;">${lat} ms</span>
+        <span class="latency-val-badge cv-layout-a2807475eb ${toneClass(color)}">${lat} ms</span>
       </div>
     `;
   }).join('');
+  applyMeasuredWidths(container);
 }
 
 function snapshotIdentity(snapshot, index) {
@@ -1630,6 +1681,8 @@ function dedupeSnapshots(snapshots) {
 }
 
 function renderOverview(data) {
+  const backlogStatus = document.getElementById('pending-upload-status');
+  if (backlogStatus) backlogStatus.hidden = isPublicExplorer();
   const metrics = document.getElementById('overview-metrics');
   const snapsBody = document.getElementById('table-overview-snapshots-body');
   const leasesBody = document.getElementById('table-overview-leases-body');
@@ -1656,7 +1709,7 @@ function renderOverview(data) {
     metric('Anchors', anchors.length, 'checkpoint evidence');
 
   snapsBody.innerHTML = snapshots.length === 0
-    ? `<tr><td colspan="3" class="loading-placeholder"><div style="padding: 8px 0; color: var(--fog);">${empty ? 'No vault initialized on this device.' : 'No snapshots captured yet.'}<div style="font-size: 0.76rem; color: var(--ash); margin-top: 4px;">Run <code style="color:var(--signal); background:var(--bg0); padding:1px 5px; border-radius:3px;">ciphervault push</code> or click <strong style="color:var(--signal);">+ Push</strong> in the topbar to commit an encrypted snapshot.</div></div></td></tr>`
+    ? `<tr><td colspan="3" class="loading-placeholder"><div class="cv-layout-5b9ce8656d">${empty ? 'No vault initialized on this device.' : 'No snapshots captured yet.'}<div class="cv-layout-1fc212d674">Run <code class="cv-layout-e8f9961ac0">ciphervault push</code> or click <strong class="cv-layout-8ed08dcdbc">+ Push</strong> in the topbar to commit an encrypted snapshot.</div></div></td></tr>`
     : [...snapshots].reverse().slice(0, 10).map(snap => `
       <tr>
         <td><strong class="hash-click" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${escapeHtml(truncateHash(snap.snapshot_id_hex, 10, 8))}</strong></td>
@@ -1665,20 +1718,20 @@ function renderOverview(data) {
       </tr>`).join('');
 
   leasesBody.innerHTML = leases.length === 0
-    ? `<tr><td colspan="4" class="loading-placeholder"><div style="padding: 8px 0; color: var(--fog);">No leases recorded.<div style="font-size: 0.76rem; color: var(--ash); margin-top: 4px;">Acquire operator storage via: <code style="color:var(--signal); background:var(--bg0); padding:1px 5px; border-radius:3px;">ciphervault lease create &lt;closure&gt; &lt;bytes&gt;</code></div></div></td></tr>`
+    ? `<tr><td colspan="4" class="loading-placeholder"><div class="cv-layout-5b9ce8656d">No leases recorded.<div class="cv-layout-1fc212d674">Acquire operator storage via: <code class="cv-layout-e8f9961ac0">ciphervault lease create &lt;closure&gt; &lt;bytes&gt;</code></div></div></td></tr>`
     : leases.map(lease => `
       <tr>
         <td><strong>${escapeHtml(truncateHash(lease.lease_id, 10, 6))}</strong></td>
         <td>${escapeHtml(lease.operator)}</td>
         <td>${escapeHtml(String(lease.bytes))}</td>
-        <td>${lease.expired ? '<span style="color: var(--bad);">expired</span>' : formatTimestamp(lease.expires_at_utc)}</td>
+        <td>${lease.expired ? '<span class="cv-layout-f3c9a155fd">expired</span>' : formatTimestamp(lease.expires_at_utc)}</td>
       </tr>`).join('');
 
   activityBody.innerHTML = activity.length === 0
     ? `<tr><td colspan="2" class="loading-placeholder">No recent activity.</td></tr>`
     : activity.map(entry => `
       <tr>
-        <td><span style="color: var(--ash);">${escapeHtml(entry.event_type)}</span></td>
+        <td><span class="cv-layout-94b41f2e28">${escapeHtml(entry.event_type)}</span></td>
         <td>${escapeHtml(entry.summary)}</td>
       </tr>`).join('');
 
@@ -1706,7 +1759,7 @@ function renderSnapshots(snapshots) {
         <p class="dag-empty-desc">${isPublicExplorer() ? 'No snapshots available in public cluster feed. Connect local vault or sign in to view private history.' : 'No snapshots captured yet. Click "Push Snapshot" to create the initial snapshot.'}</p>
         ${!isPublicExplorer() ? `
           <div class="dag-empty-actions">
-            <button class="btn-action primary small" type="button" onclick="document.getElementById('btn-open-push-modal')?.click()">
+            <button class="btn-action primary small" type="button" data-click-target="btn-open-create-snapshot">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
                 <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -1739,28 +1792,28 @@ function renderSnapshots(snapshots) {
     const timeDisplay = snap.timestamp_utc ? formatTimestamp(snap.timestamp_utc) : "Recorded";
 
     return `
-      <div class="dag-node" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" role="button" tabindex="0" aria-label="Inspect snapshot ${escapeHtml(snapIdTrunc)}" style="cursor: pointer;">
+      <div class="dag-node cv-layout-ecfbb78629" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" role="button" tabindex="0" aria-label="Inspect snapshot ${escapeHtml(snapIdTrunc)}">
         <div class="dag-timeline-track">
           <div class="dag-node-dot ${isHead ? 'head' : ''}"></div>
           ${idx < sorted.length - 1 ? '<div class="dag-timeline-line"></div>' : ''}
         </div>
         <div class="dag-card">
           <div class="dag-card-header">
-            <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="cv-layout-cd8b46a222">
               <span class="dag-message">Snapshot #${snap.device_counter || (sorted.length - idx)}</span>
-              ${isHead ? '<span class="badge-online" style="background: rgba(255, 176, 0, 0.09); color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">ACTIVE HEAD</span>' : ''}
-              ${hasHeadConflict ? '<span class="badge-status-subtle" style="color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">HEAD CONFLICT</span>' : ''}
-              <span style="font-size: 0.75rem; color: var(--ash);">(Epoch #${snap.epoch || 1})</span>
+              ${isHead ? '<span class="badge-online cv-layout-305fc30e4a">ACTIVE HEAD</span>' : ''}
+              ${hasHeadConflict ? '<span class="badge-status-subtle cv-layout-3bd4a773d2">HEAD CONFLICT</span>' : ''}
+              <span class="cv-layout-a8b74630f1">(Epoch #${snap.epoch || 1})</span>
             </div>
             <span class="dag-time">${timeDisplay}</span>
           </div>
           <div class="dag-hashes">
-            <span>Snapshot CID: <strong style="color: var(--bone); cursor: pointer;" class="hash-click" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${snapIdTrunc}</strong></span>
-            <span>Manifest CID: <strong style="color: var(--signal);">${manifestTrunc}</strong></span>
-            <span>Device: <strong style="color: var(--fog);">${deviceTrunc}</strong></span>
+            <span>Snapshot CID: <strong class="hash-click cv-layout-1f11651c92" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${snapIdTrunc}</strong></span>
+            <span>Manifest CID: <strong class="cv-layout-2ff40d572e">${manifestTrunc}</strong></span>
+            <span>Device: <strong class="cv-layout-ac902d93a5">${deviceTrunc}</strong></span>
           </div>
-          <div style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
-            <button class="btn-action-ghost btn-drawer-inspect" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}" style="padding: 3px 10px; font-size: 0.75rem; color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">
+          <div class="cv-layout-6276fe9bb2">
+            <button class="btn-action-ghost btn-drawer-inspect cv-layout-7b878cbd3e" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}">
               Inspect Manifest ➔
             </button>
           </div>
@@ -1840,13 +1893,13 @@ function renderTrackedFiles(files) {
     return `
       <tr>
         <td>
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="cv-layout-a46c8abf5b">
             ${fileIcon}
-            <strong style="color: var(--bone); font-family: var(--font-mono); font-size: 0.85rem;">${escapeHtml(file.path)}</strong>
+            <strong class="cv-layout-9776cfc620">${escapeHtml(file.path)}</strong>
           </div>
         </td>
         <td>
-          <div style="display: inline-flex; align-items: center; gap: 6px;">
+          <div class="cv-layout-9696f017ab">
             <code class="hash-chip" title="${escapeHtml(file.file_id_hex)}">${fileIdTrunc}</code>
             <button class="btn-copy" data-copy="${escapeHtml(file.file_id_hex)}" title="Copy full SHA-256 file ID">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1856,11 +1909,11 @@ function renderTrackedFiles(files) {
             </button>
           </div>
         </td>
-        <td><span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--fog);">${sizeStr}</span></td>
+        <td><span class="cv-layout-ce9304b6c1">${sizeStr}</span></td>
         <td><span class="chunk-badge">${chunks === null ? 'Not reported' : `${chunks} chunk${chunks === 1 ? '' : 's'} (recorded)`}</span></td>
         <td>${replicaBadge}</td>
         <td>
-          <button class="btn-action-ghost btn-untrack-file" data-path="${escapeHtml(file.path)}" title="Untrack from vault" style="padding: 3px 8px; font-size: 0.75rem; color: var(--bad); border: 1px solid rgba(255, 92, 92, 0.32);">
+          <button class="btn-action-ghost btn-untrack-file cv-layout-bf34ba124a" data-path="${escapeHtml(file.path)}" title="Untrack from vault">
             Untrack
           </button>
         </td>
@@ -2054,7 +2107,7 @@ function renderGuardians(data) {
     const badgeTab = document.getElementById('badge-tab-guardians');
     if (badgeTab) badgeTab.textContent = '--';
     const grid = document.getElementById('guardians-grid');
-    if (grid) grid.innerHTML = `<div class="loading-placeholder" style="grid-column: 1 / -1;">No guardian recovery ceremony enrolled for this public session. Sign in to inspect Shamir key recovery shares.</div>`;
+    if (grid) grid.innerHTML = `<div class="loading-placeholder cv-layout-c8a487f41d">No guardian recovery ceremony enrolled for this public session. Sign in to inspect Shamir key recovery shares.</div>`;
     return;
   }
 
@@ -2105,7 +2158,7 @@ function renderGuardians(data) {
         <div class="guardian-meta-list">
           <div class="guardian-meta-item">
             <span class="key">Threshold:</span>
-            <span class="val" style="color: var(--signal);">${threshold}-of-${total}</span>
+            <span class="val cv-layout-2ff40d572e">${threshold}-of-${total}</span>
           </div>
           <div class="guardian-meta-item">
             <span class="key">Signing PK:</span>
@@ -2117,7 +2170,7 @@ function renderGuardians(data) {
           </div>
           <div class="guardian-meta-item">
             <span class="key">Integrity:</span>
-            <span class="val" style="color: var(--ok);">CRC32: ${escapeHtml(crc)}</span>
+            <span class="val cv-layout-6a43a34635">CRC32: ${escapeHtml(crc)}</span>
           </div>
         </div>
 
@@ -2268,10 +2321,10 @@ function renderRelayerCheckpoints(data) {
 
     return `
       <tr>
-        <td style="font-family: var(--font-mono); color: var(--chain); font-weight: 600;">${blockStr}</td>
+        <td class="cv-layout-3ab95bae01">${blockStr}</td>
         <td>
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <code style="font-family: var(--font-mono); font-size: 0.8rem;">${txTrunc}</code>
+          <div class="cv-layout-7c3c23240c">
+            <code class="cv-layout-871ac19cb7">${txTrunc}</code>
             ${usableTransaction ? `
               <button class="btn-copy" data-copy="${escapeHtml(txHash)}" title="Copy Tx Hash">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2283,11 +2336,11 @@ function renderRelayerCheckpoints(data) {
           </div>
         </td>
         <td>
-          <span style="color: ${displayState.tone}; font-size: 0.78rem; font-weight: 600;">
+          <span class="cv-layout-0e7733412e ${toneClass(displayState.tone)}">
             ${escapeHtml(displayState.label)}
           </span>
         </td>
-        <td style="font-family: var(--font-mono); color: var(--signal);" title="${escapeHtml(cp.commitment || cp.commitment_hex || '')}">
+        <td title="${escapeHtml(cp.commitment || cp.commitment_hex || '')}" class="cv-layout-62a209dab0">
           ${commitTrunc}
         </td>
         <td>
@@ -2295,7 +2348,7 @@ function renderRelayerCheckpoints(data) {
             <a href="${escapeHtml(explorerUrl)}" target="_blank" rel="noopener noreferrer" class="arbiscan-link">
               Arbiscan ↗
             </a>
-          ` : '<span style="color: var(--ash); font-size: 0.78rem;">No verified explorer link</span>'}
+          ` : '<span class="cv-layout-30989f2a1c">No verified explorer link</span>'}
         </td>
       </tr>
     `;
@@ -2358,11 +2411,11 @@ function renderFleet(data) {
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Probe RTT</span>
-              <span class="op-meta-val" style="color: ${isOnline ? 'var(--ok)' : 'var(--bad)'}; font-family: var(--font-mono);">${lat}</span>
+              <span class="op-meta-val cv-layout-47a8b6cf8f ${toneClass(isOnline ? 'var(--ok)' : 'var(--bad)')}">${lat}</span>
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Heartbeat</span>
-              <span class="op-meta-val" style="font-size: 0.76rem; color: var(--ash);">${escapeHtml(op.last_heartbeat)}</span>
+              <span class="op-meta-val cv-layout-a46e5de3b6">${escapeHtml(op.last_heartbeat)}</span>
             </div>
           </div>
         `;
@@ -2379,14 +2432,14 @@ function renderFleet(data) {
         const headCid = (state.context && state.context.active_head_cid) || (state.vault && state.vault.active_head_hex);
         vBody.innerHTML = `
           <tr>
-            <td style="font-family: var(--font-mono); color: var(--signal); font-weight: 500;">
-              ${truncateHash(activeId, 10, 8)} <span class="badge-status-subtle" style="color:var(--ok); border-color:var(--ok-dim);">Active</span>
+            <td class="cv-layout-62bac7d2a1">
+              ${truncateHash(activeId, 10, 8)} <span class="badge-status-subtle cv-layout-ec4ebfd7fe">Active</span>
             </td>
-            <td style="font-family: var(--font-mono); color: var(--fog);">
+            <td class="cv-layout-f178cec033">
               ${headCid ? truncateHash(headCid, 10, 8) : '<em>Pending commit</em>'}
             </td>
-            <td style="font-family: var(--font-mono); font-size: 0.8rem;">Local Unlimited</td>
-            <td style="font-size: 0.8rem; color: var(--ash);">Active Workspace</td>
+            <td class="cv-layout-871ac19cb7">Local Unlimited</td>
+            <td class="cv-layout-53c01802a1">Active Workspace</td>
           </tr>
         `;
       } else {
@@ -2395,14 +2448,14 @@ function renderFleet(data) {
     } else {
       vBody.innerHTML = data.vaults.map(v => `
         <tr>
-          <td style="font-family: var(--font-mono); color: var(--signal); font-weight: 500;">
+          <td class="cv-layout-62bac7d2a1">
             ${truncateHash(v.vault_id, 10, 8)}
           </td>
-          <td style="font-family: var(--font-mono); color: var(--fog);">
+          <td class="cv-layout-f178cec033">
             ${v.head_cid ? truncateHash(v.head_cid, 10, 8) : '<em>Not reported</em>'}
           </td>
           <td>${v.storage_allowance_bytes == null ? 'Not reported' : formatBytes(v.storage_allowance_bytes)}</td>
-          <td style="font-size: 0.8rem; color: var(--ash);">${escapeHtml(v.registered_at)}</td>
+          <td class="cv-layout-53c01802a1">${escapeHtml(v.registered_at)}</td>
         </tr>
       `).join('');
     }
@@ -2412,20 +2465,20 @@ function renderFleet(data) {
   const aBody = document.getElementById('table-fleet-audits-body');
   if (aBody && data.audit_history) {
     if (data.audit_history.length === 0) {
-      aBody.innerHTML = '<tr><td colspan="7" class="loading-placeholder"><div style="padding: 8px 0; color: var(--fog);">No audit records in fleet database.<div style="font-size: 0.76rem; color: var(--ash); margin-top: 4px;">Click <strong style="color:var(--signal);">Run Fleet Audit Now</strong> above to perform the first automated verification.</div></div></td></tr>';
+      aBody.innerHTML = '<tr><td colspan="7" class="loading-placeholder"><div class="cv-layout-5b9ce8656d">No audit records in fleet database.<div class="cv-layout-1fc212d674">Click <strong class="cv-layout-8ed08dcdbc">Run Fleet Audit Now</strong> above to perform the first automated verification.</div></div></td></tr>';
     } else {
       aBody.innerHTML = data.audit_history.map(a => {
         const isHealthy = a.status === 'Healthy';
         const color = isHealthy ? 'var(--ok)' : 'var(--signal)';
         return `
           <tr>
-            <td style="font-size: 0.8rem; color: var(--ash);">${escapeHtml(a.timestamp)}</td>
-            <td style="font-family: var(--font-mono);">${truncateHash(a.vault_id, 8, 6)}</td>
-            <td><strong style="color: ${color};">${escapeHtml(a.status)}</strong></td>
-            <td style="color: var(--ok); font-family: var(--font-mono);">${a.healthy_objects ?? '--'}</td>
-            <td style="color: var(--bad); font-family: var(--font-mono);">${a.degraded_objects ?? '--'}</td>
-            <td style="color: var(--signal); font-family: var(--font-mono);">${a.repaired_objects ?? '--'}</td>
-            <td style="font-family: var(--font-mono);">${a.duration_ms == null ? 'Not reported' : `${a.duration_ms} ms`}</td>
+            <td class="cv-layout-53c01802a1">${escapeHtml(a.timestamp)}</td>
+            <td class="cv-layout-47a8b6cf8f">${truncateHash(a.vault_id, 8, 6)}</td>
+            <td><strong class="${toneClass(color)}">${escapeHtml(a.status)}</strong></td>
+            <td class="cv-layout-9228db19c9">${a.healthy_objects ?? '--'}</td>
+            <td class="cv-layout-90886257ec">${a.degraded_objects ?? '--'}</td>
+            <td class="cv-layout-24d559959f">${a.repaired_objects ?? '--'}</td>
+            <td class="cv-layout-47a8b6cf8f">${a.duration_ms == null ? 'Not reported' : `${a.duration_ms} ms`}</td>
           </tr>
         `;
       }).join('');
@@ -2521,7 +2574,7 @@ function classifyExplorerQuery(raw) {
 
 async function fetchExplorerOverview() {
   try {
-    const res = await fetch('/api/explorer/overview');
+    const res = await workspaceFetch('/api/explorer/overview');
     if (!res.ok) throw new Error(`Explorer overview request failed (${res.status})`);
     state.explorerOverview = await res.json();
   } catch (err) {
@@ -2546,7 +2599,7 @@ function renderExplorerOverview() {
             <span class="op-id">Storage Operators</span>
             <span class="${online > 0 ? 'badge-online' : 'badge-offline'}">${online}/${total} active</span>
           </div></div>
-          <div class="op-meta-row"><span class="op-meta-label">Reachability</span><span class="op-meta-val" style="color: var(--ok);">Quorum Probed</span></div>
+          <div class="op-meta-row"><span class="op-meta-label">Reachability</span><span class="op-meta-val cv-layout-6a43a34635">Quorum Probed</span></div>
           <div class="op-meta-row"><span class="op-meta-label">Coverage</span><span class="op-meta-val">100% of configured endpoints</span></div>
         </article>
         <article class="operator-card">
@@ -2591,7 +2644,7 @@ async function lookupExplorerObject(cid) {
   const result = document.getElementById('explorer-result');
   if (result) result.innerHTML = `<div class="loading-placeholder">Probing replicas for <span title="${escapeHtml(cid)}">${escapeHtml(truncateHash(cid, 12, 10))}</span>...</div>`;
   try {
-    const res = await fetch(`/api/explorer/object/${encodeURIComponent(cid)}`);
+    const res = await workspaceFetch(`/api/explorer/object/${encodeURIComponent(cid)}`);
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || `Object lookup failed (${res.status})`);
     state.explorerObject = body;
@@ -2645,12 +2698,12 @@ function renderExplorerAnchors() {
   const anchors = Array.isArray(state.anchors) ? state.anchors.slice(-5).reverse() : [];
   if (anchors.length === 0) {
     strip.innerHTML = `
-      <div class="empty-state-card" style="padding: 24px 20px; text-align: center; background: var(--bg1); border: 1px dashed var(--line); border-radius: var(--edge-lg);">
-        <div style="font-size: 0.92rem; font-weight: 600; color: var(--bone); margin-bottom: 6px;">No Arbitrum Checkpoints Committed Yet</div>
-        <p style="font-size: 0.82rem; color: var(--fog); max-width: 500px; margin: 0 auto 12px; line-height: 1.5;">
+      <div class="empty-state-card cv-layout-7e5edeaf6f">
+        <div class="cv-layout-73c6c98026">No Arbitrum Checkpoints Committed Yet</div>
+        <p class="cv-layout-4226eb98e1">
           Cryptographic commitments are anchored to Arbitrum L2 rollups. Anchor your active vault head commitment to generate verifiable on-chain receipts.
         </p>
-        <span class="canary-badge" style="display: inline-block;">Sepolia L2 Ready</span>
+        <span class="canary-badge cv-layout-52213fc812">Sepolia L2 Ready</span>
       </div>`;
     return;
   }
@@ -3000,17 +3053,17 @@ function openSnapshotInspector(snap) {
 
   const parentsList = (snap.parent_ids_hex || []).length > 0 
     ? snap.parent_ids_hex.map(p => `<code>${p}</code>`).join(', ')
-    : '<em style="color: var(--ash);">Genesis (No parents)</em>';
+    : '<em class="cv-layout-94b41f2e28">Genesis (No parents)</em>';
 
   body.innerHTML = `
-    <div style="display: flex; flex-direction: column; gap: 14px;">
+    <div class="cv-layout-3a7161c729">
       <div class="op-meta-row">
         <span class="op-meta-label">Snapshot ID:</span>
-        <span class="op-meta-val" style="color: var(--signal); word-break: break-all;">${snap.snapshot_id_hex}</span>
+        <span class="op-meta-val cv-layout-007b10e555">${snap.snapshot_id_hex}</span>
       </div>
       <div class="op-meta-row">
         <span class="op-meta-label">Manifest CID:</span>
-        <span class="op-meta-val" style="word-break: break-all;">${snap.manifest_cid_hex}</span>
+        <span class="op-meta-val cv-layout-658f27baf2">${snap.manifest_cid_hex}</span>
       </div>
       <div class="op-meta-row">
         <span class="op-meta-label">Author Device ID:</span>
@@ -3030,7 +3083,7 @@ function openSnapshotInspector(snap) {
       </div>
       <div class="op-meta-row">
         <span class="op-meta-label">Cryptographic Signature:</span>
-        <span class="op-meta-val" style="color: var(--ok);">Ed25519 Verified</span>
+        <span class="op-meta-val ${toneClass(snap.signature_verified === true ? 'var(--ok)' : 'var(--ash)')}">${snap.signature_verified === true ? 'Ed25519 signature verified' : 'Signature not verified'}</span>
       </div>
     </div>
   `;
@@ -3178,7 +3231,7 @@ function initQuickActions() {
       btnSubmitSnapshot.disabled = true;
 
       try {
-        const res = await fetch('/api/snapshots', {
+        const res = await workspaceFetch('/api/snapshots', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: message || null }),
@@ -3207,7 +3260,7 @@ function initQuickActions() {
   const triggerAnchor = async () => {
     showToast("Submitting Arbitrum checkpoint commitment...");
     try {
-      const res = await fetch('/api/anchors', { method: 'POST' });
+      const res = await workspaceFetch('/api/anchors', { method: 'POST' });
       const result = await res.json();
       if (result.success || result.status === 'ok') {
         showToast("Checkpoint commitment prepared locally. No on-chain receipt has been verified yet.");
@@ -3232,7 +3285,7 @@ function initQuickActions() {
     btnAudit.addEventListener('click', async () => {
       showToast("Running an explicit local recovery audit...");
       try {
-        const res = await fetch('/api/audit', { method: 'POST' });
+        const res = await workspaceFetch('/api/audit', { method: 'POST' });
         const result = await res.json();
         if (result.success) {
           state.audit = result.report || null;
@@ -3296,12 +3349,12 @@ function initMathVerifier() {
         const matches = computedHex.toLowerCase() === latest.commitment_hex.toLowerCase();
 
         outputBox.innerHTML = `
-          <div style="font-weight: 700; color: ${matches ? 'var(--ok)' : 'var(--bad)'}; margin-bottom: 6px;">
+          <div class="cv-layout-bfc341778e ${toneClass(matches ? 'var(--ok)' : 'var(--bad)')}">
             ${matches ? '✓ COMMITMENT PREIMAGE MATCHES' : '✗ COMMITMENT MISMATCH'}
           </div>
           <div>Recorded commitment: <code>0x${latest.commitment_hex}</code></div>
           <div>Browser Computed:  <code>0x${computedHex}</code></div>
-          <div style="color: var(--ash); font-size: 0.75rem; margin-top: 6px;">
+          <div class="cv-layout-e4e7c43569">
             This verifies the local commitment preimage only. It does not verify transaction inclusion or chain finality.
           </div>
         `;
@@ -3318,7 +3371,7 @@ function initRelayerActions() {
     btnRelayerAnchor.addEventListener('click', async () => {
       showToast("Triggering automated L2 relayer anchor...");
       try {
-        const res = await fetch('/api/relayer/anchor', { method: 'POST' });
+        const res = await workspaceFetch('/api/relayer/anchor', { method: 'POST' });
         const result = await res.json();
         if (result.status === 'ok') {
           showToast(`✓ Checkpoint relayed! Block #${result.block_number || '--'}`);
@@ -3339,7 +3392,7 @@ function initFleetActions() {
     btnAudit.addEventListener('click', async () => {
       showToast("Running fleet self-repair audit across all replicas...");
       try {
-        const res = await fetch('/api/fleet/audit', { method: 'POST' });
+        const res = await workspaceFetch('/api/fleet/audit', { method: 'POST' });
         const result = await res.json();
         if (result.status === 'ok') {
           showToast("✓ Fleet self-repair audit completed!");
@@ -3451,10 +3504,12 @@ function showToast(message, type = 'info') {
 function initSseStream() {
   if (typeof EventSource === 'undefined' || state.sseStream || document.hidden) return;
   try {
-    const sse = new EventSource('/api/stream');
+    const generation = workspaceGeneration;
+    const sse = new EventSource('/api/stream' + (selectedWorkspace ? '?workspace=' + encodeURIComponent(selectedWorkspace) : ''));
     state.sseStream = sse;
 
     sse.addEventListener('telemetry', (event) => {
+      if (state.sseStream !== sse || workspaceGeneration !== generation) return;
       try {
         const payload = JSON.parse(event.data);
         handleTelemetryPacket(payload);
@@ -3464,6 +3519,7 @@ function initSseStream() {
     });
 
     sse.onopen = () => {
+      if (state.sseStream !== sse || workspaceGeneration !== generation) return;
       const sseText = document.getElementById('sse-stream-text');
       const sseDot = document.getElementById('sse-pulse-dot');
       if (sseText) sseText.textContent = "Telemetry stream: Active";
@@ -3471,6 +3527,7 @@ function initSseStream() {
     };
 
     sse.onerror = () => {
+      if (state.sseStream !== sse || workspaceGeneration !== generation) return;
       const sseText = document.getElementById('sse-stream-text');
       const sseDot = document.getElementById('sse-pulse-dot');
       if (sseText) sseText.textContent = "Telemetry stream: Reconnecting";
@@ -3523,12 +3580,31 @@ function handleTelemetryPacket(data) {
 
   const tokenElem = document.getElementById('sse-token-status');
   if (tokenElem) {
-    if (data.token_attached) {
-      tokenElem.textContent = "PIV Smartcard Detected (Slot 9C/9D Ready)";
+    if (data.token_attached === true) {
+      tokenElem.textContent = "PIV Smartcard Detected";
       tokenElem.style.color = "var(--ok)";
-    } else {
+    } else if (data.token_attached === false) {
       tokenElem.textContent = "No Physical Smartcard Attached";
       tokenElem.style.color = "var(--fog)";
+    } else {
+      tokenElem.textContent = "Smartcard Probe Unavailable";
+      tokenElem.style.color = "var(--fog)";
+    }
+  }
+
+  const backlogStatus = document.getElementById('pending-upload-status');
+  if (backlogStatus && !isPublicExplorer()) {
+    const pending = data.pending_uploads;
+    if (pending && Number.isSafeInteger(pending.count) && pending.count >= 0
+      && Number.isSafeInteger(pending.failed_count) && pending.failed_count >= 0) {
+      const oldest = Number.isFinite(pending.oldest_created_at_utc)
+        ? ` Oldest capture: ${new Date(pending.oldest_created_at_utc * 1000).toLocaleString()}.`
+        : '';
+      backlogStatus.textContent = pending.count === 0
+        ? 'Replication backlog: no pending uploads in the last observation.'
+        : `Replication backlog: ${pending.count} pending upload(s), ${pending.failed_count} with recorded failed attempts.${oldest} Run ciphervault watch or push to retry.`;
+    } else {
+      backlogStatus.textContent = 'Replication backlog: observation unavailable.';
     }
   }
 }
@@ -3542,7 +3618,7 @@ async function loadVaultFilesForFastCdc() {
   if (!selectElem || !canAccessPrivateFeature('plaintext_inspection') || state.fastCdcVaultFilesLoaded) return;
 
   try {
-    const res = await fetch('/api/fastcdc/vault-files');
+    const res = await workspaceFetch('/api/fastcdc/vault-files');
     if (!res.ok) return;
     const data = await res.json();
     if (data.success && Array.isArray(data.files)) {
@@ -3684,6 +3760,8 @@ function closeSseStream() {
   const sseDot = document.getElementById('sse-pulse-dot');
   if (sseText) sseText.textContent = 'Telemetry stream: Paused';
   if (sseDot) sseDot.style.backgroundColor = 'var(--ash)';
+  const backlogStatus = document.getElementById('pending-upload-status');
+  if (backlogStatus) backlogStatus.textContent = 'Replication backlog: awaiting a private telemetry observation.';
 }
 
 function cycleFocusWithin(container, event) {
@@ -3742,7 +3820,7 @@ async function runFastCdcInspection(opts) {
   if (btnRun) btnRun.disabled = true;
 
   try {
-    const res = await fetch('/api/fastcdc/inspect', {
+    const res = await workspaceFetch('/api/fastcdc/inspect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -3835,7 +3913,7 @@ function renderFastCdcResults(data) {
     return `
       <div class="chunk-block ${entropyClass}" 
            data-chunk-idx="${i}" 
-           style="width: ${widthPx}px;"
+           data-width-px="${widthPx}"
            title="Chunk #${i}: ${formatBytes(c.length)} | Entropy: ${c.entropy} | ${c.is_duplicate ? 'DUPLICATE' : 'UNIQUE'}">
         <span class="chunk-block-idx">#${i}</span>
         <span class="chunk-block-sz">${formatBytes(c.length)}</span>
@@ -3844,6 +3922,7 @@ function renderFastCdcResults(data) {
   }).join('');
 
   const blocks = container.querySelectorAll('.chunk-block');
+  applyMeasuredWidths(container);
   blocks.forEach(block => {
     block.addEventListener('click', () => {
       const idx = parseInt(block.getAttribute('data-chunk-idx'), 10);
@@ -3993,7 +4072,7 @@ async function runDiffComparison() {
 
   try {
     const url = `/api/diff?snapshot_a=${encodeURIComponent(baseVal)}&snapshot_b=${encodeURIComponent(targetVal)}&reveal=${state.diffReveal ? 'true' : 'false'}`;
-    const res = await fetch(url);
+    const res = await workspaceFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to calculate secret diff`);
     const data = await res.json();
     if (!data.success && data.error) throw new Error(data.error);
@@ -4006,7 +4085,7 @@ async function runDiffComparison() {
     console.error("Diff computation error:", err);
     if (container) {
       container.innerHTML = `
-        <div class="diff-placeholder" style="color: var(--bad);">
+        <div class="diff-placeholder cv-layout-f3c9a155fd">
           <p>Failed to calculate diff: ${escapeHtml(err.message)}</p>
         </div>
       `;
@@ -4056,12 +4135,12 @@ function renderDiffResults(report) {
   if (files.length === 0) {
     container.innerHTML = `
       <div class="diff-placeholder">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 12px;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-3106344cde">
           <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
           <polyline points="22 4 12 14.01 9 11.01"></polyline>
         </svg>
         <p>No confidential differences detected between <strong>${escapeHtml(baseLabel)}</strong> and <strong>${escapeHtml(targetLabel)}</strong>.</p>
-        <span style="font-size: 0.8rem; color: var(--ash);">All secrets, keys, and values are byte-identical.</span>
+        <span class="cv-layout-53c01802a1">All secrets, keys, and values are byte-identical.</span>
       </div>
     `;
     return;
@@ -4079,7 +4158,7 @@ function renderDiffResults(report) {
       ? '<span class="diff-badge removed">- DELETED</span>'
       : isModifiedFile
       ? '<span class="diff-badge modified">~ MODIFIED</span>'
-      : '<span class="diff-badge" style="background: rgba(255,255,255,0.06); color: var(--ash);">UNCHANGED</span>';
+      : '<span class="diff-badge cv-layout-37e39698ce">UNCHANGED</span>';
 
     const rawEntries = file.entries || file.lines || [];
     const linesHtml = rawEntries.map(entry => {
@@ -4216,7 +4295,7 @@ function initFileManagement() {
       if (btnText) btnText.textContent = "Registering...";
 
       try {
-        const res = await fetch('/api/files/track', {
+        const res = await workspaceFetch('/api/files/track', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: pathVal })
@@ -4255,7 +4334,7 @@ function initFileManagement() {
 
       untrackBtn.disabled = true;
       try {
-        const res = await fetch('/api/files/untrack', {
+        const res = await workspaceFetch('/api/files/untrack', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: filePath })
@@ -4322,7 +4401,7 @@ function openSnapshotDrawer(snap) {
     const manifestCid = snap.manifest_cid_hex;
     const parents = (snap.parent_ids_hex || []).length > 0
       ? snap.parent_ids_hex.map(p => `<code>${truncateHash(p, 8, 6)}</code>`).join(', ')
-      : '<em style="color: var(--ash);">Genesis</em>';
+      : '<em class="cv-layout-94b41f2e28">Genesis</em>';
 
     body.innerHTML = `
       <div class="drawer-section">
@@ -4330,11 +4409,11 @@ function openSnapshotDrawer(snap) {
         <div class="drawer-meta-grid">
           <div class="drawer-meta-item">
             <span class="lbl">Snapshot ID</span>
-            <span class="val font-mono highlight-signal" style="word-break: break-all;">${escapeHtml(snap.snapshot_id_hex)}</span>
+            <span class="val font-mono highlight-signal cv-layout-658f27baf2">${escapeHtml(snap.snapshot_id_hex)}</span>
           </div>
           <div class="drawer-meta-item">
             <span class="lbl">Manifest CID</span>
-            <span class="val font-mono" style="word-break: break-all;">${escapeHtml(manifestCid)}</span>
+            <span class="val font-mono cv-layout-658f27baf2">${escapeHtml(manifestCid)}</span>
           </div>
           <div class="drawer-meta-item">
             <span class="lbl">Author Device</span>
@@ -4358,7 +4437,7 @@ function openSnapshotDrawer(snap) {
       <div class="drawer-section">
         <span class="drawer-sec-title">Quick Actions</span>
         <div class="drawer-actions-row">
-          <button class="btn-action primary" id="btn-drawer-restore-action" style="flex: 1;">
+          <button class="btn-action primary cv-layout-649f9eeb60" id="btn-drawer-restore-action">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
               <path d="M21 3v5h-5"></path>
@@ -4378,13 +4457,13 @@ function openSnapshotDrawer(snap) {
       </div>
 
       <div class="drawer-section">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div class="cv-layout-5ee277fbd7">
           <span class="drawer-sec-title">Snapshot Historical Manifest</span>
           <span id="drawer-files-count-badge" class="badge-status-subtle">Inspecting...</span>
         </div>
         <div class="drawer-files-list" id="drawer-files-list">
-          <div style="color: var(--signal); font-size: 0.85rem; padding: 8px 0;">
-            <span class="spinner" style="display:inline-block; width:12px; height:12px; border:2px solid var(--signal); border-top-color:transparent; border-radius:50%; animation:spin 1s linear infinite; margin-right:8px; vertical-align:middle;"></span>
+          <div class="cv-layout-25dd045c29">
+            <span class="spinner cv-layout-f2a0829bf3"></span>
             Decrypting historical snapshot manifest...
           </div>
         </div>
@@ -4392,7 +4471,7 @@ function openSnapshotDrawer(snap) {
 
       <div class="drawer-section">
         <span class="drawer-sec-title">Quorum Replicas</span>
-        <div style="font-size: 0.82rem; color: var(--fog); line-height: 1.5;">
+        <div class="cv-layout-94864f5f88">
           No snapshot-scoped replica proof is loaded here. Run an explicit local recovery audit before treating this snapshot as recoverable.
         </div>
       </div>
@@ -4402,7 +4481,7 @@ function openSnapshotDrawer(snap) {
     // never fall back to the current vault inventory, because that inventory can
     // describe a different point in history.
     const requestedSnapshotId = snap.snapshot_id_hex;
-    fetch(`/api/snapshots/${encodeURIComponent(requestedSnapshotId)}/manifest`)
+    workspaceFetch(`/api/snapshots/${encodeURIComponent(requestedSnapshotId)}/manifest`)
       .then(response => {
         if (!response.ok) throw new Error(`Manifest request failed (${response.status})`);
         return response.json();
@@ -4416,7 +4495,7 @@ function openSnapshotDrawer(snap) {
         if (data && data.status === 'ok' && Array.isArray(data.files)) {
           if (badgeElem) badgeElem.textContent = `${data.files_count} files (${formatBytes(data.total_bytes)})`;
           if (data.files.length === 0) {
-            filesListElem.innerHTML = '<div style="color: var(--ash); font-size: 0.85rem;">No confidential files registered in this snapshot manifest.</div>';
+            filesListElem.innerHTML = '<div class="cv-layout-200022ce38">No confidential files registered in this snapshot manifest.</div>';
           } else {
             filesListElem.innerHTML = data.files.map(f => `
               <div class="drawer-file-item ${f.is_deleted ? 'deleted' : ''}">
@@ -4424,16 +4503,16 @@ function openSnapshotDrawer(snap) {
                   <span class="file-name font-mono">${escapeHtml(f.path)}</span>
                   <span class="file-sz">${formatBytes(f.size_bytes || 0)}</span>
                 </div>
-                <div class="file-sub font-mono text-muted" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="file-sub font-mono text-muted cv-layout-53b8ce0490">
                   <span>${f.chunk_count} chunk${f.chunk_count === 1 ? '' : 's'} · ID: ${truncateHash(f.file_id_hex, 6, 4)}</span>
-                  ${f.is_deleted ? '<span class="badge-status-subtle" style="color: var(--bad); border-color: rgba(255, 92, 92, 0.32);">DELETED</span>' : ''}
+                  ${f.is_deleted ? '<span class="badge-status-subtle cv-layout-67b2240197">DELETED</span>' : ''}
                 </div>
               </div>
             `).join('');
           }
         } else {
           if (badgeElem) badgeElem.textContent = 'Unavailable';
-          filesListElem.innerHTML = '<div style="font-size: 0.82rem; color: var(--fog); line-height: 1.5;">This snapshot manifest is unavailable or cannot be decoded locally. Current vault files are intentionally not shown here because they may belong to a different snapshot.</div>';
+          filesListElem.innerHTML = '<div class="cv-layout-94864f5f88">This snapshot manifest is unavailable or cannot be decoded locally. Current vault files are intentionally not shown here because they may belong to a different snapshot.</div>';
         }
       })
       .catch(() => {
@@ -4442,7 +4521,7 @@ function openSnapshotDrawer(snap) {
         const badgeElem = document.getElementById('drawer-files-count-badge');
         if (badgeElem) badgeElem.textContent = 'Unavailable';
         if (filesListElem) {
-          filesListElem.innerHTML = '<div style="color: var(--ash); font-size: 0.85rem;">Historical manifest could not be loaded. Current vault files are intentionally not substituted.</div>';
+          filesListElem.innerHTML = '<div class="cv-layout-200022ce38">Historical manifest could not be loaded. Current vault files are intentionally not substituted.</div>';
         }
       });
     // Safe restore prompt with target folder selection (F12)
@@ -4458,7 +4537,7 @@ function openSnapshotDrawer(snap) {
 
         btnRestore.disabled = true;
         try {
-          const res = await fetch('/api/snapshots/restore', {
+          const res = await workspaceFetch('/api/snapshots/restore', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -4601,12 +4680,12 @@ function appendTerminalLog(tag, message, color = 'var(--signal)') {
 
   const now = new Date();
   const timeStr = now.toTimeString().split(' ')[0];
-  const rowHtml = `<div class="terminal-line"><span class="terminal-time">[${timeStr}]</span> <span class="terminal-tag" style="color: ${color};">[${escapeHtml(tag)}]</span> ${escapeHtml(message)}</div>`;
+  const rowHtml = `<div class="terminal-line"><span class="terminal-time">[${timeStr}]</span> <span class="terminal-tag ${toneClass(color)}">[${escapeHtml(tag)}]</span> ${escapeHtml(message)}</div>`;
 
   if (typeof document.createElement === 'function' && typeof logs.appendChild === 'function') {
     const line = document.createElement('div');
     line.className = 'terminal-line';
-    line.innerHTML = `<span class="terminal-time">[${timeStr}]</span> <span class="terminal-tag" style="color: ${color};">[${escapeHtml(tag)}]</span> ${escapeHtml(message)}`;
+    line.innerHTML = `<span class="terminal-time">[${timeStr}]</span> <span class="terminal-tag ${toneClass(color)}">[${escapeHtml(tag)}]</span> ${escapeHtml(message)}`;
     logs.appendChild(line);
   } else {
     logs.innerHTML = (logs.innerHTML || '') + rowHtml;
@@ -5256,7 +5335,7 @@ function initActivityFeed() {
 
 async function fetchActivity() {
   try {
-    const res = await fetch('/api/activity?limit=50');
+    const res = await workspaceFetch('/api/activity?limit=50');
     if (!res.ok) throw new Error(`Activity request failed (${res.status})`);
     const data = await res.json();
     if (data && Array.isArray(data.events)) {
@@ -5324,7 +5403,7 @@ function renderActivity(events) {
 
 async function fetchWorkspaces() {
   try {
-    const res = await fetch('/api/workspaces');
+    const res = await workspaceFetch('/api/workspaces');
     if (!res.ok) throw new Error(`Workspace request failed (${res.status})`);
     const data = await res.json();
     if (data.status === 'ok' && data.workspaces) {
@@ -5368,7 +5447,7 @@ function renderWorkspaces(workspaces, activeDb) {
           <span>${ws.snapshot_count} snap${ws.snapshot_count === 1 ? '' : 's'}</span>
           <span>•</span>
           <span>${ws.tracked_files_count} file${ws.tracked_files_count === 1 ? '' : 's'}</span>
-          ${ws.active_head_cid ? `<span>•</span><span style="font-family:var(--font-mono)">${ws.active_head_cid.substring(0, 8)}</span>` : ''}
+          ${ws.active_head_cid ? `<span>•</span><span class="cv-layout-82cece3ff4">${ws.active_head_cid.substring(0, 8)}</span>` : ''}
         </div>
       </div>
       ${ws.is_active ? '<span class="workspace-badge-active">ACTIVE</span>' : ''}
@@ -5394,13 +5473,23 @@ function renderWorkspaces(workspaces, activeDb) {
 async function switchWorkspace(dbPath) {
   try {
     showToast("Switching workspace profile...");
-    const res = await fetch('/api/workspaces/switch', {
+    const res = await workspaceFetch('/api/workspaces/switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ db_path: dbPath })
     });
     const data = await res.json();
     if (data.status === 'ok') {
+      workspaceRequests.abort();
+      workspaceRequests = new AbortController();
+      workspaceGeneration += 1;
+      selectedWorkspace = data.active_workspace_db;
+      try { sessionStorage.setItem('ciphervault.workspace', selectedWorkspace); } catch (_) {}
+      closeSseStream();
+      state.vault = null;
+      state.snapshots = [];
+      state.overview = null;
+      state.fetching = false;
       showToast("✓ " + data.message);
       const wrap = document.getElementById('workspace-switcher-wrap');
       if (wrap) wrap.classList.remove('open');
@@ -5444,7 +5533,7 @@ function initWorkspaceSwitcher() {
           return;
         }
         showToast("Scanning system for local vaults...");
-        const res = await fetch('/api/workspaces/scan', { method: 'POST' });
+        const res = await workspaceFetch('/api/workspaces/scan', { method: 'POST' });
         const data = await res.json();
         if (data.status === 'ok') {
           showToast(`✓ Found ${data.count} vault workspace(s)`);
@@ -5463,7 +5552,7 @@ function initWorkspaceSwitcher() {
 
 async function fetchScopeBanner() {
   try {
-    const res = await fetch('/api/scoped/context', { credentials: 'same-origin' });
+    const res = await workspaceFetch('/api/scoped/context', { credentials: 'same-origin' });
     if (!res.ok) throw new Error(`Scope context request failed (${res.status})`);
     renderScopeBanner(await res.json());
   } catch (err) {

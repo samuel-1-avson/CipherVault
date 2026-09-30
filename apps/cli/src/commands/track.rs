@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Result};
 use colored::Colorize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::util::{ensure_file_in_gitignore, get_vault_store, scan_gitignore_for_secrets};
 
@@ -12,9 +12,10 @@ pub(crate) fn cmd_track(
     no_gitignore: bool,
 ) -> Result<()> {
     let store = get_vault_store()?;
+    let root = crate::util::get_workspace_root()?;
 
     if from_gitignore {
-        let discovered = scan_gitignore_for_secrets(Path::new("."))?;
+        let discovered = scan_gitignore_for_secrets(&root)?;
         if discovered.is_empty() {
             println!(
                 "{}",
@@ -45,7 +46,7 @@ pub(crate) fn cmd_track(
     for path in paths {
         let path_str = path.to_string_lossy();
         let file_id = store.track_file(&path_str)?;
-        let exists = path.exists();
+        let exists = root.join(&path).exists();
         let status_str = if exists {
             "[found]".green()
         } else {

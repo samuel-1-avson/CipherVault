@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,20 +48,23 @@ async fn test_pivotal_acceptance_drill() {
     let op2_dir = base_test_dir.join("op2_storage");
     let op3_dir = base_test_dir.join("op3_storage");
 
-    let op1_state = Arc::new(OperatorState::new(
+    let op1_state = Arc::new(OperatorState::new_with_security(
         "operator-1".into(),
         op1_dir.clone(),
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
-    let op2_state = Arc::new(OperatorState::new(
+    let op2_state = Arc::new(OperatorState::new_with_security(
         "operator-2".into(),
         op2_dir.clone(),
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
-    let op3_state = Arc::new(OperatorState::new(
+    let op3_state = Arc::new(OperatorState::new_with_security(
         "operator-3".into(),
         op3_dir.clone(),
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
 
     let listener_1 = TcpListener::bind("127.0.0.1:0").await.unwrap();

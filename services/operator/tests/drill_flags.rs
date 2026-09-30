@@ -44,7 +44,7 @@ async fn boot_target(operator_id: &str, relay_server: bool) -> TestNode {
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -241,4 +241,18 @@ async fn relay_reserve_flag_prints_circuit_addr() {
         captured.contains("P2P relay circuit:"),
         "reservation banner missing.\n--- daemon output ---\n{captured}"
     );
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

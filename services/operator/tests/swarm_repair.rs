@@ -41,7 +41,7 @@ async fn boot_node(operator_id: &str, repair: RepairConfig) -> (TestNode, Arc<Op
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -380,4 +380,18 @@ async fn repair_backoff_on_budget_exhaustion_then_recovers() {
     node_a.handle.trigger_repair(cid).await.unwrap();
     assert_eq!(wait_object(&state_b, &cid_hex).await, bytes);
     wait_metric(&state_a, "ciphervault_swarm_repair_jobs_completed_total", 1).await;
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

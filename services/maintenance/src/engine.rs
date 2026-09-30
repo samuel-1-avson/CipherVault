@@ -156,6 +156,16 @@ impl MaintenanceEngine {
             .iter()
             .map(|e| OperatorClient::new(e.clone()))
             .collect();
+        Self::from_clients(clients)
+    }
+
+    pub fn from_clients(mut clients: Vec<OperatorClient>) -> Self {
+        clients.sort_by(|a, b| a.endpoint().cmp(b.endpoint()));
+        clients.dedup_by(|a, b| a.endpoint() == b.endpoint());
+        let endpoints = clients
+            .iter()
+            .map(|client| client.endpoint().to_string())
+            .collect();
         Self { endpoints, clients }
     }
 
@@ -310,7 +320,11 @@ impl MaintenanceEngine {
                                     if let Ok(receipt) =
                                         client.challenge_object_pos(token, &cid, &nonce).await
                                     {
-                                        if receipt.verify(pk, &expected_proof).is_ok() {
+                                        if receipt.verify(pk, &expected_proof).is_ok()
+                                            && receipt.cid_hex == hex::encode(cid)
+                                            && receipt.nonce_hex == hex::encode(nonce)
+                                            && receipt.size_bytes == data.len() as u64
+                                        {
                                             verified = true;
                                         }
                                     }
@@ -465,30 +479,55 @@ impl MaintenanceEngine {
             let client = client.clone();
             info_tasks.spawn(async move {
                 let info = client.get_info().await.ok();
-                (client, info.map(|info| info.operator_id))
+                (client, info)
             });
         }
-        let mut op_map: HashMap<String, (OperatorClient, String)> = HashMap::new();
+        let mut op_map: HashMap<String, (OperatorClient, String, [u8; 32])> = HashMap::new();
         while let Some(joined) = info_tasks.join_next().await {
-            if let Ok((client, Some(operator_id))) = joined {
+            if let Ok((client, Some(info))) = joined {
+                let Ok(bytes) = hex::decode(&info.operator_signing_pk_hex) else {
+                    continue;
+                };
+                let Ok(pk): Result<[u8; 32], _> = bytes.try_into() else {
+                    continue;
+                };
                 if let Some(token) = sessions.get(client.endpoint()) {
-                    op_map.insert(operator_id, (client, token.clone()));
+                    op_map.insert(info.operator_id, (client, token.clone(), pk));
                 }
             }
         }
 
         let mut renew_tasks = JoinSet::new();
         for (index, receipt) in receipts.iter().enumerate() {
-            if let Some((client, token)) = op_map.get(&receipt.operator_id) {
+            if let Some((client, token, pk)) = op_map.get(&receipt.operator_id) {
+                if receipt.verify(pk).is_err() {
+                    continue;
+                }
                 let client = client.clone();
                 let token = token.clone();
                 let lease_id = receipt.lease_id.clone();
                 let bytes = receipt.bytes;
+                let previous = receipt.clone();
+                let pk = *pk;
                 renew_tasks.spawn(async move {
                     let renewed = client
                         .renew_lease(&token, &lease_id, additional_days, bytes)
                         .await
-                        .ok();
+                        .ok()
+                        .filter(|renewed| {
+                            renewed.verify(&pk).is_ok()
+                                && renewed.lease_id == previous.lease_id
+                                && renewed.operator_id == previous.operator_id
+                                && renewed.closure_digest_hex == previous.closure_digest_hex
+                                && renewed.bytes == previous.bytes
+                                && renewed.issued_at_utc == previous.issued_at_utc
+                                && renewed.term_days
+                                    == previous.term_days.saturating_add(additional_days)
+                                && renewed.expires_at_utc
+                                    >= previous
+                                        .expires_at_utc
+                                        .saturating_add(u64::from(additional_days) * 86400)
+                        });
                     (index, renewed)
                 });
             }
@@ -524,36 +563,27 @@ async fn repair_single_object(
         return (false, placement_updates);
     }
 
-    // Pick first intact operator
-    let source_ep = &item.present_on[0];
-    let Some(source_token) = sessions.get(source_ep) else {
-        return (false, placement_updates);
-    };
-    let source_client = &client_map[source_ep];
-
-    // Fetch ciphertext bytes from intact operator
-    let bytes = match source_client.get_object(source_token, &item.cid).await {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!(
-                "Failed to fetch {} from {}: {}",
-                hex::encode(item.cid),
-                source_ep,
-                e
-            );
-            return (false, placement_updates);
+    let mut sources = JoinSet::new();
+    for endpoint in &item.present_on {
+        if let (Some(client), Some(token)) = (client_map.get(endpoint), sessions.get(endpoint)) {
+            let (client, token, cid, endpoint) =
+                (client.clone(), token.clone(), item.cid, endpoint.clone());
+            sources.spawn(async move { (endpoint, client.get_object(&token, &cid).await) });
         }
-    };
-
-    // Mandatory SHA-256 integrity verification
-    let digest = compute_digest(&bytes);
-    if digest != item.cid {
-        eprintln!(
-            "Integrity mismatch on fetched object {}. Aborting repair for this object.",
-            hex::encode(item.cid)
-        );
-        return (false, placement_updates);
     }
+    let mut surviving = None;
+    while let Some(result) = sources.join_next().await {
+        if let Ok((endpoint, Ok(bytes))) = result {
+            if compute_digest(&bytes) == item.cid {
+                surviving = Some((endpoint, bytes));
+                break;
+            }
+        }
+    }
+    sources.abort_all();
+    let Some((source_ep, bytes)) = surviving else {
+        return (false, placement_updates);
+    };
 
     // Replicate to all missing operators
     let mut repaired_all = true;

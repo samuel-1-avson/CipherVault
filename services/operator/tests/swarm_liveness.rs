@@ -45,7 +45,7 @@ async fn boot_node(
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -348,4 +348,18 @@ async fn forged_gossip_dropped_without_effect() {
         metric_value(&exp, "ciphervault_swarm_heartbeats_received_total") >= 1,
         "valid heartbeat must count as received"
     );
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }
