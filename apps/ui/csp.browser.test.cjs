@@ -99,16 +99,24 @@ const server = http.createServer((request, response) => {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = 'http://127.0.0.1:' + server.address().port;
-    child = spawn(browser, ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
+    const browserArgs = ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
       '--disable-extensions', '--disable-background-networking', '--user-data-dir=' + profile,
-      '--virtual-time-budget=2500', '--dump-dom', url], {windowsHide:true});
+      '--virtual-time-budget=2500', '--dump-dom', url];
+    // Hosted Linux VMs cannot initialize Chrome's sandbox; keep it enabled for local runs.
+    if (process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true') browserArgs.push('--no-sandbox');
+    child = spawn(browser, browserArgs, {windowsHide:true});
     let output = '', diagnostics = '';
     child.stdout.on('data', data => { output += data; });
     child.stderr.on('data', data => { diagnostics += data; });
     const timer = setTimeout(() => child.kill(), 25000);
-    const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', resolve); });
+    const {code, signal} = await new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('exit', (code, signal) => resolve({code, signal}));
+    });
     clearTimeout(timer);
-    assert.equal(code, 0, 'Browser failed: ' + diagnostics.slice(-1500));
+    const diagnosticSummary = diagnostics.length <= 3000 ? diagnostics
+      : diagnostics.slice(0, 1500) + '\n... diagnostics truncated ...\n' + diagnostics.slice(-1500);
+    assert.equal(code, 0, `Browser failed (signal ${signal}): ${diagnosticSummary}`);
     const encoded = output.match(/data-csp-test="([^"]+)"/);
     assert(encoded, 'Browser test did not complete: ' + diagnostics.slice(-1500));
     const result = JSON.parse(Buffer.from(encoded[1], 'base64').toString());
