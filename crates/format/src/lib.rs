@@ -15,7 +15,7 @@ pub use error::FormatError;
 pub use schema::{
     CheckpointEvidence, ChunkWireObject, DeviceCertificate, EpochEnvelope, GenesisRecord,
     HeadRecord, ManifestFileEntry, PlacementUpdate, RecoveryClosure, RecoverySet, SnapshotManifest,
-    SnapshotRecord, PROTOCOL_VERSION,
+    SnapshotRecord, CHUNK_WIRE_VERSION_V2, PROTOCOL_VERSION,
 };
 pub use scope::{
     validate_description, validate_external_repo_id, validate_secret_name, validate_slug,

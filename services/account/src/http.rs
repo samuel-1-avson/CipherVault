@@ -295,7 +295,13 @@ pub(crate) fn service_error(error: AccountServiceError) -> Response {
 }
 
 pub(crate) async fn csrf_origin_guard(request: Request<Body>, next: Next) -> Response {
-    if request.method() == axum::http::Method::POST {
+    if matches!(
+        *request.method(),
+        axum::http::Method::POST
+            | axum::http::Method::PATCH
+            | axum::http::Method::PUT
+            | axum::http::Method::DELETE
+    ) {
         if let Some(origin) = request.headers().get(axum::http::header::ORIGIN) {
             let origin = origin.to_str().unwrap_or_default();
             let configured = std::env::var("CIPHERVAULT_ACCOUNT_ALLOWED_ORIGINS")
@@ -322,6 +328,21 @@ pub(crate) async fn csrf_origin_guard(request: Request<Body>, next: Next) -> Res
         }
     }
     next.run(request).await
+}
+
+/// Secret values and credentials must never be retained by intermediary or
+/// browser caches. Apply the policy to error responses as well.
+pub(crate) async fn response_privacy_headers(request: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        "x-content-type-options",
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -402,7 +423,13 @@ pub(crate) fn authenticated_session_with_db(
     let session = db
         .query_row(
             "SELECT account_id, device_id_hex, session_kind, issued_at_utc, expires_at_utc
-             FROM sessions WHERE token_hash_hex = ?1 AND revoked_at_utc IS NULL AND expires_at_utc > ?2",
+             FROM sessions s WHERE token_hash_hex = ?1 AND revoked_at_utc IS NULL AND expires_at_utc > ?2
+               AND (s.device_id_hex IS NULL OR EXISTS(SELECT 1 FROM devices d
+                    WHERE d.account_id = s.account_id AND d.device_id_hex = s.device_id_hex
+                      AND d.revoked_at_utc IS NULL))
+               AND (s.credential_id_hex IS NULL OR EXISTS(SELECT 1 FROM webauthn_credentials c
+                    WHERE c.account_id = s.account_id AND c.credential_id_hex = s.credential_id_hex
+                      AND c.revoked_at_utc IS NULL))",
             params![token_hash, now],
             |row| {
                 Ok(SessionView {

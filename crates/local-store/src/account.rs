@@ -11,8 +11,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 const ACCOUNT_SCHEMA_VERSION: u32 = 1;
 const ACCOUNT_FILE: &str = "account.json";
@@ -165,11 +167,22 @@ impl AccountStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        let initialization_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("initialization.lock"))?;
+        initialization_lock.lock()?;
+        if path.exists() || key_path.exists() {
+            return Err(AccountError::Invalid(
+                "account metadata or key already exists; refusing replacement".into(),
+            ));
+        }
 
-        let mut seed = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut seed);
+        let mut seed = Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(seed.as_mut());
         let signing_key = SigningKey::from_bytes(&seed);
-        seed.fill(0);
         let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
         let digest = Sha256::digest(signing_key.verifying_key().as_bytes());
         let account_id = format!("cvacct_{}", hex::encode(&digest[..16]));
@@ -188,7 +201,8 @@ impl AccountStore {
             vaults: Vec::new(),
             hosted_endpoint: None,
         };
-        let protected = protect_secret(&signing_key.to_bytes())
+        let signing_bytes = Zeroizing::new(signing_key.to_bytes());
+        let protected = protect_secret(signing_bytes.as_ref())
             .map_err(|e| AccountError::KeyProtection(e.to_string()))?;
         write_atomic(&key_path, &protected, true)?;
         let store = Self {
@@ -276,14 +290,15 @@ impl AccountStore {
                 AccountError::Io(error)
             }
         })?;
-        let raw =
-            unprotect_secret(&protected).map_err(|e| AccountError::KeyProtection(e.to_string()))?;
+        let raw = Zeroizing::new(
+            unprotect_secret(&protected).map_err(|e| AccountError::KeyProtection(e.to_string()))?,
+        );
         if raw.len() != 32 {
             return Err(AccountError::Invalid(
                 "account signing key has invalid length".into(),
             ));
         }
-        let mut bytes = [0u8; 32];
+        let mut bytes = Zeroizing::new([0u8; 32]);
         bytes.copy_from_slice(&raw);
         let signing_key = SigningKey::from_bytes(&bytes);
         if hex::encode(signing_key.verifying_key().as_bytes()) != self.record.account_public_key_hex
@@ -519,39 +534,78 @@ impl AccountStore {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8], restrictive: bool) -> Result<(), AccountError> {
-    #[cfg(not(unix))]
-    let _ = restrictive;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_file_name(format!(
-        ".{}.tmp-{}",
+        ".{}.tmp-{}-{:032x}",
         path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("account"),
-        std::process::id()
+        std::process::id(),
+        rand::random::<u128>()
     ));
-    fs::write(&tmp, bytes)?;
-    #[cfg(unix)]
-    if restrictive {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    let result = (|| -> std::io::Result<()> {
+        let mut file = if restrictive {
+            ciphervault_file_lock::create_secret_file(&tmp)?
+        } else {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?
+        };
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        ciphervault_file_lock::atomic_replace(&tmp, path)?;
+        ciphervault_file_lock::sync_directory(path.parent().unwrap_or_else(|| Path::new(".")))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::rename(&tmp, path)?;
-    #[cfg(unix)]
-    if restrictive {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    result.map_err(AccountError::Io)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_atomic_write_retains_previous_target_and_cleans_temporary_file() {
+        let root =
+            std::env::temp_dir().join(format!("cv-account-write-{:032x}", rand::random::<u128>()));
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("target/sentinel"), b"preserved").unwrap();
+        assert!(write_atomic(&root.join("target"), b"new bytes", true).is_err());
+        assert_eq!(
+            fs::read(root.join("target/sentinel")).unwrap(),
+            b"preserved"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_account_creation_never_replaces_the_winning_key() {
+        let root =
+            std::env::temp_dir().join(format!("cv-account-race-{:032x}", rand::random::<u128>()));
+        let path = root.join("account.json");
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || AccountStore::create(Some("Synthetic"), Some(path)))
+            })
+            .collect();
+        let winners: Vec<_> = threads
+            .into_iter()
+            .filter_map(|thread| thread.join().unwrap().ok())
+            .collect();
+        assert_eq!(winners.len(), 1);
+        let opened = AccountStore::open(Some(path)).unwrap();
+        opened.unlock_signing_key().unwrap();
+        assert_eq!(opened.account_id(), winners[0].account_id());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn account_lifecycle_is_device_and_vault_scoped() {

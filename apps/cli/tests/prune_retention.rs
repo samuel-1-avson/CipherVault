@@ -17,6 +17,8 @@ fn prune_retains_head_pending_and_shared_chunks() {
             .unwrap()
             .as_nanos()
     ));
+    fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
     let vault_dir = test_dir.join("client_vault");
     fs::create_dir_all(&vault_dir).unwrap();
 

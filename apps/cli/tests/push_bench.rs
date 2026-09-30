@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 //! Phase 3 perf proof: sequential vs concurrent multi-object replication.
 //!
 //! Ignored by default; run release-mode so timings are meaningful:
@@ -27,10 +29,11 @@ async fn spawn_operator(
     port: u16,
     data_dir: std::path::PathBuf,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         format!("op_{}", port),
         data_dir,
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
     let app = create_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 0));

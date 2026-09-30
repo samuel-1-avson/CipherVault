@@ -205,6 +205,13 @@ fn encrypt_totp_secret(secret: &[u8]) -> Result<String, AccountServiceError> {
 }
 
 fn decrypt_totp_secret(value: &str) -> Result<Vec<u8>, AccountServiceError> {
+    decrypt_totp_secret_with_key(value, &totp_wrapping_key()?)
+}
+
+pub(crate) fn decrypt_totp_secret_with_key(
+    value: &str,
+    wrapping_key: &[u8; 32],
+) -> Result<Vec<u8>, AccountServiceError> {
     let envelope = b64_decode(value, "TOTP secret envelope")?;
     if envelope.len() <= TOTP_NONCE_BYTES {
         return Err(AccountServiceError::Invalid(
@@ -213,10 +220,10 @@ fn decrypt_totp_secret(value: &str) -> Result<Vec<u8>, AccountServiceError> {
     }
     let mut nonce = [0u8; TOTP_NONCE_BYTES];
     nonce.copy_from_slice(&envelope[..TOTP_NONCE_BYTES]);
-    let key = aead::UnboundKey::new(&aead::AES_256_GCM, &totp_wrapping_key()?)
+    let key = aead::UnboundKey::new(&aead::AES_256_GCM, wrapping_key)
         .map_err(|_| AccountServiceError::Invalid("unable to initialize TOTP key".into()))?;
     let key = aead::LessSafeKey::new(key);
-    let mut payload = envelope[TOTP_NONCE_BYTES..].to_vec();
+    let mut payload = zeroize::Zeroizing::new(envelope[TOTP_NONCE_BYTES..].to_vec());
     let plaintext = key
         .open_in_place(
             aead::Nonce::assume_unique_for_key(nonce),
@@ -248,13 +255,7 @@ fn account_session_for(
             "Session is outside this account",
         )));
     }
-    if session.auth_method == "recovery" {
-        return Err(Box::new(error_response(
-            StatusCode::FORBIDDEN,
-            "RECOVERY_STEP_UP_REQUIRED",
-            "Recovery sessions must enroll a device or complete a hardware/passkey step-up before account changes",
-        )));
-    }
+    crate::guards::require_recent_strong_session(&session, now_utc())?;
     Ok(session)
 }
 
@@ -515,6 +516,10 @@ pub async fn post_totp_authentication_options(
     let challenge_id = random_hex(16);
     let nonce_hex = random_hex(32);
     let expires_at = now_utc() + CHALLENGE_TTL_SECONDS;
+    if let Err(failure) = crate::abuse::check_challenge_quota(&db, &headers, &account_id, now_utc())
+    {
+        return crate::abuse::quota_failure_response(failure);
+    }
     if let Err(error) = db.execute(
         "INSERT INTO challenges(challenge_id, kind, account_id, nonce_hex, expires_at_utc)
          VALUES(?1, 'totp_login', ?2, ?3, ?4)",

@@ -272,9 +272,15 @@ enum Commands {
         #[arg(
             short,
             long,
-            help = "Directory to restore files into (defaults to current directory)"
+            help = "Directory to restore files into (relative to the selected workspace)"
         )]
         to: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Verify all snapshot content and preview file changes without writing"
+        )]
+        dry_run: bool,
 
         #[arg(
             long,
@@ -364,6 +370,25 @@ enum Commands {
     Audit {
         #[arg(short, long, num_args = 1.., help = "Custom operator endpoints to audit")]
         operators: Option<Vec<String>>,
+
+        #[arg(
+            long,
+            help = "Export authenticated public inventory for unattended maintenance"
+        )]
+        export_inventory: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Independently trusted endpoint=64hex signing key (repeatable)"
+        )]
+        operator_pin: Vec<String>,
+
+        #[arg(
+            long,
+            conflicts_with = "export_inventory",
+            help = "Fetch and decrypt the current certified snapshot in memory using independently pinned operators; write no plaintext"
+        )]
+        recovery_drill: bool,
     },
 
     /// Detect and repair degraded replicas across operators
@@ -420,6 +445,12 @@ enum Commands {
             help = "Acknowledge legacy snapshot mode (suppresses the LEGACY_PATH_DEPRECATED warning)"
         )]
         legacy: bool,
+
+        #[arg(
+            long,
+            help = "Scoped mode: require the atomic materialization revision (64 hex characters)"
+        )]
+        revision: Option<String>,
 
         #[arg(
             long,
@@ -1019,8 +1050,18 @@ enum SecretSubcommand {
         #[arg(help = "Secret name")]
         name: String,
 
-        #[arg(long, help = "Secret value (prompts securely when absent)")]
+        #[arg(
+            long,
+            conflicts_with = "value_stdin",
+            help = "Secret value (prompts securely when absent; prefer --value-stdin for scripts)"
+        )]
         value: Option<String>,
+
+        #[arg(
+            long,
+            help = "Read the exact UTF-8 secret value from stdin (maximum 64 KiB)"
+        )]
+        value_stdin: bool,
 
         #[arg(long = "type", help = "Secret type label")]
         secret_type: Option<String>,
@@ -1199,8 +1240,18 @@ enum SecretSubcommand {
         #[arg(long, help = "Secret id (skips name resolution)")]
         id: Option<String>,
 
-        #[arg(long, help = "New value (prompts securely when absent)")]
+        #[arg(
+            long,
+            conflicts_with = "value_stdin",
+            help = "New value (prompts securely when absent; prefer --value-stdin for scripts)"
+        )]
         value: Option<String>,
+
+        #[arg(
+            long,
+            help = "Read the exact UTF-8 replacement value from stdin (maximum 64 KiB)"
+        )]
+        value_stdin: bool,
 
         #[arg(long, help = "Audit reason")]
         reason: Option<String>,
@@ -1882,10 +1933,11 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Restore {
             snapshot,
             to,
+            dry_run,
             hardware_token,
             reader,
             pin,
-        } => cmd_restore(snapshot, to, hardware_token, reader, pin),
+        } => cmd_restore(snapshot, to, hardware_token, reader, pin, dry_run),
         Commands::Recover {
             kit,
             shares,
@@ -2004,7 +2056,12 @@ async fn run(cli: Cli) -> Result<()> {
             HookSubcommand::Install => cmd_hook_install(),
             HookSubcommand::Check => cmd_hook_check(),
         },
-        Commands::Audit { operators } => cmd_audit(operators).await,
+        Commands::Audit {
+            operators,
+            export_inventory,
+            operator_pin,
+            recovery_drill,
+        } => cmd_audit(operators, export_inventory, operator_pin, recovery_drill).await,
         Commands::Repair {
             operators,
             replicas,
@@ -2031,6 +2088,7 @@ async fn run(cli: Cli) -> Result<()> {
             endpoint,
             token,
             legacy,
+            revision,
             no_inherit,
             dry_run,
             quiet,
@@ -2038,8 +2096,8 @@ async fn run(cli: Cli) -> Result<()> {
             command,
         } => {
             cmd_run(
-                snapshot, env_file, project, env, endpoint, token, legacy, no_inherit, dry_run,
-                quiet, set, command,
+                snapshot, env_file, project, env, endpoint, token, legacy, revision, no_inherit,
+                dry_run, quiet, set, command,
             )
             .await
         }
@@ -2197,6 +2255,13 @@ pub fn discover_workspace_vaults() -> Vec<WorkspaceVaultInfo> {
     }
 
     let active_path = get_active_vault_path();
+    if active_path.exists() {
+        searched_paths.insert(
+            active_path
+                .canonicalize()
+                .unwrap_or_else(|_| active_path.clone()),
+        );
+    }
 
     for db_path in searched_paths {
         if let Ok(store) = LocalVaultStore::open(&db_path) {
@@ -2252,7 +2317,7 @@ pub fn discover_workspace_vaults() -> Vec<WorkspaceVaultInfo> {
 }
 
 async fn cmd_watch(debounce_secs: u64, sync: bool, dry_run: bool) -> Result<()> {
-    let root_dir = std::env::current_dir()?;
+    let root_dir = crate::util::get_workspace_root()?;
     let vault_db = root_dir.join(VAULT_DIR).join(DB_FILE);
     if !vault_db.exists() {
         bail!(
@@ -2522,7 +2587,7 @@ mod ui_router_tests {
     }
 
     #[test]
-    fn private_session_rotation_covers_expiry_and_vault_binding() {
+    fn private_session_rotation_covers_expiry_and_preserves_workspace_tabs() {
         let mut expired = new_private_ui_session(Some("vault-a".to_string()));
         expired.issued_at = std::time::Instant::now()
             .checked_sub(PRIVATE_UI_SESSION_TTL + std::time::Duration::from_secs(1))
@@ -2537,7 +2602,7 @@ mod ui_router_tests {
             &active,
             &Some("vault-a".to_string())
         ));
-        assert!(private_ui_session_should_rotate(
+        assert!(!private_ui_session_should_rotate(
             &active,
             &Some("vault-b".to_string())
         ));

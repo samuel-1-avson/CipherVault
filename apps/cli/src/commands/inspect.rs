@@ -138,7 +138,7 @@ fn build_overview_report(
 
     let mut tracked_bytes: u64 = 0;
     for (rel_path, _) in &tracked {
-        if let Ok(meta) = fs::metadata(rel_path) {
+        if let Ok(meta) = fs::metadata(crate::util::get_workspace_root()?.join(rel_path)) {
             tracked_bytes = tracked_bytes.saturating_add(meta.len());
         }
     }
@@ -356,9 +356,10 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         );
     } else {
         for (rel_path, file_id) in tracked {
-            let exists = rel_path.exists();
+            let full_path = crate::util::get_workspace_root()?.join(&rel_path);
+            let exists = full_path.exists();
             let state = if exists {
-                let len = fs::metadata(&rel_path)?.len();
+                let len = fs::metadata(&full_path)?.len();
                 format!("{} bytes", len).green()
             } else {
                 "missing on disk".red()

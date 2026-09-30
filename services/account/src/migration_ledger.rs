@@ -1066,11 +1066,24 @@ pub(crate) fn abort_run(
     let mut rolled_back = 0i64;
     for (ledger_id, secret_id) in &doomed {
         if let Some(secret_id) = secret_id {
+            // The project-management capability has already passed the
+            // migration guard. Derive only the exact resource scope for this
+            // internal cleanup; a narrow workload token never reaches here.
+            let mut resource_claims = claims.clone();
+            match crate::secrets::resolve_secret(db, secret_id) {
+                Ok(view) => {
+                    resource_claims.environment_id = Some(view.environment_id);
+                    resource_claims.repository_binding_id = view.repository_binding_id;
+                    resource_claims.service_id = view.service_id;
+                }
+                Err(SecretError::NotFound) => {}
+                Err(error) => return Err(MigrationError::Secrets(error)),
+            }
             // Best-effort per secret: a manually deleted row must not wedge
             // the rollback; only hard failures abort.
             match delete_secret(
                 db,
-                claims,
+                &resource_claims,
                 attrs,
                 secret_id,
                 &format!("migration {migration_id} aborted"),
@@ -1247,13 +1260,9 @@ mod tests {
             1,
         )
         .unwrap();
-        // Core calls need env-bearing claims (project-wide tokens only fan
-        // out at the route layer); migration targets carry no env, so one
-        // env-scoped admin identity serves both.
-        let admin = ScopeClaims::new(&tenant, &project, "account:alice", 1000, 9_999_999_999)
-            .with_environment(&env);
-        let dev = ScopeClaims::new(&tenant, &project, "account:bob", 1000, 9_999_999_999)
-            .with_environment(&env);
+        // Project administration and environment operations use distinct credentials.
+        let admin = ScopeClaims::new(&tenant, &project, "account:alice", 1000, 9_999_999_999);
+        let dev = ScopeClaims::new(&tenant, &project, "account:bob", 1000, 9_999_999_999);
         Fixture {
             project,
             env,
@@ -1294,7 +1303,7 @@ mod tests {
             db,
             &wrap,
             KEK_ID,
-            &fixture.admin,
+            &fixture.admin.clone().with_environment(env),
             &RequestAttributes::default(),
             &CreateSecret {
                 project_id: &fixture.project,

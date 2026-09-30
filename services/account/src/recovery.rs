@@ -35,6 +35,9 @@ pub async fn post_recovery_codes(
         Ok(value) => value,
         Err(response) => return *response,
     };
+    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     if session.device_id_hex.is_none() {
         return error_response(
             StatusCode::FORBIDDEN,

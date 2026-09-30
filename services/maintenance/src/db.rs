@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -204,12 +204,120 @@ impl MaintenanceDb {
             CREATE INDEX IF NOT EXISTS idx_audit_locator ON audit_history(locator_hex);
             CREATE INDEX IF NOT EXISTS idx_repair_locator ON repair_history(locator_hex);
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_history(timestamp_utc);
+            CREATE TABLE IF NOT EXISTS maintenance_inventory (
+                locator_hex TEXT PRIMARY KEY,
+                inventory_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_jobs (
+                locator_hex TEXT PRIMARY KEY,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_utc INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
             "#,
         )?;
 
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn store_inventory(
+        &self,
+        inventory: &crate::scheduler::MaintenanceInventory,
+    ) -> Result<()> {
+        inventory.validate()?;
+        let locator = hex::encode(inventory.set.locator);
+        let exists: bool = self.conn.lock().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM tracked_vaults WHERE locator_hex=?1)",
+            params![locator],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            self.register_vault(&locator, None)?;
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute("INSERT INTO maintenance_inventory (locator_hex, inventory_json) VALUES (?1, ?2) ON CONFLICT(locator_hex) DO UPDATE SET inventory_json=excluded.inventory_json",
+            params![locator, serde_json::to_string(inventory)?])?;
+        conn.execute(
+            "UPDATE tracked_vaults SET replica_count=?1 WHERE locator_hex=?2",
+            params![inventory.required_replicas as i64, locator],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_inventory(
+        &self,
+        locator: &str,
+    ) -> Result<Option<crate::scheduler::MaintenanceInventory>> {
+        let json: Option<String> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT inventory_json FROM maintenance_inventory WHERE locator_hex=?1",
+                params![locator],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn job_due(&self, locator: &str, now: u64) -> Result<bool> {
+        let due: Option<u64> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT next_attempt_utc FROM maintenance_jobs WHERE locator_hex=?1",
+                params![locator],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(due.is_none_or(|due| due <= now))
+    }
+
+    pub fn record_job_result(
+        &self,
+        locator: &str,
+        interval_secs: u64,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let previous: Option<u32> = conn
+            .query_row(
+                "SELECT attempts FROM maintenance_jobs WHERE locator_hex=?1",
+                params![locator],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let attempts = if error.is_some() {
+            previous.unwrap_or(0).saturating_add(1).min(20)
+        } else {
+            0
+        };
+        let delay = if error.is_some() {
+            interval_secs
+                .max(1)
+                .saturating_mul(1u64 << attempts.min(10))
+                .min(3600)
+        } else {
+            interval_secs.max(1)
+        };
+        let next = chrono::Utc::now().timestamp().max(0) as u64 + delay;
+        conn.execute("INSERT INTO maintenance_jobs (locator_hex, attempts, next_attempt_utc, last_error) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(locator_hex) DO UPDATE SET attempts=excluded.attempts, next_attempt_utc=excluded.next_attempt_utc, last_error=excluded.last_error",
+            params![locator, attempts, next, error])?;
+        Ok(())
+    }
+
+    pub fn record_unverified(&self, locator: &str, details: &str) -> Result<()> {
+        self.record_audit(locator, false, 0, 0, details)?;
+        self.conn.lock().unwrap().execute(
+            "UPDATE tracked_vaults SET last_status='Unverified' WHERE locator_hex=?1",
+            params![locator],
+        )?;
+        Ok(())
     }
 
     pub fn register_vault(&self, locator_hex: &str, label: Option<&str>) -> Result<()> {

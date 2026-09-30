@@ -7,7 +7,7 @@ use ciphervault_local_store::LocalVaultStore;
 
 use crate::{
     cmd_restore, cmd_track, cmd_untrack, discover_workspace_vaults, generate_diff_report,
-    get_active_vault_path, get_vault_store, set_active_vault_path, DB_FILE, VAULT_DIR,
+    get_active_vault_path, get_vault_store, DB_FILE, VAULT_DIR,
 };
 
 #[derive(serde::Deserialize)]
@@ -45,7 +45,7 @@ pub(crate) async fn api_files_track_handler(
     axum::Json(payload): axum::Json<FileActionPayload>,
 ) -> impl axum::response::IntoResponse {
     let p = PathBuf::from(payload.path.trim());
-    if !p.exists() {
+    if !crate::util::get_workspace_root().is_ok_and(|root| root.join(&p).exists()) {
         return axum::Json(serde_json::json!({
             "status": "error",
             "success": false,
@@ -103,6 +103,7 @@ pub(crate) async fn api_snapshots_restore_handler(
         payload.hardware_token.unwrap_or(false),
         payload.reader,
         payload.pin,
+        false,
     ) {
         Ok(_) => {
             if let Ok(store) = get_vault_store() {
@@ -250,6 +251,7 @@ pub(crate) async fn api_snapshot_manifest_handler(
         "snapshot_id_hex": clean_hex,
         "epoch": record.epoch,
         "device_counter": record.device_counter,
+        "signature_verified": super::handlers::local_snapshot_signature_verified(&store, &record),
         "timestamp_utc": record.advisory_timestamp_utc,
         "files_count": file_items.len(),
         "total_bytes": total_bytes,
@@ -314,15 +316,29 @@ pub(crate) async fn api_workspaces_switch_handler(
         }));
     }
 
-    match LocalVaultStore::open(&target_db) {
-        Ok(_) => {
-            set_active_vault_path(Some(target_db.clone()));
-            axum::Json(serde_json::json!({
-                "status": "ok",
-                "message": format!("Switched active workspace to {}", target_db.display()),
-                "active_workspace_db": target_db.display().to_string()
-            }))
+    let context = match crate::util::VaultContext::from_db_path(&target_db) {
+        Ok(context) => context,
+        Err(error) => {
+            return axum::Json(serde_json::json!({ "status": "error", "error": error.to_string() }))
         }
+    };
+    let allowed = crate::util::REQUEST_VAULT_CONTEXT
+        .scope(context.clone(), async {
+            super::session::private_account_session_valid()
+        })
+        .await;
+    if !allowed {
+        return axum::Json(
+            serde_json::json!({ "status": "error", "error": "Sign in with an active device for the selected workspace." }),
+        );
+    }
+    match LocalVaultStore::open(&context.db_path) {
+        Ok(_) => axum::Json(serde_json::json!({
+            "status": "ok",
+            "message": format!("Selected workspace {}", context.root_dir.display()),
+            "active_workspace_db": context.db_path.display().to_string(),
+            "workspace_root": context.root_dir.display().to_string()
+        })),
         Err(e) => axum::Json(serde_json::json!({
             "status": "error",
             "error": format!("Failed to open vault store: {}", e)

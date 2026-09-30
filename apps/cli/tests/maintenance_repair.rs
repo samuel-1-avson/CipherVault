@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,10 +19,11 @@ async fn spawn_operator(
     port: u16,
     data_dir: std::path::PathBuf,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         format!("op_{}", port),
         data_dir,
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
     let app = create_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -44,6 +47,7 @@ async fn test_maintenance_audit_and_self_repair() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     // 1. Spawn 3 operator instances
     let op1_dir = test_dir.join("op1");
@@ -282,6 +286,7 @@ fn test_persisted_fleet_maintenance_scheduler() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
     let db_path = test_dir.join("fleet_scheduler.db");
 
     let db = MaintenanceDb::open(&db_path).unwrap();

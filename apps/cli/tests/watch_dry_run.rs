@@ -16,6 +16,9 @@ async fn test_watch_dry_run_inspects_without_persisting() {
             .unwrap()
             .as_nanos()
     ));
+    fs::create_dir_all(&test_dir).unwrap();
+    // Resolve the freshly created fixture root before strict ancestor checks.
+    let test_dir = fs::canonicalize(test_dir).unwrap();
     let root_dir = test_dir.clone();
     let vault_dir = root_dir.join(".ciphervault");
     fs::create_dir_all(&vault_dir).unwrap();
@@ -84,6 +87,35 @@ async fn test_watch_dry_run_inspects_without_persisting() {
     assert!(store.list_snapshots().unwrap().is_empty());
     let (_, _, counter, _) = store.get_device_state().unwrap();
     assert_eq!(counter, 0);
+    assert!(store.list_activity(10).unwrap().is_empty());
+
+    // Exercise the actual event loop: dry-run may acknowledge its in-memory
+    // inspection, but edits must never create a snapshot or advance a counter.
+    let (shutdown, receiver) = tokio::sync::broadcast::channel(8);
+    let run_loop = watcher.run_loop(receiver);
+    tokio::pin!(run_loop);
+    let inspect_edit = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        fs::write(&secret_path, b"DRY_RUN_KEY=changed_in_real_watch_loop\n").unwrap();
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while watcher.check_for_changes().unwrap() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("Dry-run watcher never inspected the edit");
+    };
+    tokio::select! {
+        result = &mut run_loop => panic!("Watcher stopped before dry-run inspection: {result:?}"),
+        _ = inspect_edit => {},
+    }
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), &mut run_loop)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store.list_snapshots().unwrap().is_empty());
+    assert_eq!(store.get_device_state().unwrap().2, 0);
     assert!(store.list_activity(10).unwrap().is_empty());
 
     // Sync-configured inspector reports replication intent, still persisting nothing.

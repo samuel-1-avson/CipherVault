@@ -17,6 +17,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
 
 # A newer push supersedes an older one on the same ref: cancel the stale
 # run instead of burning billable minutes (macOS legs cost 10x Linux) on
@@ -28,11 +31,11 @@ concurrency:
 jobs:
   test:
     name: Rust Test Suite (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout Code
@@ -68,6 +71,31 @@ jobs:
           node --check apps/ui/app.js
           node apps/ui/audit.test.cjs
           node tests/dashboard_container_contract.cjs
+
+      - name: Release packaging and hosted secret bootstrap regressions
+        if: runner.os == 'Linux'
+        run: |
+          node tests/release_package_assets.cjs
+          node tests/web_secret_bootstrap.cjs
+
+  browser:
+    name: Real Browser CSP Regressions
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Run actual Chromium dashboard regressions
+        run: node apps/ui/csp.browser.test.cjs
+
+  msrv:
+    name: Minimum Supported Rust (1.89)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
 
   contracts:
     name: Foundry Solidity Test Suite

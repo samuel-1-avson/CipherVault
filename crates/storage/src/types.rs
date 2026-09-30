@@ -178,6 +178,9 @@ pub struct RecoveryRecordsResponse {
     pub records_hex: Vec<String>,
     #[serde(default)]
     pub truncated: bool,
+    /// Opaque append-only byte offset. Absent means this response is complete.
+    #[serde(default)]
+    pub next_cursor: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

@@ -186,6 +186,13 @@ struct VoucherCharge {
     holder_pk_hex: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PersistedVoucherLedger {
+    version: u32,
+    spent: HashMap<String, VoucherCharge>,
+    holder_spent: HashMap<String, u64>,
+}
+
 /// Per-operator spend ledger, keyed by voucher nonce. Callers hold the
 /// lock across verify→charge, so concurrent writes on one voucher cannot
 /// overspend; call [`VoucherLedger::release`] when persistence fails or
@@ -298,10 +305,11 @@ impl VoucherLedger {
     /// total (persistence failed or the write stored no new bytes).
     /// Unknown nonces are a no-op.
     pub fn release(&mut self, nonce_hex: &str, bytes: u64) {
-        let holder = match self.spent.get_mut(nonce_hex) {
+        let (holder, released) = match self.spent.get_mut(nonce_hex) {
             Some(entry) => {
-                entry.spent_bytes = entry.spent_bytes.saturating_sub(bytes);
-                entry.holder_pk_hex.clone()
+                let released = bytes.min(entry.spent_bytes);
+                entry.spent_bytes -= released;
+                (entry.holder_pk_hex.clone(), released)
             }
             None => return,
         };
@@ -309,7 +317,7 @@ impl VoucherLedger {
             return;
         }
         if let Some(total) = self.holder_spent.get_mut(&holder) {
-            *total = total.saturating_sub(bytes);
+            *total = total.saturating_sub(released);
             if *total == 0 {
                 self.holder_spent.remove(&holder);
             }
@@ -331,7 +339,12 @@ impl VoucherLedger {
     /// from last boot's file. Holder totals ride along inside each pinned
     /// charge and are re-derived on decode.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(&self.spent).map_err(|error| error.to_string())
+        serde_json::to_vec(&PersistedVoucherLedger {
+            version: 2,
+            spent: self.spent.clone(),
+            holder_spent: self.holder_spent.clone(),
+        })
+        .map_err(|error| error.to_string())
     }
 
     /// Restores spend state previously produced by [`VoucherLedger::encode`].
@@ -344,28 +357,54 @@ impl VoucherLedger {
     /// (empty holder on every charge) restore voucher spend exactly and
     /// user totals as zero — a documented one-way upgrade.
     pub fn decode_into(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let spent: HashMap<String, VoucherCharge> =
+        let value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let (spent, totals) = if value.get("version").is_some() {
+            let stored: PersistedVoucherLedger =
+                serde_json::from_value(value).map_err(|e| e.to_string())?;
+            if stored.version != 2 {
+                return Err("Unsupported voucher ledger version".into());
+            }
+            if stored.holder_spent.keys().any(|key| !valid_nonce_key(key)) {
+                return Err("Invalid holder key in ledger".into());
+            }
+            (stored.spent, stored.holder_spent)
+        } else {
+            (
+                serde_json::from_value::<HashMap<String, VoucherCharge>>(value)
+                    .map_err(|e| e.to_string())?,
+                HashMap::new(),
+            )
+        };
+        if spent.iter().any(|(nonce, charge)| {
+            !valid_nonce_key(nonce) || charge.spent_bytes > charge.quota_bytes
+        }) {
+            return Err("Invalid voucher charge in ledger".into());
+        }
         self.spent = spent
             .into_iter()
             .filter(|(nonce, charge)| {
                 valid_nonce_key(nonce) && charge.spent_bytes <= charge.quota_bytes
             })
             .collect();
-        self.holder_spent.clear();
+        let mut active_totals = HashMap::<String, u64>::new();
         for charge in self.spent.values() {
             if charge.holder_pk_hex.is_empty() {
                 continue;
             }
-            let total = self
-                .holder_spent
+            let total = active_totals
                 .get(&charge.holder_pk_hex)
                 .copied()
                 .unwrap_or(0);
-            self.holder_spent.insert(
+            active_totals.insert(
                 charge.holder_pk_hex.clone(),
                 total.saturating_add(charge.spent_bytes),
             );
+        }
+        self.holder_spent = totals;
+        for (holder, active) in active_totals {
+            let total = self.holder_spent.entry(holder).or_default();
+            *total = (*total).max(active);
         }
         Ok(())
     }
@@ -575,7 +614,7 @@ mod tests {
         assert!(restored.try_consume(&voucher, &pk, now, 1).is_err());
         // Garbage is an error, never a panic or a silent empty ledger.
         assert!(restored.decode_into(b"not json").is_err());
-        // Impossible terms are skipped while valid spend is kept.
+        // Impossible terms fail closed; corruption must not forgive spend.
         let mut mixed = serde_json::Map::new();
         mixed.insert(
             voucher.nonce_hex.clone(),
@@ -603,10 +642,9 @@ mod tests {
         );
         let mixed = serde_json::Value::Object(mixed);
         let mut filtered = VoucherLedger::new(u64::MAX);
-        filtered
+        assert!(filtered
             .decode_into(&serde_json::to_vec(&mixed).unwrap())
-            .expect("decode");
-        assert_eq!(filtered.len(), 1);
+            .is_err());
     }
 
     fn status_of(err: StorageError) -> u16 {
@@ -738,6 +776,30 @@ mod tests {
         assert!(ledger.try_consume(&fresh, &pk, now, 400_000).is_ok());
         let err = ledger.try_consume(&fresh, &pk, now, 1).unwrap_err();
         assert_eq!(status_of(err), 429);
+    }
+
+    #[test]
+    fn expired_spend_survives_prune_persist_restart_and_refunds_are_conserved() {
+        let key = issuer();
+        let pk = issuer_pk(&key);
+        let holder = holder_pk();
+        let now = now_unix_secs();
+        let first = WriteVoucher::issue(&key, holder.clone(), 1_000, 1).unwrap();
+        let second = WriteVoucher::issue(&key, holder, 1_000, 3600).unwrap();
+        let mut ledger = VoucherLedger::new(u64::MAX);
+        ledger.set_user_quota_bytes(1_000);
+        ledger.try_consume(&first, &pk, now, 900).unwrap();
+        ledger.prune_expired(now + 2);
+        assert_eq!(ledger.len(), 0);
+        let mut restored = VoucherLedger::new(u64::MAX);
+        restored.decode_into(&ledger.encode().unwrap()).unwrap();
+        restored.set_user_quota_bytes(1_000);
+        restored.try_consume(&second, &pk, now + 2, 100).unwrap();
+        assert!(restored.try_consume(&second, &pk, now + 2, 1).is_err());
+        // Refunding more than this voucher spent must never forgive earlier spend.
+        restored.release(&second.nonce_hex, 1_000);
+        assert!(restored.try_consume(&second, &pk, now + 2, 101).is_err());
+        restored.try_consume(&second, &pk, now + 2, 100).unwrap();
     }
 
     #[test]

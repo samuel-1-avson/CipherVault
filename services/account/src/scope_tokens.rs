@@ -39,7 +39,7 @@ pub struct ScopeClaims {
     pub repository_binding_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
-    /// VCS branch attested at mint time (CI); drives the production gate.
+    /// Legacy branch metadata. This never establishes trusted attestation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// Key confirmation (DPoP-lite, T-902): ed25519 public key hex the token
@@ -48,6 +48,13 @@ pub struct ScopeClaims {
     /// of the payload, so binding cannot be stripped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cnf: Option<String>,
+    /// Source session hash binds issued credentials to logout, recovery and
+    /// device/passkey revocation. No raw session token is placed in claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session_hash: Option<String>,
+    /// Explicit human elevation expires with the fresh authentication window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevated_until_utc: Option<u64>,
     pub principal_id: String,
     pub issued_at_utc: u64,
     pub expires_at_utc: u64,
@@ -71,6 +78,8 @@ impl ScopeClaims {
             service_id: None,
             branch: None,
             cnf: None,
+            origin_session_hash: None,
+            elevated_until_utc: None,
             principal_id: principal_id.to_string(),
             issued_at_utc,
             expires_at_utc,
@@ -93,12 +102,6 @@ impl ScopeClaims {
     /// Narrows the token to one service.
     pub fn with_service(mut self, service_id: &str) -> Self {
         self.service_id = Some(service_id.to_string());
-        self
-    }
-
-    /// Attests the VCS branch (verified at mint, never caller-supplied later).
-    pub fn with_branch(mut self, branch: &str) -> Self {
-        self.branch = Some(branch.to_string());
         self
     }
 
@@ -127,6 +130,8 @@ impl ScopeClaims {
             service_id: None,
             branch: None,
             cnf: None,
+            origin_session_hash: None,
+            elevated_until_utc: None,
             principal_id: format!("account:{account_id}"),
             issued_at_utc: 0,
             expires_at_utc: u64::MAX,
@@ -247,6 +252,29 @@ fn mac_input(payload_b64: &str) -> Vec<u8> {
         payload_b64.as_bytes(),
     ]
     .concat()
+}
+
+/// Resolve revocable issuer context against the same connection used for
+/// policy/storage. This closes the gap between HTTP authentication and an
+/// operation if logout or credential revocation happens between those steps.
+pub(crate) fn scope_origin_active(
+    db: &Connection,
+    claims: &ScopeClaims,
+    now: u64,
+    require_strong: bool,
+) -> Result<bool, rusqlite::Error> {
+    let Some(origin) = claims.origin_session_hash.as_deref() else {
+        return Ok(true);
+    };
+    db.query_row("SELECT EXISTS(SELECT 1 FROM sessions s
+        WHERE s.token_hash_hex = ?1 AND ('account:' || s.account_id) = ?2
+          AND s.revoked_at_utc IS NULL AND s.expires_at_utc > ?3
+          AND (?4 = 0 OR s.session_kind IN ('device', 'webauthn'))
+          AND (s.device_id_hex IS NULL OR EXISTS(SELECT 1 FROM devices d
+               WHERE d.account_id = s.account_id AND d.device_id_hex = s.device_id_hex AND d.revoked_at_utc IS NULL))
+          AND (s.credential_id_hex IS NULL OR EXISTS(SELECT 1 FROM webauthn_credentials c
+               WHERE c.account_id = s.account_id AND c.credential_id_hex = s.credential_id_hex AND c.revoked_at_utc IS NULL)))",
+        params![origin, claims.principal_id, now, require_strong], |row| row.get(0))
 }
 
 /// Revokes a token id until its expiry (upsert: re-deny extends).

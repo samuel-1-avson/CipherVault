@@ -78,7 +78,7 @@ async fn boot_nat_node(
         slot,
         tag,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         format!("nat-{tag}"),
         dir.clone(),
         generate_signing_key(),
@@ -422,4 +422,18 @@ async fn autonat_confirms_loopback_reachability() {
         }
     }
     panic!("autonat never confirmed reachability ({last_err})");
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

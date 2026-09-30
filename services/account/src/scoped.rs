@@ -267,6 +267,39 @@ pub(crate) fn init_scoped_schema(connection: &Connection) -> Result<(), AccountS
             [],
         )?;
     }
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_abuse_quotas_window ON abuse_quotas(window_started_at_utc)",
+        [],
+    )?;
+    let has_key_fingerprint: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('encryption_keys') WHERE name = 'key_fingerprint')",
+        [], |row| row.get(0),
+    )?;
+    if !has_key_fingerprint {
+        connection.execute(
+            "ALTER TABLE encryption_keys ADD COLUMN key_fingerprint BLOB",
+            [],
+        )?;
+    }
+    // Persist exact rotation receipts. Legacy receipts lack sufficient
+    // evidence to infer their original version and require a new request key.
+    for (column, ddl) in [
+        ("request_digest", "BLOB"),
+        ("previous_version", "INTEGER"),
+        ("committed_version", "INTEGER"),
+        ("provider_verified", "INTEGER"),
+    ] {
+        let present: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('secret_rotation_jobs') WHERE name = ?1)",
+            [column], |row| row.get(0),
+        )?;
+        if !present {
+            connection.execute(
+                &format!("ALTER TABLE secret_rotation_jobs ADD COLUMN {column} {ddl}"),
+                [],
+            )?;
+        }
+    }
     // Bindings created before VCS lifecycle (T-601) gain ownership-proof and
     // reconciliation columns here; NULL means "never proven / never probed"
     // and fails closed (unproven bindings stay suspended). Fresh databases

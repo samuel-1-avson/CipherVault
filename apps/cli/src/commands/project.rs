@@ -6,7 +6,6 @@
 //! environment: an env slug from another project must never leak across.
 
 use anyhow::{Context, Result};
-use std::path::Path;
 
 use super::scope::{api_get, http_client, resolve_endpoint, resolve_token, write_context_file_at};
 use crate::ProjectSubcommand;
@@ -96,7 +95,7 @@ pub(crate) async fn cmd_project(sub: ProjectSubcommand) -> Result<()> {
             )
             .await?;
             let slug = view["slug"].as_str().unwrap_or(project.trim());
-            write_context_file_at(Path::new("."), Some(slug), None)?;
+            write_context_file_at(&crate::util::get_workspace_root()?, Some(slug), None)?;
             println!("Using project {slug} (environment cleared).");
             Ok(())
         }

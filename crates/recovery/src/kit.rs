@@ -1,7 +1,7 @@
 use chrono::Utc;
 use crc32fast::Hasher;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use ciphervault_crypto::{open_sealed_box, RecoverySecret, VaultEpochKey};
 use ciphervault_format::EpochEnvelope;
@@ -20,6 +20,11 @@ pub struct OfflineRecoveryKit {
     pub recovery_locator_hex: String,
     pub operator_endpoints: Vec<String>,
     pub created_at_utc: u64,
+}
+impl Drop for OfflineRecoveryKit {
+    fn drop(&mut self) {
+        self.recovery_secret_hex.zeroize();
+    }
 }
 
 impl std::fmt::Debug for OfflineRecoveryKit {
@@ -94,6 +99,24 @@ impl OfflineRecoveryKit {
         raw_bytes.zeroize();
         let secret = RecoverySecret::from_bytes(arr);
         arr.zeroize();
+        let signing = secret.derive_recovery_signing_key()?;
+        let (_, encryption) = secret.derive_recovery_encryption_keys()?;
+        if self.version != 1
+            || hex::decode(&self.vault_id_hex)?.len() != 32
+            || !self
+                .recovery_signing_pk_hex
+                .eq_ignore_ascii_case(&hex::encode(signing.verifying_key().as_bytes()))
+            || !self
+                .recovery_encryption_pk_hex
+                .eq_ignore_ascii_case(&hex::encode(encryption.as_bytes()))
+            || !self
+                .recovery_locator_hex
+                .eq_ignore_ascii_case(&hex::encode(secret.derive_recovery_locator()?))
+        {
+            return Err(RecoveryError::InvalidKitFormat(
+                "Recovery kit public descriptors do not match its secret".into(),
+            ));
+        }
         Ok(secret)
     }
 
@@ -147,14 +170,25 @@ Configured Operators:
         let secret = self.validate_and_extract_secret()?;
         let (enc_sk, enc_pk) = secret.derive_recovery_encryption_keys()?;
 
-        let raw_key = open_sealed_box(&enc_sk, &enc_pk, &envelope.sealed_epoch_key)?;
+        if envelope.vault_id != hex::decode(&self.vault_id_hex)?
+            || envelope.recipient_fingerprint != enc_pk.as_bytes()
+        {
+            return Err(RecoveryError::InvalidKitFormat(
+                "Epoch envelope vault/recipient mismatch".into(),
+            ));
+        }
+        let raw_key = Zeroizing::new(open_sealed_box(
+            &enc_sk,
+            &enc_pk,
+            &envelope.sealed_epoch_key,
+        )?);
         if raw_key.len() != 32 {
             return Err(RecoveryError::InvalidKeyLength(raw_key.len()));
         }
 
-        let mut arr = [0u8; 32];
+        let mut arr = Zeroizing::new([0u8; 32]);
         arr.copy_from_slice(&raw_key);
-        Ok(VaultEpochKey::from_bytes(arr))
+        Ok(VaultEpochKey::from_bytes(*arr))
     }
 
     /// Parses an OfflineRecoveryKit from its printable text representation.
@@ -250,6 +284,11 @@ pub struct ThresholdRecoveryKit {
     pub operator_endpoints: Vec<String>,
     pub created_at_utc: u64,
 }
+impl Drop for ThresholdRecoveryKit {
+    fn drop(&mut self) {
+        self.share_data_hex.zeroize();
+    }
+}
 
 impl std::fmt::Debug for ThresholdRecoveryKit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -312,6 +351,16 @@ impl ThresholdRecoveryKit {
     pub fn validate_and_extract_share(
         &self,
     ) -> Result<ciphervault_crypto::ShamirShare, RecoveryError> {
+        if self.version != 1
+            || self.threshold < 2
+            || self.total_shares < self.threshold
+            || self.guardian_index == 0
+            || self.guardian_index > self.total_shares
+        {
+            return Err(RecoveryError::InvalidKitFormat(
+                "Invalid guardian threshold/index parameters".into(),
+            ));
+        }
         let mut raw_bytes = hex::decode(&self.share_data_hex)?;
         if raw_bytes.len() != 32 {
             raw_bytes.zeroize();
@@ -333,10 +382,9 @@ impl ThresholdRecoveryKit {
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&raw_bytes);
         raw_bytes.zeroize();
-        Ok(ciphervault_crypto::ShamirShare::new(
-            self.guardian_index,
-            arr,
-        ))
+        let share = ciphervault_crypto::ShamirShare::new(self.guardian_index, arr);
+        arr.zeroize();
+        Ok(share)
     }
 
     /// Combines M or more guardian threshold shares to reconstruct the complete OfflineRecoveryKit.
@@ -371,6 +419,16 @@ impl ThresholdRecoveryKit {
                     "Mismatched threshold parameters across guardian shares".into(),
                 ));
             }
+            if kit.version != kits[0].version
+                || kit.created_at_utc != kits[0].created_at_utc
+                || kit.recovery_signing_pk_hex != kits[0].recovery_signing_pk_hex
+                || kit.recovery_encryption_pk_hex != kits[0].recovery_encryption_pk_hex
+                || kit.recovery_locator_hex != kits[0].recovery_locator_hex
+            {
+                return Err(RecoveryError::InvalidKitFormat(
+                    "Mismatched recovery share set/public descriptors".into(),
+                ));
+            }
         }
 
         let mut shares = Vec::with_capacity(kits.len());
@@ -391,6 +449,12 @@ impl ThresholdRecoveryKit {
 
         let reconstructed =
             OfflineRecoveryKit::create(&vault_id, &secret, kits[0].operator_endpoints.clone())?;
+        if reconstructed.recovery_signing_pk_hex != kits[0].recovery_signing_pk_hex
+            || reconstructed.recovery_encryption_pk_hex != kits[0].recovery_encryption_pk_hex
+            || reconstructed.recovery_locator_hex != kits[0].recovery_locator_hex
+        {
+            return Err(RecoveryError::InvalidKitFormat("Reconstructed secret does not match guardian public descriptors; mixed/corrupt share set".into()));
+        }
 
         Ok(reconstructed)
     }
@@ -526,6 +590,27 @@ Configured Operators:
 mod tests {
     use super::*;
     use ciphervault_crypto::{generate_signing_key, seal_box};
+
+    #[test]
+    fn guardian_mixed_share_sets_and_descriptor_tampering_are_rejected() {
+        let secret = RecoverySecret::generate();
+        let kit = OfflineRecoveryKit::create(&[8; 32], &secret, vec![]).unwrap();
+        let first = ThresholdRecoveryKit::split_kit(&kit, 2, 3).unwrap();
+        let second = ThresholdRecoveryKit::split_kit(&kit, 2, 3).unwrap();
+        // Same root/descriptors but independent Shamir polynomials: reconstruction must fail.
+        assert!(
+            ThresholdRecoveryKit::combine_kits(&[first[0].clone(), second[1].clone()]).is_err()
+        );
+        let mut bad = first[1].clone();
+        bad.recovery_locator_hex = "99".repeat(32);
+        assert!(ThresholdRecoveryKit::combine_kits(&[first[0].clone(), bad]).is_err());
+        let mut bad = first[0].clone();
+        bad.guardian_index = 4;
+        assert!(bad.validate_and_extract_share().is_err());
+        let mut bad_kit = kit.clone();
+        bad_kit.recovery_signing_pk_hex = "00".repeat(32);
+        assert!(bad_kit.validate_and_extract_secret().is_err());
+    }
 
     #[test]
     fn test_recovery_kit_roundtrip_and_checksum() {

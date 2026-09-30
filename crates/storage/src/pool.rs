@@ -29,7 +29,34 @@ impl MultiOperatorPool {
             .collect();
         endpoints.sort();
         endpoints.dedup();
-        let clients = endpoints.into_iter().map(OperatorClient::new).collect();
+        let pins = std::env::var("CIPHERVAULT_OPERATOR_PINS").ok();
+        let clients = endpoints
+            .into_iter()
+            .map(|endpoint| {
+                let client = OperatorClient::new(endpoint.clone());
+                if let Some(pins) = &pins {
+                    let pin = pins.split(',').find_map(|entry| {
+                        entry
+                            .trim()
+                            .rsplit_once('=')
+                            .filter(|(configured, _)| {
+                                configured.trim().trim_end_matches('/') == endpoint
+                            })
+                            .map(|(_, key)| key.trim())
+                    });
+                    match pin
+                        .and_then(|key| hex::decode(key).ok())
+                        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                    {
+                        Some(key) => client.pin_signing_key(key),
+                        None => client.reject_identity_pin(format!(
+                            "Configured operator pin missing or invalid for {endpoint}"
+                        )),
+                    }
+                }
+                client
+            })
+            .collect();
         Self {
             clients,
             object_concurrency: AtomicUsize::new(DEFAULT_OBJECT_CONCURRENCY),
@@ -98,7 +125,7 @@ impl MultiOperatorPool {
     /// Discovers active peer operators from current endpoints via P2P gossip and dynamically expands the pool.
     /// Returns the number of newly discovered and verified peer operators.
     pub async fn discover_and_expand_peers(&mut self) -> Result<usize, StorageError> {
-        let mut new_endpoints = Vec::new();
+        let mut new_clients: Vec<OperatorClient> = Vec::new();
         let existing: std::collections::HashSet<String> = self
             .clients
             .iter()
@@ -108,20 +135,45 @@ impl MultiOperatorPool {
         for client in &self.clients {
             if let Ok(peers) = client.get_peers().await {
                 for peer in peers {
-                    if peer.verify().is_ok() {
+                    let enrolled = std::env::var("CIPHERVAULT_TRUSTED_OPERATOR_IDENTITIES")
+                        .unwrap_or_default()
+                        .split(',')
+                        .any(|entry| {
+                            entry.trim().split_once('=').is_some_and(|(id, key)| {
+                                id.trim() == peer.operator_id
+                                    && key.trim().eq_ignore_ascii_case(&peer.signing_pk_hex)
+                            })
+                        });
+                    let now = chrono::Utc::now().timestamp().max(0) as u64;
+                    if enrolled
+                        && peer.verify().is_ok()
+                        && peer.timestamp_utc <= now.saturating_add(300)
+                        && now.saturating_sub(peer.timestamp_utc) <= 86_400
+                    {
                         let normalized = peer.endpoint.trim_end_matches('/').to_string();
-                        if !existing.contains(&normalized) && !new_endpoints.contains(&normalized) {
-                            new_endpoints.push(normalized);
+                        if !existing.contains(&normalized)
+                            && !new_clients
+                                .iter()
+                                .any(|client| client.endpoint() == normalized)
+                        {
+                            let Ok(key) = hex::decode(&peer.signing_pk_hex) else {
+                                continue;
+                            };
+                            let Ok(key): Result<[u8; 32], _> = key.try_into() else {
+                                continue;
+                            };
+                            let candidate = OperatorClient::new_pinned(normalized.clone(), key);
+                            if candidate.get_info_pinned(&key).await.is_ok() {
+                                new_clients.push(candidate);
+                            }
                         }
                     }
                 }
             }
         }
 
-        let count = new_endpoints.len();
-        for endpoint in new_endpoints {
-            self.clients.push(OperatorClient::new(endpoint));
-        }
+        let count = new_clients.len();
+        self.clients.extend(new_clients);
 
         Ok(count)
     }
@@ -514,8 +566,13 @@ impl MultiOperatorPool {
             // For public recovery fetch or with open access
             client.get_object("recovery_anonymous", cid).await
         });
-        if let Some(bytes) = join_all(queries).await.into_iter().flatten().next() {
-            return Ok(bytes);
+        let mut pending: FuturesUnordered<_> = queries.collect();
+        while let Some(result) = pending.next().await {
+            if let Ok(bytes) = result {
+                if ciphervault_format::compute_digest(&bytes) == *cid {
+                    return Ok(bytes);
+                }
+            }
         }
         Err(StorageError::OperatorUnreachable {
             endpoint: "all".into(),

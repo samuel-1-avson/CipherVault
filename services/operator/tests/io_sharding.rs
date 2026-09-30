@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[test]
 fn concurrent_puts_across_keys_stay_consistent() {
     let root = std::env::temp_dir().join(format!("cv-io-shard-{}", rand::random::<u128>()));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         "shard-test".into(),
         root.clone(),
         ciphervault_crypto::generate_signing_key(),
@@ -83,4 +83,18 @@ fn concurrent_puts_across_keys_stay_consistent() {
 
     drop(state);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

@@ -19,7 +19,9 @@ Notes:
   builds enumerate zero readers and fail token operations with a descriptive
   `HsmError` instead of crashing or misbehaving.
 - The non-Windows keystore (`portable_keystore`) is real AEAD, but its key
-  lives in a 0600 file next to the vault. Threat model: protects against
+  lives in a 0600 file at `CIPHERVAULT_KEYSTORE_PATH` or
+  `$HOME/.config/ciphervault/keystore.key`. Provisioning is exclusive and
+  non-destructive; malformed/unreadable existing keys fail closed. Threat model: protects against
   offline casual reads and cross-user snooping on multi-user machines; it does
   NOT bind to OS identity or a TPM the way DPAPI/Hello/Keychain do. Do not
   claim equal device binding across platforms until the gaps below close.

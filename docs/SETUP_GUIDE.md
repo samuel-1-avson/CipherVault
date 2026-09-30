@@ -112,20 +112,26 @@ ciphervault status
 
 Prefer clicking? Run bare `ciphervault` for the guided terminal UI.
 
+Before remote push, enroll the vault's device identity on every strict operator and configure independently obtained operator signing-key pins. Strict operators require a service token for administrative enrollment; self-signed `/v1/info` is not an independent pin ceremony. See [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md#operator-authentication-and-pins).
+
+Captures default to legacy v1 while independent crypto review is open. Experimental v2 writing requires `CIPHERVAULT_CHUNK_V2_WRITE=1`; it provides encrypted reuse across edits and keyed identifiers for new objects. Default v1 and old history retain public candidate-file confirmation. Both versions remain readable. [Protocol details and gate](../crates/snapshot/CHUNK_PROTOCOL_V2.md).
+
 ### Daily loop
 
 ```sh
 ciphervault push -m "rotate stripe key"   # snapshot + replicate to operators
 ciphervault pull                          # fetch a teammate's latest snapshot
 ciphervault diff                          # what changed (values masked by default)
-ciphervault run -- npm start              # secrets into memory, never onto disk
+ciphervault run --legacy -- npm start     # snapshot secrets injected without a plaintext file
 ciphervault doctor                        # self-check when something feels off
 ```
 
 ### Going further
 
 - `ciphervault watch --sync` (or the `ciphervault-agent` service) snapshots
-  on every save.
+  after debounced saves; a three-second fallback scan covers missed events and failed captures stay dirty for retry.
+- `ciphervault restore --snapshot <id> --to ./preview --dry-run` verifies data and previews file actions without writing a target or staging files. Actual restore uses a rollback journal and merge semantics. Historical restore, diff and snapshot run use each snapshot's recorded epoch after rekeying.
+- Scoped execution uses one authorized revision-bound materialization batch; use `run --project <project> --env <environment> --revision <64hex> -- <command>` when an exact revision is required. Dry-run reads metadata only; malformed/partial batches never start the child.
 - `ciphervault recovery split` + `recover` cover clean-machine disaster
   recovery; rehearse with `ciphervault recovery test --to ./restore-drill`.
 - CI pipelines: zero-disk injection is covered in

@@ -95,11 +95,16 @@ impl Libp2pTransport {
         }
     }
 
-    fn control_auth() -> P2pAuth {
+    fn control_auth(&self) -> P2pAuth {
         P2pAuth {
             bearer_token: None,
             vault_id_hex: None,
-            service_token: Self::service_token(),
+            service_token: std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN_PEERS")
+                .unwrap_or_default()
+                .split(',')
+                .any(|peer| peer.trim() == self.peer.to_string())
+                .then(Self::service_token)
+                .flatten(),
             voucher: None,
         }
     }
@@ -380,13 +385,39 @@ impl OperatorTransport for Libp2pTransport {
         locator: &'a [u8; 32],
     ) -> BoxFuture<'a, Result<Vec<Vec<u8>>, StorageError>> {
         Box::pin(async move {
-            let body = OperatorRpcBody::GetRecovery { locator: *locator };
-            match self.rpc(P2pAuth::default(), body).await? {
-                OperatorRpcResponse::RecoveryRecords { records } => Ok(records),
-                OperatorRpcResponse::Err { status, message } => {
-                    Err(StorageError::ServerError { status, message })
+            let mut out = Vec::new();
+            let mut cursor = 0u64;
+            let mut total_bytes = 0usize;
+            loop {
+                let body = OperatorRpcBody::GetRecoveryPage {
+                    locator: *locator,
+                    cursor,
+                };
+                match self.rpc(P2pAuth::default(), body).await? {
+                    OperatorRpcResponse::RecoveryPage {
+                        records,
+                        next_cursor,
+                    } => {
+                        for record in records {
+                            total_bytes = total_bytes.saturating_add(record.len());
+                            if total_bytes > 64 * 1024 * 1024 || out.len() >= 10_000 {
+                                return Err(Self::unexpected("recovery log exceeds client limits"));
+                            }
+                            out.push(record);
+                        }
+                        match next_cursor {
+                            Some(next) if next > cursor && next <= 64 * 1024 * 1024 => {
+                                cursor = next
+                            }
+                            Some(_) => return Err(Self::unexpected("invalid recovery cursor")),
+                            None => return Ok(out),
+                        }
+                    }
+                    OperatorRpcResponse::Err { status, message } => {
+                        return Err(StorageError::ServerError { status, message })
+                    }
+                    _ => return Err(Self::unexpected("get_recovery_records")),
                 }
-                _ => Err(Self::unexpected("get_recovery_records")),
             }
         })
     }
@@ -399,7 +430,7 @@ impl OperatorTransport for Libp2pTransport {
             let body = OperatorRpcBody::AnnouncePeer {
                 descriptor: descriptor.clone(),
             };
-            match self.rpc(Self::control_auth(), body).await? {
+            match self.rpc(self.control_auth(), body).await? {
                 OperatorRpcResponse::PeerAnnounced => Ok(()),
                 OperatorRpcResponse::Err { status, message } => {
                     Err(StorageError::ServerError { status, message })
@@ -412,7 +443,7 @@ impl OperatorTransport for Libp2pTransport {
     fn get_peers<'a>(&'a self) -> BoxFuture<'a, Result<Vec<PeerDescriptor>, StorageError>> {
         Box::pin(async move {
             match self
-                .rpc(Self::control_auth(), OperatorRpcBody::GetPeers)
+                .rpc(self.control_auth(), OperatorRpcBody::GetPeers)
                 .await?
             {
                 OperatorRpcResponse::Peers { peers } => Ok(peers),
@@ -455,7 +486,7 @@ impl OperatorTransport for Libp2pTransport {
     ) -> BoxFuture<'a, Result<Vec<PendingApprovalChallenge>, StorageError>> {
         Box::pin(async move {
             match self
-                .rpc(Self::control_auth(), OperatorRpcBody::GetPendingApprovals)
+                .rpc(self.control_auth(), OperatorRpcBody::GetPendingApprovals)
                 .await?
             {
                 OperatorRpcResponse::PendingApprovals { challenges } => Ok(challenges),

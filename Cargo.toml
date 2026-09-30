@@ -17,8 +17,9 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.25"
+version = "1.0.26"
 edition = "2021"
+rust-version = "1.89"
 authors = ["CipherVault Contributors"]
 license = "MIT OR Apache-2.0"
 
@@ -41,7 +42,9 @@ serde_bytes = "0.11"
 ciborium = "0.2"
 thiserror = "2.0"
 anyhow = "1.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
+# SQLite 3.53.2 includes the WAL-reset corruption fix. Preserve checked
+# u64/usize conversions used by persisted timestamps and quota counters.
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 clap_complete = "4.5"
 colored = "3.0"
@@ -62,7 +65,9 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc",
 # Yamux, identify, Kademlia, Gossipsub, request-response/CBOR, mDNS (LAN),
 # relay client, DCUtR, AutoNAT, rendezvous, metrics. Isolated to services/operator::swarm.
 libp2p = { version = "0.57", default-features = false, features = ["tokio", "tcp", "quic", "dns", "noise", "yamux", "identify", "kad", "gossipsub", "request-response", "cbor", "mdns", "ping", "relay", "dcutr", "autonat", "rendezvous", "metrics", "macros", "ed25519"] }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+# Ratatui 0.30 resolves a patched lru release. Keep optional features minimal;
+# its 0.28 backend matches the CLI's existing event API.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_28"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 
 # Internal workspace crates

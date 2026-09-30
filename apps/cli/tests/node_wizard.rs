@@ -470,6 +470,7 @@ fn backup_round_trip_copies_identity_files() {
         "setup failed: {}",
         String::from_utf8_lossy(&setup.stderr)
     );
+    let dir = std::fs::canonicalize(dir).expect("canonicalize node data directory");
     let dest = dir.join("backup-out");
     let backup = Command::new(bin())
         .args([

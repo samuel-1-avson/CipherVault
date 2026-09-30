@@ -231,15 +231,7 @@ fn format_identity_registry_entry(operator_id: &str, public_key_hex: &str) -> St
 }
 
 fn strict_auth_enabled() -> bool {
-    std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
-        .unwrap_or(true)
+    ciphervault_operator::state::OperatorSecurityConfig::from_env().strict_auth
 }
 
 fn validate_security_configuration() -> io::Result<()> {
@@ -484,7 +476,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

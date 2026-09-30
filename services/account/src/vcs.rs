@@ -49,6 +49,8 @@ pub enum VcsError {
     Terminal,
     #[error("vcs webhook signing key is not configured")]
     Unconfigured,
+    #[error("vcs provider verification is unavailable")]
+    ProviderUnavailable,
     #[error("vcs provider error: {0}")]
     Provider(String),
     #[error("binding database error: {0}")]
@@ -464,7 +466,10 @@ pub(crate) fn prove_ownership(
             installation_token,
             &view.external_repo_id,
         )
-        .map_err(|err| VcsError::Provider(err.to_string()))?;
+        .map_err(|err| match err {
+            VcsError::ProviderUnavailable => VcsError::ProviderUnavailable,
+            other => VcsError::Provider(other.to_string()),
+        })?;
     if !verified {
         let reason = serde_json::json!({"binding_id": binding_id}).to_string();
         audit_binding(

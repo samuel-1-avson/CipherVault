@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,10 +27,11 @@ fn sha256_file(path: &Path) -> [u8; 32] {
 
 async fn spawn_operator(name: &str, storage_dir: PathBuf) -> (String, tokio::task::JoinHandle<()>) {
     fs::create_dir_all(&storage_dir).unwrap();
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         name.into(),
         storage_dir,
         generate_signing_key(),
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -59,6 +62,9 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
             .as_nanos()
     ));
     fs::create_dir_all(&base_test_dir).unwrap();
+    // Restore paths under macOS temp_dir otherwise retain the /var alias,
+    // which strict vault path checks correctly reject as a symlink ancestor.
+    let base_test_dir = fs::canonicalize(base_test_dir).unwrap();
 
     // =========================================================================
     // 1. CLUSTER DEPLOYMENT: Spawn 3 independent operator nodes

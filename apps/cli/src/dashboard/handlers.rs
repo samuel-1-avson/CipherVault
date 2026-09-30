@@ -3,16 +3,12 @@
 use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures_util::{
-    future::join_all,
-    stream::{self, Stream},
-};
+use futures_util::{future::join_all, stream};
 
 use ciphervault_crypto::{generate_signing_key, HardwareSecurityModule};
-use ciphervault_local_store::AccountStore;
+use ciphervault_local_store::{AccountStore, LocalVaultStore};
 use ciphervault_maintenance::MaintenanceDb;
 use ciphervault_storage::OperatorClient;
 
@@ -254,7 +250,92 @@ pub(crate) fn local_authority(value: &str) -> Option<(String, u16)> {
     Some((local_host_name(host)?, port))
 }
 
+fn decode_workspace_selection(value: &str) -> Result<String, &'static str> {
+    if value.is_empty() || value.len() > 8192 {
+        return Err("Workspace selection is empty or too long");
+    }
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'%' {
+            let pair = bytes
+                .get(offset + 1..offset + 3)
+                .ok_or("Malformed workspace encoding")?;
+            let hex_digit = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
+            let high = hex_digit(pair[0]).ok_or("Malformed workspace encoding")?;
+            let low = hex_digit(pair[1]).ok_or("Malformed workspace encoding")?;
+            decoded.push(high * 16 + low);
+            offset += 3;
+        } else {
+            decoded.push(bytes[offset]);
+            offset += 1;
+        }
+    }
+    let path = String::from_utf8(decoded).map_err(|_| "Workspace path must be valid UTF-8")?;
+    if path.trim().is_empty() || path.chars().any(char::is_control) {
+        return Err("Workspace path is empty or contains control characters");
+    }
+    Ok(path)
+}
+
+fn selected_workspace(request: &axum::extract::Request) -> Result<Option<String>, &'static str> {
+    let mut headers = request.headers().get_all("x-ciphervault-workspace").iter();
+    if let Some(value) = headers.next() {
+        if headers.next().is_some() {
+            return Err("Only one workspace selection is allowed");
+        }
+        return decode_workspace_selection(
+            value.to_str().map_err(|_| "Malformed workspace header")?,
+        )
+        .map(Some);
+    }
+    if request.uri().path() == "/api/stream" {
+        let mut selected = None;
+        for parameter in request.uri().query().unwrap_or_default().split('&') {
+            let (key, value) = parameter.split_once('=').unwrap_or((parameter, ""));
+            if key == "workspace" {
+                if selected.is_some() {
+                    return Err("Only one workspace selection is allowed");
+                }
+                selected = Some(decode_workspace_selection(value)?);
+            }
+        }
+        return Ok(selected);
+    }
+    Ok(None)
+}
+
 pub(crate) async fn private_ui_request_guard(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Resolve the selected context once, before authorization and dispatch.
+    // EventSource cannot set headers, so its read-only stream uses a query.
+    let selected = match selected_workspace(&request) {
+        Ok(selected) => selected,
+        Err(error) => return (axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "status": "error", "code": "INVALID_WORKSPACE", "error": error }))).into_response(),
+    };
+    let context = match selected {
+        Some(path) => match crate::util::VaultContext::from_db_path(path) {
+            Ok(context) => Some(context),
+            Err(error) => return (axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "status": "error", "code": "INVALID_WORKSPACE", "error": error.to_string() }))).into_response(),
+        },
+        None => crate::util::VaultContext::from_db_path(crate::util::get_active_vault_path()).ok(),
+    };
+    if let Some(context) = context {
+        crate::util::REQUEST_VAULT_CONTEXT
+            .scope(context, private_ui_request_guard_in_context(request, next))
+            .await
+    } else {
+        private_ui_request_guard_in_context(request, next).await
+    }
+}
+
+async fn private_ui_request_guard_in_context(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -419,7 +500,7 @@ pub(crate) async fn api_vault_handler() -> impl axum::response::IntoResponse {
         "device_counter": device_counter,
         "epoch": epoch,
         "tracked_files": tracked.iter().map(|(p, id)| {
-            let full_path = Path::new(p);
+            let full_path = crate::util::get_workspace_root().unwrap_or_default().join(p);
             let size_bytes = fs::metadata(full_path).map(|m| m.len()).unwrap_or(0);
             serde_json::json!({
                 "path": p.to_string_lossy(),
@@ -628,6 +709,7 @@ pub(crate) async fn api_snapshots_handler() -> impl axum::response::IntoResponse
 
     let snapshots = store.list_snapshots().unwrap_or_default();
     let active_head = store.get_active_head().ok().flatten();
+    let keys = trusted_snapshot_keys(&store);
 
     let json_snaps: Vec<_> = snapshots.iter().map(|snap| {
         let record_cid = snap.compute_record_cid().ok();
@@ -643,10 +725,48 @@ pub(crate) async fn api_snapshots_handler() -> impl axum::response::IntoResponse
             "epoch": snap.epoch,
             "timestamp_utc": snap.advisory_timestamp_utc,
             "is_head": is_head,
+            "signature_verified": snap.version == ciphervault_format::PROTOCOL_VERSION && store.get_vault_id().is_ok_and(|vault| snap.vault_id == vault) && keys.iter().any(|key| snap.verify(key).is_ok()),
         })
     }).collect();
 
     axum::Json(serde_json::json!(json_snaps))
+}
+
+fn trusted_snapshot_keys(store: &LocalVaultStore) -> Vec<[u8; 32]> {
+    let Ok(genesis) = store.get_genesis_record() else {
+        return Vec::new();
+    };
+    let Ok(vault_id) = store.get_vault_id() else {
+        return Vec::new();
+    };
+    if genesis.vault_id != vault_id || genesis.verify().is_err() {
+        return Vec::new();
+    }
+    let Ok(root) = genesis.recovery_signing_pk.as_slice().try_into() else {
+        return Vec::new();
+    };
+    store
+        .list_device_certificates()
+        .unwrap_or_default()
+        .iter()
+        .filter(|cert| {
+            cert.vault_id == vault_id && cert.permissions & 1 != 0 && cert.verify(&root).is_ok()
+        })
+        .filter_map(|cert| cert.device_signing_pk.as_slice().try_into().ok())
+        .collect()
+}
+
+pub(crate) fn local_snapshot_signature_verified(
+    store: &LocalVaultStore,
+    record: &ciphervault_format::SnapshotRecord,
+) -> bool {
+    record.version == ciphervault_format::PROTOCOL_VERSION
+        && store
+            .get_vault_id()
+            .is_ok_and(|vault| record.vault_id == vault)
+        && trusted_snapshot_keys(store)
+            .iter()
+            .any(|key| record.verify(key).is_ok())
 }
 
 pub(crate) async fn api_anchors_handler() -> impl axum::response::IntoResponse {
@@ -873,7 +993,7 @@ pub(crate) async fn api_relayer_anchor_handler() -> impl axum::response::IntoRes
 }
 
 pub(crate) async fn api_fleet_handler() -> impl axum::response::IntoResponse {
-    let fleet_db_path = PathBuf::from(".ciphervault").join("fleet.db");
+    let fleet_db_path = crate::util::get_vault_directory().join("fleet.db");
     if !fleet_db_path.exists() {
         return axum::Json(serde_json::json!({
             "status": "ok",
@@ -1024,7 +1144,7 @@ pub(crate) async fn api_fleet_handler() -> impl axum::response::IntoResponse {
 
 pub(crate) async fn api_fleet_audit_handler() -> impl axum::response::IntoResponse {
     let audit_res = audit_current(None).await;
-    let fleet_db_path = PathBuf::from(".ciphervault").join("fleet.db");
+    let fleet_db_path = crate::util::get_vault_directory().join("fleet.db");
     let db = MaintenanceDb::open(&fleet_db_path).ok();
 
     match audit_res {
@@ -1094,45 +1214,70 @@ pub(crate) async fn api_token_handler() -> impl axum::response::IntoResponse {
     }))
 }
 
-pub(crate) async fn api_stream_handler(
-) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let stream = stream::unfold((), |_| async {
-        let operators = get_configured_operators();
-        let http = public_operator_http_client();
-        let probes = operators.into_iter().map(|endpoint| {
-            let http = http.clone();
-            async move {
-                let client = OperatorClient::with_http_client(endpoint.clone(), http);
-                let start = std::time::Instant::now();
-                let (online, latency_ms) = match client.get_info().await {
-                    Ok(_) => (true, start.elapsed().as_millis() as u64),
-                    Err(_) => (false, 999),
-                };
-                serde_json::json!({
-                    "endpoint": endpoint,
-                    "online": online,
-                    "latency_ms": latency_ms,
-                })
+pub(crate) async fn api_stream_handler(headers: axum::http::HeaderMap) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // The body is polled after the guard's task-local context ends. Capture
+    // the resolved workspace and the actual authorized cookie, then recheck
+    // both the browser and account sessions while the stream is open.
+    let context = match crate::util::VaultContext::from_db_path(crate::util::get_active_vault_path()) {
+        Ok(context) => context,
+        Err(_) => return (axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "code": "VAULT_NOT_INITIALIZED", "error": "Initialize a vault before opening private telemetry" }))).into_response(),
+    };
+    let token = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (name, value) = cookie.trim().split_once('=')?;
+                (name == "ciphervault_private_session").then(|| value.to_string())
+            })
+        })
+        .unwrap_or_default();
+    let subscription = match super::telemetry::subscribe(super::telemetry::TelemetryKey {
+        db_path: context.db_path.clone(),
+        operators: get_configured_operators(),
+    }) {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "3")],
+                axum::Json(
+                    serde_json::json!({ "code": "TELEMETRY_CAPACITY_REACHED", "error": error }),
+                ),
+            )
+                .into_response()
+        }
+    };
+    let stream = stream::unfold(
+        (subscription, context, token),
+        |(mut subscription, context, token)| async move {
+            let data = crate::util::REQUEST_VAULT_CONTEXT.scope(context.clone(), async {
+            loop {
+                if private_ui_session_snapshot().token != token || !private_account_session_valid() {
+                    return None;
+                }
+                tokio::select! {
+                    data = subscription.next() => {
+                        // A sample may have arrived concurrently with revocation.
+                        if private_ui_session_snapshot().token != token || !private_account_session_valid() {
+                            return None;
+                        }
+                        return data;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+                }
             }
-        });
-        let op_latencies = join_all(probes).await;
-
-        let token_attached = ciphervault_crypto::PcscHardwareToken::probe()
-            .ok()
-            .flatten()
-            .is_some();
-        let timestamp = Utc::now().to_rfc3339();
-
-        let data = serde_json::json!({
-            "timestamp": timestamp,
-            "operators": op_latencies,
-            "token_attached": token_attached,
-        });
-
-        let event = Event::default().event("telemetry").data(data.to_string());
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        Some((Ok(event), ()))
-    });
-
-    Sse::new(stream).keep_alive(KeepAlive::default())
+        }).await?;
+            let event = Event::default().event("telemetry").data(data.as_str());
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (subscription, context, token),
+            ))
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }

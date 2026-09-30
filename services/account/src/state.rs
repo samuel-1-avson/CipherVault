@@ -60,7 +60,17 @@ impl AccountState {
     pub fn open(data_dir: impl Into<PathBuf>) -> Result<Self, AccountServiceError> {
         let data_dir = data_dir.into();
         fs::create_dir_all(&data_dir)?;
+        crate::disaster_recovery::checked_existing(&data_dir)?;
+        ciphervault_file_lock::lock_secret_directory(&data_dir)?;
         let db_path = data_dir.join("accounts.sqlite3");
+        match ciphervault_file_lock::create_secret_file(&db_path) {
+            Ok(file) => file.sync_all()?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = ciphervault_file_lock::open_regular_file(&db_path)?;
+                ciphervault_file_lock::lock_secret_file(&db_path)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
         let connection = Connection::open(db_path.clone())?;
         connection.busy_handler(Some(counting_busy_handler))?;
         connection.execute_batch(
@@ -148,6 +158,7 @@ impl AccountState {
              );
              CREATE TABLE IF NOT EXISTS session_handoffs (
                  handoff_hash_hex TEXT PRIMARY KEY,
+                 origin_session_hash TEXT,
                  account_id TEXT NOT NULL,
                  device_id_hex TEXT,
                  auth_method TEXT NOT NULL,
@@ -226,6 +237,16 @@ impl AccountState {
                 [],
             )?;
         }
+        let has_handoff_origin: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session_handoffs') WHERE name = 'origin_session_hash')",
+            [], |row| row.get(0),
+        )?;
+        if !has_handoff_origin {
+            connection.execute(
+                "ALTER TABLE session_handoffs ADD COLUMN origin_session_hash TEXT",
+                [],
+            )?;
+        }
         let has_session_credential: bool = connection.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM pragma_table_info('sessions')
@@ -269,10 +290,14 @@ impl AccountState {
             // wrapping key is missing, malformed, or unreadable.
             let _ = totp_wrapping_key()?;
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&db_path, fs::Permissions::from_mode(0o600));
+        // The owner-only parent protects future sidecars too; tighten current
+        // WAL/SHM files before traffic so old deployments migrate safely.
+        for suffix in ["", "-wal", "-shm"] {
+            let path = data_dir.join(format!("accounts.sqlite3{suffix}"));
+            if path.try_exists()? {
+                let _ = ciphervault_file_lock::open_regular_file(&path)?;
+                ciphervault_file_lock::lock_secret_file(&path)?;
+            }
         }
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),

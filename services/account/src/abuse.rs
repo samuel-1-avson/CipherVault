@@ -60,6 +60,42 @@ pub(crate) const EXPORT_BUCKET: QuotaBucket = QuotaBucket {
     window_seconds: 300,
 };
 
+const CHALLENGE_ACCOUNT_BUCKET: QuotaBucket = QuotaBucket {
+    name: "challenge-account",
+    max_requests: 30,
+    window_seconds: 300,
+};
+const CHALLENGE_SOURCE_BUCKET: QuotaBucket = QuotaBucket {
+    name: "challenge-source",
+    max_requests: 120,
+    window_seconds: 60,
+};
+const CHALLENGE_GLOBAL_BUCKET: QuotaBucket = QuotaBucket {
+    name: "challenge-global",
+    max_requests: 2000,
+    window_seconds: 60,
+};
+
+/// Reserve before persisting any login/enrollment challenge. All ceremonies
+/// share the account budget, so switching methods cannot evade it.
+pub(crate) fn check_challenge_quota(
+    db: &Connection,
+    headers: &axum::http::HeaderMap,
+    account_id: &str,
+    now: u64,
+) -> Result<(), QuotaFailure> {
+    check_quota(db, &CHALLENGE_GLOBAL_BUCKET, "auth", "all", now)?;
+    check_quota(
+        db,
+        &CHALLENGE_SOURCE_BUCKET,
+        "auth",
+        &crate::http::request_source(headers),
+        now,
+    )?;
+    check_quota(db, &CHALLENGE_ACCOUNT_BUCKET, "auth", account_id, now)?;
+    Ok(())
+}
+
 /// Outcome of an allowed check, for limit headers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct QuotaState {
@@ -89,66 +125,48 @@ pub(crate) fn check_quota(
 ) -> Result<QuotaState, QuotaFailure> {
     // Opportunistic prune (fixed horizon covers the longest bucket window).
     db.execute(
-        "DELETE FROM abuse_quotas WHERE (?1 - window_started_at_utc) > 3600",
-        params![now as i64],
+        "DELETE FROM abuse_quotas WHERE window_started_at_utc < ?1",
+        params![now.saturating_sub(3600)],
     )?;
     let key = format!("{}:{tenant_id}:{principal_id}", bucket.name);
-    let current: Option<(i64, i64)> = db
+    // One SQLite statement reserves the unit. Read-then-increment permits
+    // independent account processes to overrun a shared quota.
+    let reserved: Option<(u64, u64)> = db
         .query_row(
-            "SELECT window_started_at_utc, count FROM abuse_quotas WHERE quota_key = ?1",
-            params![key],
+            "INSERT INTO abuse_quotas(quota_key, window_started_at_utc, count, updated_at_utc)
+         VALUES(?1, ?2, 1, ?2)
+         ON CONFLICT(quota_key) DO UPDATE SET
+           window_started_at_utc = CASE WHEN ?2 >= window_started_at_utc + ?3
+                                        THEN ?2 ELSE window_started_at_utc END,
+           count = CASE WHEN ?2 >= window_started_at_utc + ?3 THEN 1 ELSE count + 1 END,
+           updated_at_utc = ?2
+         WHERE ?2 >= window_started_at_utc + ?3 OR count < ?4
+         RETURNING window_started_at_utc, count",
+            params![key, now, bucket.window_seconds, bucket.max_requests],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    match current {
-        None => {
-            db.execute(
-                "INSERT INTO abuse_quotas(quota_key, window_started_at_utc, count, updated_at_utc)
-                 VALUES(?1, ?2, 1, ?2)",
-                params![key, now as i64],
-            )?;
-            Ok(QuotaState {
-                limit: bucket.max_requests,
-                remaining: bucket.max_requests.saturating_sub(1),
-                reset_after_secs: bucket.window_seconds,
-            })
-        }
-        Some((started_raw, count_raw)) => {
-            let started = started_raw as u64;
-            let count = count_raw.max(0) as u64;
-            if now.saturating_sub(started) >= bucket.window_seconds {
-                db.execute(
-                    "UPDATE abuse_quotas SET window_started_at_utc = ?2, count = 1,
-                                             updated_at_utc = ?2
-                     WHERE quota_key = ?1",
-                    params![key, now as i64],
-                )?;
-                return Ok(QuotaState {
-                    limit: bucket.max_requests,
-                    remaining: bucket.max_requests.saturating_sub(1),
-                    reset_after_secs: bucket.window_seconds,
-                });
-            }
-            if count >= bucket.max_requests {
-                let elapsed = now.saturating_sub(started);
-                return Err(QuotaFailure::Denied {
-                    retry_after_secs: bucket.window_seconds.saturating_sub(elapsed).max(1),
-                    limit: bucket.max_requests,
-                });
-            }
-            db.execute(
-                "UPDATE abuse_quotas SET count = count + 1, updated_at_utc = ?2
-                 WHERE quota_key = ?1",
-                params![key, now as i64],
-            )?;
-            let elapsed = now.saturating_sub(started);
-            Ok(QuotaState {
-                limit: bucket.max_requests,
-                remaining: bucket.max_requests.saturating_sub(count + 1),
-                reset_after_secs: bucket.window_seconds.saturating_sub(elapsed),
-            })
-        }
+    if let Some((started, count)) = reserved {
+        return Ok(QuotaState {
+            limit: bucket.max_requests,
+            remaining: bucket.max_requests.saturating_sub(count),
+            reset_after_secs: bucket
+                .window_seconds
+                .saturating_sub(now.saturating_sub(started)),
+        });
     }
+    let started: u64 = db.query_row(
+        "SELECT window_started_at_utc FROM abuse_quotas WHERE quota_key = ?1",
+        [&key],
+        |row| row.get(0),
+    )?;
+    Err(QuotaFailure::Denied {
+        retry_after_secs: bucket
+            .window_seconds
+            .saturating_sub(now.saturating_sub(started))
+            .max(1),
+        limit: bucket.max_requests,
+    })
 }
 
 /// Maps a [`QuotaFailure`] to its HTTP response: 503 fail-closed on store
@@ -303,6 +321,38 @@ mod tests {
             QuotaFailure::Denied { .. }
         ));
         check_quota(&db, &other, "t1", "alice", 1001).unwrap();
+        cleanup(root);
+    }
+    #[test]
+    fn quota_reservation_is_atomic_across_independent_connections() {
+        use std::sync::{Arc, Barrier};
+        let (root, _state, _app) = test_app("quota-concurrent");
+        let barrier = Arc::new(Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = root.join("accounts.sqlite3");
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let db = Connection::open(path).unwrap();
+                    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                    barrier.wait();
+                    let mut allowed = 0;
+                    for _ in 0..10 {
+                        match check_quota(&db, &TINY, "tenant", "principal", 1000) {
+                            Ok(_) => allowed += 1,
+                            Err(QuotaFailure::Denied { .. }) => {}
+                            Err(error) => panic!("quota reservation failed: {error}"),
+                        }
+                    }
+                    allowed
+                })
+            })
+            .collect();
+        let count: usize = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .sum();
+        assert_eq!(count, TINY.max_requests as usize);
         cleanup(root);
     }
 }

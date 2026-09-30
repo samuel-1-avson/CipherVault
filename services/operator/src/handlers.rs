@@ -18,6 +18,24 @@ use ciphervault_storage::StorageError;
 
 use crate::state::OperatorState;
 
+async fn bounded_io<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, (StatusCode, String)> {
+    static IO_LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let permit = IO_LIMIT
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(16)))
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation()
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 pub(crate) fn extract_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("Authorization")?
@@ -28,20 +46,6 @@ pub(crate) fn extract_token(headers: &HeaderMap) -> Option<&str> {
 
 pub(crate) fn extract_vault_id(headers: &HeaderMap) -> Option<&str> {
     headers.get("X-CipherVault-Id")?.to_str().ok()
-}
-
-fn strict_operator_auth() -> bool {
-    std::env::var("CIPHERVAULT_OPERATOR_STRICT_AUTH")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
-        // Fail closed when an operator is launched outside the hardened
-        // Compose/systemd environment. Anonymous control routes are unsafe
-        // as a source default.
-        .unwrap_or(true)
 }
 
 /// Constant-time service-token comparison: mismatched lengths and
@@ -64,12 +68,20 @@ pub(crate) fn require_control_auth(
             return Ok(());
         }
     }
-    if !strict_operator_auth() && extract_token(headers).is_none() {
+    if !state.security.strict_auth && extract_token(headers).is_none() {
         // Kept as an explicit migration switch for existing operator-to-operator clients.
         // Production compose enables strict mode; local legacy callers can migrate separately.
         return Ok(());
     }
-    require_session(state, headers, true).map(|_| ())
+    let token = require_session(state, headers, true)?;
+    let vault = extract_vault_id(headers).unwrap_or_default();
+    if !state.session_has_permission(token, vault, crate::state::PERMISSION_FLEET_ADMIN) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Fleet administrator capability required".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn require_service_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
@@ -86,6 +98,36 @@ fn require_service_token(headers: &HeaderMap) -> Result<(), (StatusCode, String)
             .is_none_or(|provided| !service_token_matches(provided, &expected))
     {
         return Err((StatusCode::UNAUTHORIZED, "Invalid service token".into()));
+    }
+    Ok(())
+}
+
+/// Fleet administrators may inspect all approvals; tenants see only their vault.
+pub(crate) fn approval_scope(
+    state: &OperatorState,
+    headers: &HeaderMap,
+    write: bool,
+) -> Result<Option<String>, (StatusCode, String)> {
+    if require_service_token(headers).is_ok()
+        || (!state.security.strict_auth && extract_token(headers).is_none())
+    {
+        return Ok(None);
+    }
+    let token = require_session(state, headers, write)?;
+    let vault = extract_vault_id(headers).unwrap_or_default();
+    if state.session_has_permission(token, vault, crate::state::PERMISSION_FLEET_ADMIN) {
+        Ok(None)
+    } else {
+        Ok(Some(vault.to_ascii_lowercase()))
+    }
+}
+
+fn enforce_approval_scope(scope: Option<&str>, vault: &str) -> Result<(), (StatusCode, String)> {
+    if scope.is_some_and(|scope| !scope.eq_ignore_ascii_case(vault)) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Approval belongs to another vault".into(),
+        ));
     }
     Ok(())
 }
@@ -144,7 +186,7 @@ pub struct IdentityRequest {
 }
 
 fn default_identity_permissions() -> u32 {
-    0xffff_ffff
+    crate::state::PERMISSION_VAULT_DEFAULT
 }
 
 /// Extracts the `X-CipherVault-Voucher` write voucher (JSON). Absent
@@ -200,7 +242,12 @@ pub(crate) fn require_session<'a>(
             "X-CipherVault-Id must be 32-byte hex".into(),
         ));
     }
-    let valid = state.validate_session_for_vault(token, vault_id);
+    let permission = if write {
+        crate::state::PERMISSION_WRITE
+    } else {
+        crate::state::PERMISSION_READ
+    };
+    let valid = state.session_has_permission(token, vault_id, permission);
     if !valid {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -403,8 +450,8 @@ pub async fn put_object(
     require_session(&state, &headers, true)?;
     let voucher = extract_voucher(&headers)?;
 
-    state
-        .put_object_with_voucher(&cid, &body, voucher.as_ref())
+    bounded_io(move || state.put_object_with_voucher(&cid, &body, voucher.as_ref()))
+        .await?
         .map_err(storage_error_response)?;
     Ok(StatusCode::OK.into_response())
 }
@@ -416,8 +463,8 @@ pub async fn get_object(
 ) -> Result<Bytes, (StatusCode, String)> {
     require_session(&state, &headers, false)?;
 
-    let bytes = state
-        .get_object(&cid)
+    let bytes = bounded_io(move || state.get_object(&cid))
+        .await?
         .ok_or((StatusCode::NOT_FOUND, "Object not found".into()))?;
     Ok(Bytes::from(bytes))
 }
@@ -474,7 +521,10 @@ pub async fn post_lease(
         .map_err(storage_error_response)?;
     if let Some(vault_id_hex) = extract_vault_id(&headers) {
         if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex) {
-            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Lease ownership could not be persisted: {err}"),
+            ));
         }
     }
     Ok(Json(receipt))
@@ -549,18 +599,14 @@ pub async fn post_renew_lease(
     let voucher = extract_voucher(&headers)?;
 
     let receipt = state
-        .renew_lease_with_voucher(
+        .renew_owned_lease_with_voucher(
             &lease_id,
             req.additional_days,
             req.byte_count,
+            extract_vault_id(&headers).unwrap_or_default(),
             voucher.as_ref(),
         )
         .map_err(storage_error_response)?;
-    if let Some(vault_id_hex) = extract_vault_id(&headers) {
-        if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex) {
-            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
-        }
-    }
     Ok(Json(receipt))
 }
 
@@ -576,9 +622,16 @@ pub async fn post_recovery_record(
 
     let caller_pk = state.get_session_public_key(token);
     let voucher = extract_voucher(&headers)?;
-    let seq = state
-        .append_recovery_record_with_voucher(&locator, &body, caller_pk.as_ref(), voucher.as_ref())
-        .map_err(storage_error_response)?;
+    let seq = bounded_io(move || {
+        state.append_recovery_record_with_voucher(
+            &locator,
+            &body,
+            caller_pk.as_ref(),
+            voucher.as_ref(),
+        )
+    })
+    .await?
+    .map_err(storage_error_response)?;
     Ok(Json(AppendRecordResponse {
         sequence: seq,
         status: "appended".into(),
@@ -590,28 +643,25 @@ pub async fn post_recovery_record(
 /// secret), and clean-machine recovery has no session by definition.
 /// Clients select/verify heads against the recovery signing key. Do NOT add
 /// session auth here without a recovery-bootstrap story.
+#[derive(Deserialize)]
+pub struct RecoveryQuery {
+    #[serde(default)]
+    cursor: u64,
+}
+
 pub async fn get_recovery_records(
     State(state): State<Arc<OperatorState>>,
     Path(locator): Path<String>,
-) -> Json<RecoveryRecordsResponse> {
-    let records = state.get_recovery_records(&locator);
-    let mut records_hex = Vec::new();
-    let mut encoded_bytes = 0usize;
-    let mut truncated = false;
-    for record in records {
-        let encoded = hex::encode(record);
-        let response_cap = crate::state::max_recovery_response_bytes();
-        if encoded_bytes.saturating_add(encoded.len()) > response_cap {
-            truncated = true;
-            break;
-        }
-        encoded_bytes += encoded.len();
-        records_hex.push(encoded);
-    }
-    Json(RecoveryRecordsResponse {
-        records_hex,
-        truncated,
-    })
+    Query(query): Query<RecoveryQuery>,
+) -> Result<Json<RecoveryRecordsResponse>, (StatusCode, String)> {
+    let page = bounded_io(move || state.get_recovery_page(&locator, query.cursor))
+        .await?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(RecoveryRecordsResponse {
+        records_hex: page.records.into_iter().map(hex::encode).collect(),
+        truncated: page.next_cursor.is_some(),
+        next_cursor: page.next_cursor,
+    }))
 }
 
 pub async fn post_relayer_checkpoint(
@@ -856,7 +906,8 @@ pub async fn post_approval_challenge(
     headers: HeaderMap,
     Json(challenge): Json<ciphervault_recovery::ApprovalChallenge>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_control_auth(&state, &headers)?;
+    let scope = approval_scope(&state, &headers, true)?;
+    enforce_approval_scope(scope.as_deref(), &challenge.vault_id_hex)?;
     let id = challenge.challenge_id.clone();
     state
         .register_approval_challenge(challenge)
@@ -871,8 +922,16 @@ pub async fn get_pending_challenges(
     State(state): State<Arc<OperatorState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ciphervault_recovery::ApprovalChallenge>>, (StatusCode, String)> {
-    require_control_auth(&state, &headers)?;
-    let list = state.get_pending_challenges();
+    let scope = approval_scope(&state, &headers, false)?;
+    let list = state
+        .get_pending_challenges()
+        .into_iter()
+        .filter(|challenge| {
+            scope
+                .as_deref()
+                .is_none_or(|scope| scope.eq_ignore_ascii_case(&challenge.vault_id_hex))
+        })
+        .collect();
     Ok(Json(list))
 }
 
@@ -880,16 +939,19 @@ pub async fn get_challenge_status(
     State(state): State<Arc<OperatorState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    require_control_auth(&state, &headers).map_err(|_| StatusCode::UNAUTHORIZED)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let scope = approval_scope(&state, &headers, false)?;
     match state.get_challenge_status(&id) {
-        Some((challenge, receipts)) => Ok(Json(serde_json::json!({
-            "challenge": challenge,
-            "receipts": receipts,
-            "approved": !receipts.is_empty(),
-            "receipt_count": receipts.len()
-        }))),
-        None => Err(StatusCode::NOT_FOUND),
+        Some((challenge, receipts)) => {
+            enforce_approval_scope(scope.as_deref(), &challenge.vault_id_hex)?;
+            Ok(Json(serde_json::json!({
+                "challenge": challenge,
+                "receipts": receipts,
+                "approved": !receipts.is_empty(),
+                "receipt_count": receipts.len()
+            })))
+        }
+        None => Err((StatusCode::NOT_FOUND, "Approval challenge not found".into())),
     }
 }
 
@@ -898,7 +960,11 @@ pub async fn post_submit_approval(
     headers: HeaderMap,
     Json(receipt): Json<ciphervault_recovery::SignedApprovalReceipt>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_control_auth(&state, &headers)?;
+    let scope = approval_scope(&state, &headers, true)?;
+    let (challenge, _) = state
+        .get_challenge_status(&receipt.challenge_id)
+        .ok_or((StatusCode::NOT_FOUND, "Approval challenge not found".into()))?;
+    enforce_approval_scope(scope.as_deref(), &challenge.vault_id_hex)?;
     let count = state
         .submit_approval_receipt(receipt)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;

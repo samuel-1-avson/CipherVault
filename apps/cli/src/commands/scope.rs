@@ -212,7 +212,7 @@ pub(crate) async fn resolve_scope(
     env_flag: Option<&str>,
     require_env: bool,
 ) -> Result<ResolvedScope> {
-    let file = read_context_file_at(Path::new("."))?;
+    let file = read_context_file_at(&crate::util::get_workspace_root()?)?;
     let (project_id, project_slug, project_source) =
         resolve_project(client, endpoint, token, project_flag, file.as_ref()).await?;
     let env_raw = non_empty(env_flag)
@@ -358,7 +358,8 @@ async fn autodetect_project(
     endpoint: &str,
     token: &str,
 ) -> Result<Option<(String, String)>> {
-    let Some((provider, repo_slug)) = git_origin_identity(Path::new(".")) else {
+    let Some((provider, repo_slug)) = git_origin_identity(&crate::util::get_workspace_root()?)
+    else {
         return Ok(None);
     };
     let body = api_get(client, endpoint, token, "/v1/projects", "project list").await?;

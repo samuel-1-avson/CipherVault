@@ -11,12 +11,12 @@
 //! audit export, and opt-in DPoP-lite key binding for scope tokens. mTLS
 //! stays deferred (needs a TLS-termination dependency).
 
+use crate::key_lifecycle::VersionedKekService;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use ciphervault_crypto::LocalKekService;
 use ciphervault_format::SecretValue;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -25,15 +25,17 @@ use crate::abuse::{
     check_quota, quota_failure_response, API_BUCKET, EXPORT_BUCKET, MINT_BUCKET, READ_VALUE_BUCKET,
 };
 use crate::audit_chain::{export_audit_log, verify_chain, AuditEventType};
-use crate::guards::require_strong_session;
-use crate::http::{authenticated_session, bearer_token, error_response, service_error};
+use crate::guards::{require_recent_strong_session, STEP_UP_MAX_AGE_SECONDS};
+use crate::http::{
+    authenticated_session, bearer_token, error_response, service_error, session_token,
+};
 use crate::policy::{
     grant_project_role, project_role_of, revoke_project_role, scoped_denial_response, ProjectRole,
     RequestAttributes,
 };
 use crate::projects::{list_projects, show_project, ProjectError};
 use crate::reconcile::NoProviderClient;
-use crate::rotation::{rotate_secret, NoopVerifier, RotateSecret};
+use crate::rotation::{rotate_secret, ManualReplacementVerifier, RotateSecret};
 use crate::scope_tokens::{
     deny_scope_token, mint_scope_token, prune_scope_denylist, scope_token_denied,
     scope_token_signing_key, verify_scope_token, ScopeClaims, SCOPE_TOKEN_PREFIX,
@@ -141,6 +143,15 @@ fn verify_token_claims(
             "Invalid or expired scope token",
         )));
     }
+    if !crate::scope_tokens::scope_origin_active(&db, &claims, now_utc(), true)
+        .map_err(|error| service_error(error.into()))?
+    {
+        return Err(Box::new(error_response(
+            StatusCode::UNAUTHORIZED,
+            "INVALID_SCOPE_TOKEN",
+            "Invalid or expired scope token",
+        )));
+    }
     let _ = prune_scope_denylist(&db, now_utc());
     crate::dpop::verify_dpop(&db, &claims, headers, now_utc())
         .map_err(|err| Box::new(crate::dpop::dpop_error_response(&err)))?;
@@ -167,6 +178,21 @@ fn authenticate_token(
     // authenticated callers consume budget.
     {
         let db = state.connection().map_err(service_error)?;
+        let project_valid: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects
+            WHERE project_id = ?1 AND tenant_id = ?2 AND deleted_at_utc IS NULL)",
+                rusqlite::params![project_id, claims.tenant_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| service_error(error.into()))?;
+        if !project_valid
+            || project_role_of(&db, project_id, &claims.principal_id)
+                .map_err(|error| service_error(error.into()))?
+                .is_none()
+        {
+            return Err(Box::new(scoped_denial_response()));
+        }
         if let Err(failure) = check_quota(
             &db,
             &API_BUCKET,
@@ -179,7 +205,11 @@ fn authenticate_token(
     }
     let attrs = RequestAttributes {
         branch: claims.branch.clone(),
-        elevated: false,
+        elevated: claims.origin_session_hash.is_some()
+            && claims
+                .elevated_until_utc
+                .is_some_and(|until| now_utc() < until),
+        ..RequestAttributes::default()
     };
     Ok(RouteAuth { claims, attrs })
 }
@@ -203,14 +233,26 @@ fn authenticate_session(
     let Some(tenant) = tenant else {
         return Err(Box::new(scoped_denial_response()));
     };
-    let claims = ScopeClaims::for_session(&tenant, project_id, environment_id, &session.account_id);
+    let mut claims =
+        ScopeClaims::for_session(&tenant, project_id, environment_id, &session.account_id);
+    claims.origin_session_hash =
+        session_token(headers).map(|token| crate::util::hash_token(&token));
+    if project_role_of(&db, project_id, &claims.principal_id)
+        .map_err(|error| service_error(error.into()))?
+        .is_none()
+    {
+        return Err(Box::new(scoped_denial_response()));
+    }
     if let Err(failure) = check_quota(&db, &API_BUCKET, &tenant, &claims.principal_id, now_utc()) {
         return Err(Box::new(quota_failure_response(failure)));
     }
-    let elevated = require_strong_session(&session).is_ok();
+    let elevated = require_recent_strong_session(&session, now_utc()).is_ok();
     let attrs = RequestAttributes {
         branch: None,
         elevated,
+        human_session: true,
+        recent_strong_auth: elevated,
+        ..RequestAttributes::default()
     };
     Ok(RouteAuth { claims, attrs })
 }
@@ -221,6 +263,7 @@ struct LooseAuth {
     principal_id: String,
     project_id: Option<String>,
     tenant_id: Option<String>,
+    environment_id: Option<String>,
 }
 
 fn authenticate_loose(
@@ -236,6 +279,7 @@ fn authenticate_loose(
             principal_id: claims.principal_id,
             project_id: Some(claims.project_id),
             tenant_id: Some(claims.tenant_id),
+            environment_id: claims.environment_id,
         })
     } else {
         let session = authenticated_session(state, headers)?;
@@ -243,13 +287,17 @@ fn authenticate_loose(
             principal_id: format!("account:{}", session.account_id),
             project_id: None,
             tenant_id: None,
+            environment_id: None,
         })
     }
 }
 
 /// Local KEK service bound to one project (development/small deployments;
 /// KMS-backed deployments swap this constructor in Phase 10).
-fn wrapping_for(project_id: &str) -> Result<(LocalKekService, String), Box<Response>> {
+pub(crate) fn wrapping_for(
+    state: &AccountState,
+    project_id: &str,
+) -> Result<(VersionedKekService, String), Box<Response>> {
     let raw = match std::env::var(LOCAL_KEK_FILE_ENV) {
         Ok(path) if !path.trim().is_empty() => {
             std::fs::read_to_string(path.trim()).map_err(|_| {
@@ -268,27 +316,40 @@ fn wrapping_for(project_id: &str) -> Result<(LocalKekService, String), Box<Respo
             )
         })?,
     };
-    let bytes = hex::decode(raw.trim()).map_err(|_| {
+    let service = VersionedKekService::from_config(project_id, &raw).map_err(|_| {
         error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
             "KEK_INVALID",
-            "Local KEK is misconfigured",
+            "Local KEK configuration is invalid or its active version is unavailable",
         )
     })?;
-    let key: [u8; 32] = bytes.try_into().map_err(|_| {
-        error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "KEK_INVALID",
-            "Local KEK is misconfigured",
-        )
-    })?;
-    let kek_id = format!("local:{project_id}");
-    Ok((LocalKekService::new(&kek_id, key), kek_id))
+    {
+        let mut db = state.connection().map_err(service_error)?;
+        service.register(&mut db, project_id).map_err(|_| error_response(StatusCode::SERVICE_UNAVAILABLE,
+            "KEK_IDENTITY_MISMATCH", "Configured KEK versions do not match stored key identity; retain historical key material"))?;
+    }
+    let id = service.active_id().to_string();
+    Ok((service, id))
 }
 
-fn secret_error_response(err: SecretError) -> Response {
+pub(crate) fn secret_error_response(err: SecretError) -> Response {
     match err {
         SecretError::NotFound | SecretError::Denied => scoped_denial_response(),
+        SecretError::RevisionMismatch => error_response(
+            StatusCode::CONFLICT,
+            "SCOPE_REVISION_CHANGED",
+            "Scope versions changed; fetch a fresh batch",
+        ),
+        SecretError::MaterializationTooLarge => error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "MATERIALIZATION_TOO_LARGE",
+            "Batch values exceed 128 KiB",
+        ),
+        SecretError::IdempotencyConflict => error_response(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_CONFLICT",
+            "Use a new idempotency key for a different or legacy request",
+        ),
         SecretError::Conflict => error_response(
             StatusCode::CONFLICT,
             "SECRET_NAME_CONFLICT",
@@ -343,7 +404,7 @@ pub async fn post_secret(
             "value must not be empty",
         );
     }
-    let (wrap, kek_id) = match wrapping_for(&project_id) {
+    let (wrap, kek_id) = match wrapping_for(&state, &project_id) {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -449,7 +510,7 @@ pub async fn get_secret_value_route(
             return quota_failure_response(failure);
         }
     }
-    let (wrap, _) = match wrapping_for(&project_id) {
+    let (wrap, _) = match wrapping_for(&state, &project_id) {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -538,7 +599,11 @@ pub async fn get_secrets(
             limit: query.limit.unwrap_or(50),
         },
     ) {
-        Ok(views) => Json(serde_json::json!({ "secrets": views })).into_response(),
+        Ok(views) => {
+            let revision =
+                crate::scoped_enhancements::scope_revision(&project_id, &environment_id, &views);
+            Json(serde_json::json!({ "secrets": views, "revision": revision })).into_response()
+        }
         Err(err) => secret_error_response(err),
     }
 }
@@ -600,7 +665,7 @@ pub async fn post_secret_move(
         Ok(auth) => auth,
         Err(response) => return *response,
     };
-    let (wrap, kek_id) = match wrapping_for(&project_id) {
+    let (wrap, kek_id) = match wrapping_for(&state, &project_id) {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -680,6 +745,8 @@ pub(crate) struct RotateSecretBody {
     new_value: String,
     idempotency_key: String,
     reason: String,
+    #[serde(default)]
+    verify_provider: bool,
 }
 
 pub async fn post_secret_rotate(
@@ -699,7 +766,7 @@ pub async fn post_secret_rotate(
             "new_value and idempotency_key are required",
         );
     }
-    let (wrap, kek_id) = match wrapping_for(&project_id) {
+    let (wrap, kek_id) = match wrapping_for(&state, &project_id) {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -707,14 +774,31 @@ pub async fn post_secret_rotate(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
-    // Provider liveness checks land in Phase 6 (per-secret-type cloud
-    // probes). Until then rotation stores without a live probe; the
-    // RotationVerifier seam keeps that explicit and testable.
+    // Authorize before exposing whether a provider integration is available.
+    let view = match crate::secrets::resolve_secret(&db, &secret_id) {
+        Ok(view) => view,
+        Err(error) => return secret_error_response(error),
+    };
+    if crate::policy::authorize(
+        &db,
+        &auth.claims,
+        crate::policy::ScopedAction::RotateSecret,
+        &crate::secrets::target_from_view(&view),
+        &auth.attrs,
+    )
+    .is_err()
+    {
+        return scoped_denial_response();
+    }
+    if body.verify_provider {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "PROVIDER_VERIFICATION_UNAVAILABLE",
+            "Provider credential verification is not configured; manual replacement remains available");
+    }
     match rotate_secret(
         &mut db,
         &wrap,
         &kek_id,
-        &NoopVerifier,
+        &ManualReplacementVerifier,
         &auth.claims,
         &auth.attrs,
         &RotateSecret {
@@ -967,6 +1051,10 @@ pub(crate) struct MintTokenBody {
     repository_binding_id: Option<String>,
     service_id: Option<String>,
     branch: Option<String>,
+    /// Human callers must explicitly opt into production elevation. The
+    /// server verifies fresh signing-key/passkey proof; no branch is inferred.
+    #[serde(default)]
+    elevated: bool,
     ttl_seconds: Option<u64>,
     /// Opt-in DPoP-lite binding (T-902): 64-hex ed25519 public key. Bound
     /// tokens require a `DPoP` proof on every use.
@@ -974,8 +1062,8 @@ pub(crate) struct MintTokenBody {
 }
 
 /// Mints a narrow scope token from an account session (no token-exchange
-/// chains in v1). OIDC federation (IdP JWT verification) arrives in Phase 6
-/// once a JWT dependency is available; until then this is the CLI/CI mint.
+/// chains in v1). Branch-bearing workload credentials require a real trusted
+/// identity adapter, which is unavailable in this runtime.
 pub async fn post_scope_token(
     State(state): State<AccountState>,
     headers: HeaderMap,
@@ -992,6 +1080,16 @@ pub async fn post_scope_token(
         Ok(session) => session,
         Err(response) => return response,
     };
+    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
+    if body.branch.is_some() {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "WORKLOAD_ATTESTATION_UNAVAILABLE",
+            "Branch claims require a configured trusted workload identity verifier",
+        );
+    }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
@@ -1036,8 +1134,11 @@ pub async fn post_scope_token(
     ] {
         if let Some(value) = value {
             let exists: bool = match db.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ?1)"),
-                rusqlite::params![value],
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ?1
+                          AND tenant_id = ?2 AND project_id = ?3)"
+                ),
+                rusqlite::params![value, tenant, body.project_id],
                 |row| row.get(0),
             ) {
                 Ok(exists) => exists,
@@ -1048,9 +1149,46 @@ pub async fn post_scope_token(
             }
         }
     }
-    let ttl = body.ttl_seconds.unwrap_or(900).clamp(60, 3600);
     let now = now_utc();
+    let ttl = body
+        .ttl_seconds
+        .unwrap_or(900)
+        .clamp(60, 900)
+        .min(session.expires_at_utc.saturating_sub(now));
+    let Some(source_token) = session_token(&headers) else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "SESSION_REQUIRED",
+            "Account session required",
+        );
+    };
     let mut claims = ScopeClaims::new(&tenant, &body.project_id, &principal_id, now, now + ttl);
+    claims.origin_session_hash = Some(crate::util::hash_token(&source_token));
+    match crate::scope_tokens::scope_origin_active(&db, &claims, now, true) {
+        Ok(true) => {}
+        Ok(false) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "SESSION_INVALID",
+                "Issuer session is no longer active",
+            )
+        }
+        Err(error) => return service_error(error.into()),
+    }
+    if body.elevated {
+        let until = session
+            .issued_at_utc
+            .saturating_add(STEP_UP_MAX_AGE_SECONDS)
+            .min(claims.expires_at_utc);
+        if until <= now {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "AUTHENTICATION_STEP_UP_REQUIRED",
+                "Authenticate again before requesting production elevation",
+            );
+        }
+        claims.elevated_until_utc = Some(until);
+    }
     if let Some(env) = body.environment_id.as_deref() {
         claims = claims.with_environment(env);
     }
@@ -1060,15 +1198,43 @@ pub async fn post_scope_token(
     if let Some(service) = body.service_id.as_deref() {
         claims = claims.with_service(service);
     }
-    if let Some(branch) = body.branch.as_deref() {
-        claims = claims.with_branch(branch);
-    }
     if let Some(bind) = body.bind_pubkey_ed25519_hex.as_deref() {
         match crate::dpop::validate_binding_key(bind) {
             Ok(normalized) => claims = claims.with_cnf(&normalized),
             Err(detail) => {
                 return error_response(StatusCode::BAD_REQUEST, "INVALID_SECRET_REQUEST", detail);
             }
+        }
+    }
+    if let Some(environment) = body.environment_id.as_deref() {
+        let tier: i64 = match db.query_row(
+            "SELECT tier FROM environments WHERE environment_id = ?1",
+            [environment],
+            |row| row.get(0),
+        ) {
+            Ok(tier) => tier,
+            Err(error) => return service_error(error.into()),
+        };
+        if tier >= 2 && claims.elevated_until_utc.is_none() {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "PRODUCTION_ELEVATION_REQUIRED",
+                "Request explicit elevation after fresh signing-key or passkey authentication",
+            );
+        }
+    }
+    if let Some(binding) = body.repository_binding_id.as_deref() {
+        let active: bool = match db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repository_bindings
+            WHERE binding_id = ?1 AND status = 'active' AND ownership_verified_at_utc IS NOT NULL)",
+            [binding],
+            |row| row.get(0),
+        ) {
+            Ok(active) => active,
+            Err(error) => return service_error(error.into()),
+        };
+        if !active {
+            return scoped_denial_response();
         }
     }
     let key = match scope_token_signing_key() {
@@ -1099,6 +1265,7 @@ pub async fn post_scope_token(
         "jti": claims.jti,
         "expires_in": ttl,
         "bound": claims.cnf.is_some(),
+        "elevated_until_utc": claims.elevated_until_utc,
     })
     .to_string();
     if let Err(error) = audit_secret_event(
@@ -1151,12 +1318,12 @@ pub async fn delete_scope_token(
             "Scope tokens cannot manage revocation",
         );
     }
-    if authenticated_session(&state, &headers).is_err() {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "SESSION_REQUIRED",
-            "Account session required",
-        );
+    let session = match authenticated_session(&state, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
+        return *response;
     }
     if body.jti.trim().is_empty() {
         return error_response(
@@ -1394,7 +1561,7 @@ pub async fn get_project(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
-    let view = match show_project(
+    let mut view = match show_project(
         &db,
         &auth.principal_id,
         &project_ref,
@@ -1408,6 +1575,10 @@ pub async fn get_project(
         if view.project_id != own {
             return scoped_denial_response();
         }
+    }
+    if let Some(environment) = auth.environment_id.as_deref() {
+        view.environments
+            .retain(|entry| entry.environment_id == environment);
     }
     Json(view).into_response()
 }
@@ -1436,6 +1607,11 @@ fn vcs_error_response(err: VcsError) -> Response {
             StatusCode::SERVICE_UNAVAILABLE,
             "VCS_WEBHOOK_UNCONFIGURED",
             "VCS webhook signing key is not configured",
+        ),
+        VcsError::ProviderUnavailable => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "VCS_PROVIDER_UNAVAILABLE",
+            "Repository ownership verification requires a configured provider client",
         ),
         VcsError::Provider(_) => error_response(
             StatusCode::BAD_GATEWAY,
@@ -1595,7 +1771,7 @@ pub async fn post_repository_prove(
         );
     }
     // Fail-closed seam: no provider API client is wired yet, so proof
-    // returns 502 until a real client replaces NoProviderClient.
+    // returns 503 until a real client replaces NoProviderClient.
     match prove_ownership(
         &db,
         &auth.claims,
@@ -2303,11 +2479,13 @@ mod tests {
             )
             .unwrap();
         }
+        // Project-wide membership changes use a separate administration token.
+        let management = mint(&tenant, &project, None, "account:alice");
         let (status, member) = call(
             app.clone(),
             "POST",
             &format!("/v1/projects/{project}/members"),
-            Some(&admin),
+            Some(&management),
             Some(serde_json::json!({ "principal_id": "account:carol", "role": "operator" })),
         )
         .await;
@@ -2317,7 +2495,7 @@ mod tests {
             app.clone(),
             "DELETE",
             &format!("/v1/projects/{project}/members?principal_id=account:carol"),
-            Some(&admin),
+            Some(&management),
             None,
         )
         .await;
@@ -2348,8 +2526,8 @@ mod tests {
             db.execute(
                 "INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc,
                                       expires_at_utc)
-                 VALUES(?1, 'acct-alice', 'device', 1, 9999999999)",
-                rusqlite::params![hash_token("session-token-alice")],
+                 VALUES(?1, 'acct-alice', 'device', ?2, 9999999999)",
+                rusqlite::params![hash_token("session-token-alice"), now_utc()],
             )
             .unwrap();
             (tenant, fixture.project, fixture.env)
@@ -2530,7 +2708,8 @@ mod tests {
             .unwrap();
             (tenant, fixture.project, fixture.env)
         };
-        let admin = mint(&tenant, &project, Some(&env), "account:alice");
+        let admin = mint(&tenant, &project, None, "account:alice");
+        let environment_token = mint(&tenant, &project, Some(&env), "account:alice");
         let dev = mint(&tenant, &project, Some(&env), "account:bob");
         let digest_hex = "07".repeat(32);
 
@@ -2606,7 +2785,7 @@ mod tests {
             app.clone(),
             "POST",
             &format!("/v1/projects/{project}/environments/{env}/secrets"),
-            Some(&admin),
+            Some(&environment_token),
             Some(serde_json::json!({ "name": "MIG_KEY", "value": "v" })),
         )
         .await;
@@ -2731,7 +2910,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(listed["bindings"].as_array().unwrap().len(), 1);
 
-        // Prove hits the fail-closed provider seam (502, never a false accept).
+        // Unconfigured provider verification is explicit and never falsely accepts.
         let (status, prove) = call(
             app.clone(),
             "POST",
@@ -2743,8 +2922,8 @@ mod tests {
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY);
-        assert_eq!(prove["code"], "VCS_PROVIDER_ERROR");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(prove["code"], "VCS_PROVIDER_UNAVAILABLE");
 
         // Suspend (default mode) is idempotent; secrets kept.
         let (status, view) = call(
@@ -2965,8 +3144,8 @@ mod tests {
             db.execute(
                 "INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc,
                                       expires_at_utc)
-                 VALUES(?1, 'acct-alice', 'device', 1, 9999999999)",
-                rusqlite::params![hash_token("session-token-alice")],
+                 VALUES(?1, 'acct-alice', 'device', ?2, 9999999999)",
+                rusqlite::params![hash_token("session-token-alice"), now_utc()],
             )
             .unwrap();
             (tenant, shop.project, blog.project)
@@ -3220,14 +3399,23 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         let uri = format!("/v1/projects/{project}/environments/{env}/secrets/K");
 
-        // Exhaust the read-value bucket directly (fast, deterministic, no
-        // env-var races under parallel tests); the route must then 429.
-        {
+        // Seed the exhausted quota in one durable write. Repeated reservations
+        // can take longer than the real 60-second window on slow CI disks and
+        // correctly roll over before the HTTP assertion. The quota unit tests
+        // cover reservation counts, exact rollover, and concurrent connections;
+        // this fixture checks HTTP enforcement and headers.
+        let exhaust_bucket = |bucket: &crate::abuse::QuotaBucket| {
             let db = state.connection().unwrap();
-            for _ in 0..READ_VALUE_BUCKET.max_requests {
-                let _ = check_quota(&db, &READ_VALUE_BUCKET, &tenant, "account:alice", now_utc());
-            }
-        }
+            let now = now_utc();
+            db.execute(
+                "INSERT INTO abuse_quotas(quota_key, window_started_at_utc, count, updated_at_utc)
+                 VALUES(?1, ?2, ?3, ?2)
+                 ON CONFLICT(quota_key) DO UPDATE SET window_started_at_utc = excluded.window_started_at_utc,
+                     count = excluded.count, updated_at_utc = excluded.updated_at_utc",
+                rusqlite::params![format!("{}:{tenant}:account:alice", bucket.name), now, bucket.max_requests],
+            ).unwrap();
+        };
+        exhaust_bucket(&READ_VALUE_BUCKET);
         let request = Request::get(uri.as_str())
             .header("authorization", format!("Bearer {token}"))
             .body(Body::empty())
@@ -3255,12 +3443,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         // Exhaust the API bucket: every scoped call 429s.
-        {
-            let db = state.connection().unwrap();
-            for _ in 0..API_BUCKET.max_requests {
-                let _ = check_quota(&db, &API_BUCKET, &tenant, "account:alice", now_utc());
-            }
-        }
+        exhaust_bucket(&API_BUCKET);
         let (status, _) = call(app.clone(), "GET", &uri, Some(&token), None).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         cleanup(root);
@@ -3366,8 +3549,8 @@ mod tests {
             db.execute(
                 "INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc,
                                       expires_at_utc)
-                 VALUES(?1, 'acct-alice', 'device', 1, 9999999999)",
-                rusqlite::params![hash_token("session-token-alice")],
+                 VALUES(?1, 'acct-alice', 'device', ?2, 9999999999)",
+                rusqlite::params![hash_token("session-token-alice"), now_utc()],
             )
             .unwrap();
             (tenant, fixture.project)
@@ -3580,8 +3763,8 @@ mod tests {
             db.execute(
                 "INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc,
                                       expires_at_utc)
-                 VALUES(?1, 'erin', 'device', 1, 9999999999)",
-                rusqlite::params![hash_token("session-token-erin")],
+                 VALUES(?1, 'erin', 'device', ?2, 9999999999)",
+                rusqlite::params![hash_token("session-token-erin"), now_utc()],
             )
             .unwrap();
             (tenant, fixture.project)
@@ -3751,6 +3934,720 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        cleanup(root);
+    }
+    fn seed_human_session(db: &rusqlite::Connection, method: &str, issued_at: u64) {
+        db.execute(
+            "INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc)
+            VALUES('acct-alice', 'Alice', 'aa', 1) ON CONFLICT DO NOTHING",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc, expires_at_utc)
+            VALUES(?1, 'acct-alice', ?2, ?3, ?4)",
+            rusqlite::params![hash_token(method), method, issued_at, now_utc() + 1800]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn token_issuance_rejects_recovery_stale_totp_and_self_declared_branch() {
+        test_env();
+        let (root, state, app) = test_app("mint-strength");
+        let fixture = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(
+                &db,
+                &tenant,
+                "scope",
+                "account:acct-alice",
+                ProjectRole::Admin,
+            );
+            for method in ["recovery", "totp", "device", "webauthn"] {
+                seed_human_session(&db, method, now_utc());
+            }
+            fixture
+        };
+        for method in ["recovery", "totp"] {
+            let (status, _) = call(
+                app.clone(),
+                "POST",
+                "/v1/scope-tokens",
+                Some(method),
+                Some(serde_json::json!({"project_id": fixture.project})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method}");
+        }
+        let (status, error) = call(app.clone(), "POST", "/v1/scope-tokens", Some("device"),
+            Some(serde_json::json!({"project_id": fixture.project, "environment_id": fixture.env, "branch": "main"}))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error["code"], "WORKLOAD_ATTESTATION_UNAVAILABLE");
+        {
+            let db = state.connection().unwrap();
+            db.execute(
+                "UPDATE sessions SET issued_at_utc = ?1 WHERE token_hash_hex = ?2",
+                rusqlite::params![
+                    now_utc() - STEP_UP_MAX_AGE_SECONDS - 1,
+                    hash_token("device")
+                ],
+            )
+            .unwrap();
+        }
+        let (status, body) = call(
+            app.clone(),
+            "POST",
+            "/v1/scope-tokens",
+            Some("device"),
+            Some(serde_json::json!({"project_id": fixture.project})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "AUTHENTICATION_STEP_UP_REQUIRED");
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn recent_human_elevation_works_and_source_revocation_invalidates_token() {
+        test_env();
+        let (root, state, app) = test_app("mint-human-production");
+        let fixture = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(
+                &db,
+                &tenant,
+                "prod",
+                "account:acct-alice",
+                ProjectRole::Admin,
+            );
+            db.execute(
+                "UPDATE environments SET tier = 2 WHERE environment_id = ?1",
+                [&fixture.env],
+            )
+            .unwrap();
+            seed_human_session(&db, "device", now_utc());
+            seed_human_session(&db, "webauthn", now_utc());
+            fixture
+        };
+        for method in ["device", "webauthn"] {
+            let body =
+                serde_json::json!({"project_id": fixture.project, "environment_id": fixture.env});
+            let (status, response) = call(
+                app.clone(),
+                "POST",
+                "/v1/scope-tokens",
+                Some(method),
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(response["code"], "PRODUCTION_ELEVATION_REQUIRED");
+            let mut body = body;
+            body["elevated"] = true.into();
+            let (status, minted) = call(
+                app.clone(),
+                "POST",
+                "/v1/scope-tokens",
+                Some(method),
+                Some(body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let token = minted["token"].as_str().unwrap();
+            let claims = verify_scope_token(&TEST_SIGNING_KEY, token, now_utc()).unwrap();
+            assert_eq!(claims.origin_session_hash, Some(hash_token(method)));
+            assert!(claims.branch.is_none());
+            assert!(claims.elevated_until_utc.unwrap() <= now_utc() + STEP_UP_MAX_AGE_SECONDS);
+            let uri = format!(
+                "/v1/projects/{}/environments/{}/secrets",
+                fixture.project, fixture.env
+            );
+            let (status, _) = call(app.clone(), "POST", &uri, Some(token),
+                Some(serde_json::json!({"name": format!("KEY_{}", method.to_uppercase()), "value": "synthetic"}))).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, _) = call(
+                app.clone(),
+                "POST",
+                "/v1/sessions/revoke",
+                Some(method),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let (status, _) = call(
+                app.clone(),
+                "GET",
+                &format!(
+                    "/v1/projects/{}/secrets?environment={}",
+                    fixture.project, fixture.env
+                ),
+                Some(token),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn narrowed_admin_tokens_fail_all_project_administration_routes() {
+        test_env();
+        let (root, state, app) = test_app("narrow-admin-routes");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "admin", "account:alice", ProjectRole::Admin);
+            (tenant, fixture)
+        };
+        let broad = ScopeClaims::new(
+            &tenant,
+            &fixture.project,
+            "account:alice",
+            now_utc(),
+            now_utc() + 300,
+        );
+        for claims in [
+            broad.clone().with_environment(&fixture.env),
+            broad.clone().with_repository_binding("binding"),
+            broad.clone().with_service("service"),
+        ] {
+            let token = mint_scope_token(&TEST_SIGNING_KEY, &claims).unwrap();
+            let pid = &fixture.project;
+            let cases = [
+                (
+                    "POST",
+                    format!("/v1/projects/{pid}/members"),
+                    Some(serde_json::json!({"principal_id":"account:new", "role":"developer"})),
+                ),
+                (
+                    "DELETE",
+                    format!("/v1/projects/{pid}/members?principal_id=account:alice"),
+                    None,
+                ),
+                ("GET", format!("/v1/projects/{pid}/members/requests"), None),
+                (
+                    "POST",
+                    format!("/v1/projects/{pid}/members/requests/unknown/decision"),
+                    Some(serde_json::json!({"approve":true})),
+                ),
+                (
+                    "POST",
+                    format!("/v1/projects/{pid}/invites"),
+                    Some(serde_json::json!({"role":"developer"})),
+                ),
+                ("GET", format!("/v1/projects/{pid}/invites"), None),
+                (
+                    "DELETE",
+                    format!("/v1/projects/{pid}/invites/unknown"),
+                    None,
+                ),
+                ("GET", format!("/v1/projects/{pid}/repositories"), None),
+                (
+                    "POST",
+                    format!("/v1/projects/{pid}/repositories"),
+                    Some(
+                        serde_json::json!({"provider":"github", "external_repo_id":"7", "repo_full_name":"org/repo", "repo_url":"https://github.com/org/repo", "installation_id":"1"}),
+                    ),
+                ),
+                ("GET", format!("/v1/projects/{pid}/migrations"), None),
+                (
+                    "POST",
+                    format!("/v1/projects/{pid}/migrations"),
+                    Some(
+                        serde_json::json!({"source_vault_id":"v1", "source_snapshot_hex":"ab".repeat(32)}),
+                    ),
+                ),
+            ];
+            for (method, uri, body) in cases {
+                let (status, _) = call(app.clone(), method, &uri, Some(&token), body).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+            }
+        }
+        let db = state.connection().unwrap();
+        assert_eq!(
+            project_role_of(&db, &fixture.project, "account:alice").unwrap(),
+            Some(ProjectRole::Admin)
+        );
+        assert!(project_role_of(&db, &fixture.project, "account:new")
+            .unwrap()
+            .is_none());
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn challenge_issuance_is_bounded_without_failed_authentication() {
+        test_env();
+        let (root, state, app) = test_app("challenge-quota");
+        let account = format!("cvacct_{}", "a1".repeat(16));
+        {
+            let db = state.connection().unwrap();
+            db.execute("INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc)
+                VALUES(?1, 'Test', ?2, 1)", rusqlite::params![account, "a1".repeat(32)]).unwrap();
+        }
+        for _ in 0..30 {
+            let (status, _) = call(
+                app.clone(),
+                "POST",
+                "/v1/sessions/challenge",
+                None,
+                Some(serde_json::json!({"account_id":account})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        // Switching to enrollment cannot reset the shared account budget.
+        let (status, response) = call(app.clone(), "POST", &format!("/v1/accounts/{account}/devices/challenge"), None,
+            Some(serde_json::json!({"device_id_hex":"22".repeat(32), "public_key_hex":"33".repeat(32)}))).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response["code"], "QUOTA_EXCEEDED");
+        let db = state.connection().unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM challenges", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 30);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn handoff_preserves_authentication_age_and_expiry() {
+        test_env();
+        let (root, state, app) = test_app("handoff-step-up");
+        let fixture = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(
+                &db,
+                &tenant,
+                "handoff",
+                "account:acct-alice",
+                ProjectRole::Admin,
+            );
+            seed_human_session(&db, "device", now_utc() - STEP_UP_MAX_AGE_SECONDS - 60);
+            fixture
+        };
+        let (status, handoff) = call(
+            app.clone(),
+            "POST",
+            "/v1/sessions/handoff",
+            Some("device"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, consumed) = call(
+            app.clone(),
+            "POST",
+            "/v1/sessions/handoff/consume",
+            None,
+            Some(serde_json::json!({"handoff_code":handoff["handoff_code"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            consumed["session"]["issued_at_utc"].as_u64().unwrap()
+                < now_utc() - STEP_UP_MAX_AGE_SECONDS
+        );
+        let (status, _) = call(
+            app.clone(),
+            "POST",
+            "/v1/scope-tokens",
+            consumed["token"].as_str(),
+            Some(serde_json::json!({"project_id":fixture.project})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        cleanup(root);
+    }
+    #[tokio::test]
+    async fn legacy_self_declared_main_token_does_not_unlock_production() {
+        test_env();
+        let (root, state, app) = test_app("legacy-main-denied");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "prod", "account:alice", ProjectRole::Admin);
+            db.execute(
+                "UPDATE environments SET tier = 2 WHERE environment_id = ?1",
+                [&fixture.env],
+            )
+            .unwrap();
+            (tenant, fixture)
+        };
+        let mut claims = ScopeClaims::new(
+            &tenant,
+            &fixture.project,
+            "account:alice",
+            now_utc(),
+            now_utc() + 600,
+        )
+        .with_environment(&fixture.env);
+        claims.branch = Some("main".into());
+        let token = mint_scope_token(&TEST_SIGNING_KEY, &claims).unwrap();
+        let (status, _) = call(
+            app.clone(),
+            "GET",
+            &format!(
+                "/v1/projects/{}/secrets?environment={}",
+                fixture.project, fixture.env
+            ),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn source_device_revocation_invalidates_issued_scope_credential() {
+        test_env();
+        let (root, state, app) = test_app("source-device-revoke");
+        let fixture = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(
+                &db,
+                &tenant,
+                "scope",
+                "account:acct-alice",
+                ProjectRole::Admin,
+            );
+            seed_human_session(&db, "device", now_utc());
+            db.execute("INSERT INTO devices(account_id, device_id_hex, public_key_hex, label, enrolled_at_utc)
+                VALUES('acct-alice', 'test-device', 'pubkey', 'Test', 1)", []).unwrap();
+            db.execute(
+                "UPDATE sessions SET device_id_hex = 'test-device' WHERE token_hash_hex = ?1",
+                [hash_token("device")],
+            )
+            .unwrap();
+            fixture
+        };
+        let (status, minted) = call(
+            app.clone(),
+            "POST",
+            "/v1/scope-tokens",
+            Some("device"),
+            Some(serde_json::json!({"project_id":fixture.project,"environment_id":fixture.env})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        {
+            let db = state.connection().unwrap();
+            db.execute("UPDATE devices SET revoked_at_utc = ?1", [now_utc()])
+                .unwrap();
+        }
+        let (status, _) = call(
+            app.clone(),
+            "GET",
+            &format!(
+                "/v1/projects/{}/secrets?environment={}",
+                fixture.project, fixture.env
+            ),
+            minted["token"].as_str(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn batch_route_accepts_listing_revision_and_exposes_manual_rotation_status() {
+        test_env();
+        let (root, state, app) = test_app("batch-http");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "batch", "account:alice", ProjectRole::Admin);
+            (tenant, fixture)
+        };
+        let token = mint(
+            &tenant,
+            &fixture.project,
+            Some(&fixture.env),
+            "account:alice",
+        );
+        let (status, secret) = call(
+            app.clone(),
+            "POST",
+            &format!(
+                "/v1/projects/{}/environments/{}/secrets",
+                fixture.project, fixture.env
+            ),
+            Some(&token),
+            Some(serde_json::json!({"name":"KEY", "value":"synthetic"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, list) = call(
+            app.clone(),
+            "GET",
+            &format!(
+                "/v1/projects/{}/secrets?environment={}",
+                fixture.project, fixture.env
+            ),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let uri = format!(
+            "/v1/projects/{}/environments/{}/materialize",
+            fixture.project, fixture.env
+        );
+        let (status, batch) = call(
+            app.clone(),
+            "POST",
+            &uri,
+            Some(&token),
+            Some(serde_json::json!({"names":["KEY"],"expected_revision":list["revision"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(batch["revision"], list["revision"]);
+        assert_eq!(batch["values"][0]["value"], "synthetic");
+        let rotate_uri = format!(
+            "/v1/projects/{}/secrets/{}/rotate",
+            fixture.project,
+            secret["secret_id"].as_str().unwrap()
+        );
+        let (status, unavailable) = call(app.clone(), "POST", &rotate_uri, Some(&token),
+            Some(serde_json::json!({"new_value":"new", "reason":"provider check", "idempotency_key":"provider", "verify_provider":true}))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(unavailable["code"], "PROVIDER_VERIFICATION_UNAVAILABLE");
+        let (status, outcome) = call(app.clone(), "POST", &rotate_uri, Some(&token),
+            Some(serde_json::json!({"new_value":"new", "reason":"manual", "idempotency_key":"manual"}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(outcome["provider_verified"], false);
+        let (status, stale) = call(
+            app.clone(),
+            "POST",
+            &uri,
+            Some(&token),
+            Some(serde_json::json!({"names":["KEY"],"expected_revision":list["revision"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(stale["code"], "SCOPE_REVISION_CHANGED");
+        cleanup(root);
+    }
+    #[tokio::test]
+    async fn recovery_enrollment_device_proof_login_then_scoped_issuance() {
+        use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
+        test_env();
+        let (root, state, app) = test_app("recovery-device-login-mint");
+        let lost_root = generate_signing_key();
+        let (status, account) = call(app.clone(), "POST", "/v1/accounts", None,
+            Some(serde_json::json!({"display_name":"Recovering", "account_public_key_hex":hex::encode(lost_root.verifying_key().as_bytes())}))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let account_id = account["account_id"].as_str().unwrap();
+        let code = format!("cvrc_{}", "55".repeat(16));
+        let fixture = {
+            let db = state.connection().unwrap();
+            db.execute("INSERT INTO recovery_codes(account_id, code_hash_hex, created_at_utc) VALUES(?1, ?2, ?3)",
+                rusqlite::params![account_id, hash_token(&code), now_utc()]).unwrap();
+            let tenant = seed_org(&db);
+            seed_project(
+                &db,
+                &tenant,
+                "recovered",
+                &format!("account:{account_id}"),
+                ProjectRole::Admin,
+            )
+        };
+        let (status, recovery) = call(
+            app.clone(),
+            "POST",
+            "/v1/recovery/redeem",
+            None,
+            Some(serde_json::json!({"account_id":account_id,"code":code})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let recovery_token = recovery["token"].as_str().unwrap();
+        let (status, _) = call(
+            app.clone(),
+            "POST",
+            "/v1/scope-tokens",
+            Some(recovery_token),
+            Some(serde_json::json!({"project_id":fixture.project, "environment_id":fixture.env})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let new_device = generate_signing_key();
+        let device_id = "66".repeat(32);
+        let public_key = hex::encode(new_device.verifying_key().as_bytes());
+        let (status, challenge) = call(
+            app.clone(),
+            "POST",
+            &format!("/v1/accounts/{account_id}/devices/challenge"),
+            None,
+            Some(serde_json::json!({"device_id_hex":device_id,"public_key_hex":public_key})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let proof = sign_with_domain(
+            &new_device,
+            b"account_device_enrollment",
+            &crate::util::challenge_signing_bytes(
+                account_id,
+                Some(&device_id),
+                Some(&public_key),
+                challenge["challenge_id"].as_str().unwrap(),
+                challenge["nonce_hex"].as_str().unwrap(),
+            ),
+        );
+        let (status, _) = call(
+            app.clone(),
+            "POST",
+            &format!("/v1/accounts/{account_id}/devices"),
+            Some(recovery_token),
+            Some(
+                serde_json::json!({"device_id_hex":device_id,"public_key_hex":public_key,
+                "challenge_id":challenge["challenge_id"],"proof_signature_hex":hex::encode(proof)}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        // Recovery remains restricted. A separate device-key proof establishes
+        // fresh signing-key authentication, without needing the account root.
+        let (status, challenge) = call(
+            app.clone(),
+            "POST",
+            "/v1/sessions/challenge",
+            None,
+            Some(serde_json::json!({"account_id":account_id,"device_id_hex":device_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let proof = sign_with_domain(
+            &new_device,
+            b"account_login",
+            &crate::util::challenge_signing_bytes(
+                account_id,
+                Some(&device_id),
+                None,
+                challenge["challenge_id"].as_str().unwrap(),
+                challenge["nonce_hex"].as_str().unwrap(),
+            ),
+        );
+        let (status, login) = call(app.clone(), "POST", "/v1/sessions", None,
+            Some(serde_json::json!({"challenge_id":challenge["challenge_id"],"signature_hex":hex::encode(proof)}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(login["session"]["auth_method"], "device");
+        assert_eq!(login["session"]["device_id_hex"], device_id);
+        let (status, issued) = call(
+            app.clone(),
+            "POST",
+            "/v1/scope-tokens",
+            login["token"].as_str(),
+            Some(serde_json::json!({"project_id":fixture.project, "environment_id":fixture.env})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(app.clone(), "POST", "/v1/sessions", None,
+            Some(serde_json::json!({"challenge_id":challenge["challenge_id"],"signature_hex":hex::encode(proof)}))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // Changing the enrolled key under the same identity invalidates all
+        // credentials whose proof was established under its previous key.
+        let replacement = generate_signing_key();
+        let replacement_public = hex::encode(replacement.verifying_key().as_bytes());
+        let (status, challenge) = call(
+            app.clone(),
+            "POST",
+            &format!("/v1/accounts/{account_id}/devices/challenge"),
+            None,
+            Some(
+                serde_json::json!({"device_id_hex":device_id,"public_key_hex":replacement_public}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let proof = sign_with_domain(
+            &lost_root,
+            b"account_device_enrollment",
+            &crate::util::challenge_signing_bytes(
+                account_id,
+                Some(&device_id),
+                Some(&replacement_public),
+                challenge["challenge_id"].as_str().unwrap(),
+                challenge["nonce_hex"].as_str().unwrap(),
+            ),
+        );
+        let (status, _) = call(
+            app.clone(),
+            "POST",
+            &format!("/v1/accounts/{account_id}/devices"),
+            None,
+            Some(
+                serde_json::json!({"device_id_hex":device_id,"public_key_hex":replacement_public,
+                "challenge_id":challenge["challenge_id"],"proof_signature_hex":hex::encode(proof)}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = call(
+            app.clone(),
+            "GET",
+            &format!(
+                "/v1/projects/{}/secrets?environment={}",
+                fixture.project, fixture.env
+            ),
+            issued["token"].as_str(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn weak_or_stale_sessions_cannot_change_recovery_or_credentials() {
+        test_env();
+        let (root, state, app) = test_app("account-security-step-up");
+        let account_id = format!("cvacct_{}", "77".repeat(16));
+        {
+            let db = state.connection().unwrap();
+            db.execute("INSERT INTO accounts(account_id, display_name, account_public_key_hex, created_at_utc)
+                VALUES(?1, 'Test', ?2, 1)", rusqlite::params![account_id, "88".repeat(32)]).unwrap();
+            for (token, method, age) in [
+                ("weak", "totp", 0),
+                ("stale", "device", STEP_UP_MAX_AGE_SECONDS + 60),
+                ("recovery", "recovery", 0),
+            ] {
+                db.execute("INSERT INTO sessions(token_hash_hex, account_id, session_kind, issued_at_utc, expires_at_utc)
+                    VALUES(?1, ?2, ?3, ?4, ?5)", rusqlite::params![hash_token(token), account_id, method, now_utc() - age, now_utc() + 900]).unwrap();
+            }
+        }
+        for token in ["weak", "stale", "recovery"] {
+            let cases = [
+                (
+                    format!("/v1/accounts/{account_id}/recovery/codes"),
+                    Some(serde_json::json!({"count":4})),
+                ),
+                (
+                    format!(
+                        "/v1/accounts/{account_id}/devices/{}/revoke",
+                        "99".repeat(32)
+                    ),
+                    None,
+                ),
+                (
+                    format!("/v1/accounts/{account_id}/webauthn/credentials/aa/revoke"),
+                    None,
+                ),
+                (
+                    format!("/v1/accounts/{account_id}/webauthn/registration/options"),
+                    None,
+                ),
+                (format!("/v1/accounts/{account_id}/totp/enrollment"), None),
+            ];
+            for (uri, body) in cases {
+                let (status, _) = call(app.clone(), "POST", &uri, Some(token), body).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{token}: {uri}");
+            }
+        }
         cleanup(root);
     }
 }

@@ -15,7 +15,7 @@ fn issued_challenge_survives_restart() {
     let vault_id_hex = hex::encode([7u8; 32]);
 
     let (challenge_id, nonce_hex, _) = {
-        let state = OperatorState::new(
+        let state = legacy_state(
             "challenge-restart".into(),
             root.clone(),
             generate_signing_key(),
@@ -31,7 +31,7 @@ fn issued_challenge_survives_restart() {
         b"operator_challenge",
         &hex::decode(&nonce_hex).unwrap(),
     );
-    let reopened = OperatorState::new(
+    let reopened = legacy_state(
         "challenge-restart".into(),
         root.clone(),
         generate_signing_key(),
@@ -53,7 +53,7 @@ fn consumed_challenge_does_not_come_back_after_restart() {
     let device_pk_hex = hex::encode(device_key.verifying_key().as_bytes());
     let vault_id_hex = hex::encode([9u8; 32]);
 
-    let state = OperatorState::new(
+    let state = legacy_state(
         "challenge-consume".into(),
         root.clone(),
         generate_signing_key(),
@@ -72,7 +72,7 @@ fn consumed_challenge_does_not_come_back_after_restart() {
         .expect("first verification succeeds");
     drop(state);
 
-    let reopened = OperatorState::new(
+    let reopened = legacy_state(
         "challenge-consume".into(),
         root.clone(),
         generate_signing_key(),
@@ -85,4 +85,18 @@ fn consumed_challenge_does_not_come_back_after_restart() {
         "single-use challenge must not verify twice across a restart"
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

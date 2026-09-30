@@ -21,7 +21,7 @@ pub(crate) const FASTCDC_MAX_RESULT_CHUNKS: usize = 512;
 pub(crate) const FASTCDC_MAX_CHUNK_SIZE: usize = 1024 * 1024;
 
 pub(crate) fn fastcdc_workspace_root() -> std::result::Result<PathBuf, String> {
-    std::env::current_dir()
+    crate::util::get_workspace_root()
         .map_err(|_| "Unable to determine the local workspace root.".to_string())?
         .canonicalize()
         .map_err(|_| "Unable to resolve the local workspace root.".to_string())

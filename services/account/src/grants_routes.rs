@@ -217,6 +217,9 @@ pub async fn accept_invite_route(
         Ok(session) => session,
         Err(response) => return response,
     };
+    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),

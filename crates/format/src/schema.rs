@@ -7,6 +7,8 @@ use ciphervault_crypto::{HardwareSecurityModule, HsmSlot};
 use ed25519_dalek::SigningKey;
 
 pub const PROTOCOL_VERSION: u32 = 1;
+/// Independently versioned chunk-wire encryption/addressing protocol.
+pub const CHUNK_WIRE_VERSION_V2: u32 = 2;
 
 /// Genesis record establishing a new vault.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -134,6 +136,18 @@ impl EpochEnvelope {
         Ok(())
     }
 
+    pub fn sign_with_hsm(
+        &mut self,
+        hsm: &dyn HardwareSecurityModule,
+        slot: HsmSlot,
+    ) -> Result<(), FormatError> {
+        self.signature = hsm
+            .sign_message(slot, b"epoch_envelope", &self.unsigned_bytes()?)
+            .map_err(FormatError::CryptoError)?
+            .to_vec();
+        Ok(())
+    }
+
     pub fn verify(&self, device_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
         if self.signature.len() != 64 {
             return Err(FormatError::MalformedRecord(
@@ -186,7 +200,7 @@ impl ChunkWireObject {
 }
 
 /// Confidential file entry inside the encrypted manifest.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct ManifestFileEntry {
     #[serde(with = "serde_bytes")]
     pub file_id: Vec<u8>,
@@ -201,6 +215,26 @@ pub struct ManifestFileEntry {
     pub file_version_key: Vec<u8>,
     pub chunk_cids: Vec<Vec<u8>>,
     pub is_deleted: bool,
+}
+
+impl Drop for ManifestFileEntry {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.file_version_key.zeroize();
+    }
+}
+
+impl std::fmt::Debug for ManifestFileEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManifestFileEntry")
+            .field("relative_path", &self.relative_path)
+            .field("raw_length", &self.raw_length)
+            .field("padded_length", &self.padded_length)
+            .field("file_version_key", &"[REDACTED]")
+            .field("chunk_cids", &self.chunk_cids)
+            .field("is_deleted", &self.is_deleted)
+            .finish()
+    }
 }
 
 /// Snapshot manifest listing all files and chunk keys.

@@ -8,6 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   validate-developer-suite:
@@ -34,7 +37,7 @@ jobs:
             ${{ runner.os }}-cargo-dev-suite-
 
       - name: Compile CipherVault CLI
-        run: cargo build -p ciphervault-cli --release
+        run: cargo build -p ciphervault-cli --release --locked
 
       - name: Add CipherVault to PATH
         run: echo "$(pwd)/target/release" >> $GITHUB_PATH

@@ -15,21 +15,77 @@ pub(crate) const DB_FILE: &str = "vault.db";
 pub(crate) const OPERATORS_FILE: &str = "operators.json";
 pub(crate) const RECOVERY_FILE: &str = "recovery_kit_backup.txt";
 
-static ACTIVE_VAULT_PATH: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+/// Tests that alter process environment/session state share one serializer.
+#[cfg(test)]
+pub(crate) static TEST_PROCESS_STATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-pub fn set_active_vault_path(path: Option<PathBuf>) {
-    if let Ok(mut guard) = ACTIVE_VAULT_PATH.write() {
-        *guard = path;
+/// An immutable workspace selection shared by all operations in one request.
+/// Browser tabs select independently; unscoped CLI calls use their working directory.
+#[derive(Clone, Debug)]
+pub(crate) struct VaultContext {
+    pub db_path: PathBuf,
+    pub root_dir: PathBuf,
+}
+
+tokio::task_local! {
+    pub(crate) static REQUEST_VAULT_CONTEXT: VaultContext;
+}
+
+impl VaultContext {
+    pub(crate) fn from_db_path(path: impl AsRef<Path>) -> Result<Self> {
+        let db_path = path
+            .as_ref()
+            .canonicalize()
+            .context("Cannot resolve workspace database")?;
+        let vault_dir = db_path
+            .parent()
+            .context("Workspace database has no parent directory")?;
+        if db_path.file_name().and_then(|name| name.to_str()) != Some(DB_FILE)
+            || vault_dir.file_name().and_then(|name| name.to_str()) != Some(VAULT_DIR)
+        {
+            bail!("Workspace database must be at <workspace>/.ciphervault/vault.db");
+        }
+        let root_dir = vault_dir
+            .parent()
+            .context("Workspace has no root directory")?
+            .to_path_buf();
+        Ok(Self { db_path, root_dir })
     }
 }
 
 pub fn get_active_vault_path() -> PathBuf {
-    if let Ok(guard) = ACTIVE_VAULT_PATH.read() {
-        if let Some(ref p) = *guard {
-            return p.clone();
-        }
+    if let Ok(path) = REQUEST_VAULT_CONTEXT.try_with(|context| context.db_path.clone()) {
+        return path;
     }
     Path::new(VAULT_DIR).join(DB_FILE)
+}
+
+pub(crate) fn get_workspace_root() -> Result<PathBuf> {
+    if let Ok(root) = REQUEST_VAULT_CONTEXT.try_with(|context| context.root_dir.clone()) {
+        return Ok(root);
+    }
+    let db_path = get_active_vault_path();
+    let absolute = if db_path.is_absolute() {
+        db_path
+    } else {
+        std::env::current_dir()?.join(db_path)
+    };
+    let parent = absolute
+        .parent()
+        .context("Vault database has no parent directory")?;
+    let root = if parent.file_name().and_then(|name| name.to_str()) == Some(VAULT_DIR) {
+        parent.parent().context("Vault has no workspace root")?
+    } else {
+        parent
+    };
+    root.canonicalize().context("Cannot resolve workspace root")
+}
+
+pub(crate) fn get_vault_directory() -> PathBuf {
+    get_active_vault_path()
+        .parent()
+        .unwrap_or_else(|| Path::new(VAULT_DIR))
+        .to_path_buf()
 }
 
 pub fn get_vault_store() -> Result<LocalVaultStore> {
@@ -42,6 +98,40 @@ pub fn get_vault_store() -> Result<LocalVaultStore> {
         );
     }
     LocalVaultStore::open(&path).context("Failed to open local vault database")
+}
+
+pub(crate) fn verify_local_snapshot_record(
+    store: &LocalVaultStore,
+    record: &ciphervault_format::SnapshotRecord,
+) -> Result<()> {
+    let genesis = store.get_genesis_record()?;
+    genesis
+        .verify()
+        .context("Invalid vault genesis signature")?;
+    let vault_id = store.get_vault_id()?;
+    anyhow::ensure!(
+        genesis.vault_id == vault_id
+            && record.vault_id == vault_id
+            && record.version == ciphervault_format::PROTOCOL_VERSION,
+        "Snapshot does not belong to the trusted vault"
+    );
+    let root: [u8; 32] = genesis.recovery_signing_pk.as_slice().try_into()?;
+    let authorized = store.list_device_certificates()?.iter().any(|certificate| {
+        let Ok(key) = <[u8; 32]>::try_from(certificate.device_signing_pk.as_slice()) else {
+            return false;
+        };
+        certificate.version == ciphervault_format::PROTOCOL_VERSION
+            && certificate.vault_id == vault_id
+            && certificate.permissions & 1 != 0
+            && certificate.authority_generation == record.authority_generation
+            && certificate.verify(&root).is_ok()
+            && record.verify(&key).is_ok()
+    });
+    anyhow::ensure!(
+        authorized,
+        "Snapshot signature has no trusted signing certificate"
+    );
+    Ok(())
 }
 
 pub(crate) fn current_device_identity() -> Result<(String, String, String)> {
@@ -72,6 +162,25 @@ pub(crate) fn resolve_required_replicas(replicas: Option<usize>) -> Result<usize
 /// operator client. Accountless vaults retain the legacy protocol.
 pub(crate) fn configured_operator_pool(endpoints: Vec<String>) -> MultiOperatorPool {
     let pool = MultiOperatorPool::new(endpoints);
+    match configured_operator_pins() {
+        Ok(pins) if !pins.is_empty() => {
+            for client in pool.clients() {
+                if let Some(key) = pins.get(client.endpoint()) {
+                    client.pin_signing_key(*key);
+                } else {
+                    client.reject_configuration(
+                        "The configured operator has no independently enrolled signing key",
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            for client in pool.clients() {
+                client.reject_configuration(format!("Invalid operator pin configuration: {error}"));
+            }
+        }
+        _ => {}
+    }
     if let (Ok(account), Ok((vault_id, device_id, device_pk))) =
         (AccountStore::open(None), current_device_identity())
     {
@@ -80,6 +189,39 @@ pub(crate) fn configured_operator_pool(endpoints: Vec<String>) -> MultiOperatorP
         }
     }
     pool
+}
+
+pub(crate) fn configured_operator_pins() -> Result<std::collections::BTreeMap<String, [u8; 32]>> {
+    let mut raw: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let path = get_vault_directory().join("operator_pins.json");
+    if path.exists() {
+        raw = serde_json::from_str(&fs::read_to_string(path)?)?;
+    }
+    if let Ok(config) = std::env::var("CIPHERVAULT_OPERATOR_PINS") {
+        for entry in config
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let (endpoint, key) = entry
+                .rsplit_once('=')
+                .context("Expected endpoint=64hex in CIPHERVAULT_OPERATOR_PINS")?;
+            raw.insert(
+                endpoint.trim().trim_end_matches('/').to_string(),
+                key.trim().to_string(),
+            );
+        }
+    }
+    raw.into_iter()
+        .map(|(endpoint, key)| {
+            let bytes = hex::decode(key).context("Operator pin must be hexadecimal")?;
+            let key: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .context("Operator pin must be 32 bytes")?;
+            Ok((endpoint.trim_end_matches('/').to_string(), key))
+        })
+        .collect()
 }
 
 pub fn resolve_hardware_token(
@@ -198,13 +340,13 @@ fn read_gitignore_text(path: &Path) -> Result<String> {
 }
 
 pub(crate) fn ensure_gitignore() -> Result<()> {
-    let gitignore_path = Path::new(".gitignore");
+    let gitignore_path = get_workspace_root()?.join(".gitignore");
     let entry = "\n# CipherVault local keys, database, and cache\n.ciphervault/\n";
 
     if gitignore_path.exists() {
-        let content = read_gitignore_text(gitignore_path)?;
+        let content = read_gitignore_text(&gitignore_path)?;
         if !content.contains(".ciphervault") {
-            let mut file = OpenOptions::new().append(true).open(gitignore_path)?;
+            let mut file = OpenOptions::new().append(true).open(&gitignore_path)?;
             file.write_all(entry.as_bytes())?;
         }
     } else {
@@ -214,12 +356,12 @@ pub(crate) fn ensure_gitignore() -> Result<()> {
 }
 
 pub(crate) fn ensure_file_in_gitignore(rel_path: &Path) -> Result<bool> {
-    let gitignore_path = Path::new(".gitignore");
+    let gitignore_path = get_workspace_root()?.join(".gitignore");
     let norm = rel_path.to_string_lossy().replace('\\', "/");
     let target = norm.trim_start_matches("./");
 
     let existing = if gitignore_path.exists() {
-        read_gitignore_text(gitignore_path)?
+        read_gitignore_text(&gitignore_path)?
     } else {
         String::new()
     };
@@ -446,7 +588,7 @@ pub(crate) fn get_configured_operators() -> Vec<String> {
             return list;
         }
     }
-    let config_path = Path::new(VAULT_DIR).join(OPERATORS_FILE);
+    let config_path = get_vault_directory().join(OPERATORS_FILE);
     if config_path.exists() {
         if let Ok(content) = fs::read_to_string(config_path) {
             if let Ok(ops) = serde_json::from_str::<Vec<String>>(&content) {
@@ -548,7 +690,7 @@ pub(crate) fn open_browser(url: &str) {
 }
 
 pub(crate) fn get_saved_token_reader() -> Option<String> {
-    let cfg_path = Path::new(VAULT_DIR).join("token_config.json");
+    let cfg_path = get_vault_directory().join("token_config.json");
     if cfg_path.exists() {
         if let Ok(text) = fs::read_to_string(&cfg_path) {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -563,7 +705,7 @@ pub(crate) fn get_saved_token_reader() -> Option<String> {
 }
 
 pub(crate) fn save_token_reader_preference(reader: &str) -> Result<()> {
-    let vault_dir = Path::new(VAULT_DIR);
+    let vault_dir = get_vault_directory();
     if vault_dir.exists() {
         let cfg_path = vault_dir.join("token_config.json");
         let payload = serde_json::json!({
@@ -592,8 +734,91 @@ pub(crate) fn epoch_key_status(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn workspace_fixture(base: &Path, name: &str, seed: u8) -> VaultContext {
+        use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
+        use ciphervault_format::{GenesisRecord, PROTOCOL_VERSION};
+        let root = base.join(name);
+        fs::create_dir_all(root.join(VAULT_DIR)).unwrap();
+        let recovery = RecoverySecret::generate();
+        let signing = recovery.derive_recovery_signing_key().unwrap();
+        let (_, encryption) = recovery.derive_recovery_encryption_keys().unwrap();
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![seed; 32],
+            recovery_signing_pk: signing.verifying_key().to_bytes().to_vec(),
+            recovery_encryption_pk: encryption.as_bytes().to_vec(),
+            policy_digest: vec![0; 32],
+            created_at_utc: 1,
+            creation_nonce: vec![seed; 32],
+            signature: vec![],
+        };
+        genesis.sign(&signing).unwrap();
+        let device = generate_signing_key();
+        let store = LocalVaultStore::open(root.join(VAULT_DIR).join(DB_FILE)).unwrap();
+        store
+            .init_vault(
+                &[seed; 32],
+                &genesis,
+                &device,
+                &[seed; 32],
+                &VaultEpochKey::generate(),
+                &recovery.derive_recovery_locator().unwrap(),
+            )
+            .unwrap();
+        fs::write(root.join(".env"), format!("WORKSPACE={name}\n")).unwrap();
+        drop(store);
+        VaultContext::from_db_path(root.join(VAULT_DIR).join(DB_FILE)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn concurrent_workspace_operations_keep_files_and_databases_together() {
+        let base = std::env::temp_dir().join(format!(
+            "cv-context-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let a = workspace_fixture(&base, "alpha", 1);
+        let b = workspace_fixture(&base, "beta", 2);
+        let operate = |context: VaultContext, name: &'static str, seed: u8| async move {
+            REQUEST_VAULT_CONTEXT
+                .scope(context.clone(), async {
+                    tokio::task::yield_now().await;
+                    crate::cmd_track(vec![PathBuf::from(".env")], false, false).unwrap();
+                    assert_eq!(get_workspace_root().unwrap(), context.root_dir);
+                    assert_eq!(
+                        get_vault_store().unwrap().get_vault_id().unwrap(),
+                        [seed; 32]
+                    );
+                    ensure_gitignore().unwrap();
+                    let content =
+                        fs::read_to_string(get_workspace_root().unwrap().join(".env")).unwrap();
+                    assert_eq!(content, format!("WORKSPACE={name}\n"));
+                    assert!(fs::read_to_string(context.root_dir.join(".gitignore"))
+                        .unwrap()
+                        .contains(".env"));
+                    tokio::task::yield_now().await;
+                    assert_eq!(get_active_vault_path(), context.db_path);
+                })
+                .await;
+        };
+        tokio::join!(operate(a, "alpha", 1), operate(b, "beta", 2));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn context_rejects_ambiguous_database_root() {
+        let path = std::env::temp_dir().join(format!(
+            "cv-ambiguous-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::write(&path, []).unwrap();
+        assert!(VaultContext::from_db_path(&path).is_err());
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn replicas_flag_resolution() {

@@ -47,7 +47,7 @@ async fn boot_node(operator_id: &str) -> (TestNode, Arc<OperatorState>) {
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -225,4 +225,18 @@ async fn two_nodes_exchange_object_over_operator_rpc() {
         OperatorRpcResponse::Err { status, .. } => assert_eq!(status, 401),
         other => panic!("unexpected unauth response: {other:?}"),
     }
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

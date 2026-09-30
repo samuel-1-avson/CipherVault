@@ -1,3 +1,5 @@
+// These transport/replication fixtures deliberately use local legacy mode.
+// Production authorization/enrollment defaults are covered by operator boundary tests.
 use ciphervault_format::CheckpointEvidence;
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_storage::chain::{ArbitrumAnchorClient, COMMITMENT_PUBLISHED_TOPIC};
@@ -102,10 +104,11 @@ async fn test_automated_l2_relayer_flow() {
     fs::create_dir_all(&test_dir).unwrap();
 
     let signing_key = ciphervault_crypto::generate_signing_key();
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(OperatorState::new_with_security(
         "test-relayer-op".into(),
         test_dir.clone(),
         signing_key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

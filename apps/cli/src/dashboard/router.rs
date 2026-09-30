@@ -713,10 +713,8 @@ mod tests {
     /// Any test that starts the private router or mutates that env must hold
     /// this guard for its whole body; pure-public tests need not bother. A
     /// tokio mutex (not std) so holding it across awaits is executor-safe.
-    static ROUTER_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     async fn serialized_router_test() -> tokio::sync::MutexGuard<'static, ()> {
-        ROUTER_TEST_SERIALIZER.lock().await
+        crate::util::TEST_PROCESS_STATE.lock().await
     }
 
     async fn start_private_test_server() -> (
@@ -1787,6 +1785,179 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_private_telemetry_stream_closes_after_session_revocation() {
+        let (server, base_url, _serialized) = start_private_test_server().await;
+        let _account_isolation = AccountPathGuard::isolate();
+        let _operators = ScopedEnvGuard::clear(&["CIPHERVAULT_OPERATORS"]);
+        let root =
+            std::env::temp_dir().join(format!("cv-sse-revoke-{:032x}", rand::random::<u128>()));
+        let workspace = crate::util::tests::workspace_fixture(&root, "alpha", 1);
+        std::fs::write(
+            workspace.db_path.parent().unwrap().join("operators.json"),
+            "[]",
+        )
+        .unwrap();
+        let cookie = format!(
+            "ciphervault_private_session={}",
+            private_ui_session_snapshot().token
+        );
+        let client = reqwest::Client::new();
+        let mut response = client
+            .get(format!("{base_url}/api/stream"))
+            .header("Cookie", &cookie)
+            .header(
+                "x-ciphervault-workspace",
+                workspace.db_path.to_str().unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let initial = tokio::time::timeout(std::time::Duration::from_secs(5), response.chunk())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&initial).contains("event: telemetry"));
+        let revoke = client
+            .post(format!("{base_url}/api/session/revoke"))
+            .header("Origin", &base_url)
+            .header("Cookie", &cookie)
+            .header(
+                "x-ciphervault-workspace",
+                workspace.db_path.to_str().unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::OK);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), response.chunk())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none(),
+            "revoked browser streams must close without emitting another private sample"
+        );
+        server.abort();
+        let _ = server.await;
+        drop(response);
+        // A bounded blocking SQLite sample already dispatched at the next
+        // tick may briefly retain its Windows file handle after cancellation.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match std::fs::remove_dir_all(&root) {
+                    Ok(()) => break,
+                    Err(error) if error.raw_os_error() == Some(32) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("cannot clean up telemetry fixture: {error}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_http_workspaces_keep_cookie_and_file_mutations_isolated() {
+        let (server, base_url, _serialized) = start_private_test_server().await;
+        let _account_isolation = AccountPathGuard::isolate();
+        let root =
+            std::env::temp_dir().join(format!("cv-http-context-{:032x}", rand::random::<u128>()));
+        let alpha = crate::util::tests::workspace_fixture(&root, "alpha", 1);
+        let beta = crate::util::tests::workspace_fixture(&root, "beta", 2);
+        std::fs::write(alpha.root_dir.join("alpha.env"), "SYNTHETIC=alpha\n").unwrap();
+        std::fs::write(beta.root_dir.join("beta.env"), "SYNTHETIC=beta\n").unwrap();
+        let token = private_ui_session_snapshot().token;
+        let cookie = format!("ciphervault_private_session={token}");
+        let client = reqwest::Client::new();
+        let track = |workspace: crate::util::VaultContext, name: &'static str| {
+            let client = client.clone();
+            let cookie = cookie.clone();
+            let base_url = base_url.clone();
+            async move {
+                let response = client
+                    .post(format!("{base_url}/api/files/track"))
+                    .header("Origin", &base_url)
+                    .header("Cookie", cookie)
+                    .header(
+                        "x-ciphervault-workspace",
+                        workspace.db_path.to_str().unwrap(),
+                    )
+                    .json(&serde_json::json!({"path": name}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(body["success"], true, "{body}");
+            }
+        };
+        tokio::join!(
+            track(alpha.clone(), "alpha.env"),
+            track(beta.clone(), "beta.env")
+        );
+        for (workspace, own, other) in [
+            (&alpha, "alpha.env", "beta.env"),
+            (&beta, "beta.env", "alpha.env"),
+        ] {
+            let store = ciphervault_local_store::LocalVaultStore::open(&workspace.db_path).unwrap();
+            assert_eq!(
+                store
+                    .list_tracked_files()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| entry.0.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                [own]
+            );
+            let ignored = std::fs::read_to_string(workspace.root_dir.join(".gitignore")).unwrap();
+            assert!(ignored.contains(own));
+            assert!(!ignored.contains(other));
+            let context = client
+                .get(format!("{base_url}/api/context"))
+                .header(
+                    "x-ciphervault-workspace",
+                    workspace.db_path.to_str().unwrap(),
+                )
+                .send()
+                .await
+                .unwrap();
+            let set_cookie = context
+                .headers()
+                .get(reqwest::header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(
+                set_cookie.contains(&token),
+                "Switching workspaces must preserve the process session"
+            );
+        }
+        let malformed = client
+            .get(format!("{base_url}/api/vault"))
+            .header("Cookie", &cookie)
+            .header("x-ciphervault-workspace", "%GG")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        crate::revoke_private_ui_session();
+        let revoked = client
+            .get(format!("{base_url}/api/vault"))
+            .header("Cookie", &cookie)
+            .header("x-ciphervault-workspace", beta.db_path.to_str().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        server.abort();
+        let _ = server.await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn private_scoped_explorer_proxies_projects_search_and_validates() {
         let (server, base_url, _serialized) = start_private_test_server().await;
         let _account_isolation = AccountPathGuard::isolate();
@@ -1817,7 +1988,7 @@ mod tests {
         let response = authed_get(format!("{base_url}/api/scoped/context")).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(body["status"], "ok");
+        assert_eq!(body["status"], "ok", "Unexpected scoped context: {body}");
         assert_eq!(body["project_slug"], "shop");
         assert_eq!(body["project_source"], "env");
         assert_eq!(body["environment_slug"], "staging");

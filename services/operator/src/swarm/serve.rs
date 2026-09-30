@@ -183,7 +183,10 @@ pub fn serve_operator_rpc(
                     if let Some(vault_id_hex) = handlers::extract_vault_id(&headers) {
                         if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex)
                         {
-                            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
+                            return fail(
+                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Lease ownership could not be persisted: {err}"),
+                            );
                         }
                     }
                     OperatorRpcResponse::Lease(receipt)
@@ -200,21 +203,14 @@ pub fn serve_operator_rpc(
             if let Err(e) = handlers::require_session(state, &headers, true) {
                 return fail_auth(e);
             }
-            match state.renew_lease_with_voucher(
+            match state.renew_owned_lease_with_voucher(
                 lease_id,
                 *additional_days,
                 *byte_count,
+                handlers::extract_vault_id(&headers).unwrap_or_default(),
                 request.auth.voucher.as_ref(),
             ) {
-                Ok(receipt) => {
-                    if let Some(vault_id_hex) = handlers::extract_vault_id(&headers) {
-                        if let Err(err) = state.record_lease_owner(&receipt.lease_id, vault_id_hex)
-                        {
-                            eprintln!("lease owner sidecar failed for {}: {err}", receipt.lease_id);
-                        }
-                    }
-                    OperatorRpcResponse::Lease(receipt)
-                }
+                Ok(receipt) => OperatorRpcResponse::Lease(receipt),
                 Err(e) => fail_storage(e),
             }
         }
@@ -268,18 +264,25 @@ pub fn serve_operator_rpc(
         // capability; see handler docs), same hex-counted byte cap
         // (the HTTP `truncated` flag is ignored by every client; P2P omits it)
         OperatorRpcBody::GetRecovery { locator } => {
-            let mut records = Vec::new();
-            let mut encoded_bytes = 0usize;
-            for record in state.get_recovery_records(&hex::encode(locator)) {
-                if encoded_bytes.saturating_add(record.len() * 2)
-                    > crate::state::max_recovery_response_bytes()
-                {
-                    break;
-                }
-                encoded_bytes += record.len() * 2;
-                records.push(record);
+            match state.get_recovery_page(&hex::encode(locator), 0) {
+                Ok(page) if page.next_cursor.is_none() => OperatorRpcResponse::RecoveryRecords {
+                    records: page.records,
+                },
+                Ok(_) => fail(
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                    "Recovery log requires GetRecoveryPage pagination".into(),
+                ),
+                Err(e) => fail(axum::http::StatusCode::BAD_REQUEST, e),
             }
-            OperatorRpcResponse::RecoveryRecords { records }
+        }
+        OperatorRpcBody::GetRecoveryPage { locator, cursor } => {
+            match state.get_recovery_page(&hex::encode(locator), *cursor) {
+                Ok(page) => OperatorRpcResponse::RecoveryPage {
+                    records: page.records,
+                    next_cursor: page.next_cursor,
+                },
+                Err(e) => fail(axum::http::StatusCode::BAD_REQUEST, e),
+            }
         }
         // mirrors post_peer_announce
         OperatorRpcBody::AnnouncePeer { descriptor } => {
@@ -303,11 +306,18 @@ pub fn serve_operator_rpc(
         // mirrors get_pending_challenges; the wire mirror converts exactly
         // like the HTTP JSON deserialization does, failing closed on drift
         OperatorRpcBody::GetPendingApprovals => {
-            if let Err(e) = handlers::require_control_auth(state, &headers) {
-                return fail_auth(e);
-            }
+            let scope = match handlers::approval_scope(state, &headers, false) {
+                Ok(scope) => scope,
+                Err(e) => return fail_auth(e),
+            };
             let mut challenges = Vec::new();
             for challenge in state.get_pending_challenges() {
+                if scope
+                    .as_deref()
+                    .is_some_and(|scope| !scope.eq_ignore_ascii_case(&challenge.vault_id_hex))
+                {
+                    continue;
+                }
                 match serde_json::to_value(&challenge)
                     .ok()
                     .and_then(|v| serde_json::from_value(v).ok())

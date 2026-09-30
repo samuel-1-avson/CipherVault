@@ -10,7 +10,7 @@ use crate::{
     audit_event,
     guards::{
         account_role_for, decode_32, normalize_account_id, normalize_vault_role,
-        require_strong_session,
+        require_recent_strong_session,
     },
     http::{error_response, service_error},
     state::{now_utc, AccountState, LinkVaultRequest},
@@ -30,7 +30,7 @@ pub async fn post_vault_link(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    if let Err(response) = require_strong_session(&session) {
+    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
         return *response;
     }
     if let Err(error) = decode_32(&request.vault_id_hex, "vault_id_hex") {

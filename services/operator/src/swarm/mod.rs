@@ -34,13 +34,13 @@ use libp2p::connection_limits::ConnectionLimits;
 use libp2p::identity::Keypair;
 use libp2p::kad::{QueryId, Quorum, Record as KadRecord, RecordKey};
 use libp2p::multiaddr::Protocol;
-use libp2p::request_response::OutboundRequestId;
+use libp2p::request_response::{OutboundRequestId, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{noise, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use liveness::{HeartbeatConfig, LivenessTracker};
 use repair::{RepairConfig, TokenBucket};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::OperatorState;
 
@@ -78,6 +78,10 @@ const RPC_RATE_WINDOW: Duration = Duration::from_secs(1);
 /// Upper bound on tracked peers in the rate limiter. Past this, untracked
 /// peers fail closed (429) so the tracker itself cannot be memory-DoSed.
 const MAX_RATE_TRACKED_PEERS: usize = 4096;
+/// Bound disk/crypto work and retained RPC payloads across all peers. Work
+/// completes outside the swarm loop so network progress remains responsive.
+const MAX_INBOUND_RPC_WORKERS: usize = 16;
+type RpcWorkerResult = (ResponseChannel<OperatorRpcResponse>, OperatorRpcResponse);
 
 pub struct SwarmNodeConfig {
     pub key_path: PathBuf,
@@ -1112,8 +1116,14 @@ async fn run_loop(
     heartbeat_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut repair_tick = tokio::time::interval(loop_state.repair.config.interval);
     repair_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut rpc_workers: JoinSet<RpcWorkerResult> = JoinSet::new();
     loop {
         tokio::select! {
+            result = rpc_workers.join_next(), if !rpc_workers.is_empty() => {
+                if let Some(Ok((channel, response))) = result {
+                    let _ = swarm.behaviour_mut().rpc.send_response(channel, response);
+                }
+            }
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 match command {
@@ -1256,7 +1266,7 @@ async fn run_loop(
                 }
             }
             event = swarm.select_next_some() => {
-                handle_swarm_event(&mut swarm, &state, &mut loop_state, event).await;
+                handle_swarm_event(&mut swarm, &state, &mut loop_state, &mut rpc_workers, event).await;
             }
             _ = heartbeat_tick.tick() => {
                 // Liveness tick: prune dead entries, export the gauge, and
@@ -1290,8 +1300,9 @@ async fn run_loop(
 
 async fn handle_swarm_event(
     swarm: &mut Swarm<Behaviour>,
-    state: &OperatorState,
+    state: &Arc<OperatorState>,
     loop_state: &mut LoopState,
+    rpc_workers: &mut JoinSet<RpcWorkerResult>,
     event: SwarmEvent<behaviour::BehaviourEvent>,
 ) {
     match event {
@@ -1319,8 +1330,19 @@ async fn handle_swarm_event(
                             let _ = swarm.behaviour_mut().rpc.send_response(channel, response);
                             return;
                         }
-                        let response = serve::serve_operator_rpc(state, &request);
-                        let _ = swarm.behaviour_mut().rpc.send_response(channel, response);
+                        if rpc_workers.len() >= MAX_INBOUND_RPC_WORKERS {
+                            let response = OperatorRpcResponse::Err {
+                                status: 503,
+                                message: "operator RPC workers are busy; retry later".to_string(),
+                            };
+                            let _ = swarm.behaviour_mut().rpc.send_response(channel, response);
+                            return;
+                        }
+                        let state = state.clone();
+                        rpc_workers.spawn_blocking(move || {
+                            let response = serve::serve_operator_rpc(&state, &request);
+                            (channel, response)
+                        });
                     }
                     Message::Response {
                         request_id,

@@ -10,6 +10,108 @@
 use std::io;
 use std::path::Path;
 
+/// Open a regular source file without following a final symlink/reparse point.
+pub fn open_regular_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::other("source is not a regular file"));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(io::Error::other("source is a reparse point"));
+        }
+    }
+    Ok(file)
+}
+
+/// Create an empty file exclusively and restrict it before callers write secrets.
+pub fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).read(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    if let Err(error) = lock_secret_file(path) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
+}
+
+/// Restrict a directory to its owner, including traversal and file deletion.
+pub fn lock_secret_directory(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    return imp::lock_secret_directory(path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "directory locking is unsupported",
+        ))
+    }
+}
+
+/// Replace a file atomically without deleting the destination first.
+pub fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
+        }
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        // REPLACE_EXISTING | WRITE_THROUGH. No cross-volume copy fallback.
+        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0x1 | 0x8) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    std::fs::rename(source, destination)
+}
+
+/// Flush directory entries after a rename on platforms that support it.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return std::fs::File::open(path)?.sync_all();
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(()) // Windows atomic_replace uses WRITE_THROUGH.
+    }
+}
+
 /// Restrict `path` so only the current user can read or write it.
 ///
 /// The best-effort contract lives with the CALLER: this returns `Err`
@@ -140,6 +242,15 @@ mod imp {
     }
 
     pub(super) fn lock_secret_file(path: &Path) -> io::Result<()> {
+        lock_path(path, FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+    }
+
+    pub(super) fn lock_secret_directory(path: &Path) -> io::Result<()> {
+        // Directory traversal and delete-child are required for a private staging directory.
+        lock_path(path, 0x001f_01ff)
+    }
+
+    fn lock_path(path: &Path, access_mask: Dword) -> io::Result<()> {
         // Win32 accepts forward slashes; still normalize so any
         // diagnostics show the canonical form.
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -157,7 +268,7 @@ mod imp {
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
                 return Err(io::Error::last_os_error());
             }
-            let result = lock_with_token(&wide, token);
+            let result = lock_with_token(&wide, token, access_mask);
             let _ = CloseHandle(token);
             result
         }
@@ -167,7 +278,7 @@ mod imp {
     /// apply it as a PROTECTED DACL (inheritance disabled, every inherited
     /// ACE dropped). Never applies a half-built DACL: an empty DACL denies
     /// all access, so every build step must succeed before the apply call.
-    unsafe fn lock_with_token(wide: &[u16], token: Handle) -> io::Result<()> {
+    unsafe fn lock_with_token(wide: &[u16], token: Handle, access_mask: Dword) -> io::Result<()> {
         let mut needed: Dword = 0;
         // Size query: FALSE + ERROR_INSUFFICIENT_BUFFER is the expected path.
         let _ = GetTokenInformation(
@@ -205,13 +316,7 @@ mod imp {
         if InitializeAcl(acl, acl_len as Dword, ACL_REVISION) == 0 {
             return Err(io::Error::last_os_error());
         }
-        if AddAccessAllowedAce(
-            acl,
-            ACL_REVISION,
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-            sid,
-        ) == 0
-        {
+        if AddAccessAllowedAce(acl, ACL_REVISION, access_mask, sid) == 0 {
             return Err(io::Error::last_os_error());
         }
         let status = SetNamedSecurityInfoW(

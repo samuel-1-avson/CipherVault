@@ -93,7 +93,8 @@ async fn get_secrets(
     }
     (
         axum::http::StatusCode::OK,
-        axum::Json(serde_json::json!({ "secrets": [
+        axum::Json(
+            serde_json::json!({ "revision": "aa".repeat(32), "secrets": [
             {
                 "secret_id": "sec-1", "tenant_id": "t1", "project_id": "proj-1",
                 "environment_id": "env-1", "name": "GOLDEN_ONE",
@@ -106,24 +107,37 @@ async fn get_secrets(
                 "secret_type": "key_value", "status": "deprecated",
                 "current_version": 1,
             },
-        ] })),
+        ] }),
+        ),
     )
 }
 
-async fn get_secret_value(
+async fn materialize(
     axum::extract::State(stub): axum::extract::State<Stub>,
     uri: axum::http::Uri,
-    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
 ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
-    record(&stub, "GET", &uri);
-    let value = match id.as_str() {
-        "sec-1" => "one-value",
-        "sec-2" => "two-value",
-        _ => return not_found("NOT_FOUND", "no such secret"),
-    };
+    record(&stub, "POST", &uri);
+    assert_eq!(
+        body["names"],
+        serde_json::json!(["GOLDEN_ONE", "GOLDEN_TWO"])
+    );
+    if body["expected_revision"] != "aa".repeat(32) {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(
+                serde_json::json!({"code":"SCOPE_REVISION_CHANGED","error":"Scope revision changed"}),
+            ),
+        );
+    }
     (
         axum::http::StatusCode::OK,
-        axum::Json(serde_json::json!({ "value": value })),
+        axum::Json(serde_json::json!({
+            "revision":"aa".repeat(32), "values":[
+                {"name":"GOLDEN_ONE","secret_id":"sec-1","version":3,"value":"one-value"},
+                {"name":"GOLDEN_TWO","secret_id":"sec-2","version":1,"value":"two-value"}
+            ]
+        })),
     )
 }
 
@@ -139,8 +153,8 @@ async fn start_stub() -> (String, Stub) {
             axum::routing::get(get_secrets),
         )
         .route(
-            "/v1/projects/proj-1/secrets/:id",
-            axum::routing::get(get_secret_value),
+            "/v1/projects/proj-1/environments/env-1/materialize",
+            axum::routing::post(materialize),
         )
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("localhost:0").await.unwrap();
@@ -267,7 +281,7 @@ async fn run_scoped_dry_run_lists_names_only() {
     assert!(list.target.contains("environment=env-1"), "{}", list.target);
     assert!(list.target.contains("limit=500"), "{}", list.target);
     assert!(
-        !seen.iter().any(|s| s.target.contains("/secrets/sec-")),
+        !seen.iter().any(|s| s.target.contains("/materialize")),
         "dry-run fetched values: {seen:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -305,10 +319,14 @@ async fn run_scoped_injects_values_into_child() {
         "{stderr}"
     );
 
-    // Both values fetched by stable id.
     let seen = seen_targets(&stub);
-    assert!(seen.iter().any(|s| s.target.contains("/secrets/sec-1")));
-    assert!(seen.iter().any(|s| s.target.contains("/secrets/sec-2")));
+    assert_eq!(
+        seen.iter()
+            .filter(|s| s.method == "POST" && s.target.ends_with("/materialize"))
+            .count(),
+        1
+    );
+    assert!(!seen.iter().any(|s| s.target.contains("/secrets/sec-")));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -428,4 +446,75 @@ async fn run_scoped_env_vars_engage_mode() {
         "{stderr}"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn stale_revision_does_not_start_child() {
+    let dir = fresh_dir("stale-revision");
+    let (endpoint, _) = start_stub().await;
+    let mut args = vec![
+        "run".to_string(),
+        "--project".into(),
+        "shop".into(),
+        "--env".into(),
+        "staging".into(),
+        "--token".into(),
+        "t".into(),
+        "--revision".into(),
+        "bb".repeat(32),
+        "--".into(),
+    ];
+    args.extend(echo_child("GOLDEN_ONE"));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_command(&dir, Some(&endpoint), &refs, &[])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("revision"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn cipher_control_credentials_are_absent_from_child() {
+    let dir = fresh_dir("child-auth");
+    let (endpoint, _) = start_stub().await;
+    let mut args = vec![
+        "run".to_string(),
+        "--project".into(),
+        "shop".into(),
+        "--env".into(),
+        "staging".into(),
+        "--".into(),
+    ];
+    #[cfg(windows)]
+    args.extend([
+        "cmd".into(),
+        "/c".into(),
+        "if defined CIPHERVAULT_SCOPE_TOKEN (exit /b 19) else (echo clean)".into(),
+    ]);
+    #[cfg(not(windows))]
+    args.extend([
+        "sh".into(),
+        "-c".into(),
+        "test -z \"$CIPHERVAULT_SCOPE_TOKEN\" && echo clean".into(),
+    ]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_command(
+        &dir,
+        Some(&endpoint),
+        &refs,
+        &[("CIPHERVAULT_SCOPE_TOKEN", "parent-secret-token")],
+    )
+    .output()
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "clean");
+    std::fs::remove_dir_all(dir).unwrap();
 }

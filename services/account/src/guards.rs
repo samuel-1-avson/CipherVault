@@ -96,6 +96,29 @@ pub(crate) fn require_strong_session(session: &SessionView) -> Result<(), Box<Re
     Ok(())
 }
 
+/// Credential issuance and sensitive scoped actions require fresh proof of a
+/// signing key or passkey. TOTP login alone is an alternate login method, not
+/// a verified second factor or an elevation ceremony.
+pub(crate) const STEP_UP_MAX_AGE_SECONDS: u64 = 5 * 60;
+
+pub(crate) fn require_recent_strong_session(
+    session: &SessionView,
+    now: u64,
+) -> Result<(), Box<Response>> {
+    require_strong_session(session)?;
+    if !matches!(session.auth_method.as_str(), "device" | "webauthn")
+        || session.issued_at_utc > now
+        || now.saturating_sub(session.issued_at_utc) > STEP_UP_MAX_AGE_SECONDS
+    {
+        return Err(Box::new(error_response(
+            StatusCode::FORBIDDEN,
+            "AUTHENTICATION_STEP_UP_REQUIRED",
+            "Authenticate with a signing key or passkey within the last five minutes",
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_32(value: &str, field: &str) -> Result<[u8; 32], AccountServiceError> {
     let bytes = hex::decode(value.trim())
         .map_err(|_| AccountServiceError::Invalid(format!("{field} must be 32-byte hex")))?;

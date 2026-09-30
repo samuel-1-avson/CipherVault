@@ -13,7 +13,7 @@ pub use account::{
 };
 pub use db::{
     sqlite_busy_retries, ActivityEntry, CachedBinding, CachedSecretMeta, LocalVaultStore,
-    PendingUpload, RecoveryDescriptors, ScopedContext,
+    PendingUpload, PendingUploadSummary, RecoveryDescriptors, ScopedContext,
 };
 pub use error::LocalStoreError;
 pub use keyring::{protect_secret, unprotect_secret};

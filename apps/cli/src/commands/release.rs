@@ -14,8 +14,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::update::{
-    is_pinned_release_key, release_key_id_of_pubkey, render_release_signature,
-    verify_release_signature,
+    is_pinned_release_key, release_key_id_of_pubkey, release_signing_message,
+    render_release_signature, verify_release_signature,
 };
 
 /// Loads the 32-byte release signing seed: explicit key file first (offline
@@ -63,7 +63,11 @@ pub(crate) fn cmd_release_sign(
     }
     let sums_bytes =
         fs::read(&sums).with_context(|| format!("reading checksum file {}", sums.display()))?;
-    let signature_hex = hex::encode(signing_key.sign(&sums_bytes).to_bytes());
+    let signature_hex = hex::encode(
+        signing_key
+            .sign(&release_signing_message(tag.trim(), &sums_bytes)?)
+            .to_bytes(),
+    );
     let envelope = render_release_signature(
         tag.trim(),
         &release_key_id_of_pubkey(&pubkey_hex),

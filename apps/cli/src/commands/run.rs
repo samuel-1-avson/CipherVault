@@ -11,14 +11,14 @@ use anyhow::{bail, Context, Result};
 use colored::Colorize;
 #[cfg(target_os = "windows")]
 use std::path::Path;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use ciphervault_format::{from_canonical_cbor, ChunkWireObject, SnapshotManifest};
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_snapshot::{decrypt_snapshot, DecryptedFile};
 
 use super::scope::{
-    api_get, echo_scope, http_client, resolve_endpoint, resolve_scope, resolve_token,
+    api_get, checked_json, echo_scope, http_client, resolve_endpoint, resolve_scope, resolve_token,
 };
 use crate::dotenv;
 use crate::util::{configured_operator_pool, get_configured_operators, get_vault_store};
@@ -37,6 +37,7 @@ pub(crate) async fn cmd_run(
     endpoint_opt: Option<String>,
     token_opt: Option<String>,
     legacy: bool,
+    revision_opt: Option<String>,
     no_inherit: bool,
     dry_run: bool,
     quiet: bool,
@@ -48,6 +49,15 @@ pub(crate) async fn cmd_run(
     }
     let snapshot_source = snapshot_hex_opt.is_some() || env_file_opt.is_some();
     let scoped_source = has_scope_signal(project_opt.as_deref(), env_opt.as_deref());
+    if revision_opt.is_some() && (!scoped_source || dry_run) {
+        bail!("--revision requires scoped execution; it is checked when secret values are materialized");
+    }
+    if let Some(revision) = &revision_opt {
+        if revision.len() != 64 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("--revision must be 64 hex characters");
+        }
+    }
+    let revision_opt = revision_opt.map(|revision| revision.to_ascii_lowercase());
     if snapshot_source && scoped_source {
         bail!("cannot combine snapshot source (--snapshot/--env-file) with scoped source (--project/--env)");
     }
@@ -57,6 +67,7 @@ pub(crate) async fn cmd_run(
             env_opt.as_deref(),
             endpoint_opt.as_deref(),
             token_opt.as_deref(),
+            revision_opt.as_deref(),
             no_inherit,
             dry_run,
             quiet,
@@ -98,6 +109,7 @@ async fn cmd_run_scoped(
     env_flag: Option<&str>,
     endpoint_flag: Option<&str>,
     token_flag: Option<&str>,
+    expected_revision: Option<&str>,
     no_inherit: bool,
     dry_run: bool,
     quiet: bool,
@@ -139,12 +151,11 @@ async fn cmd_run_scoped(
         );
     }
 
-    // Names + versions for dry-run; values fetched per secret (each read is
-    // server-side authorized and audited).
+    // Dry-run uses metadata only. Execution obtains all values at one revision.
     let mut names: Vec<(String, i64, String)> = Vec::with_capacity(entries.len());
-    let mut loaded_vars: Vec<(String, String)> = Vec::new();
+    let mut loaded_vars: Vec<(String, Zeroizing<String>)> = Vec::new();
     for entry in entries {
-        let (Some(secret_id), Some(name)) = (entry["secret_id"].as_str(), entry["name"].as_str())
+        let (Some(_secret_id), Some(name)) = (entry["secret_id"].as_str(), entry["name"].as_str())
         else {
             bail!("server returned a malformed secret entry");
         };
@@ -155,21 +166,6 @@ async fn cmd_run_scoped(
             .map_err(|err| anyhow::anyhow!("server returned an invalid secret name: {err}"))?;
         let version = entry["current_version"].as_i64().unwrap_or(0);
         let status = entry["status"].as_str().unwrap_or("active").to_string();
-        if !dry_run {
-            let value_body = api_get(
-                &client,
-                &endpoint,
-                &token,
-                &format!("/v1/projects/{}/secrets/{secret_id}", scope.project_id),
-                "secret get",
-            )
-            .await
-            .with_context(|| grant_hint.clone())?;
-            let value = value_body["value"]
-                .as_str()
-                .context("server returned a malformed secret value")?;
-            loaded_vars.push((name.to_string(), value.to_string()));
-        }
         names.push((name.to_string(), version, status));
     }
     names.sort_by(|a, b| a.0.cmp(&b.0));
@@ -208,26 +204,93 @@ async fn cmd_run_scoped(
         return Ok(());
     }
 
+    {
+        if names.len() > 100 {
+            bail!("Scoped execution supports at most 100 secrets in one atomic materialization");
+        }
+        let requested: Vec<&str> = names.iter().map(|entry| entry.0.as_str()).collect();
+        let expected_revision = expected_revision.or_else(|| body["revision"].as_str());
+        let response = super::dpop::maybe_dpop(
+            client.post(format!(
+                "{endpoint}/v1/projects/{}/environments/{}/materialize",
+                scope.project_id,
+                scope.env_id.as_deref().unwrap_or_default()
+            )),
+            &token,
+        )?
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "names": requested, "expected_revision": expected_revision,
+        }))
+        .send()
+        .await
+        .context("materializing scoped secrets")?;
+        let mut batch = checked_json(response, "scope materialize")
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Could not materialize revision-pinned secrets for {scope_label}: {error}"
+                )
+            })?;
+        let revision = batch["revision"]
+            .as_str()
+            .context("Missing scope revision")?
+            .to_string();
+        if revision.len() != 64
+            || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || expected_revision.is_some_and(|expected| !revision.eq_ignore_ascii_case(expected))
+        {
+            bail!("Server returned an invalid or mismatched scope revision");
+        }
+        let mut remaining: std::collections::BTreeSet<String> =
+            requested.into_iter().map(str::to_owned).collect();
+        let values = batch["values"]
+            .as_array_mut()
+            .context("Malformed materialization values")?;
+        let mut total_bytes = 0usize;
+        for entry in values {
+            let name = entry["name"]
+                .as_str()
+                .context("Malformed materialized name")?
+                .to_string();
+            let serde_json::Value::String(value) = entry["value"].take() else {
+                bail!("Malformed materialized value");
+            };
+            let value = Zeroizing::new(value);
+            total_bytes = total_bytes.saturating_add(value.len());
+            if !remaining.remove(&name) || total_bytes > 128 * 1024 {
+                bail!("Materialization returned an unexpected, duplicate, or oversized value");
+            }
+            loaded_vars.push((name, value));
+        }
+        if !remaining.is_empty() {
+            bail!("Materialization returned a partial environment; command was not started");
+        }
+        if !quiet {
+            eprintln!("Scope revision: {revision}");
+        }
+    }
+
     // `--set` wins over fetched values; BTreeMap keeps last definition.
     let deduped_vars = apply_overrides(loaded_vars, set_overrides)?;
-    spawn_with_env(&command, &deduped_vars, no_inherit, quiet, &scope_label).await
+    spawn_with_env(&command, deduped_vars, no_inherit, quiet, &scope_label).await
 }
 
 /// Applies `--set KEY=VALUE` overrides over loaded vars, last wins.
 fn apply_overrides(
-    mut loaded_vars: Vec<(String, String)>,
+    mut loaded_vars: Vec<(String, Zeroizing<String>)>,
     set_overrides: Option<Vec<String>>,
-) -> Result<std::collections::BTreeMap<String, String>> {
+) -> Result<std::collections::BTreeMap<String, Zeroizing<String>>> {
     if let Some(overrides) = set_overrides {
         for item in overrides {
             if let Some((k, v)) = item.split_once('=') {
-                loaded_vars.push((k.trim().to_string(), v.to_string()));
+                loaded_vars.push((k.trim().to_string(), Zeroizing::new(v.to_string())));
             } else {
                 bail!("Invalid --set format: expected KEY=VALUE, got '{}'", item);
             }
         }
     }
-    let mut deduped_vars: std::collections::BTreeMap<String, String> =
+    let mut deduped_vars: std::collections::BTreeMap<String, Zeroizing<String>> =
         std::collections::BTreeMap::new();
     for (k, v) in loaded_vars {
         deduped_vars.insert(k, v);
@@ -249,8 +312,6 @@ pub(crate) async fn load_snapshot_bundle(
     snapshot_hex_opt: Option<&str>,
 ) -> Result<SnapshotBundle> {
     let vault_id = store.get_vault_id()?;
-    let (_, _, _, epoch) = store.get_device_state()?;
-    let epoch_key = store.get_epoch_key(epoch)?;
 
     let snapshot_id = match snapshot_hex_opt {
         Some(hex_str) => {
@@ -273,26 +334,40 @@ pub(crate) async fn load_snapshot_bundle(
     };
 
     let (record, encrypted_manifest) = store.get_snapshot(&snapshot_id)?;
+    crate::util::verify_local_snapshot_record(store, &record)?;
+    let epoch_key = store.get_epoch_key(record.epoch).with_context(|| {
+        format!(
+            "Epoch {} key is required to read this snapshot",
+            record.epoch
+        )
+    })?;
 
-    let manifest_key = epoch_key.derive_manifest_key(record.epoch)?;
+    let manifest_key = Zeroizing::new(epoch_key.derive_manifest_key(record.epoch)?);
     let aad = [
         b"CipherVault-Manifest:",
         vault_id.as_slice(),
         &record.epoch.to_le_bytes(),
     ]
     .concat();
-    let manifest_bytes =
-        ciphervault_crypto::decrypt_chunk(&manifest_key, &encrypted_manifest, &aad)?;
+    let manifest_bytes = Zeroizing::new(ciphervault_crypto::decrypt_chunk(
+        &manifest_key,
+        &encrypted_manifest,
+        &aad,
+    )?);
     let manifest: SnapshotManifest = from_canonical_cbor(&manifest_bytes)?;
 
     let mut needed_cids = Vec::new();
     for file in &manifest.files {
         for cid_bytes in &file.chunk_cids {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(cid_bytes);
+            let arr: [u8; 32] = cid_bytes
+                .as_slice()
+                .try_into()
+                .context("Invalid manifest chunk CID")?;
             needed_cids.push(arr);
         }
     }
+    needed_cids.sort();
+    needed_cids.dedup();
 
     let mut chunks = store.get_chunks(&needed_cids)?;
     if chunks.len() != needed_cids.len() {
@@ -361,7 +436,7 @@ async fn cmd_run_snapshot(
     }
 
     // Select which file(s) to load environment variables from
-    let mut loaded_vars: Vec<(String, String)> = Vec::new();
+    let mut loaded_vars: Vec<(String, Zeroizing<String>)> = Vec::new();
     let mut loaded_from_files: Vec<String> = Vec::new();
 
     if let Some(target_file) = env_file_opt {
@@ -376,7 +451,11 @@ async fn cmd_run_snapshot(
                     anyhow::anyhow!("Failed to parse '{}': {}", file.relative_path, e)
                 })?;
                 loaded_from_files.push(file.relative_path.clone());
-                loaded_vars.extend(parsed);
+                loaded_vars.extend(
+                    parsed
+                        .into_iter()
+                        .map(|(name, value)| (name, Zeroizing::new(value))),
+                );
             }
             None => {
                 bail!(
@@ -422,7 +501,11 @@ async fn cmd_run_snapshot(
                     anyhow::anyhow!("Failed to parse '{}': {}", file.relative_path, e)
                 })?;
                 loaded_from_files.push(file.relative_path.clone());
-                loaded_vars.extend(parsed);
+                loaded_vars.extend(
+                    parsed
+                        .into_iter()
+                        .map(|(name, value)| (name, Zeroizing::new(value))),
+                );
             }
         }
     }
@@ -475,14 +558,14 @@ async fn cmd_run_snapshot(
     }
 
     let label = format!("snapshot {}", &hex::encode(snapshot_id)[..8]);
-    spawn_with_env(&command, &deduped_vars, no_inherit, quiet, &label).await
+    spawn_with_env(&command, deduped_vars, no_inherit, quiet, &label).await
 }
 
 /// Shared child spawn: injects `vars`, honors `--no-inherit`/`--quiet`,
 /// and propagates the child exit code. `label` names the secret source.
 async fn spawn_with_env(
     command: &[String],
-    vars: &std::collections::BTreeMap<String, String>,
+    vars: std::collections::BTreeMap<String, Zeroizing<String>>,
     no_inherit: bool,
     quiet: bool,
     label: &str,
@@ -521,9 +604,20 @@ async fn spawn_with_env(
         }
     }
 
-    // Inject secrets
-    for (k, v) in vars {
-        cmd.env(k, v);
+    // Never pass CipherVault control credentials to the workload.
+    for (key, _) in std::env::vars_os() {
+        if is_control_credential(&key.to_string_lossy()) {
+            cmd.env_remove(key);
+        }
+    }
+    for (key, value) in &vars {
+        if is_control_credential(key) {
+            bail!("'{key}' is reserved for CipherVault authentication and cannot be injected into a workload");
+        }
+        if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') {
+            bail!("Invalid child environment entry '{key}'");
+        }
+        cmd.env(key, value.as_str());
     }
 
     if !quiet {
@@ -545,6 +639,10 @@ async fn spawn_with_env(
         .spawn()
         .with_context(|| format!("Failed to spawn command '{}'", exe))?;
 
+    // Release application-owned values before waiting. Command and OS
+    // environment copies remain outside application zeroization guarantees.
+    drop(vars);
+    drop(cmd);
     let status = child
         .wait()
         .with_context(|| format!("Failed to wait on child process '{}'", exe))?;
@@ -555,6 +653,16 @@ async fn spawn_with_env(
     }
 
     Ok(())
+}
+
+fn is_control_credential(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name.starts_with("CIPHERVAULT_")
+        && (name.contains("TOKEN")
+            || name.contains("SECRET")
+            || name.contains("KEY")
+            || name.ends_with("_PIN")
+            || name.contains("PASSWORD"))
 }
 
 #[cfg(target_os = "windows")]

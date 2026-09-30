@@ -69,7 +69,7 @@
       </div>
 
       <!-- Off-flow category filter pills to keep JS hooks without sidebar clutter -->
-      <div class="sidebar-category-filter" style="display: none;">
+      <div class="sidebar-category-filter cv-layout-65d1f1c3d7">
         <div class="tabs-category-filter" id="tabs-category-filter" role="group" aria-label="Tab View Filter">
           <button class="filter-pill active" data-category="all" id="pill-filter-all" title="All views">
             <span>All</span>
@@ -248,7 +248,7 @@
                 <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
                 <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
               </svg>
-              <svg class="icon-theme-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: none;">
+              <svg class="icon-theme-moon cv-layout-65d1f1c3d7" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
               </svg>
             </button>
@@ -347,7 +347,7 @@
           </button>
 
           <!-- Off-flow account controls to preserve test contracts and script hooks without navbar clutter -->
-          <div class="account-actions-hidden" id="account-actions-group" aria-label="Account controls" style="display: none;">
+          <div class="account-actions-hidden cv-layout-65d1f1c3d7" id="account-actions-group" aria-label="Account controls">
             <div class="cluster-status-indicator account-status-badge" id="account-status-indicator" role="status" aria-live="polite">
               <span class="pulse-dot" id="account-pulse-dot"></span>
               <span id="account-status-text">Local</span>
@@ -394,10 +394,10 @@
             <h3 class="card-subheading">Operator Response Summary</h3>
             <p class="topology-subtext" id="operator-response-summary">Waiting for current operator response probes.</p>
           </div>
-          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <div class="cv-layout-81c5411c55">
             <div class="latency-summary-pill" id="latency-summary-pill">
               <span>Avg Latency:</span>
-              <strong id="avg-latency-display" style="color: var(--ok);">-- ms</strong>
+              <strong id="avg-latency-display" class="cv-layout-6a43a34635">-- ms</strong>
             </div>
             <div class="quorum-pill" id="quorum-status-pill">
               <span class="pulse-dot"></span>
@@ -432,12 +432,12 @@
             <span class="badge-status-subtle" id="badge-durability-state">Unverified</span>
           </div>
           <div class="metric-value" id="val-metric-durability">
-            <span id="durability-ratio" style="color: var(--signal);">--/3</span>
+            <span id="durability-ratio" class="cv-layout-2ff40d572e">--/3</span>
             <span class="metric-unit">Replicas</span>
           </div>
           <div class="metric-subtext" id="sub-metric-durability">No completed recovery verification</div>
           <div class="progress-bar-container">
-            <div class="progress-bar-fill" id="bar-durability" style="width: 0%; background: var(--ok);"></div>
+            <div class="progress-bar-fill cv-layout-a9f32ea898" id="bar-durability"></div>
           </div>
         </article>
 
@@ -448,12 +448,12 @@
             <span class="badge-status-subtle" id="badge-retention-state">Not reported</span>
           </div>
           <div class="metric-value" id="val-metric-runway">
-            <span id="val-retention-days" style="color: var(--signal);">--</span>
+            <span id="val-retention-days" class="cv-layout-2ff40d572e">--</span>
             <span class="metric-unit" id="val-retention-unit">days</span>
           </div>
           <div class="metric-subtext" id="sub-metric-runway">No retention receipt expiry is available</div>
           <div class="progress-bar-container">
-            <div class="progress-bar-fill" id="bar-runway" style="width: 0%; background: var(--signal);"></div>
+            <div class="progress-bar-fill cv-layout-3de3da0b07" id="bar-runway"></div>
           </div>
         </article>
 
@@ -464,11 +464,11 @@
             <span class="badge-status-subtle" id="badge-anchor-stage">No verified receipt</span>
           </div>
           <div class="metric-value" id="val-metric-anchor">
-            <span id="val-anchor-block" style="color: var(--chain); font-size: 1.25rem; font-family: var(--font-mono);">#--</span>
+            <span id="val-anchor-block" class="cv-layout-095e6c4667">#--</span>
           </div>
           <div class="metric-subtext" id="sub-metric-anchor">No checkpoint evidence recorded</div>
           <div class="progress-bar-container">
-            <div class="progress-bar-fill" id="bar-anchor" style="width: 0%; background: var(--chain);"></div>
+            <div class="progress-bar-fill cv-layout-5ed6a2e563" id="bar-anchor"></div>
           </div>
         </article>
 
@@ -484,7 +484,7 @@
           </div>
           <div class="metric-subtext" id="sub-metric-inventory">-- chunks encrypted</div>
           <div class="progress-bar-container">
-            <div class="progress-bar-fill" id="bar-files" style="width: 100%; background: var(--signal);"></div>
+            <div class="progress-bar-fill cv-layout-9fcc87ca45" id="bar-files"></div>
           </div>
         </article>
       </section>
@@ -536,6 +536,9 @@
       <div class="metrics-ribbon" id="overview-metrics">
         <!-- Populated by renderOverview -->
       </div>
+      <p id="pending-upload-status" role="status" aria-live="polite" aria-atomic="true">
+        Replication backlog: awaiting a private telemetry observation.
+      </p>
 
       <div class="table-card">
         <table class="data-table" id="table-overview-snapshots">
@@ -602,14 +605,14 @@
         </div>
       </div>
 
-      <div class="operators-grid" id="explorer-overview-grid" style="margin-top: 18px;">
+      <div class="operators-grid cv-layout-cfec463e2f" id="explorer-overview-grid">
         <div class="loading-placeholder">Loading network overview...</div>
       </div>
 
       <div id="explorer-result" aria-live="polite"></div>
 
-      <div class="card-section" style="margin-top: 24px;">
-        <h3 class="card-subheading" style="margin-bottom: 12px;">Latest Anchors</h3>
+      <div class="card-section cv-layout-a005516828">
+        <h3 class="card-subheading cv-layout-3106344cde">Latest Anchors</h3>
         <div id="explorer-anchors-strip">
           <div class="loading-placeholder">Loading anchors...</div>
         </div>
@@ -727,7 +730,7 @@
           </div>
           <h4 class="diff-empty-title">Ready to Compare Secret Revisions</h4>
           <p class="diff-empty-desc">Select snapshot targets and click <strong>Calculate Diff</strong> to inspect confidential changes.</p>
-          <button class="btn-action primary small" type="button" onclick="document.getElementById('btn-run-diff')?.click()">
+          <button class="btn-action primary small" type="button" data-click-target="btn-run-diff">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="5 3 19 12 5 21 5 3"></polygon>
             </svg>
@@ -833,7 +836,7 @@
           <div>
             <div class="op-meta-row">
               <span class="op-meta-label">Contract Address</span>
-              <span class="op-meta-val" id="anchor-contract-addr" style="color: var(--signal);">--</span>
+              <span class="op-meta-val cv-layout-2ff40d572e" id="anchor-contract-addr">--</span>
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Target Chain</span>
@@ -841,14 +844,14 @@
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Reported Block</span>
-              <span class="op-meta-val" id="anchor-block-num" style="color: var(--chain); font-weight: 600;">--</span>
+              <span class="op-meta-val cv-layout-bedf13c591" id="anchor-block-num">--</span>
             </div>
           </div>
 
           <div>
             <div class="op-meta-row">
               <span class="op-meta-label">Finality Status</span>
-              <span class="op-meta-val" id="anchor-finality-status" style="color: var(--ash); font-weight: 600;">Not submitted</span>
+              <span class="op-meta-val cv-layout-d0e5a3407b" id="anchor-finality-status">Not submitted</span>
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Salt Preimage (Hex)</span>
@@ -856,22 +859,22 @@
             </div>
             <div class="op-meta-row">
               <span class="op-meta-label">Opaque Commitment</span>
-              <span class="op-meta-val" id="anchor-commitment-val" style="color: var(--signal);">--</span>
+              <span class="op-meta-val cv-layout-2ff40d572e" id="anchor-commitment-val">--</span>
             </div>
           </div>
         </div>
 
-        <div class="op-meta-row" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line);">
+        <div class="op-meta-row cv-layout-e7b122695e">
           <span class="op-meta-label">Transaction Hash</span>
           <span class="op-meta-val" id="anchor-tx-hash-wrap">
-            <span id="anchor-tx-hash" style="font-family: var(--font-mono); color: var(--chain);">--</span>
+            <span id="anchor-tx-hash" class="cv-layout-376b92ecd2">--</span>
             <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash" disabled aria-disabled="true">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
             </button>
-            <a href="#" id="anchor-arbiscan-link" target="_blank" rel="noopener noreferrer" class="arbiscan-link" style="display: none; margin-left: 10px; color: var(--signal); font-size: 0.82rem; text-decoration: none;">
+            <a href="#" id="anchor-arbiscan-link" target="_blank" rel="noopener noreferrer" class="arbiscan-link cv-layout-cacbf3da64">
               <span>View on Arbiscan ↗</span>
             </a>
           </span>
@@ -883,22 +886,22 @@
             <h4>Live Cryptographic Proof Verifier</h4>
             <button class="btn-action secondary small" id="btn-run-math-verify">Run Browser SHA-256 Proof</button>
           </div>
-          <p style="font-size: 0.85rem; color: var(--fog); margin-bottom: 12px;">
+          <p class="cv-layout-bf298bc3f9">
             Verify client-side in WebCrypto that the local salt preimage and head record CID compute the recorded 32-byte commitment. This calculation does not verify an on-chain transaction or finality.
           </p>
-          <div class="verify-result-output" id="verify-result-output" style="display: none;">
+          <div class="verify-result-output cv-layout-65d1f1c3d7" id="verify-result-output">
             <!-- Output calculated dynamically -->
           </div>
         </div>
       </div>
 
       <!-- Relayed Checkpoints Ledger -->
-      <div class="table-card" style="margin-top: 24px;">
+      <div class="table-card cv-layout-a005516828">
         <div class="table-header-title">
-          <h3 style="font-size: 1.05rem; font-weight: 600;">Arbitrum Relayed Checkpoints Ledger</h3>
-          <p style="font-size: 0.8rem; color: var(--fog); margin-top: 2px;">Recorded checkpoint receipts. A transaction link is not proof of current inclusion or finality.</p>
+          <h3 class="cv-layout-7ad8adff00">Arbitrum Relayed Checkpoints Ledger</h3>
+          <p class="cv-layout-e7a4154928">Recorded checkpoint receipts. A transaction link is not proof of current inclusion or finality.</p>
         </div>
-        <table class="data-table" id="table-relayer-checkpoints" style="margin-top: 12px;">
+        <table class="data-table cv-layout-63b04ba9d1" id="table-relayer-checkpoints">
           <thead>
             <tr>
               <th>Reported block</th>
@@ -947,7 +950,7 @@
         <div class="simulator-header">
           <div>
             <h3 class="card-subheading">Recovery Ceremony Stays Local</h3>
-            <p style="font-size: 0.85rem; color: var(--fog); margin-top: 4px;">
+            <p class="cv-layout-a82d3495da">
               Use the local CLI with the approved offline procedure to create, distribute, or verify guardian material. This dashboard only presents non-secret readiness metadata.
             </p>
           </div>
@@ -971,41 +974,41 @@
       <div class="fleet-kpi-ribbon" id="fleet-kpi-ribbon">
         <div class="fleet-kpi-card">
           <div class="kpi-title">Tracked Vaults</div>
-          <div class="kpi-value" id="fleet-kpi-vaults" style="color: var(--signal);">--</div>
+          <div class="kpi-value cv-layout-2ff40d572e" id="fleet-kpi-vaults">--</div>
           <div class="kpi-subtext">Active in fleet registry</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Active Operators</div>
-          <div class="kpi-value" id="fleet-kpi-operators" style="color: var(--ok);">-- / --</div>
+          <div class="kpi-value cv-layout-6a43a34635" id="fleet-kpi-operators">-- / --</div>
           <div class="kpi-subtext">Operator response counts not reported</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Cluster Latency (Avg)</div>
-          <div class="kpi-value" id="fleet-kpi-latency" style="color: var(--signal);">-- ms</div>
+          <div class="kpi-value cv-layout-2ff40d572e" id="fleet-kpi-latency">-- ms</div>
           <div class="kpi-subtext">Roundtrip probe time</div>
         </div>
         <div class="fleet-kpi-card">
           <div class="kpi-title">Audits Completed</div>
-          <div class="kpi-value" id="fleet-kpi-audits" style="color: var(--chain);">--</div>
+          <div class="kpi-value cv-layout-653dfc3843" id="fleet-kpi-audits">--</div>
           <div class="kpi-subtext">SQLite audit log entries</div>
         </div>
       </div>
 
       <!-- Operator Node Latency & Health Visualizer Grid -->
-      <div class="card-section" style="margin-top: 20px;">
-        <h3 class="card-subheading" style="margin-bottom: 12px;">Operator Node Topology & Latency</h3>
+      <div class="card-section cv-layout-93688d4ac4">
+        <h3 class="card-subheading cv-layout-3106344cde">Operator Node Topology & Latency</h3>
         <div class="fleet-operators-grid" id="fleet-operators-grid">
           <div class="loading-placeholder">Querying operator node health...</div>
         </div>
       </div>
 
       <!-- Tracked Vaults Table -->
-      <div class="table-card" style="margin-top: 20px;">
+      <div class="table-card cv-layout-93688d4ac4">
         <div class="table-header-title">
-          <h3 style="font-size: 1.05rem; font-weight: 600;">Fleet Vault Registrations</h3>
-          <p style="font-size: 0.8rem; color: var(--fog); margin-top: 2px;">Locally tracked vaults synchronized with fleet maintenance database</p>
+          <h3 class="cv-layout-7ad8adff00">Fleet Vault Registrations</h3>
+          <p class="cv-layout-e7a4154928">Locally tracked vaults synchronized with fleet maintenance database</p>
         </div>
-        <table class="data-table" id="table-fleet-vaults" style="margin-top: 12px;">
+        <table class="data-table cv-layout-63b04ba9d1" id="table-fleet-vaults">
           <thead>
             <tr>
               <th>Vault ID</th>
@@ -1021,12 +1024,12 @@
       </div>
 
       <!-- Autonomous Self-Repair Audit Log Table -->
-      <div class="table-card" style="margin-top: 20px;">
+      <div class="table-card cv-layout-93688d4ac4">
         <div class="table-header-title">
-          <h3 style="font-size: 1.05rem; font-weight: 600;">Autonomous Self-Repair Audit History</h3>
-          <p style="font-size: 0.8rem; color: var(--fog); margin-top: 2px;">Historical verification and repair runs recorded in SQLite fleet.db</p>
+          <h3 class="cv-layout-7ad8adff00">Autonomous Self-Repair Audit History</h3>
+          <p class="cv-layout-e7a4154928">Historical verification and repair runs recorded in SQLite fleet.db</p>
         </div>
-        <table class="data-table" id="table-fleet-audits" style="margin-top: 12px;">
+        <table class="data-table cv-layout-63b04ba9d1" id="table-fleet-audits">
           <thead>
             <tr>
               <th>Timestamp</th>
@@ -1079,7 +1082,7 @@
               <span class="readiness-card-title">Offline Paper Kit</span>
               <span class="readiness-status-badge recommended">Not recorded</span>
             </div>
-            <p style="font-size: 0.8rem; color: var(--fog); line-height: 1.5; margin: 0;">
+            <p class="cv-layout-d2807ee46f">
               This dashboard cannot confirm possession of an offline recovery kit. Record and test recovery material through the approved local procedure.
             </p>
           </div>
@@ -1088,7 +1091,7 @@
               <span class="readiness-card-title">Threshold Quorum</span>
               <span class="readiness-status-badge recommended">Not configured here</span>
             </div>
-            <p style="font-size: 0.8rem; color: var(--fog); line-height: 1.5; margin: 0;">
+            <p class="cv-layout-d2807ee46f">
               Guardian metadata may describe a policy, but it is not proof that usable recovery shares are held or have been tested.
             </p>
           </div>
@@ -1097,7 +1100,7 @@
               <span class="readiness-card-title">Replication Quorum</span>
               <span class="readiness-status-badge recommended">No audit evidence</span>
             </div>
-            <p style="font-size: 0.8rem; color: var(--fog); line-height: 1.5; margin: 0;">
+            <p class="cv-layout-d2807ee46f">
               Remote recovery coverage is shown only when a snapshot-scoped audit provides evidence.
             </p>
           </div>
@@ -1106,37 +1109,37 @@
         <div class="recovery-metadata-grid">
           <div class="op-meta-row">
             <span class="op-meta-label">Vault ID</span>
-            <span class="op-meta-val" id="rec-vault-id" style="font-family: var(--font-mono); color: var(--bone);">--</span>
+            <span class="op-meta-val cv-layout-752eb9e30a" id="rec-vault-id">--</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Checksum Verification</span>
-            <span class="op-meta-val" id="rec-crc32" style="color: var(--ash); font-weight: 600;">Checksum not available</span>
+            <span class="op-meta-val cv-layout-d0e5a3407b" id="rec-crc32">Checksum not available</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Signing PK</span>
-            <span class="op-meta-val" id="rec-signing-pk" style="font-family: var(--font-mono); font-size: 0.8rem;">--</span>
+            <span class="op-meta-val cv-layout-871ac19cb7" id="rec-signing-pk">--</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Encrypt PK</span>
-            <span class="op-meta-val" id="rec-encrypt-pk" style="font-family: var(--font-mono); font-size: 0.8rem;">--</span>
+            <span class="op-meta-val cv-layout-871ac19cb7" id="rec-encrypt-pk">--</span>
           </div>
           <div class="op-meta-row">
             <span class="op-meta-label">Recovery Locator</span>
-            <span class="op-meta-val" id="rec-locator" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--signal);">--</span>
+            <span class="op-meta-val cv-layout-93bf4fdaea" id="rec-locator">--</span>
           </div>
         </div>
 
-        <div class="secret-reveal-box" style="border-left: 3px solid var(--signal);">
-          <div style="flex: 1;">
-            <div class="secret-box-label" style="display: flex; align-items: center; gap: 8px;">
+        <div class="secret-reveal-box cv-layout-f62a3acfc2">
+          <div class="cv-layout-649f9eeb60">
+            <div class="secret-box-label cv-layout-a46c8abf5b">
               <span>Zero-Knowledge Secret Boundary</span>
-              <span class="badge-status-subtle" style="color: var(--signal); border-color: rgba(255, 176, 0, 0.38);">Protected</span>
+              <span class="badge-status-subtle cv-layout-3bd4a773d2">Protected</span>
             </div>
-            <div id="secret-display" class="secret-key-revealed" style="font-size: 0.82rem; line-height: 1.5; color: var(--fog);">
-              <span aria-hidden="true" style="color: var(--signal);">▪</span> Zero-Knowledge Security Invariant: Your master recovery secret R is never transmitted across the network or stored in browser cache. Run <code>ciphervault recover</code> directly in your local terminal.
+            <div id="secret-display" class="secret-key-revealed cv-layout-83f2d5e462">
+              <span aria-hidden="true" class="cv-layout-2ff40d572e">▪</span> Zero-Knowledge Security Invariant: Your master recovery secret R is never transmitted across the network or stored in browser cache. Run <code>ciphervault recover</code> directly in your local terminal.
             </div>
           </div>
-          <div class="secret-box-actions" style="display: none;">
+          <div class="secret-box-actions cv-layout-65d1f1c3d7">
             <button id="btn-toggle-secret" class="btn-toggle-secret">Reveal Secret</button>
             <button id="btn-copy-secret" class="btn-copy-secret" title="Copy Secret Key">Copy Key</button>
           </div>
@@ -1144,12 +1147,12 @@
 
         <!-- Clean-machine recovery instructions -->
         <div class="recovery-drill-guide">
-          <h4 style="font-size: 0.95rem; margin-bottom: 8px; color: var(--bone);">Disaster Recovery Procedure on a Clean Machine:</h4>
-          <ol style="padding-left: 20px; font-size: 0.85rem; color: var(--fog); line-height: 1.8;">
+          <h4 class="cv-layout-409feb082a">Disaster Recovery Procedure on a Clean Machine:</h4>
+          <ol class="cv-layout-08c4aaac99">
             <li>Install or copy the standalone <code>ciphervault.exe</code> binary to your clean machine.</li>
             <li>Execute the clean recovery command with your paper recovery secret:</li>
           </ol>
-          <div class="cli-code-pill" style="margin-top: 10px;">
+          <div class="cli-code-pill cv-layout-f2835880c5">
             <code id="rec-cli-command">ciphervault recover --kit recovery_kit.txt</code>
             <button class="btn-copy-code" data-code="ciphervault recover --kit recovery_kit.txt">Copy</button>
           </div>
@@ -1200,7 +1203,7 @@
         <div class="fastcdc-presets-row">
           <div class="fastcdc-file-picker">
             <span class="control-label">Inspect Active Vault Files:</span>
-            <select id="select-vault-file" class="select-compact" style="min-width: 250px;" aria-label="Select Tracked Vault File">
+            <select id="select-vault-file" class="select-compact cv-layout-d492bba0e2" aria-label="Select Tracked Vault File">
               <option value="">-- Select Tracked Confidential File --</option>
             </select>
             <button class="btn-action secondary small" id="btn-inspect-vault-file" type="button">
@@ -1212,7 +1215,7 @@
             </button>
           </div>
           <div class="fastcdc-upload-actions">
-            <label for="input-upload-file" class="btn-action secondary small btn-file-picker-label" title="Upload real file to chunk" style="cursor: pointer; margin: 0;">
+            <label for="input-upload-file" class="btn-action secondary small btn-file-picker-label cv-layout-3e85ba37c0" title="Upload real file to chunk">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                 <polyline points="17 8 12 3 7 8"></polyline>
@@ -1315,7 +1318,7 @@
       </div>
 
       <!-- Selected Chunk Inspector Drawer -->
-      <div class="chunk-detail-card" id="chunk-detail-card" style="display: none;">
+      <div class="chunk-detail-card cv-layout-65d1f1c3d7" id="chunk-detail-card">
         <div class="chunk-detail-header">
           <h3 class="chunk-detail-title">
             <span>Chunk #<span id="detail-chunk-index">0</span></span>
@@ -1338,7 +1341,7 @@
             <div class="entropy-meter-wrap">
               <span class="detail-val" id="detail-chunk-entropy">--</span>
               <div class="entropy-meter-bar">
-                <div class="entropy-meter-fill" id="detail-entropy-fill" style="width: 0%;"></div>
+                <div class="entropy-meter-fill cv-layout-36360302f7" id="detail-entropy-fill"></div>
               </div>
             </div>
           </div>
@@ -1391,7 +1394,7 @@
         <button class="btn-modal-close" id="btn-close-modal-snapshot" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
+        <p class="cv-layout-f8e033cbe6">
           CipherVault uses content-defined FastCDC chunks with 4 KiB, 16 KiB, and 64 KiB boundaries. Small files may receive 4 KiB bucket padding. Capture and remote recovery verification are reported as separate stages.
         </p>
         <div class="form-group">
@@ -1409,7 +1412,7 @@
         <button class="btn-action secondary" id="btn-cancel-modal-snapshot">Cancel</button>
         <button class="btn-action primary" id="btn-submit-snapshot">
           <span id="btn-submit-text">Capture &amp; Push</span>
-          <span id="btn-submit-spinner" class="spinner" style="display: none;"></span>
+          <span id="btn-submit-spinner" class="spinner cv-layout-65d1f1c3d7"></span>
         </button>
       </div>
     </div>
@@ -1434,13 +1437,13 @@
 
   <!-- Modal: Guardian Sheet Inspector -->
   <div class="modal-backdrop" id="modal-guardian-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-guardian-title">
-    <div class="modal-card" style="max-width: 680px;">
+    <div class="modal-card cv-layout-6aa3a45d54">
       <div class="modal-header">
         <h3 id="modal-guardian-title" class="modal-title">Guardian Descriptor Sheet</h3>
         <button class="btn-modal-close" id="btn-close-modal-guardian" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body" id="modal-guardian-body">
-        <pre id="modal-guardian-text" style="font-family: var(--font-mono); font-size: 0.78rem; background: var(--bg0); padding: 16px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; max-height: 400px; overflow-y: auto; color: var(--signal);"></pre>
+        <pre id="modal-guardian-text" class="cv-layout-aeb1e72187"></pre>
       </div>
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-close-guardian-footer">Close</button>
@@ -1468,16 +1471,16 @@
 
   <!-- Modal: Unified Sign In Options Menu -->
   <div class="modal-backdrop" id="modal-account-signin-menu" role="dialog" aria-modal="true" aria-labelledby="modal-signin-menu-title" hidden>
-    <div class="modal-card" style="max-width: 540px;">
+    <div class="modal-card cv-layout-0222082539">
       <div class="modal-header">
         <div>
           <h3 id="modal-signin-menu-title" class="modal-title">Sign in to CipherVault</h3>
-          <p class="modal-subtitle" style="margin: 4px 0 0; font-size: 0.8rem; color: var(--ash);">Zero-knowledge sovereign authentication</p>
+          <p class="modal-subtitle cv-layout-7b0bd666a2">Zero-knowledge sovereign authentication</p>
         </div>
         <button class="btn-modal-close" id="btn-close-modal-signin-menu" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.86rem; color: var(--fog); margin-bottom: 16px;">
+        <p class="cv-layout-e73a0f048c">
           Choose your authentication method to access authorized vault workspaces, manage team memberships, or review cryptographic recovery shares:
         </p>
 
@@ -1538,7 +1541,7 @@
             </div>
           </button>
         </div>
-        <p class="form-help" style="margin-top: 14px;">Local device sessions expire 30 minutes after sign-in; re-signing takes one click and never touches your vault keys or recovery kit.</p>
+        <p class="form-help cv-layout-5b5914ddd5">Local device sessions expire 30 minutes after sign-in; re-signing takes one click and never touches your vault keys or recovery kit.</p>
       </div>
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-cancel-modal-signin-menu">Cancel</button>
@@ -1548,18 +1551,18 @@
 
   <!-- Modal: Hosted account bootstrap -->
   <div class="modal-backdrop" id="modal-account-connect" role="dialog" aria-modal="true" aria-labelledby="modal-account-connect-title" hidden>
-    <div class="modal-card" style="max-width: 620px;">
+    <div class="modal-card cv-layout-b49c73b5e2">
       <div class="modal-header">
         <h3 id="modal-account-connect-title" class="modal-title">Connect your CipherVault account</h3>
         <button class="btn-modal-close" id="btn-close-modal-account-connect" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
+        <p class="cv-layout-f8e033cbe6">
           Production account enrollment is signed by the account key and the current vault device. The key stays in your OS keystore; the browser never receives it.
         </p>
         <p class="form-help">Run this from the CipherVault repository that contains your vault. The command signs a short-lived browser handoff locally and prints a one-time production link; open that link to finish sign-in and enroll your passkey or authenticator:</p>
-        <pre class="terminal-output" style="white-space: pre-wrap; user-select: all; margin-top: 12px;"><code>ciphervault auth connect --endpoint https://vault.cipherv.online/api/account</code></pre>
-        <p class="form-help" style="margin-top: 12px;">If the command is unavailable, install the latest release with the official installer, or run <code>ciphervault update</code>.</p>
+        <pre class="terminal-output cv-layout-869fedccfa"><code>ciphervault auth connect --endpoint https://vault.cipherv.online/api/account</code></pre>
+        <p class="form-help cv-layout-63b04ba9d1">If the command is unavailable, install the latest release with the official installer, or run <code>ciphervault update</code>.</p>
       </div>
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-cancel-modal-account-connect">Close</button>
@@ -1570,13 +1573,13 @@
 
   <!-- Modal: Hosted account passkey ceremony -->
   <div class="modal-backdrop" id="modal-account-passkey" role="dialog" aria-modal="true" aria-labelledby="modal-account-passkey-title" hidden>
-    <div class="modal-card" style="max-width: 520px;">
+    <div class="modal-card cv-layout-43b71806a4">
       <div class="modal-header">
         <h3 id="modal-account-passkey-title" class="modal-title">Hosted CipherVault account</h3>
         <button class="btn-modal-close" id="btn-close-modal-account-passkey" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
+        <p class="cv-layout-f8e033cbe6">
           Use a passkey stored by your browser, operating system, or security key. The dashboard receives only a short-lived session cookie; vault plaintext and private keys stay local.
         </p>
         <div class="form-group">
@@ -1594,13 +1597,13 @@
 
   <!-- Modal: Hosted account authenticator code -->
   <div class="modal-backdrop" id="modal-account-totp" role="dialog" aria-modal="true" aria-labelledby="modal-account-totp-title" hidden>
-    <div class="modal-card" style="max-width: 520px;">
+    <div class="modal-card cv-layout-43b71806a4">
       <div class="modal-header">
         <h3 id="modal-account-totp-title" class="modal-title">Authenticator app sign-in</h3>
         <button class="btn-modal-close" id="btn-close-modal-account-totp" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
+        <p class="cv-layout-f8e033cbe6">
           Enter the six-digit code from your enrolled authenticator app. This creates a short-lived account session; it never exposes your vault key.
         </p>
         <div class="form-group">
@@ -1622,10 +1625,10 @@
 
   <!-- Modal: Hosted account management -->
   <div class="modal-backdrop" id="modal-account-manage" role="dialog" aria-modal="true" aria-labelledby="modal-account-manage-title" hidden>
-    <div class="modal-card modal-card-wide" style="max-width: 840px;">
+    <div class="modal-card modal-card-wide cv-layout-6c02060b08">
       <div class="modal-header">
         <h3 id="modal-account-manage-title" class="modal-title">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-8ed08dcdbc"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           Account Management
         </h3>
         <button class="btn-modal-close" id="btn-close-modal-account-manage" aria-label="Close modal">&times;</button>
@@ -1635,16 +1638,16 @@
         <!-- Section: Team & Collaborators -->
         <div class="modal-section">
           <h4 class="modal-section-title">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><line x1="20" y1="8" x2="20" y2="14"/></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-8ed08dcdbc"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><line x1="20" y1="8" x2="20" y2="14"/></svg>
             Invite & Team Members
           </h4>
           <p class="modal-section-subtitle">Manage memberships and issue role-scoped workspace invitations.</p>
 
-          <div class="form-group" style="margin-bottom: 14px;">
+          <div class="form-group cv-layout-5b90e6fb6d">
             <label class="form-label" for="input-invite-account-id">Invite an account</label>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <input type="text" id="input-invite-account-id" class="form-input" placeholder="cvacct_…" autocomplete="off" spellcheck="false" style="flex:1; min-width:200px;">
-              <select id="input-invite-role" class="form-input" style="max-width: 140px;" aria-label="Invitation role">
+            <div class="cv-layout-7395648d93">
+              <input type="text" id="input-invite-account-id" class="form-input cv-layout-8176b1ef3f" placeholder="cvacct_…" autocomplete="off" spellcheck="false">
+              <select id="input-invite-role" class="form-input cv-layout-e52001c5f5" aria-label="Invitation role">
                 <option value="viewer">Viewer</option><option value="editor">Editor</option><option value="admin">Admin</option><option value="recovery">Recovery</option>
               </select>
               <button class="btn-action primary" id="btn-submit-account-invite" type="button">Invite</button>
@@ -1652,25 +1655,25 @@
             <p class="form-help">The invitee must already have a CipherVault account. The generated invitation token is displayed once for secure delivery.</p>
           </div>
 
-          <div class="form-group" style="margin-bottom: 6px;">
+          <div class="form-group cv-layout-06e0ec735a">
             <label class="form-label" for="account-membership-list">Active Memberships & Pending Invitations</label>
-            <pre id="account-membership-list" style="font-family: var(--font-mono); font-size: 0.82rem; background: var(--bg0); padding: 12px 14px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; max-height: 140px; overflow-y: auto; color: var(--bone);">Loading…</pre>
+            <pre id="account-membership-list" class="cv-layout-d623b7dd2c">Loading…</pre>
           </div>
         </div>
 
         <!-- Section: Role Matrix -->
         <div class="modal-section">
           <h4 class="modal-section-title">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-8ed08dcdbc"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
             Role Permissions Matrix
           </h4>
           <p class="modal-section-subtitle">Minimum capabilities enforced cryptographically by the account service.</p>
 
-          <div class="table-card" style="margin-top: 6px;">
+          <div class="table-card cv-layout-f31d7355b7">
             <table class="data-table" id="table-role-matrix" aria-label="Membership role capabilities">
               <thead>
                 <tr>
-                  <th style="text-align: left;">Capability</th>
+                  <th class="cv-layout-ea5fada68c">Capability</th>
                   <th>Owner</th>
                   <th>Admin</th>
                   <th>Editor</th>
@@ -1683,24 +1686,24 @@
               </tbody>
             </table>
           </div>
-          <p class="form-help" style="margin-top: 8px;">Recovery sessions must enroll an authenticated hardware or device key before initiating any administrative changes.</p>
+          <p class="form-help cv-layout-3c11586993">Recovery sessions must enroll an authenticated hardware or device key before initiating any administrative changes.</p>
         </div>
 
         <!-- Section: Approvals & Authorization Queue -->
         <div class="modal-section">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:4px;">
-            <h4 class="modal-section-title" style="margin:0;">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <div class="cv-layout-67aa1088fc">
+            <h4 class="modal-section-title cv-layout-ab79ea2b85">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-8ed08dcdbc"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
               Dual-Admin Approval Queue
             </h4>
-            <div style="display:flex; gap:8px; align-items:center;">
+            <div class="cv-layout-d8a80cb301">
               <button class="btn-action secondary small" id="btn-refresh-approvals" type="button">Refresh queue</button>
-              <span id="approvals-status" class="form-help" style="margin:0;">Not loaded.</span>
+              <span id="approvals-status" class="form-help cv-layout-ab79ea2b85">Not loaded.</span>
             </div>
           </div>
           <p class="modal-section-subtitle">Pending dual-authorization challenges requiring multi-party signatures.</p>
 
-          <div class="table-card" style="margin-top: 6px;">
+          <div class="table-card cv-layout-f31d7355b7">
             <table class="data-table" id="table-approvals" aria-label="Pending approval challenges">
               <thead>
                 <tr>
@@ -1716,47 +1719,47 @@
               </tbody>
             </table>
           </div>
-          <p class="form-help" style="margin-top: 8px;">Out-of-band approvals are confirmed with the CLI guardian ceremony (<code style="color:var(--signal); font-family:var(--font-mono);">ciphervault approve</code>); this view is read-only.</p>
+          <p class="form-help cv-layout-3c11586993">Out-of-band approvals are confirmed with the CLI guardian ceremony (<code class="cv-layout-21cd4520ab">ciphervault approve</code>); this view is read-only.</p>
         </div>
 
         <!-- Section: Security & Credentials -->
         <div class="modal-section">
           <h4 class="modal-section-title">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--signal);"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-8ed08dcdbc"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             Security & Authentication Factors
           </h4>
           <p class="modal-section-subtitle">Emergency offline codes and two-factor authenticator enrollment.</p>
 
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:12px;">
+          <div class="cv-layout-eea8090baa">
             <!-- Recovery codes card -->
-            <div style="background:var(--bg0); border:1px solid var(--line); border-radius:6px; padding:14px;">
-              <label class="form-label" style="font-weight:700; color:var(--bone); margin-bottom:6px;">Emergency Recovery Codes</label>
-              <p class="form-help" style="margin-top:0; margin-bottom:10px;">Offline single-use codes for account restoration.</p>
+            <div class="cv-layout-59a6147007">
+              <label class="form-label cv-layout-772efe4092">Emergency Recovery Codes</label>
+              <p class="form-help cv-layout-f33e3b7d2e">Offline single-use codes for account restoration.</p>
               <button class="btn-action secondary small" id="btn-generate-recovery-codes" type="button">Generate new codes</button>
-              <pre id="account-recovery-codes" style="font-family: var(--font-mono); font-size: 0.8rem; background: var(--bg1); padding: 10px; margin-top: 10px; border-radius: var(--edge); border: 1px solid var(--line); white-space: pre-wrap; color: var(--bone);" hidden></pre>
+              <pre id="account-recovery-codes" hidden class="cv-layout-8d66185b6c"></pre>
             </div>
 
             <!-- Authenticator app card -->
-            <div style="background:var(--bg0); border:1px solid var(--line); border-radius:6px; padding:14px;">
-              <label class="form-label" style="font-weight:700; color:var(--bone); margin-bottom:6px;">Authenticator App (TOTP)</label>
-              <div id="account-totp-status" class="form-help" aria-live="polite" style="margin-top:0; margin-bottom:10px; color:var(--bone);">Not enrolled</div>
-              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <div class="cv-layout-59a6147007">
+              <label class="form-label cv-layout-772efe4092">Authenticator App (TOTP)</label>
+              <div id="account-totp-status" class="form-help cv-layout-fb39d4eaa7" aria-live="polite">Not enrolled</div>
+              <div class="cv-layout-7395648d93">
                 <button class="btn-action secondary small" id="btn-start-totp-enrollment" type="button">Set up authenticator</button>
                 <button class="btn-action secondary small" id="btn-revoke-totp" type="button" hidden>Revoke authenticator</button>
               </div>
             </div>
           </div>
 
-          <div id="totp-enrollment-panel" hidden style="margin-top:14px; background:var(--bg0); border:1px solid var(--line); border-radius:6px; padding:16px;">
-            <p class="form-help" style="margin-top:0;">Scan the setup URI or enter the secret manually in your authenticator app (Google Authenticator, 1Password, etc.). The secret is shown only once.</p>
+          <div id="totp-enrollment-panel" hidden class="cv-layout-7015bc4a05">
+            <p class="form-help cv-layout-a0925a28f0">Scan the setup URI or enter the secret manually in your authenticator app (Google Authenticator, 1Password, etc.). The secret is shown only once.</p>
             <label class="form-label" for="totp-enrollment-uri">Setup URI</label>
-            <code id="totp-enrollment-uri" style="display:block; word-break:break-all; color:var(--signal); background:var(--bg1); padding:8px; border-radius:4px; border:1px solid var(--line); margin:6px 0 10px;"></code>
+            <code id="totp-enrollment-uri" class="cv-layout-94556821f6"></code>
             <button class="btn-action secondary small" id="btn-copy-totp-uri" type="button">Copy setup URI</button>
-            <label class="form-label" for="totp-enrollment-secret" style="display:block; margin-top:14px;">Manual secret key</label>
-            <code id="totp-enrollment-secret" style="display:block; word-break:break-all; color:var(--signal); background:var(--bg1); padding:8px; border-radius:4px; border:1px solid var(--line); margin:6px 0 10px;"></code>
-            <div style="display:flex; gap:8px; align-items:center; margin-top:10px; max-width:360px;">
+            <label class="form-label cv-layout-d3b3da6765" for="totp-enrollment-secret">Manual secret key</label>
+            <code id="totp-enrollment-secret" class="cv-layout-94556821f6"></code>
+            <div class="cv-layout-ee04e0886d">
               <input type="text" id="input-enrollment-totp-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="Enter 6-digit code">
-              <button class="btn-action primary small" id="btn-confirm-totp-enrollment" type="button" style="white-space:nowrap;">Confirm</button>
+              <button class="btn-action primary small cv-layout-eb99a4c193" id="btn-confirm-totp-enrollment" type="button">Confirm</button>
             </div>
           </div>
         </div>
@@ -1776,7 +1779,7 @@
         <button class="btn-modal-close" id="btn-close-modal-track" aria-label="Close modal">&times;</button>
       </div>
       <div class="modal-body">
-        <p style="font-size: 0.88rem; color: var(--fog); margin-bottom: 16px;">
+        <p class="cv-layout-f8e033cbe6">
           Tracking a file registers it for FastCDC chunking and encrypted replication. CipherVault will automatically append it to <code>.gitignore</code> to prevent accidental repository leaks.
         </p>
         <div class="form-group">
@@ -1801,7 +1804,7 @@
   </div>
 
   <!-- Modal: Global Spotlight Command Palette (Cmd+K / Ctrl+K) -->
-  <div class="modal-backdrop command-palette-backdrop" id="modal-command-palette" role="dialog" aria-modal="true" aria-labelledby="palette-search-label" hidden style="display: none;">
+  <div class="modal-backdrop command-palette-backdrop cv-layout-65d1f1c3d7" id="modal-command-palette" role="dialog" aria-modal="true" aria-labelledby="palette-search-label" hidden>
     <div class="command-palette-card">
       <div class="palette-input-wrap">
         <svg class="palette-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -1828,7 +1831,7 @@
 
   <!-- Modal: Keyboard Shortcuts -->
   <div class="modal-backdrop" id="modal-shortcuts" role="dialog" aria-modal="true" aria-labelledby="modal-shortcuts-title">
-    <div class="modal-card" style="max-width: 520px;">
+    <div class="modal-card cv-layout-43b71806a4">
       <div class="modal-header">
         <h3 id="modal-shortcuts-title" class="modal-title">Keyboard Shortcuts</h3>
         <button class="btn-modal-close" id="btn-close-modal-shortcuts" aria-label="Close modal">&times;</button>

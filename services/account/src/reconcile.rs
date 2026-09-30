@@ -109,7 +109,7 @@ impl ProviderClient for FakeProviderClient {
 }
 
 /// Fail-closed placeholder until a real provider API client is wired.
-/// Routes use this, so ownership proof returns 502 (not a false accept)
+/// Routes use this, so ownership proof returns 503 (not a false accept)
 /// when provider verification is unconfigured.
 pub struct NoProviderClient;
 
@@ -119,9 +119,7 @@ impl ProviderClient for NoProviderClient {
         _provider: VcsProvider,
         _external_id: &str,
     ) -> Result<Option<ProviderRepo>, VcsError> {
-        Err(VcsError::Provider(
-            "no provider client configured".to_string(),
-        ))
+        Err(VcsError::ProviderUnavailable)
     }
 
     fn verify_installation(
@@ -131,9 +129,7 @@ impl ProviderClient for NoProviderClient {
         _token: &str,
         _external_id: &str,
     ) -> Result<bool, VcsError> {
-        Err(VcsError::Provider(
-            "no provider client configured".to_string(),
-        ))
+        Err(VcsError::ProviderUnavailable)
     }
 }
 

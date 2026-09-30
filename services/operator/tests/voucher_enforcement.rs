@@ -105,7 +105,7 @@ async fn boot_http(operator_id: &str, vouchers_required: bool, max_quota: u64) -
         slot,
         operator_id,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -151,7 +151,7 @@ async fn boot_p2p_node(operator_id: &str, tag: &str) -> P2pNode {
         slot,
         tag,
     ));
-    let state = Arc::new(OperatorState::new(
+    let state = Arc::new(legacy_state(
         operator_id.to_string(),
         dir.clone(),
         generate_signing_key(),
@@ -366,12 +366,17 @@ async fn http_issuance_endpoint_gates_on_service_token() {
 #[tokio::test]
 async fn client_issue_voucher_roundtrip() {
     let node = boot_http("voucher-client", true, u64::MAX).await;
+    std::env::set_var(
+        "CIPHERVAULT_OPERATOR_SERVICE_TOKEN_ENDPOINTS",
+        &node.base_url,
+    );
     let client = OperatorClient::new(node.base_url.clone());
     let holder = fresh_holder_pk();
     let voucher = client
         .issue_voucher(&holder, 4096, 3600)
         .await
         .expect("client issuance works with the service token env");
+    std::env::remove_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN_ENDPOINTS");
     assert_eq!(voucher.holder_pk_hex, holder);
     assert_eq!(voucher.quota_bytes, 4096);
 
@@ -672,4 +677,18 @@ async fn memory_leg_matches_enforcement() {
         .await
         .expect_err("memory voucherless append rejected");
     assert_eq!(server_status(&err), Some(403));
+}
+
+// This harness deliberately exercises the explicit legacy migration mode.
+fn legacy_state(
+    id: String,
+    dir: std::path::PathBuf,
+    key: ed25519_dalek::SigningKey,
+) -> OperatorState {
+    OperatorState::new_with_security(
+        id,
+        dir,
+        key,
+        ciphervault_operator::state::OperatorSecurityConfig::legacy(),
+    )
 }

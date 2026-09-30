@@ -2,6 +2,7 @@
 name = "ciphervault-maintenance"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
@@ -9,6 +10,7 @@ license.workspace = true
 ciphervault-crypto = { path = "../../crates/crypto" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-storage = { path = "../../crates/storage" }
+ciphervault-recovery = { path = "../../crates/recovery" }
 
 tokio.workspace = true
 clap.workspace = true
@@ -22,4 +24,9 @@ sha2.workspace = true
 ed25519-dalek.workspace = true
 rusqlite.workspace = true
 rand.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+ciphervault-operator = { path = "../operator" }
+axum.workspace = true
 

@@ -5,8 +5,8 @@
 
 ## 1. Executive Summary & Security Objectives
 
-**CipherVault** is a decentralized, zero-knowledge secret backup and disaster recovery platform. The cryptographic protocol is designed to provide:
-1. **Confidentiality against Untrusted Operators (IND-CCA2)**: Storage operators observe only opaque, authenticated chunk wire objects indexed by content-derived IDs ($CID = \text{SHA-256}(\text{canonical-CBOR}(C))$). Operators cannot determine file names, directory structures, variable counts, or plaintext contents.
+**CipherVault** provides client-encrypted secret backup and disaster recovery. This is an audit specification, not a completed external audit or formal proof. The cryptographic protocol is designed to provide:
+1. **Confidentiality against Untrusted Operators**: Encrypted manifests hide paths and whole-file metadata; encrypted CBOR objects use SHA-256 CIDs. Deterministic equality, lengths, vault/epoch and access patterns remain observable. Default v1 exposes public candidate-file confirmation; opt-in v2 uses keyed opaque identifiers. Do not claim full IND-CCA2 security for deterministic deduplicated storage without a precise leakage model.
 2. **Side-Channel Resistance & Constant-Time Arithmetic**: Galois Field $\text{GF}(2^8)$ multiplication (`gf_mul`) executes in strictly branchless, constant-time operations; the branchless claim is scoped to `gf_mul` only, not to the surrounding share-evaluation loops.
 3. **Hardware-Anchored Device Identity**: Physical capacitive touch confirmation (`Slot 9C` on YubiKey PIV) enforces physical user presence before snapshot head records can be signed.
 4. **Memory Hygiene & Zero-Disk Exposure**: Decryption keys and plaintext files are scrubbed using compiler-fenced zeroization (`zeroize::ZeroizeOnDrop`) and injected strictly via in-memory process environment blocks.
@@ -18,7 +18,8 @@
 | Primitive | Standard / RFC | Parameterization / Key Size | Domain / Usage |
 | :--- | :--- | :--- | :--- |
 | **Symmetric AEAD** | draft-irtf-cfrg-xchacha | XChaCha20-Poly1305 (256-bit key, 192-bit/24-byte nonce, 128-bit MAC tag) | Chunk payload & manifest encryption |
-| **Key Derivation (KDF)** | CipherVault custom (NOT HKDF, NOT libsodium-compatible) | Blake2b-512 with `CipherVault-KDF-v1` prefix + 8-byte context + LE index, truncated to 32 bytes | Epoch keys, file version keys, manifest keys, chunk nonces |
+| **Legacy Key Derivation** | CipherVault custom (not libsodium-compatible) | Blake2b-512 with `CipherVault-KDF-v1` prefix + 8-byte context + LE index, truncated to 32 bytes | Recovery descriptors, manifest keys, v1 file keys and nonces |
+| **Opt-in v2 Chunk Derivation** | HKDF-SHA256 | Versioned salt; length-prefixed domain plus fixed-width vault/epoch/binding | Keyed opaque IDs, per-chunk key and nonce; independent review pending |
 | **Content Addressing** | FIPS 180-4 | SHA-256 (32-byte digest) over canonical CBOR | Chunk Content Identifiers (CIDs) |
 | **Digital Signatures** | RFC 8032 | Ed25519 (EdDSA over Curve25519) | Snapshot records, head commitments, device certs |
 | **Key Agreement (ECDH)** | RFC 7748 | X25519 | Clean-machine sealed envelopes & recovery |
@@ -29,7 +30,7 @@
 
 ## 3. Key Derivation Hierarchy & Domain Separation Registry
 
-All key derivations use the domain-separated custom KDF (Blake2b-512 over the `CipherVault-KDF-v1` prefix, an 8-byte context, the subkey material, and the master key) or plain SHA-256/Blake2b hashes, with explicit context strings:
+The diagram below describes the retained v1 hierarchy. Epoch and device keys are random; recovery envelopes carry sealed epoch keys. V2 chunk derivations are separately specified in [CHUNK_PROTOCOL_V2.md](../crates/snapshot/CHUNK_PROTOCOL_V2.md), including exact salt/info bytes, AEAD bindings and compatibility limits. Default captures remain v1 pending independent review; only `CIPHERVAULT_CHUNK_V2_WRITE=1` opts into v2. Readers support both versions without changing old addresses.
 
 ```mermaid
 graph TD
@@ -99,7 +100,7 @@ In $\text{GF}(2^8)$, any non-zero element $a$ satisfies:
 $$a^{2^8 - 1} \equiv a^{255} \equiv 1 \implies a^{-1} \equiv a^{254}$$
 $a^{254}$ is computed via a fixed-length square-and-multiply chain of 14 operations:
 $$254 = 128 + 64 + 32 + 16 + 8 + 4 + 2$$
-Because the exponentiation chain has fixed length and calls branchless `gf_mul`, inversion runs in **provably constant time** with zero memory lookup table cache leaks.
+The exponentiation chain has fixed length and calls branchless `gf_mul`. Auditors should inspect generated code and surrounding secret-handling loops; source-level structure alone is not a platform-wide constant-time proof.
 
 ---
 
@@ -107,10 +108,14 @@ Because the exponentiation chain has fixed length and calls branchless `gf_mul`,
 
 | Invariant ID | Security Property | Formal Definition / Verification Check |
 | :--- | :--- | :--- |
-| **INV-01** | Zero Plaintext at Rest | SQLite DB keys are protected via OS Keyring (Windows DPAPI / non-Windows authenticated envelope); `recovery_kit_backup.txt` never exists on disk. |
+| **INV-01** | Protected Local Keys | Epoch/device key blobs use Windows DPAPI or a non-Windows AEAD envelope backed by an explicit master key/private key file. Metadata, tracked files, offline recovery exports and restore backups require separate disk protection. |
 | **INV-02** | Master Secret Scrubbing | `RecoverySecret` implements `ZeroizeOnDrop`; volatile memory is scrubbed with compiler fences immediately after interactive init ceremony. |
 | **INV-03** | Cross-Vault Isolation | FastCDC derivation incorporates `VaultEpochKey` and `vault_id`. Identical files across distinct vaults produce mutually uncorrelated ciphertexts. |
 | **INV-04** | Hardware Presence | Snapshot commitments with hardware binding strictly require capacitive user touch (`Slot 9C`) via APDU verification before signing. |
-| **INV-05** | Atomic Restores | Snapshot restores stage files in `.ciphervault_staging_*`, verify SHA-256 digests against manifest entries, and atomic-rename into working directory. |
-| **INV-06** | Zero-Disk Runtime Execution | `ciphervault run` passes decrypted secrets strictly via child process environment blocks in RAM, never flushing buffers to physical storage. |
+| **INV-05** | Journaled Restores | Verify all decrypted files, stage private new files and backups in `.ciphervault-restore`, journal before per-file atomic publication, and roll back interrupted uncommitted work. External edits stop rollback with a retained journal; whole-tree visibility is not atomic. |
+| **INV-06** | No Plaintext File During Runtime Injection | `ciphervault run` supplies secrets through child environment blocks without writing a secrets file. Child writes, OS inspection, swap and dumps are outside this guarantee. |
 | **INV-07** | Out-of-Band Quorum | Clean-machine emergency recoveries requiring approval block until cryptographically signed Ed25519 receipts satisfy guardian quorum. |
+
+## 6. Required independent review
+
+Review the legacy custom KDF and public candidate-confirmation boundary, opt-in deterministic HKDF v2 key/nonce construction and equality leakage, sealed-box key agreement and recipient binding, hardware/software authority composition, guardian-share consistency, authenticated DAG head/fork selection and freshness assumptions. Confirm unknown-version rejection and legacy fixture decoding; exercise repeated chunks, manifest reorder/tamper, cross-vault/epoch isolation, interrupted publication and external destination edits. Unit tests and implementation review do not close this external assurance gate. See [current guarantees](CURRENT_SECURITY_GUARANTEES.md) for deployment limits.

@@ -2,8 +2,12 @@
 name = "ciphervault-file-lock"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dependencies]
-# Intentionally dependency-free: pure std plus hand-rolled Win32 FFI.
+# Windows uses std and direct Win32 FFI; Unix needs libc's portable open flags.
