@@ -59,7 +59,7 @@ const cases = [
 try {
   const script = path.join(scratch, 'bootstrap-test.sh');
   fs.writeFileSync(script, `#!/usr/bin/env bash\nset -euo pipefail\n${functions}\n` +
-    `jq() { "$JQ_EXECUTABLE" ${process.platform === 'win32' ? '--binary ' : ''}"$@"; }\n` +
+    `jq() { command "$JQ_EXECUTABLE" ${process.platform === 'win32' ? '--binary ' : ''}"$@"; }\n` +
     'curl() {\n case "${@: -1}" in\n' +
     '  *service-accounts/default/token) printf \'{"access_token":"synthetic-offline-token"}\';;\n' +
     '  *secretmanager.googleapis.com*) cat "$PAYLOAD_RESPONSE";;\n' +
