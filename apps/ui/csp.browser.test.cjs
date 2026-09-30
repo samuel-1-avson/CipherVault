@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '../..');
 const candidates = [process.env.CIPHERVAULT_TEST_BROWSER,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].filter(Boolean);
 const browser = candidates.find(candidate => fs.existsSync(candidate));
 assert(browser, 'A Chromium browser is required; set CIPHERVAULT_TEST_BROWSER.');
@@ -99,11 +99,12 @@ const server = http.createServer((request, response) => {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = 'http://127.0.0.1:' + server.address().port;
-    const browserArgs = ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
+    const browserArgs = ['--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-proxy-server', '--no-first-run', '--no-default-browser-check',
       '--disable-extensions', '--disable-background-networking', '--user-data-dir=' + profile,
       '--virtual-time-budget=2500', '--dump-dom', url];
     // Hosted Linux VMs cannot initialize Chrome's sandbox; keep it enabled for local runs.
     if (process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true') browserArgs.push('--no-sandbox');
+    console.log(`Running browser CSP test with ${browser}`);
     child = spawn(browser, browserArgs, {windowsHide:true});
     let output = '', diagnostics = '';
     child.stdout.on('data', data => { output += data; });
@@ -118,7 +119,7 @@ const server = http.createServer((request, response) => {
       : diagnostics.slice(0, 1500) + '\n... diagnostics truncated ...\n' + diagnostics.slice(-1500);
     assert.equal(code, 0, `Browser failed (signal ${signal}): ${diagnosticSummary}`);
     const encoded = output.match(/data-csp-test="([^"]+)"/);
-    assert(encoded, 'Browser test did not complete: ' + diagnostics.slice(-1500));
+    assert(encoded, `Browser test did not complete. DOM output: ${output.slice(-2500)}\nDiagnostics: ${diagnosticSummary}`);
     const result = JSON.parse(Buffer.from(encoded[1], 'base64').toString());
     assert(!result.error, result.error);
     assert.deepEqual(result.scriptErrors, [], 'Actual browser script errors');
