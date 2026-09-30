@@ -3399,14 +3399,23 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         let uri = format!("/v1/projects/{project}/environments/{env}/secrets/K");
 
-        // Exhaust the read-value bucket directly (fast, deterministic, no
-        // env-var races under parallel tests); the route must then 429.
-        {
+        // Seed the exhausted quota in one durable write. Repeated reservations
+        // can take longer than the real 60-second window on slow CI disks and
+        // correctly roll over before the HTTP assertion. The quota unit tests
+        // cover reservation counts, exact rollover, and concurrent connections;
+        // this fixture checks HTTP enforcement and headers.
+        let exhaust_bucket = |bucket: &crate::abuse::QuotaBucket| {
             let db = state.connection().unwrap();
-            for _ in 0..READ_VALUE_BUCKET.max_requests {
-                let _ = check_quota(&db, &READ_VALUE_BUCKET, &tenant, "account:alice", now_utc());
-            }
-        }
+            let now = now_utc();
+            db.execute(
+                "INSERT INTO abuse_quotas(quota_key, window_started_at_utc, count, updated_at_utc)
+                 VALUES(?1, ?2, ?3, ?2)
+                 ON CONFLICT(quota_key) DO UPDATE SET window_started_at_utc = excluded.window_started_at_utc,
+                     count = excluded.count, updated_at_utc = excluded.updated_at_utc",
+                rusqlite::params![format!("{}:{tenant}:account:alice", bucket.name), now, bucket.max_requests],
+            ).unwrap();
+        };
+        exhaust_bucket(&READ_VALUE_BUCKET);
         let request = Request::get(uri.as_str())
             .header("authorization", format!("Bearer {token}"))
             .body(Body::empty())
@@ -3434,12 +3443,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         // Exhaust the API bucket: every scoped call 429s.
-        {
-            let db = state.connection().unwrap();
-            for _ in 0..API_BUCKET.max_requests {
-                let _ = check_quota(&db, &API_BUCKET, &tenant, "account:alice", now_utc());
-            }
-        }
+        exhaust_bucket(&API_BUCKET);
         let (status, _) = call(app.clone(), "GET", &uri, Some(&token), None).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         cleanup(root);

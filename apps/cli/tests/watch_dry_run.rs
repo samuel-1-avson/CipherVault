@@ -16,6 +16,9 @@ async fn test_watch_dry_run_inspects_without_persisting() {
             .unwrap()
             .as_nanos()
     ));
+    fs::create_dir_all(&test_dir).unwrap();
+    // Resolve the freshly created fixture root before strict ancestor checks.
+    let test_dir = fs::canonicalize(test_dir).unwrap();
     let root_dir = test_dir.clone();
     let vault_dir = root_dir.join(".ciphervault");
     fs::create_dir_all(&vault_dir).unwrap();

@@ -47,6 +47,7 @@ async fn test_maintenance_audit_and_self_repair() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     // 1. Spawn 3 operator instances
     let op1_dir = test_dir.join("op1");
@@ -285,6 +286,7 @@ fn test_persisted_fleet_maintenance_scheduler() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
     let db_path = test_dir.join("fleet_scheduler.db");
 
     let db = MaintenanceDb::open(&db_path).unwrap();

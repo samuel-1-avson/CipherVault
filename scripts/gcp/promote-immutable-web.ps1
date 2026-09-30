@@ -18,6 +18,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RuntimeServiceAccount,
 
+    # Optional complete endpoint-to-key map. When supplied, pin every configured
+    # operator before the dashboard starts; semicolons survive GCE metadata's
+    # comma-separated key/value syntax and startup-web.sh converts them back.
+    [string[]]$OperatorPins = @(),
+
     [Parameter(Mandatory = $true)]
     [string]$ExpectedBuildVersion,
 
@@ -243,6 +248,22 @@ foreach ($item in @(
 )) {
     Assert-MetadataValue $item.Name $item.Value
 }
+if ($OperatorPins.Count -gt 0) {
+    $configuredEndpoints = @($OperatorEndpoints.Split(' ') | ForEach-Object { $_.TrimEnd('/') } | Where-Object { $_ })
+    $seenPinEndpoints = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($pinEntry in $OperatorPins) {
+        $pinParts = $pinEntry.Split('=', 2)
+        if ($pinParts.Count -ne 2 -or $pinParts[0] -notin $configuredEndpoints -or $pinParts[1] -notmatch '^[0-9a-f]{64}$') {
+            throw "Every OperatorPins entry must be a configured endpoint followed by one lowercase 32-byte hex key."
+        }
+        if (-not $seenPinEndpoints.Add($pinParts[0])) {
+            throw "OperatorPins contains a duplicate endpoint."
+        }
+    }
+    if ($seenPinEndpoints.Count -ne $configuredEndpoints.Count) {
+        throw "OperatorPins must cover every configured endpoint when supplied."
+    }
+}
 foreach ($secretName in @($AccountTotpSecret, $AccountScopeTokenSecret, $AccountLocalKekSecret, $VcsWebhookSecret)) {
     if ($secretName -notmatch '^[A-Za-z0-9_-]+$') {
         throw "A Secret Manager secret name contains unsupported characters."
@@ -354,6 +375,7 @@ try {
         "vcs-webhook-secret=$VcsWebhookSecret",
         "project-id=$ProjectId"
     )
+    if ($OperatorPins.Count -gt 0) { $metadata += "operator-pins=$($OperatorPins -join ';')" }
     if ($FinalityConfirmations.Trim() -ne "") { $metadata += "finality-confirmations=$($FinalityConfirmations.Trim())" }
     if ($OperatorRegions.Trim() -ne "") { $metadata += "operator-regions=$($OperatorRegions.Trim())" }
     if ($CheckpointPublisherKey.Trim() -ne "") { $metadata += "checkpoint-publisher-key=$($CheckpointPublisherKey.Trim())" }

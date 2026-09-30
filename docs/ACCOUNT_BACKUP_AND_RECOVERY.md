@@ -27,6 +27,19 @@ Windows. A 120-second limit bounds the copying stage. Long-lived read snapshots
 can temporarily increase the live WAL; schedule large backups when traffic is
 low and monitor free disk space.
 
+For a maintenance container, bind the source directory read-only and keep both
+existing `accounts.sqlite3-wal` and `accounts.sqlite3-shm` readable by the service
+UID. A live WAL database without those sidecars can require creation/recovery
+that a read-only mount correctly refuses. Investigate that failure rather than
+using `immutable=1` against a live database or granting backup code write access
+to production. Run with no network and disable the image's HTTP healthcheck;
+these maintenance commands intentionally never start HTTP.
+[SQLite read-only WAL requirements](https://www.sqlite.org/wal.html#read_only_databases).
+
+The release bundles SQLite 3.53.2 through Rusqlite 0.40.2, including the upstream
+WAL-reset corruption fix. All source access in this command remains read-only;
+only the new output database is checkpointed into a self-contained artifact.
+
 The bundle contains:
 
 - `accounts.sqlite3`: a self-contained database with no required WAL sidecar.

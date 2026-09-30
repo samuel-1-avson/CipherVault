@@ -10,6 +10,8 @@ fn coherent_hashing_rejects_nonregular_and_oversized_inputs_before_reading() {
     let root =
         std::env::temp_dir().join(format!("cv-watcher-read-{:032x}", rand::random::<u128>()));
     fs::create_dir_all(&root).unwrap();
+    // macOS temp paths may include /var -> /private/var; resolve the fixture root.
+    let root = fs::canonicalize(root).unwrap();
     assert!(VaultWatcher::read_file_coherently(&root).is_err());
     assert_eq!(
         VaultWatcher::read_file_coherently(root.join("missing")).unwrap(),
@@ -29,6 +31,8 @@ fn coherent_hashing_rejects_nonregular_and_oversized_inputs_before_reading() {
 fn coherent_hashing_rejects_final_and_parent_symlinks() {
     let root =
         std::env::temp_dir().join(format!("cv-watcher-links-{:032x}", rand::random::<u128>()));
+    fs::create_dir_all(&root).unwrap();
+    let root = fs::canonicalize(root).unwrap();
     let original = root.join("original");
     fs::create_dir_all(&original).unwrap();
     fs::write(original.join("synthetic.env"), b"SYNTHETIC=test\n").unwrap();
@@ -48,6 +52,8 @@ async fn test_watcher_agent_and_coherent_capture() {
             .unwrap()
             .as_nanos()
     ));
+    fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
     let root_dir = test_dir.clone();
     let vault_dir = root_dir.join(".ciphervault");
     fs::create_dir_all(&vault_dir).unwrap();
@@ -172,6 +178,7 @@ impl LoopFixture {
         let root =
             std::env::temp_dir().join(format!("cv-watcher-loop-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(root.join(".ciphervault")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         let recovery = RecoverySecret::generate();
         let recovery_signer = recovery.derive_recovery_signing_key().unwrap();
         let (_, encryption) = recovery.derive_recovery_encryption_keys().unwrap();

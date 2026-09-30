@@ -882,6 +882,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("cv-v1-default-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
+        // macOS temp paths may include /var -> /private/var; resolve the fixture root.
+        let root = fs::canonicalize(root).unwrap();
         let bytes = b"SYNTHETIC_DEFAULT_CAPTURE=compatible\n";
         fs::write(root.join("synthetic.env"), bytes).unwrap();
         let vault = [51; 32];
@@ -929,6 +931,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("cv-v2-repeat-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         // Repeated content forces identical standalone chunks under every
         // supported chunk profile, plus one short trailing chunk.
         let content = vec![0u8; 1024 * 1024 + 23];
@@ -1010,6 +1013,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("cv-capture-bounds-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         let file = fs::File::create(root.join("huge.env")).unwrap();
         file.set_len(MAX_FILE_SIZE + 1).unwrap();
         let vault = [5; 32];
@@ -1063,6 +1067,7 @@ mod tests {
         ));
         fs::create_dir_all(root.join("vault")).unwrap();
         fs::create_dir_all(root.join("outside")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         fs::write(root.join("outside/secret.env"), b"OUTSIDE=must_not_capture").unwrap();
         symlink(
             root.join("outside/secret.env"),
@@ -1097,6 +1102,8 @@ mod tests {
     fn test_atomic_all_or_nothing_restore_on_corruption() {
         let temp_dir =
             std::env::temp_dir().join(format!("cv_atomic_restore_{}", rand::random::<u64>()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let temp_dir = fs::canonicalize(temp_dir).unwrap();
         let vault_root = temp_dir.join("vault_root");
         let restore_target = temp_dir.join("restore_target");
         fs::create_dir_all(&vault_root).unwrap();
@@ -1159,6 +1166,8 @@ mod tests {
     #[test]
     fn test_restore_bounds_enforcement_and_rejection() {
         let temp_dir = std::env::temp_dir().join(format!("cv_bounds_{}", rand::random::<u64>()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let temp_dir = fs::canonicalize(temp_dir).unwrap();
         let restore_target = temp_dir.join("target");
         fs::create_dir_all(&restore_target).unwrap();
 
@@ -1217,6 +1226,8 @@ mod tests {
     fn test_decrypt_snapshot_in_memory() {
         let temp_dir =
             std::env::temp_dir().join(format!("cv_decrypt_mem_{}", rand::random::<u64>()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let temp_dir = fs::canonicalize(temp_dir).unwrap();
         let vault_root = temp_dir.join("vault_root");
         fs::create_dir_all(&vault_root).unwrap();
 

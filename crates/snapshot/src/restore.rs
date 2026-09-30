@@ -341,6 +341,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("cv-restore-crash-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
+        // Resolve the freshly created fixture root before strict ancestor checks.
+        let root = fs::canonicalize(root).unwrap();
         let stage = root.join(STAGE);
         fs::create_dir(&stage).unwrap();
         lock_secret_directory(&stage).unwrap();
@@ -386,6 +388,8 @@ mod tests {
     fn published_secret_has_restrictive_windows_acl() {
         let root =
             std::env::temp_dir().join(format!("cv-restore-acl-{:032x}", rand::random::<u128>()));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         let files = vec![DecryptedFile {
             relative_path: "secret.env".into(),
             plaintext: b"SYNTHETIC=value".to_vec(),
@@ -407,6 +411,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("cv-restore-fail-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         fs::write(root.join("a.env"), b"old-a").unwrap();
         let files = vec![
             DecryptedFile {
@@ -439,6 +444,7 @@ mod tests {
             rand::random::<u128>()
         ));
         fs::create_dir_all(root.join("blocked")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         fs::write(root.join("a.env"), b"old-a").unwrap();
         let files = vec![
             DecryptedFile {

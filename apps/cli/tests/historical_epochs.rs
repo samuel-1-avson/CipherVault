@@ -58,6 +58,9 @@ fn historical_restore_diff_and_run_use_each_snapshots_epoch_after_rotation() {
         rand::random::<u128>()
     ));
     fs::create_dir_all(&root).unwrap();
+    // macOS temp_dir uses /var, a system alias for /private/var. Pass the
+    // canonical fixture path so strict restore sees no symlink ancestors.
+    let root = root.canonicalize().unwrap();
     succeeds(cli(&root, &["init", "--operators", "http://127.0.0.1:1"]));
     fs::write(
         root.join(".env"),
@@ -168,6 +171,7 @@ fn historical_restore_diff_and_run_use_each_snapshots_epoch_after_rotation() {
 fn writer_gate_is_fail_safe_in_real_cli_capture() {
     let root = std::env::temp_dir().join(format!("cv-writer-gate-{:032x}", rand::random::<u128>()));
     fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
     succeeds(cli(&root, &["init", "--operators", "http://127.0.0.1:1"]));
     fs::write(root.join(".env"), b"SYNTHETIC_WRITE_GATE=test\n").unwrap();
     succeeds(cli(&root, &["track", ".env"]));
@@ -180,7 +184,12 @@ fn writer_gate_is_fail_safe_in_real_cli_capture() {
     .unwrap();
     assert!(store.list_snapshots().unwrap().is_empty());
     assert!(store.list_pending_uploads().unwrap().is_empty());
-    assert_eq!(store.get_device_state().unwrap().2, 0);
+    // The child encrypts its device key with the harness's explicit portable
+    // master key. Inspect through that same child environment: the parent
+    // deliberately retains its own keystore and must not decrypt child keys.
+    let status: serde_json::Value =
+        serde_json::from_str(&succeeds(cli(&root, &["status", "--json"]))).unwrap();
+    assert_eq!(status["device_counter"], 0);
     let versions = || {
         let head = store.get_active_head().unwrap().unwrap();
         let cid = head.snapshot_id.as_slice().try_into().unwrap();

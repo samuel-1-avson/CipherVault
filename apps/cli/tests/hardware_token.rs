@@ -205,6 +205,7 @@ fn test_hardware_token_snapshot_and_head_signing_ceremony() {
             .as_millis()
     ));
     fs::create_dir_all(&temp_dir).unwrap();
+    let temp_dir = fs::canonicalize(temp_dir).unwrap();
     let test_file = temp_dir.join("secret_document.txt");
     fs::write(&test_file, b"Hardware-authenticated confidential content").unwrap();
 

@@ -120,6 +120,7 @@ async fn setup_replication_fixture() -> ReplicationFixture {
         slot
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     // 1. Spawn 3 operator instances
     let op1_dir = test_dir.join("op1");

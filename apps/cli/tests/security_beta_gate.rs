@@ -79,6 +79,7 @@ async fn test_canary_leak_defense_across_operators_and_db() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     let vault_root = test_dir.join("vault");
     fs::create_dir_all(&vault_root).unwrap();
@@ -353,6 +354,7 @@ fn test_operator_boundary_and_dos_limits() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     let state = OperatorState::new_with_security(
         "op_test".to_string(),
@@ -417,6 +419,7 @@ async fn test_threshold_guardian_recovery_flow() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     // 1. Create a master recovery secret R and offline recovery kit
     let vault_id = [0x42u8; 32];
@@ -516,6 +519,7 @@ async fn test_unauthorized_caller_cannot_append_to_existing_vault_log() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     let state = Arc::new(OperatorState::new_with_security(
         "op_f02".to_string(),
@@ -606,6 +610,7 @@ fn test_untrack_removes_file_from_local_store() {
             .as_nanos()
     ));
     fs::create_dir_all(&test_dir).unwrap();
+    let test_dir = fs::canonicalize(test_dir).unwrap();
 
     let db_path = test_dir.join("vault.db");
     let store = LocalVaultStore::open(&db_path).unwrap();

@@ -355,6 +355,9 @@ mod tests {
             rand::random::<u128>()
         ));
         fs::create_dir_all(&root).unwrap();
+        // macOS exposes its temporary directory through /var -> /private/var.
+        // Resolve this fixture-owned root before invoking strict capture checks.
+        let root = fs::canonicalize(root).unwrap();
         let recovery = RecoverySecret::generate();
         let root_key = recovery.derive_recovery_signing_key().unwrap();
         let (_, recovery_enc_pk) = recovery.derive_recovery_encryption_keys().unwrap();
