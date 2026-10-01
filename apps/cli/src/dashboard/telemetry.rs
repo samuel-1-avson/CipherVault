@@ -30,6 +30,7 @@ const PRIVATE_TELEMETRY_LIMITS: Limits = Limits {
     subscribers: 64,
     operators: 32,
 };
+const BACKLOG_PROBE_LIMIT: usize = 4;
 const PRIVATE_TELEMETRY_PERIOD: Duration = Duration::from_secs(3);
 type Probe = Arc<dyn Fn(TelemetryKey) -> BoxFuture<'static, String> + Send + Sync>;
 
@@ -149,6 +150,19 @@ static TOKEN_PROBE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static OPERATOR_PROBES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static BACKLOG_PROBES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
+#[cfg(test)]
+pub(super) async fn wait_for_blocking_probes_to_finish() {
+    let Some(capacity) = BACKLOG_PROBES.get() else {
+        return;
+    };
+    let permits = capacity
+        .clone()
+        .acquire_many_owned(BACKLOG_PROBE_LIMIT as u32)
+        .await
+        .expect("backlog probe semaphore stays open");
+    drop(permits);
+}
+
 pub(super) fn subscribe(key: TelemetryKey) -> Result<TelemetrySubscription, &'static str> {
     PRIVATE_TELEMETRY
         .get_or_init(|| {
@@ -223,7 +237,7 @@ async fn sample(key: TelemetryKey) -> String {
     };
     let backlog = async move {
         let permit = BACKLOG_PROBES
-            .get_or_init(|| Arc::new(Semaphore::new(4)))
+            .get_or_init(|| Arc::new(Semaphore::new(BACKLOG_PROBE_LIMIT)))
             .clone()
             .acquire_owned()
             .await

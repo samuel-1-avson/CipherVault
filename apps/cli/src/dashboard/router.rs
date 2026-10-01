@@ -1965,8 +1965,16 @@ mod tests {
         server.abort();
         let _ = server.await;
         drop(response);
-        // A bounded blocking SQLite sample already dispatched at the next
-        // tick may briefly retain its Windows file handle after cancellation.
+        // Aborting the async sampler cannot cancel a spawn_blocking SQLite
+        // sample already dispatched at the next tick. Wait for its permit to
+        // return before removing the fixture; otherwise it may recreate WAL
+        // sidecars while remove_dir_all is running (ENOTEMPTY on Unix).
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            super::super::telemetry::wait_for_blocking_probes_to_finish(),
+        )
+        .await
+        .expect("telemetry SQLite probes must stop before fixture cleanup");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 match std::fs::remove_dir_all(&root) {
