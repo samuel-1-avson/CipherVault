@@ -93,6 +93,15 @@ The release workflow verifies the signed `SHA256SUMS.txt`, then updates the vers
 If that job ever fails, first authenticate the checksum file and signature using `dist/scripts/install.sh`, then run the manifest updater against the authenticated checksums:
 
 ```sh
-python3 dist/scripts/fill_package_manager_manifests.py dist/package-managers SHA256SUMS.txt v1.0.28
+tag=v1.0.28
+verify_dir="$(mktemp -d)"
+trap 'rm -rf "$verify_dir"' EXIT
+CIPHERVAULT_INSTALLER_VERIFY_ONLY=1 \
+  CIPHERVAULT_VERIFY_SUMS="$PWD/SHA256SUMS.txt" \
+  CIPHERVAULT_VERIFY_SIGNATURE="$PWD/SHA256SUMS.txt.sig" \
+  CIPHERVAULT_VERIFY_TAG="$tag" \
+  CIPHERVAULT_VERIFY_SCRATCH="$verify_dir" \
+  bash dist/scripts/install.sh
+python3 dist/scripts/fill_package_manager_manifests.py dist/package-managers SHA256SUMS.txt "$tag"
 git diff -- dist/package-managers
 ```
