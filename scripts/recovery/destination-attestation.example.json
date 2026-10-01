@@ -1,0 +1,8 @@
+{
+  "governance_id": "backup-custodian-team",
+  "bucket": "gs://REPLACE_WITH_CUSTODIAN_BUCKET",
+  "project_number": "REPLACE_WITH_SEPARATE_NUMERIC_PROJECT_NUMBER",
+  "production_admins_cannot_delete": false,
+  "review_reference": "REPLACE_WITH_IAM_AND_ORGANIZATION_REVIEW_REFERENCE",
+  "expires_at_utc": 0
+}

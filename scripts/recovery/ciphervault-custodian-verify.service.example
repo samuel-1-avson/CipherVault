@@ -1,0 +1,21 @@
+[Unit]
+Description=Independently download and rehearse the latest CipherVault account archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=custodian
+Group=custodian
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/ciphervault/scripts/recovery/receive_custody.py --config /etc/ciphervault/custodian.json --verify-latest
+TimeoutStartSec=3h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/run/offline-custody /etc/ciphervault
+Environment=CLOUDSDK_CONFIG=/var/lib/ciphervault-custodian/gcloud
+ReadWritePaths=/var/lib/ciphervault-custodian
+# Runs on the independent custodian host, never the production VM.
+# Test its failure handler and separate freshness monitor before activation.

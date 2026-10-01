@@ -20,6 +20,9 @@ pub enum CryptoError {
     #[error("Sealed box payload too short: minimum length {min_len}")]
     SealedBoxPayloadTooShort { min_len: usize },
 
+    #[error("Sealed box key agreement rejected a non-contributory X25519 public key")]
+    NonContributoryKeyAgreement,
+
     #[error("Argon2 password hashing error: {0}")]
     PasswordHashError(String),
 

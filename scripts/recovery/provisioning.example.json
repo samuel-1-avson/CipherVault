@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "production_project_id": "gen-lang-client-0022105784",
+  "production_project_number": "108687509435",
+  "production_admin_principals": ["REPLACE_WITH_ACTUAL_PRODUCTION_ADMIN_PRINCIPAL"],
+  "recovery_project_id": "cv-recovery-108687509435",
+  "recovery_bucket_name": "cv-account-recovery-108687509435",
+  "bucket_location": "EU",
+  "retention_days": 30,
+  "billing_account": "REPLACE_WITH_CUSTODIAN_APPROVED_BILLING_ACCOUNT",
+  "organization_id": null,
+  "folder_id": null,
+  "provisioner_account": "REPLACE_WITH_ACTUAL_INDEPENDENT_CUSTODIAN_EMAIL",
+  "custody_admin_principals": ["REPLACE_WITH_ACTUAL_BACKUP_ADMIN_PRINCIPAL"],
+  "restore_principals": ["REPLACE_WITH_ACTUAL_RESTORE_CUSTODIAN_PRINCIPAL"],
+  "offline_key_custodian_principals": ["REPLACE_WITH_ACTUAL_SEPARATE_OFFLINE_KEY_CUSTODIAN_PRINCIPAL"],
+  "production_uploader_principal": "serviceAccount:cv-web-runtime@gen-lang-client-0022105784.iam.gserviceaccount.com",
+  "age_public_recipient": "REPLACE_WITH_ACTUAL_CUSTODIAN_AGE_PUBLIC_RECIPIENT",
+  "governance_review_reference": "REPLACE_WITH_APPROVED_INDEPENDENCE_REVIEW",
+  "independence_reviewed": false,
+  "review_expires_at_utc": 0
+}

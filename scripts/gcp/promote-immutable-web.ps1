@@ -248,6 +248,66 @@ foreach ($item in @(
 )) {
     Assert-MetadataValue $item.Name $item.Value
 }
+
+function Suspend-AndConfirmAccountRollbackSafe {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstanceName,
+        [Parameter(Mandatory = $true)][string]$ProjectId,
+        [Parameter(Mandatory = $true)][string]$Zone
+    )
+    # Stop the entire unit before inspecting policy. Otherwise an owner can
+    # enable required MFA between this check and the legacy account restart.
+    # The prior account binary ignores the additive MFA tables.
+    $rollbackGuard = @'
+import contextlib
+import pathlib
+import sqlite3
+import subprocess
+import sys
+
+def inspect_database(database):
+    database = pathlib.Path(database)
+    if not database.is_absolute() or any(part.is_symlink() for part in (database, *database.parents)):
+        raise RuntimeError("Unexpected database path")
+    if not database.is_file():
+        raise RuntimeError("Account database is missing")
+    with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5)) as db:
+        db.execute("PRAGMA query_only=ON")
+        if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise RuntimeError("Account database integrity failed")
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"accounts", "sessions"}.issubset(tables):
+            raise RuntimeError("Account schema is missing")
+        exists = db.execute("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_mfa_policy')").fetchone()[0]
+        if not exists:
+            return True
+        # Unknown/invalid policy values are unsafe too. Do not log identities.
+        return db.execute("SELECT COUNT(*) FROM account_mfa_policy WHERE required IS NULL OR required != 0").fetchone()[0] == 0
+
+def main():
+    mount = subprocess.check_output(["docker", "volume", "inspect", "ciphervault-ui_account_data", "--format", "{{.Mountpoint}}"], text=True, stderr=subprocess.DEVNULL).strip()
+    if not inspect_database(pathlib.Path(mount) / "accounts.sqlite3"):
+        print("ACCOUNT_ROLLBACK_BLOCKED_REQUIRED_MFA")
+        return 2
+    print("ACCOUNT_ROLLBACK_SAFE_NO_REQUIRED_MFA")
+    return 0
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        # A failed read must never authorize downgrade, and diagnostics must
+        # not expose account rows or ambient process configuration.
+        print("ACCOUNT_ROLLBACK_BLOCKED_UNVERIFIED_DATABASE")
+        sys.exit(3)
+'@
+    $remoteCommand = "set -eu`ncommand -v python3 >/dev/null`nsudo systemctl stop ciphervault-ui.service`nsudo python3 - <<'CIPHERVAULT_ROLLBACK_GUARD'`n$rollbackGuard`nCIPHERVAULT_ROLLBACK_GUARD"
+    $remoteCommand = $remoteCommand.Replace("`r", "")
+    $result = Invoke-NativeText gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command $remoteCommand
+    if ($result.ExitCode -ne 0 -or $result.Text -ne "ACCOUNT_ROLLBACK_SAFE_NO_REQUIRED_MFA") {
+        throw "Account rollback safety could not be established. Required MFA may be active; candidate image metadata and staged configuration must be retained."
+    }
+}
 if ($OperatorPins.Count -gt 0) {
     $configuredEndpoints = @($OperatorEndpoints.Split(' ') | ForEach-Object { $_.TrimEnd('/') } | Where-Object { $_ })
     $seenPinEndpoints = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
@@ -442,7 +502,21 @@ try {
     Write-Host "Promotion completed. Run scripts/gcp/verify-immutable-deployment.sh for independent post-deploy verification." -ForegroundColor Green
 } catch {
     if ($promotionStarted) {
-        Write-Warning "Promotion failed after the VM stop. Restoring the last-good staged configuration and the supplied signed rollback images."
+        Write-Warning "Promotion failed after the VM stop. Checking whether the previous account image can safely resume."
+        try {
+            Suspend-AndConfirmAccountRollbackSafe -InstanceName $InstanceName -ProjectId $ProjectId -Zone $Zone
+        } catch {
+            Write-Warning $_.Exception.Message
+            # Preserve the candidate account/configuration, including any newly
+            # required MFA policy. Never restore an older database to bypass it.
+            try {
+                Invoke-Gcloud compute ssh $InstanceName --project $ProjectId --zone $Zone --command "sudo systemctl start ciphervault-ui.service"
+            } catch {
+                Write-Warning "The candidate service could not be restarted. Keep it isolated and repair the candidate deployment; do not downgrade the account service."
+            }
+            throw
+        }
+        Write-Warning "No required MFA policy exists. Restoring the last-good staged configuration and the supplied signed rollback images."
         try {
             # The boot-time startup script reinstalls the active config from
             # release/, so restoring the snapshot here makes the reset boot

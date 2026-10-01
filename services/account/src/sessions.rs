@@ -242,6 +242,10 @@ pub async fn post_login(
     ) {
         return service_error(error.into());
     }
+    let mfa_required = match crate::mfa::policy_required(db, &challenge.0) {
+        Ok(required) => required,
+        Err(error) => return service_error(error.into()),
+    };
     if let Err(error) = txn.commit() {
         return service_error(error.into());
     }
@@ -255,6 +259,9 @@ pub async fn post_login(
                 auth_method: "device".into(),
                 issued_at_utc: now,
                 expires_at_utc: expires_at,
+                mfa_required,
+                mfa_verified_at_utc: None,
+                mfa_proof_id: None,
             },
         }),
     )
@@ -466,6 +473,10 @@ pub async fn post_session_handoff_consume(
     ) {
         return service_error(error.into());
     }
+    let mfa_required = match crate::mfa::policy_required(&db, &handoff.0) {
+        Ok(required) => required,
+        Err(error) => return service_error(error.into()),
+    };
     let mut response = Json(SessionResponse {
         token: token.clone(),
         session: SessionView {
@@ -474,6 +485,9 @@ pub async fn post_session_handoff_consume(
             auth_method: handoff.2,
             issued_at_utc: handoff.5,
             expires_at_utc: expires_at,
+            mfa_required,
+            mfa_verified_at_utc: None,
+            mfa_proof_id: None,
         },
     })
     .into_response();

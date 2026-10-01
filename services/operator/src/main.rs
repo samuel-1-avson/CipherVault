@@ -4,7 +4,7 @@ use ed25519_dalek::SigningKey;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,6 +34,13 @@ use ciphervault_operator::{create_router, OperatorState};
 struct Args {
     #[arg(short, long, default_value = "8101", help = "Port to listen on")]
     port: u16,
+
+    #[arg(
+        long,
+        default_value = "0.0.0.0",
+        help = "IP address for the HTTP API; use 127.0.0.1 for isolated local drills (P2P listeners are separate)"
+    )]
+    bind_address: IpAddr,
 
     #[arg(
         short,
@@ -454,7 +461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let addr = SocketAddr::new(args.bind_address, args.port);
     println!(
         "{}",
         "=======================================================".cyan()
@@ -488,6 +495,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod identity_tests {
     use super::format_identity_registry_entry;
+    use clap::Parser;
+
+    #[test]
+    fn http_bind_address_supports_loopback_and_rejects_hostnames() {
+        let defaults = super::Args::try_parse_from(["ciphervault-operator"]).unwrap();
+        assert_eq!(defaults.bind_address.to_string(), "0.0.0.0");
+        for address in ["127.0.0.1", "::1"] {
+            let args =
+                super::Args::try_parse_from(["ciphervault-operator", "--bind-address", address])
+                    .unwrap();
+            assert!(args.bind_address.is_loopback());
+        }
+        assert!(super::Args::try_parse_from([
+            "ciphervault-operator",
+            "--bind-address",
+            "https://localhost",
+        ])
+        .is_err());
+    }
 
     #[test]
     fn registry_entry_pairs_operator_id_with_public_key() {

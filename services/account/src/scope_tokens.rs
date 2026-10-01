@@ -52,6 +52,9 @@ pub struct ScopeClaims {
     /// device/passkey revocation. No raw session token is placed in claims.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_session_hash: Option<String>,
+    /// Bind this credential to the second-factor proof present at issuance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mfa_proof_id: Option<String>,
     /// Explicit human elevation expires with the fresh authentication window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevated_until_utc: Option<u64>,
@@ -79,6 +82,7 @@ impl ScopeClaims {
             branch: None,
             cnf: None,
             origin_session_hash: None,
+            mfa_proof_id: None,
             elevated_until_utc: None,
             principal_id: principal_id.to_string(),
             issued_at_utc,
@@ -131,6 +135,7 @@ impl ScopeClaims {
             branch: None,
             cnf: None,
             origin_session_hash: None,
+            mfa_proof_id: None,
             elevated_until_utc: None,
             principal_id: format!("account:{account_id}"),
             issued_at_utc: 0,
@@ -263,6 +268,9 @@ pub(crate) fn scope_origin_active(
     now: u64,
     require_strong: bool,
 ) -> Result<bool, rusqlite::Error> {
+    if !crate::mfa::scope_mfa_active(db, claims, now)? {
+        return Ok(false);
+    }
     let Some(origin) = claims.origin_session_hash.as_deref() else {
         return Ok(true);
     };

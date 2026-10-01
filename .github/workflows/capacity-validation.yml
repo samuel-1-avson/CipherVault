@@ -1,0 +1,49 @@
+name: Isolated Capacity Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capacity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-tcp:
+    name: Linux release binaries, synthetic TCP workload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: capacity-release
+      - name: Verify capacity harness accounting and safety limits
+        run: node --test tests/capacity_harness.cjs
+      - name: Build durable service binaries
+        run: cargo build --locked --release -p ciphervault-account -p ciphervault-operator
+      - name: Validate isolated local TCP services
+        run: |
+          node scripts/capacity-validation.cjs \
+            --account-bin target/release/ciphervault-account \
+            --operator-bin target/release/ciphervault-operator \
+            --output capacity-results.json \
+            --requests 240 --concurrency 1,8,32,64 --p99-ms 2000 \
+            --require-enforced-mfa --require-overload-rejection
+      - name: Preserve measured evidence, including failed gates
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: capacity-${{ github.sha }}
+          path: capacity-results.json
+          if-no-files-found: warn
+          retention-days: 30

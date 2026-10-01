@@ -1,0 +1,9 @@
+{
+  "governance_id": "offline-key-custodians",
+  "historical_kek_versions": [],
+  "totp_key_retained": false,
+  "scope_signing_key_rotation_ready": false,
+  "archive_decryption_key_retained": false,
+  "restore_reference": "REPLACE_WITH_INDEPENDENT_CUSTODIAN_RESTORE_REFERENCE",
+  "expires_at_utc": 0
+}

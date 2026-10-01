@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "production_project_number": "REPLACE_WITH_NUMERIC_PROJECT_NUMBER",
+  "production_governance_id": "production-admin-team",
+  "production_principals": ["group:REPLACE_WITH_PRODUCTION_ADMINS"],
+  "account_binary": "/usr/local/bin/ciphervault-account",
+  "gcloud_binary": "/usr/lib/google-cloud-sdk/bin/gcloud",
+  "data_dir": "/var/lib/ciphervault-account",
+  "work_dir": "/var/lib/ciphervault-custody",
+  "kek_file": "/run/secrets/account-local-kek",
+  "totp_key_file": "/run/secrets/account-totp-key",
+  "max_backup_age_seconds": 90000,
+  "max_artifact_bytes": 1073741824,
+  "timeout_seconds": 900,
+  "destination": {
+    "bucket": "gs://REPLACE_WITH_CUSTODIAN_BUCKET",
+    "prefix": "account-custody",
+    "project_number": "REPLACE_WITH_SEPARATE_NUMERIC_PROJECT_NUMBER",
+    "governance_id": "backup-custodian-team",
+    "min_retention_days": 30,
+    "attestation_file": "/etc/ciphervault/destination-attestation.json"
+  },
+  "key_custody": {
+    "governance_id": "offline-key-custodians",
+    "receipt_file": "/etc/ciphervault/key-custody-receipt.json"
+  },
+  "archive_encryption": {
+    "age_binary": "/usr/local/bin/age",
+    "recipient": "REPLACE_WITH_AGE_X25519_PUBLIC_RECIPIENT",
+    "identity_file": null
+  }
+}

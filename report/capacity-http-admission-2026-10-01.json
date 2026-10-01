@@ -1,0 +1,1163 @@
+{
+  "format_version": 1,
+  "started_at_utc": "2026-10-01T09:04:42.724Z",
+  "scope": "isolated local TCP; synthetic fixtures; no production or cloud calls",
+  "host": {
+    "os": "Windows_NT 10.0.26220",
+    "arch": "x64",
+    "logical_cpus": 16,
+    "total_memory_bytes": 16356954112,
+    "node": "v24.20.0"
+  },
+  "configuration": {
+    "concurrency": [
+      1,
+      8,
+      32,
+      64
+    ],
+    "requests": 240,
+    "secrets": 50,
+    "objectBytes": 65536,
+    "p99Ms": 2000,
+    "overload": 128,
+    "overloadBytes": 1048576,
+    "requireRejection": true
+  },
+  "binaries": {
+    "account": {
+      "version": "ciphervault-account 1.0.26",
+      "sha256": "7fcc5b7fd48e727f783210096d0917dd242622630c0030ebf8a2ca5457e5f159",
+      "binary_path": "C:\\Users\\samue\\.cargo-targets\\ciphervault\\debug\\ciphervault-account.exe",
+      "profile_hint": "debug"
+    },
+    "operator": {
+      "version": "ciphervault-operator 1.0.26",
+      "sha256": "0f28d4773719a7c9787444914f20d74903c2c9410efb4c1f6ff68f6db0c697fd",
+      "binary_path": "C:\\Users\\samue\\.cargo-targets\\ciphervault\\debug\\ciphervault-operator.exe",
+      "profile_hint": "debug"
+    }
+  },
+  "phases": [
+    {
+      "name": "account-mixed-c1",
+      "service": "account",
+      "concurrency": 1,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 4038.97,
+      "requests_per_second": 59.42,
+      "successes_per_second": 59.42,
+      "p50_ms": 15.48,
+      "p95_ms": 32.53,
+      "p99_ms": 56.51,
+      "max_ms": 66.58,
+      "errors": [],
+      "operations": {
+        "value_read": {
+          "requests": 96,
+          "successes": 96,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 96
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 4038.97,
+          "requests_per_second": 23.77,
+          "successes_per_second": 23.77,
+          "p50_ms": 14.68,
+          "p95_ms": 20.42,
+          "p99_ms": 36.16,
+          "max_ms": 36.16,
+          "errors": []
+        },
+        "materialize_5": {
+          "requests": 60,
+          "successes": 60,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 60
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 4038.97,
+          "requests_per_second": 14.86,
+          "successes_per_second": 14.86,
+          "p50_ms": 16.95,
+          "p95_ms": 28.92,
+          "p99_ms": 35.67,
+          "max_ms": 35.67,
+          "errors": []
+        },
+        "manual_rotation": {
+          "requests": 48,
+          "successes": 48,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 48
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 4038.97,
+          "requests_per_second": 11.88,
+          "successes_per_second": 11.88,
+          "p50_ms": 15.06,
+          "p95_ms": 18.52,
+          "p99_ms": 25.21,
+          "max_ms": 25.21,
+          "errors": []
+        },
+        "metadata_list": {
+          "requests": 24,
+          "successes": 24,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 24
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 4038.97,
+          "requests_per_second": 5.94,
+          "successes_per_second": 5.94,
+          "p50_ms": 18.16,
+          "p95_ms": 32.27,
+          "p99_ms": 38.37,
+          "max_ms": 38.37,
+          "errors": []
+        },
+        "audit_export": {
+          "requests": 12,
+          "successes": 12,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 12
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 4038.97,
+          "requests_per_second": 2.97,
+          "successes_per_second": 2.97,
+          "p50_ms": 36.92,
+          "p95_ms": 66.58,
+          "p99_ms": 66.58,
+          "max_ms": 66.58,
+          "errors": []
+        }
+      },
+      "backup": {
+        "elapsed_ms": 98.76,
+        "requests_completed_when_backup_finished": 14,
+        "overlapped_requests": true,
+        "audit_chains_checked": 1,
+        "database_bytes": 544768,
+        "table_rows": {
+          "accounts": 16,
+          "devices": 0,
+          "encryption_keys": 1,
+          "environments": 1,
+          "organizations": 1,
+          "projects": 1,
+          "recovery_codes": 0,
+          "scope_token_denylist": 0,
+          "secret_access_events": 75,
+          "secret_versions": 50,
+          "secrets": 50,
+          "sessions": 16,
+          "totp_credentials": 0,
+          "webauthn_credentials": 0
+        }
+      },
+      "disk": {
+        "bytes": 4984528,
+        "files": 3
+      }
+    },
+    {
+      "name": "operator-mixed-c1",
+      "service": "operator",
+      "concurrency": 1,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 3165.9,
+      "requests_per_second": 75.81,
+      "successes_per_second": 75.81,
+      "p50_ms": 14.41,
+      "p95_ms": 22.29,
+      "p99_ms": 25.9,
+      "max_ms": 26.72,
+      "errors": [],
+      "disk": {
+        "bytes": 6293129,
+        "files": 101
+      },
+      "operations": {
+        "unique_write": {
+          "requests": 80,
+          "successes": 80,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 80
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 3165.9,
+          "requests_per_second": 25.27,
+          "successes_per_second": 25.27,
+          "p50_ms": 19.05,
+          "p95_ms": 21.61,
+          "p99_ms": 26.21,
+          "max_ms": 26.21,
+          "errors": []
+        },
+        "verified_read": {
+          "requests": 160,
+          "successes": 160,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 160
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 3165.9,
+          "requests_per_second": 50.54,
+          "successes_per_second": 50.54,
+          "p50_ms": 10.97,
+          "p95_ms": 22.38,
+          "p99_ms": 25.9,
+          "max_ms": 26.72,
+          "errors": []
+        }
+      }
+    },
+    {
+      "name": "account-mixed-c8",
+      "service": "account",
+      "concurrency": 8,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 2257.4,
+      "requests_per_second": 106.32,
+      "successes_per_second": 106.32,
+      "p50_ms": 57.71,
+      "p95_ms": 147.92,
+      "p99_ms": 187.68,
+      "max_ms": 266.78,
+      "errors": [],
+      "operations": {
+        "value_read": {
+          "requests": 96,
+          "successes": 96,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 96
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2257.4,
+          "requests_per_second": 42.53,
+          "successes_per_second": 42.53,
+          "p50_ms": 90.46,
+          "p95_ms": 141.01,
+          "p99_ms": 187.68,
+          "max_ms": 187.68,
+          "errors": []
+        },
+        "materialize_5": {
+          "requests": 60,
+          "successes": 60,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 60
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2257.4,
+          "requests_per_second": 26.58,
+          "successes_per_second": 26.58,
+          "p50_ms": 51.93,
+          "p95_ms": 149.64,
+          "p99_ms": 266.78,
+          "max_ms": 266.78,
+          "errors": []
+        },
+        "manual_rotation": {
+          "requests": 48,
+          "successes": 48,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 48
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2257.4,
+          "requests_per_second": 21.26,
+          "successes_per_second": 21.26,
+          "p50_ms": 54.7,
+          "p95_ms": 147.92,
+          "p99_ms": 167.98,
+          "max_ms": 167.98,
+          "errors": []
+        },
+        "metadata_list": {
+          "requests": 24,
+          "successes": 24,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 24
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2257.4,
+          "requests_per_second": 10.63,
+          "successes_per_second": 10.63,
+          "p50_ms": 41.53,
+          "p95_ms": 57.71,
+          "p99_ms": 63.06,
+          "max_ms": 63.06,
+          "errors": []
+        },
+        "audit_export": {
+          "requests": 12,
+          "successes": 12,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 12
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2257.4,
+          "requests_per_second": 5.32,
+          "successes_per_second": 5.32,
+          "p50_ms": 124.78,
+          "p95_ms": 157.16,
+          "p99_ms": 157.16,
+          "max_ms": 157.16,
+          "errors": []
+        }
+      },
+      "backup": {
+        "elapsed_ms": 112.11,
+        "requests_completed_when_backup_finished": 19,
+        "overlapped_requests": true,
+        "audit_chains_checked": 1,
+        "database_bytes": 860160,
+        "table_rows": {
+          "accounts": 16,
+          "devices": 0,
+          "encryption_keys": 1,
+          "environments": 1,
+          "organizations": 1,
+          "projects": 1,
+          "recovery_codes": 0,
+          "scope_token_denylist": 0,
+          "secret_access_events": 530,
+          "secret_versions": 99,
+          "secrets": 50,
+          "sessions": 16,
+          "totp_credentials": 0,
+          "webauthn_credentials": 0
+        }
+      },
+      "disk": {
+        "bytes": 5263056,
+        "files": 3
+      }
+    },
+    {
+      "name": "operator-mixed-c8",
+      "service": "operator",
+      "concurrency": 8,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 209.5,
+      "requests_per_second": 1145.6,
+      "successes_per_second": 1145.6,
+      "p50_ms": 5.45,
+      "p95_ms": 12.92,
+      "p99_ms": 15,
+      "max_ms": 21.27,
+      "errors": [],
+      "disk": {
+        "bytes": 11536009,
+        "files": 181
+      },
+      "operations": {
+        "unique_write": {
+          "requests": 80,
+          "successes": 80,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 80
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 209.5,
+          "requests_per_second": 381.86,
+          "successes_per_second": 381.86,
+          "p50_ms": 9.92,
+          "p95_ms": 14.3,
+          "p99_ms": 21.27,
+          "max_ms": 21.27,
+          "errors": []
+        },
+        "verified_read": {
+          "requests": 160,
+          "successes": 160,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 160
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 209.5,
+          "requests_per_second": 763.72,
+          "successes_per_second": 763.72,
+          "p50_ms": 4.6,
+          "p95_ms": 8.16,
+          "p99_ms": 9.12,
+          "max_ms": 9.59,
+          "errors": []
+        }
+      }
+    },
+    {
+      "name": "account-mixed-c32",
+      "service": "account",
+      "concurrency": 32,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 2567.89,
+      "requests_per_second": 93.46,
+      "successes_per_second": 93.46,
+      "p50_ms": 296.71,
+      "p95_ms": 552.31,
+      "p99_ms": 612.33,
+      "max_ms": 703.03,
+      "errors": [],
+      "operations": {
+        "metadata_list": {
+          "requests": 24,
+          "successes": 24,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 24
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2567.89,
+          "requests_per_second": 9.35,
+          "successes_per_second": 9.35,
+          "p50_ms": 231.54,
+          "p95_ms": 456.35,
+          "p99_ms": 532.7,
+          "max_ms": 532.7,
+          "errors": []
+        },
+        "value_read": {
+          "requests": 96,
+          "successes": 96,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 96
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2567.89,
+          "requests_per_second": 37.38,
+          "successes_per_second": 37.38,
+          "p50_ms": 318.73,
+          "p95_ms": 589.27,
+          "p99_ms": 703.03,
+          "max_ms": 703.03,
+          "errors": []
+        },
+        "materialize_5": {
+          "requests": 60,
+          "successes": 60,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 60
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2567.89,
+          "requests_per_second": 23.37,
+          "successes_per_second": 23.37,
+          "p50_ms": 326.05,
+          "p95_ms": 525.39,
+          "p99_ms": 600.66,
+          "max_ms": 600.66,
+          "errors": []
+        },
+        "manual_rotation": {
+          "requests": 48,
+          "successes": 48,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 48
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2567.89,
+          "requests_per_second": 18.69,
+          "successes_per_second": 18.69,
+          "p50_ms": 270.13,
+          "p95_ms": 548.94,
+          "p99_ms": 579.62,
+          "max_ms": 579.62,
+          "errors": []
+        },
+        "audit_export": {
+          "requests": 12,
+          "successes": 12,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 12
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2567.89,
+          "requests_per_second": 4.67,
+          "successes_per_second": 4.67,
+          "p50_ms": 381.58,
+          "p95_ms": 492.61,
+          "p99_ms": 492.61,
+          "max_ms": 492.61,
+          "errors": []
+        }
+      },
+      "backup": {
+        "elapsed_ms": 120.87,
+        "requests_completed_when_backup_finished": 16,
+        "overlapped_requests": true,
+        "audit_chains_checked": 1,
+        "database_bytes": 1179648,
+        "table_rows": {
+          "accounts": 16,
+          "devices": 0,
+          "encryption_keys": 1,
+          "environments": 1,
+          "organizations": 1,
+          "projects": 1,
+          "recovery_codes": 0,
+          "scope_token_denylist": 0,
+          "secret_access_events": 967,
+          "secret_versions": 147,
+          "secrets": 50,
+          "sessions": 16,
+          "totp_credentials": 0,
+          "webauthn_credentials": 0
+        }
+      },
+      "disk": {
+        "bytes": 5615312,
+        "files": 3
+      }
+    },
+    {
+      "name": "operator-mixed-c32",
+      "service": "operator",
+      "concurrency": 32,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 217.79,
+      "requests_per_second": 1101.96,
+      "successes_per_second": 1101.96,
+      "p50_ms": 25.45,
+      "p95_ms": 46.01,
+      "p99_ms": 54.57,
+      "max_ms": 59.96,
+      "errors": [],
+      "disk": {
+        "bytes": 16778889,
+        "files": 261
+      },
+      "operations": {
+        "unique_write": {
+          "requests": 80,
+          "successes": 80,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 80
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 217.79,
+          "requests_per_second": 367.33,
+          "successes_per_second": 367.33,
+          "p50_ms": 33.1,
+          "p95_ms": 53.51,
+          "p99_ms": 59.96,
+          "max_ms": 59.96,
+          "errors": []
+        },
+        "verified_read": {
+          "requests": 160,
+          "successes": 160,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 160
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 217.79,
+          "requests_per_second": 734.65,
+          "successes_per_second": 734.65,
+          "p50_ms": 23.3,
+          "p95_ms": 44.19,
+          "p99_ms": 49.28,
+          "max_ms": 53.5,
+          "errors": []
+        }
+      }
+    },
+    {
+      "name": "account-mixed-c64",
+      "service": "account",
+      "concurrency": 64,
+      "requests": 240,
+      "successes": 240,
+      "rejected": 0,
+      "failures": 0,
+      "statuses": {
+        "200": 240
+      },
+      "failure_percent": 0,
+      "rejection_percent": 0,
+      "elapsed_ms": 2981.39,
+      "requests_per_second": 80.5,
+      "successes_per_second": 80.5,
+      "p50_ms": 679.25,
+      "p95_ms": 1171.1,
+      "p99_ms": 1229.28,
+      "max_ms": 1508.65,
+      "errors": [],
+      "operations": {
+        "metadata_list": {
+          "requests": 24,
+          "successes": 24,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 24
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2981.39,
+          "requests_per_second": 8.05,
+          "successes_per_second": 8.05,
+          "p50_ms": 481.85,
+          "p95_ms": 1054.56,
+          "p99_ms": 1101.8,
+          "max_ms": 1101.8,
+          "errors": []
+        },
+        "value_read": {
+          "requests": 96,
+          "successes": 96,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 96
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2981.39,
+          "requests_per_second": 32.2,
+          "successes_per_second": 32.2,
+          "p50_ms": 728.05,
+          "p95_ms": 1128.29,
+          "p99_ms": 1240.37,
+          "max_ms": 1240.37,
+          "errors": []
+        },
+        "audit_export": {
+          "requests": 12,
+          "successes": 12,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 12
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2981.39,
+          "requests_per_second": 4.02,
+          "successes_per_second": 4.02,
+          "p50_ms": 698.07,
+          "p95_ms": 1220.76,
+          "p99_ms": 1220.76,
+          "max_ms": 1220.76,
+          "errors": []
+        },
+        "materialize_5": {
+          "requests": 60,
+          "successes": 60,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 60
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2981.39,
+          "requests_per_second": 20.12,
+          "successes_per_second": 20.12,
+          "p50_ms": 689.01,
+          "p95_ms": 1193.38,
+          "p99_ms": 1229.28,
+          "max_ms": 1229.28,
+          "errors": []
+        },
+        "manual_rotation": {
+          "requests": 48,
+          "successes": 48,
+          "rejected": 0,
+          "failures": 0,
+          "statuses": {
+            "200": 48
+          },
+          "failure_percent": 0,
+          "rejection_percent": 0,
+          "elapsed_ms": 2981.39,
+          "requests_per_second": 16.1,
+          "successes_per_second": 16.1,
+          "p50_ms": 644.62,
+          "p95_ms": 1167.97,
+          "p99_ms": 1508.65,
+          "max_ms": 1508.65,
+          "errors": []
+        }
+      },
+      "backup": {
+        "elapsed_ms": 137.14,
+        "requests_completed_when_backup_finished": 30,
+        "overlapped_requests": true,
+        "audit_chains_checked": 1,
+        "database_bytes": 1466368,
+        "table_rows": {
+          "accounts": 16,
+          "devices": 0,
+          "encryption_keys": 1,
+          "environments": 1,
+          "organizations": 1,
+          "projects": 1,
+          "recovery_codes": 0,
+          "scope_token_denylist": 0,
+          "secret_access_events": 1410,
+          "secret_versions": 194,
+          "secrets": 50,
+          "sessions": 16,
+          "totp_credentials": 0,
+          "webauthn_credentials": 0
+        }
+      },
+      "disk": {
+        "bytes": 5865168,
+        "files": 3
+      }
+    },
+    {
+      "name": "operator-mixed-c64",
+      "service": "operator",
+      "concurrency": 64,
+      "requests": 240,
+      "successes": 227,
+      "rejected": 13,
+      "failures": 0,
+      "statuses": {
+        "200": 227,
+        "503": 13
+      },
+      "failure_percent": 0,
+      "rejection_percent": 5.42,
+      "elapsed_ms": 176.07,
+      "requests_per_second": 1363.11,
+      "successes_per_second": 1289.27,
+      "p50_ms": 41.24,
+      "p95_ms": 67.28,
+      "p99_ms": 70.96,
+      "max_ms": 72.88,
+      "errors": [],
+      "disk": {
+        "bytes": 21563017,
+        "files": 334
+      },
+      "operations": {
+        "unique_write": {
+          "requests": 80,
+          "successes": 73,
+          "rejected": 7,
+          "failures": 0,
+          "statuses": {
+            "200": 73,
+            "503": 7
+          },
+          "failure_percent": 0,
+          "rejection_percent": 8.75,
+          "elapsed_ms": 176.07,
+          "requests_per_second": 454.36,
+          "successes_per_second": 414.61,
+          "p50_ms": 57.51,
+          "p95_ms": 69.87,
+          "p99_ms": 72.88,
+          "max_ms": 72.88,
+          "errors": []
+        },
+        "verified_read": {
+          "requests": 160,
+          "successes": 154,
+          "rejected": 6,
+          "failures": 0,
+          "statuses": {
+            "200": 154,
+            "503": 6
+          },
+          "failure_percent": 0,
+          "rejection_percent": 3.75,
+          "elapsed_ms": 176.07,
+          "requests_per_second": 908.73,
+          "successes_per_second": 874.65,
+          "p50_ms": 38.67,
+          "p95_ms": 56.94,
+          "p99_ms": 62.01,
+          "max_ms": 62.69,
+          "errors": []
+        }
+      }
+    },
+    {
+      "name": "operator-overload",
+      "service": "operator",
+      "concurrency": 128,
+      "requests": 128,
+      "successes": 20,
+      "rejected": 108,
+      "failures": 0,
+      "statuses": {
+        "200": 20,
+        "503": 108
+      },
+      "failure_percent": 0,
+      "rejection_percent": 84.38,
+      "elapsed_ms": 372.71,
+      "requests_per_second": 343.43,
+      "successes_per_second": 53.66,
+      "p50_ms": 214.62,
+      "p95_ms": 337.78,
+      "p99_ms": 346.45,
+      "max_ms": 346.61,
+      "errors": [],
+      "disk": {
+        "bytes": 42534537,
+        "files": 354
+      }
+    }
+  ],
+  "gates": {
+    "no_unexpected_failures": true,
+    "account_no_rejections": true,
+    "p99_within_budget": true,
+    "sqlite_integrity_ok": true,
+    "operator_object_integrity_ok": true,
+    "backup_audit_checks_passed": true,
+    "overload_rejected_when_required": true
+  },
+  "artifacts_retained": false,
+  "operator_bind": "127.0.0.1",
+  "resource_samples": [
+    {
+      "at_utc": "2026-10-01T09:04:51.883Z",
+      "account": {
+        "rss_bytes": 13844480,
+        "peak_rss_bytes": 13844480,
+        "cpu_seconds": 0.015625
+      },
+      "operator": {
+        "rss_bytes": 13778944,
+        "peak_rss_bytes": 13778944,
+        "cpu_seconds": 0.03125
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:04:54.524Z",
+      "account": {
+        "rss_bytes": 17022976,
+        "peak_rss_bytes": 17354752,
+        "cpu_seconds": 0.984375
+      },
+      "operator": {
+        "rss_bytes": 15609856,
+        "peak_rss_bytes": 15749120,
+        "cpu_seconds": 0.1875
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:04:56.527Z",
+      "account": {
+        "rss_bytes": 17514496,
+        "peak_rss_bytes": 18251776,
+        "cpu_seconds": 1.6875
+      },
+      "operator": {
+        "rss_bytes": 15609856,
+        "peak_rss_bytes": 15749120,
+        "cpu_seconds": 0.1875
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:04:58.528Z",
+      "account": {
+        "rss_bytes": 17326080,
+        "peak_rss_bytes": 18554880,
+        "cpu_seconds": 2.234375
+      },
+      "operator": {
+        "rss_bytes": 15675392,
+        "peak_rss_bytes": 15814656,
+        "cpu_seconds": 0.265625
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:00.528Z",
+      "account": {
+        "rss_bytes": 17326080,
+        "peak_rss_bytes": 18554880,
+        "cpu_seconds": 2.234375
+      },
+      "operator": {
+        "rss_bytes": 15679488,
+        "peak_rss_bytes": 15814656,
+        "cpu_seconds": 0.75
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:01.515Z",
+      "account": {
+        "rss_bytes": 17080320,
+        "peak_rss_bytes": 18554880,
+        "cpu_seconds": 2.234375
+      },
+      "operator": {
+        "rss_bytes": 15687680,
+        "peak_rss_bytes": 15818752,
+        "cpu_seconds": 0.859375
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:04.532Z",
+      "account": {
+        "rss_bytes": 20774912,
+        "peak_rss_bytes": 23212032,
+        "cpu_seconds": 4.015625
+      },
+      "operator": {
+        "rss_bytes": 17203200,
+        "peak_rss_bytes": 17231872,
+        "cpu_seconds": 1
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:05.297Z",
+      "account": {
+        "rss_bytes": 21159936,
+        "peak_rss_bytes": 23740416,
+        "cpu_seconds": 4.25
+      },
+      "operator": {
+        "rss_bytes": 17571840,
+        "peak_rss_bytes": 18104320,
+        "cpu_seconds": 1.53125
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:06.532Z",
+      "account": {
+        "rss_bytes": 28622848,
+        "peak_rss_bytes": 29638656,
+        "cpu_seconds": 5.140625
+      },
+      "operator": {
+        "rss_bytes": 17571840,
+        "peak_rss_bytes": 18104320,
+        "cpu_seconds": 1.53125
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:08.541Z",
+      "account": {
+        "rss_bytes": 31801344,
+        "peak_rss_bytes": 31801344,
+        "cpu_seconds": 6.84375
+      },
+      "operator": {
+        "rss_bytes": 21655552,
+        "peak_rss_bytes": 22773760,
+        "cpu_seconds": 1.84375
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:10.541Z",
+      "account": {
+        "rss_bytes": 33488896,
+        "peak_rss_bytes": 38277120,
+        "cpu_seconds": 8.484375
+      },
+      "operator": {
+        "rss_bytes": 21655552,
+        "peak_rss_bytes": 22773760,
+        "cpu_seconds": 1.84375
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:11.949Z",
+      "account": {
+        "rss_bytes": 34459648,
+        "peak_rss_bytes": 38735872,
+        "cpu_seconds": 9.421875
+      },
+      "operator": {
+        "rss_bytes": 24453120,
+        "peak_rss_bytes": 25202688,
+        "cpu_seconds": 2.546875
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:12.744Z",
+      "account": {
+        "rss_bytes": 34459648,
+        "peak_rss_bytes": 38735872,
+        "cpu_seconds": 9.421875
+      },
+      "operator": {
+        "rss_bytes": 42102784,
+        "peak_rss_bytes": 70561792,
+        "cpu_seconds": 3.5625
+      }
+    },
+    {
+      "at_utc": "2026-10-01T09:05:14.029Z",
+      "account": {
+        "rss_bytes": 34459648,
+        "peak_rss_bytes": 38735872,
+        "cpu_seconds": 9.421875
+      },
+      "operator": {
+        "rss_bytes": 17596416,
+        "peak_rss_bytes": 17596416,
+        "cpu_seconds": 0.25
+      }
+    }
+  ],
+  "overload_resources": {
+    "account": {
+      "rss_bytes": 34459648,
+      "peak_rss_bytes": 38735872,
+      "cpu_seconds": 9.421875
+    },
+    "operator": {
+      "rss_bytes": 42102784,
+      "peak_rss_bytes": 70561792,
+      "cpu_seconds": 3.5625
+    }
+  },
+  "operator_object_integrity": {
+    "objects_checked": 349,
+    "valid": true
+  },
+  "default_operator_limiter": {
+    "requests": 640,
+    "successes": 599,
+    "rejected": 41,
+    "failures": 0,
+    "statuses": {
+      "200": 599,
+      "429": 41
+    },
+    "failure_percent": 0,
+    "rejection_percent": 6.41,
+    "elapsed_ms": 155.53,
+    "requests_per_second": 4114.91,
+    "successes_per_second": 3851.3,
+    "p50_ms": 3.56,
+    "p95_ms": 6.3,
+    "p99_ms": 10.35,
+    "max_ms": 14.22,
+    "errors": [],
+    "configured_per_minute": 600
+  },
+  "account_database": {
+    "integrity_check": "ok",
+    "journal_mode": "wal",
+    "observer_synchronous": 2,
+    "durability_evidence": "Service source opens WAL and never changes SQLite default FULL; observer pragma is connection-local, not direct telemetry of service connection",
+    "secret_versions": 242,
+    "access_events": 1828
+  },
+  "passed": true,
+  "completed_at_utc": "2026-10-01T09:05:14.715Z"
+}

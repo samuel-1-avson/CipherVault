@@ -30,11 +30,12 @@ pub(crate) fn account_proxy_http_client() -> HttpClient {
         .get_or_init(|| {
             HttpClient::builder()
                 .timeout(Duration::from_secs(8))
+                .redirect(reqwest::redirect::Policy::none())
                 .pool_idle_timeout(Duration::from_secs(120))
                 .pool_max_idle_per_host(4)
                 .tcp_keepalive(Some(Duration::from_secs(30)))
                 .build()
-                .unwrap_or_else(|_| HttpClient::new())
+                .expect("fixed account proxy HTTP client configuration must initialize without redirect following")
         })
         .clone()
 }
@@ -97,6 +98,8 @@ pub(crate) async fn proxy_account_request(
             format!("{}/register", base)
         } else if path == "/v1/sessions" {
             format!("{}/session", base)
+        } else if path == "/v1/sessions/mfa/totp" {
+            format!("{}/session/mfa/totp", base)
         } else if path == "/v1/sessions/challenge" {
             format!("{}/sessions/challenge", base)
         } else if path == "/v1/sessions/login" {
@@ -249,6 +252,56 @@ pub(crate) async fn api_account_session_handler(
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     proxy_account_request(reqwest::Method::GET, "/v1/sessions", &headers, None).await
+}
+
+pub(crate) async fn api_account_mfa_step_up_handler(
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_request(
+        reqwest::Method::POST,
+        "/v1/sessions/mfa/totp",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+pub(crate) async fn api_account_mfa_get_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    proxy_account_resource(reqwest::Method::GET, &account_id, "mfa", &headers, None).await
+}
+
+pub(crate) async fn api_account_mfa_patch_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_resource(
+        reqwest::Method::PATCH,
+        &account_id,
+        "mfa",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+pub(crate) async fn api_account_mfa_recovery_reset_handler(
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    proxy_account_resource(
+        reqwest::Method::POST,
+        &account_id,
+        "mfa/recovery-reset",
+        &headers,
+        Some(body),
+    )
+    .await
 }
 
 pub(crate) async fn api_account_session_challenge_handler(
@@ -613,5 +666,51 @@ mod tests {
             let request = client.get("http://127.0.0.1:9/v1/sessions").build();
             assert!(request.is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn account_proxy_does_not_follow_credential_body_redirects() {
+        use axum::{http::StatusCode, routing::post, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let target = format!("{base}/target");
+        let followed = Arc::new(AtomicUsize::new(0));
+        let seen = followed.clone();
+        let router = Router::new()
+            .route(
+                "/initial",
+                post(move || {
+                    let target = target.clone();
+                    async move { (StatusCode::TEMPORARY_REDIRECT, [("location", target)]) }
+                }),
+            )
+            .route(
+                "/target",
+                post(move || {
+                    let seen = seen.clone();
+                    async move {
+                        seen.fetch_add(1, Ordering::Relaxed);
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let response = account_proxy_http_client()
+            .post(format!("{base}/initial"))
+            .header("authorization", "Bearer synthetic-session")
+            .body("synthetic-factor-body")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(followed.load(Ordering::Relaxed), 0);
+        server.abort();
+        let _ = server.await;
     }
 }

@@ -1728,7 +1728,7 @@
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cv-layout-8ed08dcdbc"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             Security & Authentication Factors
           </h4>
-          <p class="modal-section-subtitle">Emergency offline codes and two-factor authenticator enrollment.</p>
+          <p class="modal-section-subtitle">Offline recovery codes, authenticator enrollment and account MFA policy.</p>
 
           <div class="cv-layout-eea8090baa">
             <!-- Recovery codes card -->
@@ -1747,6 +1747,20 @@
                 <button class="btn-action secondary small" id="btn-start-totp-enrollment" type="button">Set up authenticator</button>
                 <button class="btn-action secondary small" id="btn-revoke-totp" type="button" hidden>Revoke authenticator</button>
               </div>
+            </div>
+          </div>
+
+          <div id="account-mfa-panel" hidden class="cv-layout-7015bc4a05">
+            <h5 class="form-label">Required second factor</h5>
+            <p id="account-mfa-status" class="form-help" role="status" aria-live="polite">MFA status unavailable.</p>
+            <p id="account-mfa-help" class="form-help">Sign in with your device key or passkey within five minutes, then verify a new authenticator code. After confirming enrollment, wait for the code to change. Retain unused recovery codes before requiring MFA. Changing the policy signs out your other sessions.</p>
+            <label class="form-label" for="input-account-mfa-code">Authenticator code for this session</label>
+            <input type="password" id="input-account-mfa-code" class="form-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" aria-describedby="account-mfa-help" placeholder="6-digit code">
+            <div class="cv-layout-7395648d93">
+              <button class="btn-action primary small" id="btn-verify-account-mfa" type="button">Verify second factor</button>
+              <button class="btn-action secondary small" id="btn-require-account-mfa" type="button">Require MFA</button>
+              <button class="btn-action secondary small" id="btn-optional-account-mfa" type="button" hidden>Make MFA optional</button>
+              <button class="btn-action secondary small" id="btn-refresh-account-primary" type="button">Refresh key or passkey sign-in</button>
             </div>
           </div>
 

@@ -72,6 +72,18 @@ jobs:
           node apps/ui/audit.test.cjs
           node tests/dashboard_container_contract.cjs
 
+      - name: Setup Python for custody and review regressions
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Recovery custody and internal review package regressions
+        env:
+          CIPHERVAULT_ACCOUNT_TEST_BINARY: ${{ github.workspace }}/target/debug/ciphervault-account${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          python -m unittest discover -s tests/recovery -v
+          python -m unittest discover -s scripts/security -p "test_*.py" -v
+
       - name: Release packaging and hosted secret bootstrap regressions
         if: runner.os == 'Linux'
         run: |

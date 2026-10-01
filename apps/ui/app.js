@@ -55,6 +55,8 @@ const state = {
   operatorJobs: [],
   account: null,
   accountService: null,
+  accountMfa: null,
+  accountMfaBusy: false,
   totpEnrollment: null,
   snapshots: [],
   overview: null,
@@ -194,6 +196,14 @@ async function fetchHostedAccountState() {
     const capabilities = await capabilitiesResponse.json().catch(() => ({}));
     const sessionResponse = await workspaceFetch('/api/account/session', { credentials: 'same-origin' });
     const session = sessionResponse.ok ? await sessionResponse.json().catch(() => null) : null;
+    if (session && state.accountMfa?.account_id === session.account_id) {
+      // A handoff or renewed login loses its old proof. Never let a cached
+      // policy response imply that a new session carries the old factor.
+      state.accountMfa = { ...state.accountMfa, required: session.mfa_required === true,
+        verified_at_utc: session.mfa_verified_at_utc ?? null };
+    } else {
+      state.accountMfa = null;
+    }
     state.accountService = {
       configured: true,
       capabilities,
@@ -271,6 +281,7 @@ async function fetchContext() {
 }
 
 function renderAccountStatus(account) {
+  renderHostedMfaPolicy();
   const text = document.getElementById('account-status-text');
   const dot = document.getElementById('account-pulse-dot');
   const loginButton = document.getElementById('btn-account-login');
@@ -551,6 +562,17 @@ function initAccountControls() {
   document.getElementById('btn-start-totp-enrollment')?.addEventListener('click', startTotpEnrollment);
   document.getElementById('btn-confirm-totp-enrollment')?.addEventListener('click', confirmTotpEnrollment);
   document.getElementById('btn-revoke-totp')?.addEventListener('click', revokeTotpEnrollment);
+  document.getElementById('btn-verify-account-mfa')?.addEventListener('click', verifyHostedMfa);
+  document.getElementById('btn-require-account-mfa')?.addEventListener('click', () => changeHostedMfaPolicy(true));
+  document.getElementById('btn-optional-account-mfa')?.addEventListener('click', () => changeHostedMfaPolicy(false));
+  document.getElementById('input-account-mfa-code')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') document.getElementById('btn-verify-account-mfa')?.click();
+  });
+  document.getElementById('btn-refresh-account-primary')?.addEventListener('click', () => {
+    closeAccountManagementModal();
+    const modal = document.getElementById('modal-account-signin-menu');
+    if (modal) { modal.hidden = false; openModal(modal, document.activeElement); }
+  });
   document.getElementById('btn-close-modal-account-connect')?.addEventListener('click', closeHostedAccountConnectModal);
   document.getElementById('btn-cancel-modal-account-connect')?.addEventListener('click', closeHostedAccountConnectModal);
   document.getElementById('btn-refresh-account-connect')?.addEventListener('click', async () => {
@@ -626,6 +648,8 @@ function closeHostedAccountConnectModal() {
 }
 
 function closeAccountManagementModal() {
+  const code = document.getElementById('input-account-mfa-code');
+  if (code) code.value = '';
   const modal = document.getElementById('modal-account-manage');
   if (!modal) return;
   closeModal(modal);
@@ -666,6 +690,7 @@ async function refreshAccountManagement(accountId) {
       : 'Not enrolled';
     if (totpStart) totpStart.hidden = account.totp_enabled === true;
     if (totpRevoke) totpRevoke.hidden = account.totp_enabled !== true;
+    await refreshHostedMfaPolicy();
     if (list) {
       const lines = [];
       (memberships.memberships || account.memberships || []).forEach(member => {
@@ -678,6 +703,124 @@ async function refreshAccountManagement(accountId) {
     }
   } catch (error) {
     if (list) list.textContent = error instanceof Error ? error.message : 'Account details unavailable';
+  }
+}
+
+function supportsHostedMfa() {
+  return state.accountService?.capabilities?.scoped_auth?.enforced_account_mfa_policy === true;
+}
+
+function renderHostedMfaPolicy() {
+  const panel = document.getElementById('account-mfa-panel');
+  const account = state.account || {};
+  const supported = supportsHostedMfa() && account.authenticated === true;
+  if (panel) panel.hidden = !supported;
+  if (!supported) {
+    const input = document.getElementById('input-account-mfa-code');
+    if (input) input.value = '';
+    return;
+  }
+  const policy = state.accountMfa?.account_id === account.account_id ? state.accountMfa : null;
+  const session = account.session || {};
+  const now = Math.floor(Date.now() / 1000);
+  const maxAge = policy?.max_age_seconds || 300;
+  const primaryFresh = ['device', 'webauthn'].includes(session.auth_method)
+    && Number.isFinite(session.issued_at_utc) && session.issued_at_utc <= now
+    && now - session.issued_at_utc <= maxAge;
+  const verifiedAt = policy?.available ? policy.verified_at_utc : session.mfa_verified_at_utc;
+  const verified = primaryFresh && Number.isFinite(verifiedAt) && verifiedAt <= now && now - verifiedAt < maxAge;
+  const required = policy?.available ? policy.required === true : session.mfa_required === true;
+  const status = document.getElementById('account-mfa-status');
+  if (status) status.textContent = policy?.error || `${required ? 'Required' : 'Optional'} · ${verified
+    ? 'second factor verified for this session'
+    : primaryFresh ? 'verify a new authenticator code for this session' : 'refresh key or passkey sign-in, then verify a new authenticator code'}.`;
+  const verify = document.getElementById('btn-verify-account-mfa');
+  const enable = document.getElementById('btn-require-account-mfa');
+  const disable = document.getElementById('btn-optional-account-mfa');
+  const refresh = document.getElementById('btn-refresh-account-primary');
+  if (verify) verify.disabled = state.accountMfaBusy || !primaryFresh || account.totp_enabled !== true;
+  if (enable) { enable.hidden = required; enable.disabled = state.accountMfaBusy || !verified || policy?.available !== true; }
+  if (disable) { disable.hidden = !required; disable.disabled = state.accountMfaBusy || !verified || policy?.available !== true; }
+  if (refresh) refresh.disabled = state.accountMfaBusy;
+  const revoke = document.getElementById('btn-revoke-totp');
+  if (revoke) {
+    revoke.disabled = required;
+    revoke.title = required ? 'Make MFA optional with a verified second factor before revoking this authenticator.' : '';
+  }
+}
+
+async function refreshHostedMfaPolicy() {
+  const accountId = state.account?.account_id;
+  if (!supportsHostedMfa() || !accountId) {
+    state.accountMfa = null;
+    renderHostedMfaPolicy();
+    return;
+  }
+  try {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/mfa`, { credentials: 'same-origin' });
+    const policy = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(policy.error || `MFA policy unavailable (${response.status})`);
+    if (state.account?.account_id !== accountId) return;
+    state.accountMfa = { ...policy, account_id: accountId, available: true };
+  } catch (error) {
+    state.accountMfa = { account_id: accountId, available: false,
+      error: error instanceof Error ? error.message : 'MFA policy unavailable.' };
+  }
+  renderHostedMfaPolicy();
+}
+
+async function verifyHostedMfa() {
+  if (!supportsHostedMfa() || state.accountMfaBusy) return;
+  const input = document.getElementById('input-account-mfa-code');
+  const code = input?.value.trim() || '';
+  if (input) input.value = '';
+  if (!/^[0-9]{6}$/.test(code)) {
+    showToast('Enter a new six-digit authenticator code.');
+    input?.focus();
+    return;
+  }
+  state.accountMfaBusy = true;
+  renderHostedMfaPolicy();
+  try {
+    const response = await workspaceFetch('/api/account/session/mfa/totp', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Second-factor verification failed (${response.status})`);
+    await fetchHostedAccountState();
+    await refreshHostedMfaPolicy();
+    showToast('Second factor verified for this session.');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Second-factor verification failed');
+    await refreshHostedMfaPolicy();
+  } finally {
+    state.accountMfaBusy = false;
+    renderHostedMfaPolicy();
+  }
+}
+
+async function changeHostedMfaPolicy(required) {
+  const accountId = state.account?.account_id;
+  if (!supportsHostedMfa() || !accountId || state.accountMfaBusy) return;
+  state.accountMfaBusy = true;
+  renderHostedMfaPolicy();
+  try {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/mfa`, {
+      method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ required }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `MFA policy change failed (${response.status})`);
+    await fetchHostedAccountState();
+    await refreshHostedMfaPolicy();
+    showToast(`${required ? 'MFA is now required' : 'MFA is now optional'}. Your other sessions were signed out.`);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'MFA policy change failed');
+    await refreshHostedMfaPolicy();
+  } finally {
+    state.accountMfaBusy = false;
+    renderHostedMfaPolicy();
   }
 }
 

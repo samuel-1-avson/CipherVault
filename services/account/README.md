@@ -8,6 +8,14 @@ The account service has two confidentiality contexts. Original file-backup vault
 
 ## Authentication and authorization
 
+The [enforced MFA policy](../../docs/ENFORCED_MFA.md) adds explicit per-account
+second-factor enforcement. Existing accounts remain optional until an owner
+confirms an authenticator, retains recovery codes, verifies a fresh TOTP code for
+the current primary session, and enables the durable policy. Sensitive guards
+and scoped-token origin checks enforce it; handoffs carry no factor proof.
+Emergency reset is full-account recovery and revokes all sessions. A recovery
+code sheet remains recovery authority, not independent multi-party approval.
+
 
 
 Sensitive human operations, account administration, recovery-code reissue, credential/device changes and scope-token issuance require signing-key or passkey authentication within five minutes. Signing-key possession is strong authentication for this policy; it is not itself a claim that two-factor MFA occurred. WebAuthn user verification is enforced only when `CIPHERVAULT_WEBAUTHN_REQUIRE_UV=true`; this runtime does not infer verified MFA from a standalone device session. Recovery sessions cannot mint credentials or mutate scoped state. TOTP alone remains an alternate login method; it does not establish strong MFA or production elevation. A browser handoff preserves the original authentication time, expiry, device and passkey revocation context. After recovery enrollment, the new device can answer a device-bound `/v1/sessions/challenge` using its enrolled signing key with the existing `account_login` proof domain. Account-root signing remains supported. Recovery enrollment alone does not upgrade the recovery session; a separate key-possession login is required.

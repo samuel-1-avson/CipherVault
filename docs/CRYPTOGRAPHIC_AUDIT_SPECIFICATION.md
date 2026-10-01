@@ -8,8 +8,8 @@
 **CipherVault** provides client-encrypted secret backup and disaster recovery. This is an audit specification, not a completed external audit or formal proof. The cryptographic protocol is designed to provide:
 1. **Confidentiality against Untrusted Operators**: Encrypted manifests hide paths and whole-file metadata; encrypted CBOR objects use SHA-256 CIDs. Deterministic equality, lengths, vault/epoch and access patterns remain observable. Default v1 exposes public candidate-file confirmation; opt-in v2 uses keyed opaque identifiers. Do not claim full IND-CCA2 security for deterministic deduplicated storage without a precise leakage model.
 2. **Side-Channel Resistance & Constant-Time Arithmetic**: Galois Field $\text{GF}(2^8)$ multiplication (`gf_mul`) executes in strictly branchless, constant-time operations; the branchless claim is scoped to `gf_mul` only, not to the surrounding share-evaluation loops.
-3. **Hardware-Anchored Device Identity**: Physical capacitive touch confirmation (`Slot 9C` on YubiKey PIV) enforces physical user presence before snapshot head records can be signed.
-4. **Memory Hygiene & Zero-Disk Exposure**: Decryption keys and plaintext files are scrubbed using compiler-fenced zeroization (`zeroize::ZeroizeOnDrop`) and injected strictly via in-memory process environment blocks.
+3. **Hardware-Anchored Device Identity**: Hardware-bound signing uses the configured PIV token key. Touch requirements depend on token provisioning and policy; simulation and subsystem tests do not establish a physical-presence ceremony. Validate the actual supported device/platform before asserting touch enforcement.
+4. **Memory Hygiene and Injection**: Owned secret buffers use zeroizing containers in covered paths. Runtime secret injection uses process environments without writing a secrets file. This does not guarantee erasure of every copy or protection from swap/dumps/child behavior; restore intentionally publishes plaintext with restrictive permissions.
 
 ---
 
@@ -111,10 +111,10 @@ The exponentiation chain has fixed length and calls branchless `gf_mul`. Auditor
 | **INV-01** | Protected Local Keys | Epoch/device key blobs use Windows DPAPI or a non-Windows AEAD envelope backed by an explicit master key/private key file. Metadata, tracked files, offline recovery exports and restore backups require separate disk protection. |
 | **INV-02** | Master Secret Scrubbing | `RecoverySecret` implements `ZeroizeOnDrop`; volatile memory is scrubbed with compiler fences immediately after interactive init ceremony. |
 | **INV-03** | Cross-Vault Isolation | FastCDC derivation incorporates `VaultEpochKey` and `vault_id`. Identical files across distinct vaults produce mutually uncorrelated ciphertexts. |
-| **INV-04** | Hardware Presence | Snapshot commitments with hardware binding strictly require capacitive user touch (`Slot 9C`) via APDU verification before signing. |
+| **INV-04** | Hardware Signing | Hardware-bound commitments use the configured certified token signer. Physical presence and touch enforcement require independently checked token policy and a real device ceremony. |
 | **INV-05** | Journaled Restores | Verify all decrypted files, stage private new files and backups in `.ciphervault-restore`, journal before per-file atomic publication, and roll back interrupted uncommitted work. External edits stop rollback with a retained journal; whole-tree visibility is not atomic. |
 | **INV-06** | No Plaintext File During Runtime Injection | `ciphervault run` supplies secrets through child environment blocks without writing a secrets file. Child writes, OS inspection, swap and dumps are outside this guarantee. |
-| **INV-07** | Out-of-Band Quorum | Clean-machine emergency recoveries requiring approval block until cryptographically signed Ed25519 receipts satisfy guardian quorum. |
+| **INV-07** | Configured Approval Quorum | Where an explicit approval policy applies, verify signed guardian receipts against that policy. Offline-root recovery material, threshold reconstruction, and account emergency codes are separate authorities; quorum approval is not a universal property of every recovery path. |
 
 ## 6. Required independent review
 

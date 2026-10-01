@@ -107,32 +107,57 @@ fn test_gf_distributivity_and_commutativity() {
 
 #[test]
 fn test_constant_time_execution_profile() {
-    // Timing benchmark ensuring zero divergence between pathological inputs (0x00 vs 0xFF vs 0xAA)
-    let iterations = 200_000;
+    // Coarse timing regression, not proof of constant-time execution: hosted OS
+    // scheduling and CPU frequency affect wall time. Keep the original ratio
+    // gate while comparing balanced samples of all three pathological inputs.
+    const ITERATIONS: usize = 200_000;
+    const SAMPLES: usize = 9;
+    const PATTERNS: [u8; 3] = [0x00, 0xFF, 0xAA];
 
-    let start = std::time::Instant::now();
-    let mut acc1 = 0u8;
-    for i in 0..iterations {
-        acc1 ^= gf_mul((i & 0xFF) as u8, 0x00);
+    fn timed_batch(multiplier: u8) -> std::time::Duration {
+        let start = std::time::Instant::now();
+        let mut accumulator = 0u8;
+        for i in 0..ITERATIONS {
+            // Opaque operands prevent constant folding of zero multiplication;
+            // consuming each accumulator keeps every multiplication observable.
+            accumulator = std::hint::black_box(
+                accumulator
+                    ^ gf_mul(
+                        std::hint::black_box((i & 0xFF) as u8),
+                        std::hint::black_box(multiplier),
+                    ),
+            );
+        }
+        std::hint::black_box(accumulator);
+        start.elapsed()
     }
-    let dur_zeros = start.elapsed();
 
-    let start = std::time::Instant::now();
-    let mut acc2 = 0u8;
-    for i in 0..iterations {
-        acc2 ^= gf_mul((i & 0xFF) as u8, 0xFF);
+    for pattern in PATTERNS {
+        timed_batch(pattern);
     }
-    let dur_ones = start.elapsed();
 
-    assert_eq!(acc1, 0);
-    let _ = acc2;
-
-    // Both loops execute the identical number of branchless operations.
-    // Ensure timing ratio stays tightly bounded (within 2.0x allowing for OS thread scheduler variance)
-    let ratio = dur_zeros.as_nanos() as f64 / (dur_ones.as_nanos() as f64).max(1.0);
-    assert!(
-        ratio > 0.4 && ratio < 2.5,
-        "Timing variance ratio abnormal: {}",
-        ratio
-    );
+    let mut samples = [[0u128; PATTERNS.len()]; SAMPLES];
+    for (round, timings) in samples.iter_mut().enumerate() {
+        // Each pattern occupies first, middle and last position equally often.
+        for offset in 0..PATTERNS.len() {
+            let index = (round + offset) % PATTERNS.len();
+            timings[index] = timed_batch(PATTERNS[index]).as_nanos();
+        }
+    }
+    let medians: [u128; PATTERNS.len()] = std::array::from_fn(|index| {
+        let mut timings = samples.map(|round| round[index]);
+        timings.sort_unstable();
+        timings[SAMPLES / 2]
+    });
+    for left in 0..PATTERNS.len() {
+        for right in left + 1..PATTERNS.len() {
+            let ratio = medians[left] as f64 / (medians[right] as f64).max(1.0);
+            assert!(
+                ratio > 0.4 && ratio < 2.5,
+                "Coarse timing ratio abnormal for {:#04x}/{:#04x}: {ratio}; median ns: {medians:?}",
+                PATTERNS[left],
+                PATTERNS[right],
+            );
+        }
+    }
 }

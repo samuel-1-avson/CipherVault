@@ -41,6 +41,9 @@ pub fn seal_box(recipient_pk: &X25519PublicKey, plaintext: &[u8]) -> Result<Vec<
     let ephemeral_pk = X25519PublicKey::from(&ephemeral_sk);
 
     let shared_point = ephemeral_sk.diffie_hellman(recipient_pk);
+    if !shared_point.was_contributory() {
+        return Err(CryptoError::NonContributoryKeyAgreement);
+    }
     let (key, nonce) =
         derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
     let key = Zeroizing::new(key);
@@ -87,6 +90,9 @@ pub fn open_sealed_box(
     let ephemeral_pk = X25519PublicKey::from(epk_arr);
 
     let shared_point = recipient_sk.diffie_hellman(&ephemeral_pk);
+    if !shared_point.was_contributory() {
+        return Err(CryptoError::NonContributoryKeyAgreement);
+    }
     let (key, nonce) =
         derive_box_seal_key_and_nonce(&ephemeral_pk, recipient_pk, shared_point.as_bytes());
     let key = Zeroizing::new(key);
@@ -142,5 +148,50 @@ mod tests {
         let sealed = seal_box(&recipient_pk1, payload).unwrap();
 
         assert!(open_sealed_box(&recipient_sk2, &recipient_pk2, &sealed).is_err());
+    }
+
+    #[test]
+    fn low_order_recipients_cannot_receive_publicly_decryptable_boxes() {
+        let mut order_one = [0u8; 32];
+        order_one[0] = 1;
+        for bytes in [[0u8; 32], order_one] {
+            let recipient = X25519PublicKey::from(bytes);
+            assert!(matches!(
+                seal_box(&recipient, b"synthetic epoch key"),
+                Err(CryptoError::NonContributoryKeyAgreement)
+            ));
+        }
+    }
+
+    #[test]
+    fn low_order_ephemeral_cannot_forge_an_authenticated_box() {
+        let recipient_sk = X25519StaticSecret::random_from_rng(rand::thread_rng());
+        let recipient_pk = X25519PublicKey::from(&recipient_sk);
+        let mut order_one = [0u8; 32];
+        order_one[0] = 1;
+        for bytes in [[0u8; 32], order_one] {
+            let ephemeral_pk = X25519PublicKey::from(bytes);
+            // A low-order point gives an all-zero DH result. An attacker can
+            // derive this key from public values and create a valid AEAD tag;
+            // tag verification alone therefore cannot reject this forgery.
+            let (key, nonce) =
+                derive_box_seal_key_and_nonce(&ephemeral_pk, &recipient_pk, &[0u8; 32]);
+            let forged = XChaCha20Poly1305::new_from_slice(&key)
+                .unwrap()
+                .encrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: b"attacker-chosen synthetic key",
+                        aad: b"CipherVault-SealedBox",
+                    },
+                )
+                .unwrap();
+            let mut sealed = bytes.to_vec();
+            sealed.extend_from_slice(&forged);
+            assert!(matches!(
+                open_sealed_box(&recipient_sk, &recipient_pk, &sealed),
+                Err(CryptoError::NonContributoryKeyAgreement)
+            ));
+        }
     }
 }

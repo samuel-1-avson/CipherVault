@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
@@ -179,3 +180,97 @@ assert.doesNotMatch(
   /rate_limit/,
   'the public edge Caddyfile must not use rate_limit: stock Caddy has no such directive (see runbook)',
 );
+
+// Execute the actual rollback policy query against real SQLite fixtures. A
+// healthy legacy binary can still violate a newly required MFA policy.
+const promotion = read('scripts', 'gcp', 'promote-immutable-web.ps1');
+const rollbackGuard = promotion.match(/\$rollbackGuard = @'\r?\n([\s\S]*?)\r?\n'@/);
+assert.ok(rollbackGuard, 'the promotion must include its read-only account rollback guard');
+const guardSource = Buffer.from(rollbackGuard[1], 'utf8').toString('base64');
+const guardFixtures = `
+import base64
+import os
+import pathlib
+import sqlite3
+import tempfile
+ns = {"__name__": "guard_fixture"}
+exec(base64.b64decode("${guardSource}"), ns)
+inspect = ns["inspect_database"]
+with tempfile.TemporaryDirectory(prefix="ciphervault-rollback-") as root:
+    # macOS aliases /var to /private/var. The fixture uses a canonical root;
+    # production paths retain the guard's strict rejection of symlinks.
+    fixture_root = pathlib.Path(root).resolve()
+    database = fixture_root / "accounts.sqlite3"
+    try:
+        inspect(database)
+        raise AssertionError("missing database allowed rollback")
+    except RuntimeError:
+        pass
+    db = sqlite3.connect(database)
+    db.executescript("CREATE TABLE accounts(account_id TEXT); CREATE TABLE sessions(token_hash_hex TEXT);")
+    db.commit()
+    assert inspect(database), "legacy schema must remain rollback-compatible"
+    if os.name == "posix":
+        linked_database = fixture_root / "linked.sqlite3"
+        linked_database.symlink_to(database)
+        linked_directory = fixture_root / "linked-directory"
+        linked_directory.symlink_to(fixture_root, target_is_directory=True)
+        for linked_path in (linked_database, linked_directory / "accounts.sqlite3"):
+            try:
+                inspect(linked_path)
+                raise AssertionError("symlink path allowed rollback")
+            except RuntimeError:
+                pass
+    db.executescript("CREATE TABLE account_mfa_policy(account_id TEXT, required INTEGER);")
+    db.commit()
+    assert inspect(database), "empty optional policy must allow rollback"
+    db.execute("INSERT INTO account_mfa_policy VALUES('synthetic', 0)")
+    db.commit()
+    assert inspect(database), "explicit optional policy must allow rollback"
+    db.execute("UPDATE account_mfa_policy SET required=1")
+    db.commit()
+    before = database.read_bytes()
+    assert not inspect(database), "required MFA must block downgrade"
+    assert database.read_bytes() == before, "rollback guard changed the database"
+    db.execute("UPDATE account_mfa_policy SET required=NULL")
+    db.commit()
+    assert not inspect(database), "unknown policy must block downgrade"
+    db.executescript("DROP TABLE account_mfa_policy; CREATE TABLE account_mfa_policy(unexpected INTEGER);")
+    db.commit()
+    try:
+        inspect(database)
+        raise AssertionError("malformed policy schema allowed rollback")
+    except sqlite3.DatabaseError:
+        pass
+    db.close()
+    database.write_bytes(b"corrupt database")
+    try:
+        inspect(database)
+        raise AssertionError("corrupt database allowed rollback")
+    except sqlite3.DatabaseError:
+        pass
+print("Account rollback SQLite safety fixtures passed.")
+`;
+const guarded = spawnSync(process.env.CIPHERVAULT_PYTHON || 'python', ['-c', guardFixtures], {
+  encoding: 'utf8',
+  timeout: 30000,
+});
+assert.equal(guarded.error, undefined, `rollback guard could not execute: ${guarded.error}`);
+assert.equal(guarded.status, 0, `${guarded.stdout}\n${guarded.stderr}`);
+assert.match(guarded.stdout, /Account rollback SQLite safety fixtures passed/);
+const rollbackBlock = promotion.slice(promotion.indexOf('if ($promotionStarted)'));
+assert.ok(
+  rollbackBlock.indexOf('Suspend-AndConfirmAccountRollbackSafe') < rollbackBlock.indexOf('$rollbackMetadata'),
+  'rollback must stop and verify policy before installing legacy account image metadata',
+);
+assert.match(
+  promotion,
+  /sudo systemctl stop ciphervault-ui\.service`nsudo python3/,
+  'rollback must stop writers before inspecting required MFA policy',
+);
+assert.match(
+  rollbackBlock,
+  /candidate service could not be restarted[\s\S]*?throw[\s\S]*?\$rollbackMetadata/,
+  'a failed safety check must throw before legacy image metadata is installed',
+);
+console.log(guarded.stdout.trim());

@@ -411,6 +411,13 @@ pub struct SessionView {
     pub auth_method: String,
     pub issued_at_utc: u64,
     pub expires_at_utc: u64,
+    #[serde(default)]
+    pub mfa_required: bool,
+    #[serde(default)]
+    pub mfa_verified_at_utc: Option<u64>,
+    /// Internal binding for scope claims; never accepted from a client view.
+    #[serde(skip)]
+    pub(crate) mfa_proof_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
