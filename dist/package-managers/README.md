@@ -86,13 +86,13 @@ Full two-track walkthrough: [docs/SETUP_GUIDE.md](../../docs/SETUP_GUIDE.md).
 
 ---
 
-## 6. Refreshing the winget hash for a new release
+## 6. Updating package manifests for a new release
 
-The release workflow fills `InstallerSha256` (plus the scoop/brew hashes) automatically from the published `SHA256SUMS.txt` and commits the result to `main`.
-If that job ever fails, fill manually from `SHA256SUMS.txt`:
+The release workflow verifies the signed `SHA256SUMS.txt`, then updates the version, release URLs, and hashes in the Homebrew, Scoop, and Winget manifests. If the versioned Winget directory is missing, it seeds the three files from the newest existing manifest before updating them. The workflow opens a pull request for review.
 
-```powershell
-$tag = 'v1.0.17'
-$zip = "ciphervault-$tag-x86_64-pc-windows-msvc.zip"
-(Get-Content SHA256SUMS.txt | Select-String $zip).ToString().Split()[0]
+If that job ever fails, first authenticate the checksum file and signature using `dist/scripts/install.sh`, then run the manifest updater against the authenticated checksums:
+
+```sh
+python3 dist/scripts/fill_package_manager_manifests.py dist/package-managers SHA256SUMS.txt v1.0.28
+git diff -- dist/package-managers
 ```

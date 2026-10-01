@@ -77,6 +77,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Package manager manifest regression
+        run: python tests/release_package_manifests.py
+
       - name: Recovery custody and internal review package regressions
         env:
           CIPHERVAULT_ACCOUNT_TEST_BINARY: ${{ github.workspace }}/target/debug/ciphervault-account${{ runner.os == 'Windows' && '.exe' || '' }}
