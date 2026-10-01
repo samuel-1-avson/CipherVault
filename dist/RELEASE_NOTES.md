@@ -1,11 +1,20 @@
-# CipherVault 1.0.27
+# CipherVault 1.0.28
 
 This release adds enforced account MFA, closes defects identified by the internal
 security review, and bounds operator disk-work admission. It also supplies tested
 recovery-custody tooling and a reproducible isolated capacity workload.
 
+The v1.0.27 candidate was stopped before publication when optimized Linux
+validation found that permission hardening could release SQLite's live POSIX
+locks. This release corrects that interaction and retains the cancelled tag as
+an audit record.
+
 ## Security and reliability changes
 
+- Account database and sidecar permission checks avoid opening and closing raw
+  descriptors owned by active SQLite connections. This preserves POSIX database
+  and shared-memory locks, preventing other connections from unlinking an active
+  WAL and causing an online backup to miss committed data.
 - Account owners can require fresh TOTP verification after signing-key or passkey
   authentication. Proof is bound to the exact session and active authenticator;
   handoffs and new logins require a new code. Derived scope tokens bind the proof

@@ -121,10 +121,24 @@ fn new_private_directory(path: &Path) -> Result<PathBuf, AccountServiceError> {
     Ok(absolute)
 }
 
-fn readonly_database(path: &Path) -> Result<Connection, AccountServiceError> {
+/// Validate SQLite paths without opening/closing a raw descriptor. On POSIX,
+/// closing a second descriptor can release locks held by a live connection.
+pub(crate) fn checked_regular_database_path(path: &Path) -> Result<PathBuf, AccountServiceError> {
     let path = checked_existing(path)?;
-    let _file = open_regular_file(&path)?;
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    if !fs::symlink_metadata(&path)?.is_file() {
+        return Err(invalid("SQLite paths must be regular files"));
+    }
+    // Resolve permitted immutable macOS aliases only after rejecting unsafe
+    // caller-controlled links, so SQLite's NOFOLLOW also sees safe ancestors.
+    Ok(fs::canonicalize(path)?)
+}
+
+fn readonly_database(path: &Path) -> Result<Connection, AccountServiceError> {
+    let path = checked_regular_database_path(path)?;
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
     db.busy_timeout(Duration::from_secs(5))?;
     Ok(db)
 }
