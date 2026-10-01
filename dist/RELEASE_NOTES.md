@@ -1,3 +1,64 @@
+# CipherVault 1.0.27
+
+This release adds enforced account MFA, closes defects identified by the internal
+security review, and bounds operator disk-work admission. It also supplies tested
+recovery-custody tooling and a reproducible isolated capacity workload.
+
+## Security and reliability changes
+
+- Account owners can require fresh TOTP verification after signing-key or passkey
+  authentication. Proof is bound to the exact session and active authenticator;
+  handoffs and new logins require a new code. Derived scope tokens bind the proof
+  present at issuance and expire within its freshness window.
+- Sensitive account mutations recheck session, MFA policy and role under their
+  storage connection. TOTP verification consumes codes and rechecks the failure
+  budget transactionally, including across separate service connections.
+- Dashboard controls expose verification and explicit policy activation. Enabling
+  the policy requires unused recovery codes. Emergency reset consumes a code,
+  revokes the authenticator and every session, and requires a new login.
+- Sealed-box encryption and decryption reject non-contributory X25519 peers.
+  Valid ciphertexts keep their existing format.
+- Operator HTTP disk work returns capacity HTTP 503 when its admission permits
+  are occupied. Storage clients retry transient 503 responses with bounded
+  backoff so replication and recovery-log healing can recover from short bursts.
+- Backup tooling supports an encrypted, create-only production upload path and
+  a separate custodian restore-verification path. Private outputs, archive limits,
+  destination checks and stale/failure monitoring fail closed. A provisioning
+  plan and inactive two-host scheduler templates document the recommended setup.
+
+## Upgrade and operational notes
+
+- Existing accounts retain optional MFA until their owners enroll an authenticator,
+  retain protected recovery codes and explicitly enable the policy. Deploying the
+  binary alone does not establish enforced MFA for live accounts. See
+  [the MFA runbook](../docs/ENFORCED_MFA.md).
+- The recovery-code sheet remains full-account emergency recovery authority: it
+  can authorize replacement-device enrollment and, with another unused code,
+  factor reset. Keep it separate from everyday devices and cloud credentials.
+  Multiple codes on the same sheet are not independent factors.
+- Back up the account database and preserve all historical wrapping keys and
+  KEKs before upgrading. Recovery archives exclude those keys. New custody tooling
+  does not create independent custodians, transfer keys, change cloud IAM, lock
+  retention or activate schedulers automatically. See
+  [the custody runbook](../docs/INDEPENDENT_RECOVERY_CUSTODY.md).
+- The web promotion script stops account writers and checks the database before
+  automatically rolling back to an older account image. Required MFA or a failed
+  verification blocks downgrade; repair the candidate service in that case.
+- Local TCP capacity tests verify required-MFA reads, backup overlap, overload
+  rejection and stored-object integrity. They identify a remaining account SQLite
+  mutex bottleneck. These Windows debug measurements do not certify production
+  capacity; qualify optimized binaries on a production-equivalent isolated host.
+- The security review is internal. Independent review, hardware ceremonies and
+  verified provider/KMS adapters remain open. Default v1 capture compatibility,
+  known candidate-confirmation/history exposure and recovery-generation limits
+  are unchanged; v2 writing still requires deliberate opt-in and upgraded readers.
+
+See [the implementation report](../report/ASSURANCE_IMPLEMENTATION_2026-10-01.md)
+and [current security guarantees](../docs/CURRENT_SECURITY_GUARANTEES.md) for
+validation evidence and remaining acceptance requirements.
+
+---
+
 # CipherVault 1.0.26
 
 This release hardens authorization, workspace isolation, recovery, persistent quotas,

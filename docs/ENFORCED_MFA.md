@@ -98,3 +98,9 @@ guesses across separate SQLite connections. Run account/workspace checks, strict
 Clippy, and actual browser/proxy regressions before promotion. Rehearse enrollment,
 handoff, factor loss, and recovery using a synthetic account before enabling live
 policies. Keep protected database/key backups and a verified signed rollback path.
+
+Older account binaries ignore required-MFA policy tables. The web promotion
+script therefore stops account writers and checks the database before an
+automatic downgrade. A required policy, unreadable database or invalid schema
+blocks rollback to the legacy account service. Keep the candidate image and
+repair it; restoring an older database would also discard newly enabled policy.

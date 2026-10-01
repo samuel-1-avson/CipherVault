@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version: v1.0.26](https://img.shields.io/badge/Version-v1.0.26-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.27](https://img.shields.io/badge/Version-v1.0.27-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
