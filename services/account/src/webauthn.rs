@@ -12,7 +12,7 @@ use crate::{
     db::account_exists,
     guards::normalize_account_id,
     hash_token,
-    http::{attach_session_cookie, authenticated_session, error_response, service_error},
+    http::{attach_session_cookie, error_response, service_error},
     prune_expired, random_hex,
     state::{
         now_utc, AccountState, SessionResponse, SessionView, WebAuthnAuthenticationOptionsRequest,
@@ -45,24 +45,15 @@ pub async fn post_webauthn_revoke(
             )
         }
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
-    }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) =
+        crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id)
+    {
+        return *response;
+    }
     let now = now_utc();
     let changed = match db.execute(
         "UPDATE webauthn_credentials SET revoked_at_utc = ?3
@@ -111,30 +102,21 @@ pub async fn post_webauthn_registration_options(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
     };
-    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
-    }
+    let session =
+        match crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id) {
+            Ok(session) => session,
+            Err(response) => return *response,
+        };
     let Some(device_id_hex) = session.device_id_hex.as_deref() else {
         return error_response(
             StatusCode::FORBIDDEN,
             "DEVICE_SESSION_REQUIRED",
             "WebAuthn credentials must be registered from an enrolled device session",
         );
-    };
-    let db = match state.connection() {
-        Ok(db) => db,
-        Err(error) => return service_error(error),
     };
     if let Err(error) = prune_expired(&db, now_utc()) {
         return service_error(error.into());
@@ -174,20 +156,6 @@ pub async fn post_webauthn_registration_verify(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
-    }
     let credential_id = match b64_decode(&request.credential_id_b64, "credential_id_b64") {
         Ok(value) if !value.is_empty() && value.len() <= 1024 => value,
         Ok(_) => {
@@ -225,6 +193,11 @@ pub async fn post_webauthn_registration_verify(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    let session =
+        match crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id) {
+            Ok(session) => session,
+            Err(response) => return *response,
+        };
     let challenge = match db
         .query_row(
             "SELECT nonce_hex, device_id_hex, expires_at_utc, used_at_utc FROM challenges
@@ -649,6 +622,10 @@ pub async fn post_webauthn_authentication_verify(
     ) {
         return service_error(error.into());
     }
+    let mfa_required = match crate::mfa::policy_required(&db, &challenge.0) {
+        Ok(required) => required,
+        Err(error) => return service_error(error.into()),
+    };
     let mut response = Json(SessionResponse {
         token: token.clone(),
         session: SessionView {
@@ -657,6 +634,9 @@ pub async fn post_webauthn_authentication_verify(
             auth_method: "webauthn".into(),
             issued_at_utc: now,
             expires_at_utc: expires_at,
+            mfa_required,
+            mfa_verified_at_utc: None,
+            mfa_proof_id: None,
         },
     })
     .into_response();

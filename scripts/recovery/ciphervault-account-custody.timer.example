@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily CipherVault account custody backup (UTC)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+Unit=ciphervault-account-custody.service
+
+[Install]
+WantedBy=timers.target

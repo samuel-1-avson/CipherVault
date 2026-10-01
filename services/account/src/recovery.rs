@@ -8,7 +8,7 @@ use rusqlite::params;
 
 use crate::{
     audit_event,
-    guards::{account_role_for, normalize_account_id},
+    guards::{normalize_account_id, require_recent_account_role_with_db},
     hash_token,
     http::{
         attach_session_cookie, auth_rate_allowed, auth_rate_failure_with_db, auth_rate_key,
@@ -31,13 +31,16 @@ pub async fn post_recovery_codes(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let (session, _) = match account_role_for(&state, &headers, &account_id, "owner") {
-        Ok(value) => value,
-        Err(response) => return *response,
+    let count = request.count.clamp(4, 16);
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
     };
-    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
+    let (session, _) =
+        match require_recent_account_role_with_db(&db, &headers, &account_id, "owner") {
+            Ok(value) => value,
+            Err(response) => return *response,
+        };
     if session.device_id_hex.is_none() {
         return error_response(
             StatusCode::FORBIDDEN,
@@ -45,11 +48,6 @@ pub async fn post_recovery_codes(
             "Recovery codes require an enrolled device-bound session",
         );
     }
-    let count = request.count.clamp(4, 16);
-    let db = match state.connection() {
-        Ok(db) => db,
-        Err(error) => return service_error(error),
-    };
     if let Err(error) = db.execute(
         "DELETE FROM recovery_codes WHERE account_id = ?1 AND used_at_utc IS NULL",
         params![account_id],
@@ -131,6 +129,10 @@ pub async fn post_recovery_redeem(
     ) {
         return service_error(error.into());
     }
+    let mfa_required = match crate::mfa::policy_required(&db, &account_id) {
+        Ok(required) => required,
+        Err(error) => return service_error(error.into()),
+    };
     drop(db);
     auth_rate_success(&state, &rate_key);
     let mut response = (
@@ -143,6 +145,9 @@ pub async fn post_recovery_redeem(
                 auth_method: "recovery".into(),
                 issued_at_utc: now,
                 expires_at_utc: expires_at,
+                mfa_required,
+                mfa_verified_at_utc: None,
+                mfa_proof_id: None,
             },
         }),
     )

@@ -1,0 +1,10 @@
+[Unit]
+Description=Monitor independent CipherVault custody verification every 15 minutes
+
+[Timer]
+OnBootSec=15m
+OnUnitActiveSec=15m
+Unit=ciphervault-custodian-status.service
+
+[Install]
+WantedBy=timers.target

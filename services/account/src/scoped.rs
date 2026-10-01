@@ -25,6 +25,7 @@ use crate::error::AccountServiceError;
 /// every [`crate::state::AccountState::open`], including pre-existing
 /// databases that predate scoping (greenfield tables, no backfill needed).
 pub(crate) fn init_scoped_schema(connection: &Connection) -> Result<(), AccountServiceError> {
+    crate::mfa::init_schema(connection)?;
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS organizations (
              tenant_id TEXT PRIMARY KEY,

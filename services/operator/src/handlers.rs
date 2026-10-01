@@ -22,12 +22,24 @@ async fn bounded_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, (StatusCode, String)> {
     static IO_LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-    let permit = IO_LIMIT
+    let limit = IO_LIMIT
         .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(16)))
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+        .clone();
+    bounded_io_with_limit(limit, operation).await
+}
+
+async fn bounded_io_with_limit<T: Send + 'static>(
+    limit: Arc<tokio::sync::Semaphore>,
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, (StatusCode, String)> {
+    // Waiting request futures otherwise form an unbounded queue even with a
+    // bounded blocking worker pool. Admit immediately or let the caller retry.
+    let permit = limit.try_acquire_owned().map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Operator I/O capacity exhausted; retry later".to_owned(),
+        )
+    })?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         operation()
@@ -987,6 +999,58 @@ pub async fn get_metrics(State(state): State<Arc<OperatorState>>) -> impl IntoRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn io_admission_rejects_saturation_and_recovers_after_completion() {
+        let limit = Arc::new(tokio::sync::Semaphore::new(16));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let mut operations = Vec::new();
+        for index in 0..16 {
+            let limit = limit.clone();
+            let started = started_tx.clone();
+            let release = release_rx.clone();
+            operations.push(tokio::spawn(async move {
+                bounded_io_with_limit(limit, move || {
+                    started.send(()).unwrap();
+                    // Dropping release_tx also unblocks workers on assertion
+                    // failure, so a failed test cannot hang the runtime.
+                    let _ = release.lock().unwrap().recv();
+                    index
+                })
+                .await
+            }));
+        }
+        for _ in 0..16 {
+            tokio::time::timeout(std::time::Duration::from_secs(10), started_rx.recv())
+                .await
+                .expect("all admitted workers started")
+                .expect("worker start sender remains alive");
+        }
+        let rejected_operation_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran = rejected_operation_ran.clone();
+        let rejected = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            bounded_io_with_limit(limit.clone(), move || {
+                ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )
+        .await
+        .expect("saturation must return immediately")
+        .unwrap_err();
+        assert_eq!(rejected.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(rejected.1.contains("capacity exhausted"));
+        assert!(!rejected_operation_ran.load(std::sync::atomic::Ordering::SeqCst));
+        for _ in 0..16 {
+            release_tx.send(()).unwrap();
+        }
+        for operation in operations {
+            operation.await.unwrap().unwrap();
+        }
+        assert_eq!(limit.available_permits(), 16);
+        assert_eq!(bounded_io_with_limit(limit, || 42).await.unwrap(), 42);
+    }
 
     /// `GET /v1/peers/self` mints a fresh descriptor for this node's own
     /// identity: operator id matches, the signature verifies against the

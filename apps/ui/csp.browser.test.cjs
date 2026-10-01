@@ -62,6 +62,22 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
     result.tokenUnknown = document.getElementById('sse-token-status').textContent;
     handleTelemetryPacket({pending_uploads:{count:0, failed_count:0, oldest_created_at_utc:null}});
     result.backlogEmpty = backlog.textContent;
+    state.accountService = {capabilities:{scoped_auth:{enforced_account_mfa_policy:true}}};
+    const now = Math.floor(Date.now()/1000);
+    state.account = {account_id:'cvacct_'+'ab'.repeat(16),authenticated:true,totp_enabled:true,
+      session:{auth_method:'device',issued_at_utc:now,mfa_required:true,mfa_verified_at_utc:null}};
+    state.accountMfa = {account_id:state.account.account_id,available:true,required:true,verified_at_utc:null,max_age_seconds:300};
+    renderHostedMfaPolicy();
+    result.mfaPanelHidden = document.getElementById('account-mfa-panel').hidden;
+    result.mfaNeedsCode = document.getElementById('account-mfa-status').textContent;
+    result.mfaPolicyDisabled = document.getElementById('btn-optional-account-mfa').disabled;
+    result.mfaCodeLabel = document.querySelector('label[for="input-account-mfa-code"]')?.textContent;
+    state.accountMfa.verified_at_utc = now;
+    renderHostedMfaPolicy();
+    result.mfaPolicyEnabled = !document.getElementById('btn-optional-account-mfa').disabled;
+    document.getElementById('input-account-mfa-code').value = '123456';
+    closeAccountManagementModal();
+    result.mfaCodeCleared = document.getElementById('input-account-mfa-code').value === '';
     closeSseStream(); clearInterval(state.pollTimer);
     await new Promise(resolve => setTimeout(resolve, 50));
   } catch (error) { result.error = String(error.stack || error); }
@@ -138,6 +154,12 @@ const server = http.createServer((request, response) => {
     assert.equal(result.backlogLive, 'polite');
     assert.equal(result.tokenUnknown, 'Smartcard Probe Unavailable');
     assert(result.backlogEmpty.includes('no pending uploads in the last observation'));
+    assert.equal(result.mfaPanelHidden, false);
+    assert(result.mfaNeedsCode.includes('verify a new authenticator code'));
+    assert.equal(result.mfaPolicyDisabled, true);
+    assert(result.mfaCodeLabel.includes('Authenticator code for this session'));
+    assert.equal(result.mfaPolicyEnabled, true);
+    assert.equal(result.mfaCodeCleared, true);
     console.log('Actual Chromium dashboard CSP regression passed: forwarded controls, layout, truthful signatures, zero policy violations.');
   } finally {
     child?.kill(); server.close();

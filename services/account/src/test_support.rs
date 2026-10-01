@@ -12,6 +12,8 @@ use crate::{
     util::random_hex,
 };
 
+pub(crate) static TOTP_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub(crate) async fn json(response: Response) -> serde_json::Value {
     let body = to_bytes(response.into_body(), MAX_BODY_BYTES)
         .await

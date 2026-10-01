@@ -63,7 +63,6 @@ pub(crate) fn auth_rate_key(headers: &HeaderMap, account_id: &str, ceremony: &st
 }
 
 pub(crate) fn auth_rate_allowed(state: &AccountState, key: &str) -> Result<(), Box<Response>> {
-    let now = now_utc();
     let db = state.connection().map_err(|_| {
         Box::new(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -71,6 +70,11 @@ pub(crate) fn auth_rate_allowed(state: &AccountState, key: &str) -> Result<(), B
             "Authentication rate limiter unavailable",
         ))
     })?;
+    auth_rate_allowed_with_db(&db, key)
+}
+
+pub(crate) fn auth_rate_allowed_with_db(db: &Connection, key: &str) -> Result<(), Box<Response>> {
+    let now = now_utc();
     db.execute(
         "DELETE FROM auth_rate_limits
          WHERE blocked_until_utc <= ?1
@@ -270,6 +274,10 @@ pub(crate) fn auth_rate_success(state: &AccountState, key: &str) {
     }
 }
 
+pub(crate) fn auth_rate_success_with_db(db: &Connection, key: &str) {
+    let _ = db.execute("DELETE FROM auth_rate_limits WHERE rate_key = ?1", [key]);
+}
+
 pub(crate) fn service_error(error: AccountServiceError) -> Response {
     match error {
         AccountServiceError::Invalid(message) => {
@@ -438,18 +446,24 @@ pub(crate) fn authenticated_session_with_db(
                     auth_method: row.get(2)?,
                     issued_at_utc: row.get::<_, i64>(3)? as u64,
                     expires_at_utc: row.get::<_, i64>(4)? as u64,
+                    mfa_required: false,
+                    mfa_verified_at_utc: None,
+                    mfa_proof_id: None,
                 })
             },
         )
         .optional()
         .map_err(|error| service_error(error.into()))?;
-    session.ok_or_else(|| {
+    let mut session = session.ok_or_else(|| {
         error_response(
             StatusCode::UNAUTHORIZED,
             "SESSION_INVALID",
             "Session is missing, expired, or revoked",
         )
-    })
+    })?;
+    crate::mfa::apply_session_status(db, &token_hash, &mut session, now)
+        .map_err(|error| service_error(error.into()))?;
+    Ok(session)
 }
 
 #[cfg(test)]

@@ -237,6 +237,7 @@ fn authenticate_session(
         ScopeClaims::for_session(&tenant, project_id, environment_id, &session.account_id);
     claims.origin_session_hash =
         session_token(headers).map(|token| crate::util::hash_token(&token));
+    claims.mfa_proof_id = session.mfa_proof_id.clone();
     if project_role_of(&db, project_id, &claims.principal_id)
         .map_err(|error| service_error(error.into()))?
         .is_none()
@@ -1164,6 +1165,7 @@ pub async fn post_scope_token(
     };
     let mut claims = ScopeClaims::new(&tenant, &body.project_id, &principal_id, now, now + ttl);
     claims.origin_session_hash = Some(crate::util::hash_token(&source_token));
+    claims.mfa_proof_id = session.mfa_proof_id.clone();
     match crate::scope_tokens::scope_origin_active(&db, &claims, now, true) {
         Ok(true) => {}
         Ok(false) => {
@@ -1174,6 +1176,18 @@ pub async fn post_scope_token(
             )
         }
         Err(error) => return service_error(error.into()),
+    }
+    if session.mfa_required {
+        let until = session
+            .issued_at_utc
+            .saturating_add(STEP_UP_MAX_AGE_SECONDS)
+            .min(
+                session
+                    .mfa_verified_at_utc
+                    .unwrap_or(0)
+                    .saturating_add(STEP_UP_MAX_AGE_SECONDS),
+            );
+        claims.expires_at_utc = claims.expires_at_utc.min(until);
     }
     if body.elevated {
         let until = session

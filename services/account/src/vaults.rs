@@ -9,8 +9,7 @@ use rusqlite::params;
 use crate::{
     audit_event,
     guards::{
-        account_role_for, decode_32, normalize_account_id, normalize_vault_role,
-        require_recent_strong_session,
+        decode_32, normalize_account_id, normalize_vault_role, require_recent_account_role_with_db,
     },
     http::{error_response, service_error},
     state::{now_utc, AccountState, LinkVaultRequest},
@@ -26,13 +25,6 @@ pub async fn post_vault_link(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let (session, _) = match account_role_for(&state, &headers, &account_id, "owner") {
-        Ok(value) => value,
-        Err(response) => return *response,
-    };
-    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
     if let Err(error) = decode_32(&request.vault_id_hex, "vault_id_hex") {
         return service_error(error);
     }
@@ -40,6 +32,10 @@ pub async fn post_vault_link(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) = require_recent_account_role_with_db(&db, &headers, &account_id, "owner")
+    {
+        return *response;
+    }
     let alias: String = request.alias.trim().chars().take(120).collect();
     let role = match normalize_vault_role(&request.role) {
         Ok(role) => role,

@@ -809,5 +809,75 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(!getElementById('modal-inspector-body').innerHTML.includes('Ed25519 signature verified'));
   vm.runInContext(`openSnapshotInspector({ snapshot_id_hex: 'aa', parent_ids_hex: [], signature_verified: true })`, context);
   assert(getElementById('modal-inspector-body').innerHTML.includes('Ed25519 signature verified'));
-  console.log('Dashboard behavior, DOM, and accessibility contract regressions passed.');
+  // MFA controls are opt-in and derive proof freshness from this session.
+  const mfaAccount = 'cvacct_' + 'ab'.repeat(16);
+  const mfaNow = Math.floor(Date.now() / 1000);
+  context.mfaAccount = mfaAccount;
+  context.mfaNow = mfaNow;
+  vm.runInContext(`showToast = message => { globalThis.lastMfaToast = message; };
+    state.accountService = {capabilities:{scoped_auth:{enforced_account_mfa_policy:false}}};
+    state.account = {account_id:mfaAccount,authenticated:true,totp_enabled:true,
+      session:{auth_method:'device',issued_at_utc:mfaNow,mfa_required:false,mfa_verified_at_utc:null}};
+    renderHostedMfaPolicy();`, context);
+  assert.equal(getElementById('account-mfa-panel').hidden, true, 'Legacy servers hide unsupported MFA policy');
+  vm.runInContext(`state.accountService.capabilities.scoped_auth.enforced_account_mfa_policy = true;
+    state.accountMfa = {account_id:mfaAccount,available:true,required:false,verified_at_utc:null,max_age_seconds:300};
+    renderHostedMfaPolicy();`, context);
+  assert.equal(getElementById('account-mfa-panel').hidden, false);
+  assert.equal(getElementById('btn-require-account-mfa').disabled, true, 'Unverified sessions cannot offer policy changes');
+  assert.equal(getElementById('btn-verify-account-mfa').disabled, false);
+  let mfaRequired = false;
+  let mfaVerified = null;
+  let policyDenied = false;
+  const mfaCalls = [];
+  context.fetch = async (url, options = {}) => {
+    mfaCalls.push({url,method:options.method || 'GET',body:options.body});
+    let payload;
+    let ok = true;
+    if (url.endsWith('/session/mfa/totp')) {
+      assert.equal(getElementById('input-account-mfa-code').value, '', 'Codes are cleared before network submission');
+      assert.deepEqual(JSON.parse(options.body), {code:'000123'});
+      mfaVerified = mfaNow; payload = {status:'verified'};
+    } else if (options.method === 'PATCH') {
+      if (policyDenied) { ok = false; payload = {error:'Retain recovery codes before requiring MFA'}; }
+      else { mfaRequired = JSON.parse(options.body).required; payload = {required:mfaRequired}; }
+    } else if (url.endsWith('/capabilities')) {
+      payload = {scoped_auth:{enforced_account_mfa_policy:true}};
+    } else if (url.endsWith('/session')) {
+      payload = {account_id:mfaAccount,auth_method:'device',issued_at_utc:mfaNow,
+        mfa_required:mfaRequired,mfa_verified_at_utc:mfaVerified};
+    } else {
+      payload = {required:mfaRequired,verified_at_utc:mfaVerified,max_age_seconds:300};
+    }
+    return {ok,status:ok ? 200 : 409,json:async () => payload};
+  };
+  vm.runInContext('renderHostedMfaPolicy()', context);
+  assert.equal(mfaCalls.length, 0, 'Rendering never enables MFA or submits a code');
+  getElementById('input-account-mfa-code').value = '000123';
+  await vm.runInContext('verifyHostedMfa()', context);
+  assert.equal(mfaCalls.filter(call => call.method === 'POST').length, 1);
+  assert.equal(mfaCalls.some(call => call.method === 'PATCH'), false, 'Verification does not change policy');
+  assert.equal(getElementById('btn-require-account-mfa').disabled, false);
+  await vm.runInContext('changeHostedMfaPolicy(true)', context);
+  assert.equal(mfaRequired, true);
+  assert.equal(getElementById('btn-optional-account-mfa').hidden, false);
+  assert.equal(getElementById('btn-revoke-totp').disabled, true);
+  // A handed-off/new session cannot inherit a cached proof in the UI.
+  mfaVerified = null;
+  await vm.runInContext('fetchHostedAccountState()', context);
+  assert.equal(getElementById('btn-optional-account-mfa').disabled, true);
+  assert(!getElementById('account-mfa-status').textContent.includes('second factor verified'));
+  // An explicit failed policy operation keeps the server's required state.
+  policyDenied = true;
+  await vm.runInContext('changeHostedMfaPolicy(false)', context);
+  assert.equal(mfaRequired, true);
+  assert(String(context.lastMfaToast).includes('Retain recovery codes'));
+  getElementById('input-account-mfa-code').value = '654321';
+  vm.runInContext(`closeModal = () => {}; closeAccountManagementModal()`, context);
+  assert.equal(getElementById('input-account-mfa-code').value, '', 'Closing account management clears a typed factor');
+  for (const id of ['account-mfa-panel','account-mfa-status','input-account-mfa-code','btn-verify-account-mfa','btn-require-account-mfa','btn-optional-account-mfa']) {
+    assert(shellHtml.includes(`id="${id}"`), `${id} exists in the production shell`);
+  }
+  assert(shellHtml.includes('aria-describedby="account-mfa-help"'));
+  console.log('Dashboard behavior, DOM, accessibility and session-bound MFA regressions passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

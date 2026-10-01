@@ -30,6 +30,7 @@ mod guards;
 mod http;
 mod key_lifecycle;
 mod memberships;
+mod mfa;
 mod migration_ledger;
 mod migration_routes;
 mod policy;
@@ -152,6 +153,15 @@ pub fn create_router(state: AccountState) -> axum::Router {
         .route("/v1/sessions/challenge", post(post_login_challenge))
         .route("/v1/sessions", post(post_login).get(get_session))
         .route("/v1/sessions/revoke", post(post_session_revoke))
+        .route("/v1/sessions/mfa/totp", post(mfa::post_step_up))
+        .route(
+            "/v1/accounts/:account_id/mfa",
+            get(mfa::get_policy).patch(mfa::patch_policy),
+        )
+        .route(
+            "/v1/accounts/:account_id/mfa/recovery-reset",
+            post(mfa::post_recovery_reset),
+        )
         .route("/v1/sessions/handoff", post(post_session_handoff))
         .route(
             "/v1/sessions/handoff/consume",

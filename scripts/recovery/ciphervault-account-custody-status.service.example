@@ -1,0 +1,17 @@
+[Unit]
+Description=Check CipherVault custody backup freshness and latest failure
+
+[Service]
+Type=oneshot
+User=ciphervault
+Group=ciphervault
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/ciphervault/scripts/recovery/account_custody.py --config /etc/ciphervault/custody.json --upload-status
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/var/lib/ciphervault-custody /etc/ciphervault /run/secrets /var/lib/ciphervault-account
+# A non-zero exit reports stale, failed, interrupted, changed-config, or
+# absent evidence. Connect this unit to an approved monitoring destination.
+# This checks production upload freshness only. The custodian's separate
+# status service must check downloaded restore verification.

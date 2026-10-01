@@ -1,6 +1,6 @@
 # Current security and operational guarantees
 
-Updated 30 September 2026. This describes the remediation implementation, not an independent cryptographic certification or production deployment approval. Run the repository's current checks and review their actual results before release.
+Updated 1 October 2026. This describes the working implementation, not independent cryptographic certification or a claim that unpromoted changes run in production. Run current checks and review their actual results before release.
 
 ## Chunk versions and deployment gate
 
@@ -45,6 +45,16 @@ If pins are configured, missing/malformed entries and key mismatches fail closed
 Quorum counts distinct verified signing keys. Verification proves current possession of stored ciphertext, not future availability, economic independence or ownership across operators. Keep off-network recovery material, multiple failure domains and restore drills.
 
 `ciphervault audit --recovery-drill --operator-pin <endpoint>=<64hex>` additionally fetches the current certified head's record, manifest, unique chunks and bootstrap objects from authenticated pinned operators, checks CID/discovery/authority/closure bindings, and decrypts all files in zeroizing memory using the locally retained historical epoch key. It prints verified file/byte/object counts, writes no plaintext and opens the vault read-only. Complete configured pins can replace repeated `--operator-pin` arguments. Missing pins, corrupt/unavailable objects, missing discovery and failed plaintext integrity abort the drill; local cached ciphertext is never a fallback. The drill limits padded plaintext to 1 GiB and encrypted manifest to 16 MiB. It checks reconstruction of the locally expected head; it does not establish quorum, remote freshness or clean-machine recovery without local keys. Ordinary `audit` checks ciphertext availability only; `recover` with offline material remains the clean-machine exercise.
+
+## Account second-factor policy
+
+[Enforced MFA](ENFORCED_MFA.md) adds an owner-controlled durable policy, fresh
+device/passkey plus session-bound one-time TOTP proof, factor/source revalidation
+for scoped credentials, and explicit recovery. Existing accounts remain optional
+until enrolled and enabled; upgrades do not silently change their policy.
+Handoffs lose factor proof. The recovery-code sheet remains full-account recovery
+authority, not independent multi-party approval. The dated deployment ledger
+describes production before these working changes.
 
 ## Scoped execution
 

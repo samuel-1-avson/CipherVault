@@ -119,14 +119,18 @@ retained values unrecoverable. The full drill reports failure in that case;
 it never silently skips an unreadable retained version or claims complete
 recovery.
 
-## Authentication policy still required
+## Authentication policy and recovery
 
-Fresh signing-key/passkey sessions gate sensitive operations. TOTP login is
-currently an alternate login method and is **not** a verified second factor.
-An enforced MFA implementation must bind a one-time TOTP step-up to an existing
-fresh device/passkey session, record factor time in that session, recheck it in
-every sensitive guard and scoped-token origin lookup, and invalidate it on
-credential revocation or handoff. Passkey user-verification policy alone is not
-evidence that two independent factors were enforced. Enrollment/bootstrap and
-recovery need explicit policy so enforcement cannot silently lock out existing
-accounts or authorize credential replacement with TOTP alone.
+[Enforced account MFA](ENFORCED_MFA.md) now provides durable account policy and
+one-time TOTP step-up bound to fresh signing-key/passkey proof. Existing accounts
+remain optional until an owner enrolls a factor, retains codes, and enables the
+policy. TOTP-only login does not establish MFA. Handoffs do not transfer factor
+proof; scoped tokens revalidate the bound proof and revocable source.
+
+Emergency reset consumes a recovery code with fresh primary proof, then revokes
+all sessions and the factor. Existing lost-key enrollment means a holder of the
+recovery-code sheet can regain account authority and reset MFA with two codes.
+That is full-account recovery, not independent factors; protect the sheet
+accordingly. Restored policies remain in the database and copied sessions are
+revoked. See [the custody runbook](INDEPENDENT_RECOVERY_CUSTODY.md) for independent
+archive/key retention and scheduling.

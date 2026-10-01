@@ -1,0 +1,14 @@
+[Unit]
+Description=Check independent CipherVault custody restore freshness and failure
+
+[Service]
+Type=oneshot
+User=custodian
+Group=custodian
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/ciphervault/scripts/recovery/receive_custody.py --config /etc/ciphervault/custodian.json --status
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/var/lib/ciphervault-custodian /etc/ciphervault /run/offline-custody
+# Connect failure/stale events to the independent custodian's monitoring.

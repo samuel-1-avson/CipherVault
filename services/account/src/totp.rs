@@ -22,7 +22,7 @@ use crate::{
     hash_token,
     http::{
         attach_session_cookie, auth_rate_allowed, auth_rate_failure_with_db, auth_rate_key,
-        auth_rate_success, authenticated_session, error_response, service_error,
+        auth_rate_success, error_response, service_error,
     },
     random_hex,
     state::{
@@ -186,7 +186,7 @@ pub(crate) fn totp_wrapping_key() -> Result<[u8; 32], AccountServiceError> {
         .map_err(|_| AccountServiceError::Invalid("TOTP wrapping key must be 32-byte hex".into()))
 }
 
-fn encrypt_totp_secret(secret: &[u8]) -> Result<String, AccountServiceError> {
+pub(crate) fn encrypt_totp_secret(secret: &[u8]) -> Result<String, AccountServiceError> {
     let key = aead::UnboundKey::new(&aead::AES_256_GCM, &totp_wrapping_key()?)
         .map_err(|_| AccountServiceError::Invalid("unable to initialize TOTP key".into()))?;
     let key = aead::LessSafeKey::new(key);
@@ -204,7 +204,7 @@ fn encrypt_totp_secret(secret: &[u8]) -> Result<String, AccountServiceError> {
     Ok(b64_encode(&envelope))
 }
 
-fn decrypt_totp_secret(value: &str) -> Result<Vec<u8>, AccountServiceError> {
+pub(crate) fn decrypt_totp_secret(value: &str) -> Result<Vec<u8>, AccountServiceError> {
     decrypt_totp_secret_with_key(value, &totp_wrapping_key()?)
 }
 
@@ -247,16 +247,10 @@ fn account_session_for(
     headers: &HeaderMap,
     account_id: &str,
 ) -> Result<SessionView, Box<Response>> {
-    let session = authenticated_session(state, headers).map_err(Box::new)?;
-    if session.account_id != account_id {
-        return Err(Box::new(error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        )));
-    }
-    crate::guards::require_recent_strong_session(&session, now_utc())?;
-    Ok(session)
+    let db = state
+        .connection()
+        .map_err(|error| Box::new(service_error(error)))?;
+    crate::guards::require_recent_account_session_with_db(&db, headers, account_id)
 }
 
 /// Start TOTP enrollment for an already authenticated account session. The
@@ -289,6 +283,11 @@ pub async fn post_totp_enrollment(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) =
+        crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id)
+    {
+        return *response;
+    }
     let active = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM totp_credentials
@@ -369,6 +368,14 @@ pub async fn post_totp_enrollment_verify(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) =
+        crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id)
+    {
+        return *response;
+    }
+    if let Err(response) = crate::http::auth_rate_allowed_with_db(&db, &rate_key) {
+        return *response;
+    }
     let row = match db
         .query_row(
             "SELECT secret_ciphertext_b64, enabled, revoked_at_utc, last_used_step
@@ -457,6 +464,22 @@ pub async fn post_totp_revoke(
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) =
+        crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id)
+    {
+        return *response;
+    }
+    match crate::mfa::policy_required(&db, &account_id) {
+        Ok(true) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "MFA_POLICY_REQUIRES_FACTOR",
+                "Disable required MFA using second-factor proof before revoking its authenticator",
+            )
+        }
+        Ok(false) => {}
+        Err(error) => return service_error(error.into()),
+    }
     let now = now_utc();
     let changed = match db.execute(
         "UPDATE totp_credentials SET enabled = 0, revoked_at_utc = ?2 WHERE account_id = ?1 AND revoked_at_utc IS NULL",
@@ -679,6 +702,15 @@ pub async fn post_totp_authentication_verify(
     }
     drop(db);
     auth_rate_success(&state, &rate_key);
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
+    };
+    let mfa_required = match crate::mfa::policy_required(&db, &account_id) {
+        Ok(required) => required,
+        Err(error) => return service_error(error.into()),
+    };
+    drop(db);
     let mut response = Json(SessionResponse {
         token: token.clone(),
         session: SessionView {
@@ -687,6 +719,9 @@ pub async fn post_totp_authentication_verify(
             auth_method: "totp".into(),
             issued_at_utc: now,
             expires_at_utc: expires_at,
+            mfa_required,
+            mfa_verified_at_utc: None,
+            mfa_proof_id: None,
         },
     })
     .into_response();
@@ -737,6 +772,7 @@ mod tests {
 
     #[tokio::test]
     async fn totp_enrollment_login_and_replay_protection() {
+        let _environment_guard = crate::test_support::TOTP_ENV_LOCK.lock().await;
         let previous_key = std::env::var(TOTP_KEY_ENV).ok();
         std::env::set_var(TOTP_KEY_ENV, "11".repeat(32));
         let (root, state, app) = test_app("totp");

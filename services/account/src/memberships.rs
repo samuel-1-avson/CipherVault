@@ -9,11 +9,11 @@ use rusqlite::{params, OptionalExtension};
 use crate::{
     audit_event,
     guards::{
-        account_role_for, normalize_account_id, normalize_vault_role,
-        require_recent_strong_session, role_rank,
+        account_role_for_with_db, normalize_account_id, normalize_vault_role,
+        require_recent_account_role_with_db, require_recent_strong_session, role_rank,
     },
     hash_token,
-    http::{authenticated_session, error_response, service_error},
+    http::{authenticated_session_with_db, error_response, service_error},
     random_hex,
     state::{
         now_utc, AccountState, InvitationAcceptRequest, InvitationRequest, InvitationView,
@@ -61,13 +61,15 @@ pub async fn post_invitation(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let (session, actor_role) = match account_role_for(&state, &headers, &account_id, "admin") {
-        Ok(value) => value,
-        Err(response) => return *response,
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
     };
-    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
+    let (_, actor_role) =
+        match require_recent_account_role_with_db(&db, &headers, &account_id, "admin") {
+            Ok(value) => value,
+            Err(response) => return *response,
+        };
     let invitee = match normalize_account_id(&request.invitee_account_id) {
         Ok(value) => value,
         Err(error) => return service_error(error),
@@ -90,10 +92,6 @@ pub async fn post_invitation(
             "Only an owner can grant admin access, and owner access cannot be delegated",
         );
     }
-    let db = match state.connection() {
-        Ok(db) => db,
-        Err(error) => return service_error(error),
-    };
     let exists = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id = ?1)",
@@ -156,13 +154,13 @@ pub async fn get_invitations(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    if let Err(response) = account_role_for(&state, &headers, &account_id, "admin") {
-        return *response;
-    }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) = account_role_for_with_db(&db, &headers, &account_id, "admin") {
+        return *response;
+    }
     let mut statement = match db.prepare(
         "SELECT invitation_id, account_id, invitee_account_id, role, created_at_utc, expires_at_utc, accepted_at_utc, revoked_at_utc
          FROM invitations WHERE account_id = ?1 ORDER BY created_at_utc DESC",
@@ -190,10 +188,6 @@ pub async fn post_invitation_accept(
     headers: HeaderMap,
     Json(request): Json<InvitationAcceptRequest>,
 ) -> Response {
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
     let token = request.token.trim();
     if token.len() < 16 {
         return error_response(
@@ -205,6 +199,10 @@ pub async fn post_invitation_accept(
     let mut db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
+    };
+    let mut session = match authenticated_session_with_db(&db, &headers) {
+        Ok(session) => session,
+        Err(response) => return response,
     };
     let invitation = match db.query_row(
         "SELECT invitation_id, account_id, role, expires_at_utc, accepted_at_utc, revoked_at_utc
@@ -230,6 +228,13 @@ pub async fn post_invitation_accept(
             "Invitation is expired, accepted, or revoked",
         );
     }
+    session.mfa_required |= match crate::mfa::policy_required(&db, &account_id) {
+        Ok(required) => required,
+        Err(error) => return service_error(error.into()),
+    };
+    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
+        return *response;
+    }
     let now = now_utc();
     let tx = match db.transaction() {
         Ok(tx) => tx,
@@ -252,7 +257,7 @@ pub async fn post_invitation_accept(
     }
     if let Err(error) = tx.execute(
         "INSERT INTO memberships(account_id, member_account_id, role, status, invited_at_utc, accepted_at_utc, revoked_at_utc)
-         SELECT account_id, invitee_account_id, role, 'active', invited_at_utc, ?2, NULL FROM invitations WHERE invitation_id = ?1
+         SELECT account_id, invitee_account_id, role, 'active', created_at_utc, ?2, NULL FROM invitations WHERE invitation_id = ?1
          ON CONFLICT(account_id, member_account_id) DO UPDATE SET role = excluded.role, status = 'active', accepted_at_utc = excluded.accepted_at_utc, revoked_at_utc = NULL",
         params![invitation_id, now],
     ) {
@@ -282,13 +287,13 @@ pub async fn get_memberships(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    if let Err(response) = account_role_for(&state, &headers, &account_id, "viewer") {
-        return *response;
-    }
     let db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
     };
+    if let Err(response) = account_role_for_with_db(&db, &headers, &account_id, "viewer") {
+        return *response;
+    }
     let mut statement = match db.prepare("SELECT account_id, member_account_id, role, status, invited_at_utc, accepted_at_utc, revoked_at_utc FROM memberships WHERE account_id = ?1 OR member_account_id = ?1 ORDER BY invited_at_utc") { Ok(statement) => statement, Err(error) => return service_error(error.into()) };
     let mut rows = match statement.query(params![account_id]) {
         Ok(rows) => rows,
@@ -321,13 +326,15 @@ pub async fn post_membership_revoke(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
-    let (session, actor_role) = match account_role_for(&state, &headers, &account_id, "admin") {
-        Ok(value) => value,
-        Err(response) => return *response,
+    let db = match state.connection() {
+        Ok(db) => db,
+        Err(error) => return service_error(error),
     };
-    if let Err(response) = require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
+    let (session, actor_role) =
+        match require_recent_account_role_with_db(&db, &headers, &account_id, "admin") {
+            Ok(value) => value,
+            Err(response) => return *response,
+        };
     if session.account_id == member_account_id {
         return error_response(
             StatusCode::FORBIDDEN,
@@ -335,10 +342,6 @@ pub async fn post_membership_revoke(
             "A session cannot revoke its own membership",
         );
     }
-    let db = match state.connection() {
-        Ok(db) => db,
-        Err(error) => return service_error(error),
-    };
     let target_role = match db
         .query_row(
             "SELECT role FROM memberships
@@ -382,6 +385,79 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower05::ServiceExt;
+
+    #[tokio::test]
+    async fn invitation_acceptance_requires_primary_and_target_account_factor_policy() {
+        let (root, state, app) = test_app("invitation-factor-policy");
+        let owner = format!("cvacct_{}", random_hex(16));
+        let invitee = format!("cvacct_{}", random_hex(16));
+        let invitation = format!("cvinv_{}", random_hex(32));
+        let now = now_utc();
+        {
+            let db = state.connection().unwrap();
+            for (account, key) in [(&owner, "11".repeat(32)), (&invitee, "22".repeat(32))] {
+                db.execute("INSERT INTO accounts(account_id,display_name,account_public_key_hex,created_at_utc)
+                    VALUES(?1,'Invitation factor regression',?2,?3)", params![account,key,now]).unwrap();
+            }
+            for method in ["device", "totp", "recovery"] {
+                db.execute("INSERT INTO sessions(token_hash_hex,account_id,session_kind,issued_at_utc,expires_at_utc)
+                    VALUES(?1,?2,?3,?4,?5)", params![hash_token(method),invitee,method,now,now+1800]).unwrap();
+            }
+            db.execute("INSERT INTO invitations(invitation_id,account_id,invitee_account_id,role,token_hash_hex,created_at_utc,expires_at_utc)
+                VALUES('factor-invitation',?1,?2,'viewer',?3,?4,?5)", params![owner,invitee,hash_token(&invitation),now,now+900]).unwrap();
+        }
+        let accept = |method: &str| {
+            Request::post("/v1/invitations/accept")
+                .header("authorization", format!("Bearer {method}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"token":invitation}).to_string(),
+                ))
+                .unwrap()
+        };
+        for method in ["totp", "recovery"] {
+            assert_eq!(
+                app.clone().oneshot(accept(method)).await.unwrap().status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        {
+            let db = state.connection().unwrap();
+            db.execute(
+                "INSERT INTO account_mfa_policy VALUES(?1,1,?2)",
+                params![owner, now],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(accept("device"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        {
+            let db = state.connection().unwrap();
+            let accepted: Option<u64> = db.query_row("SELECT accepted_at_utc FROM invitations WHERE invitation_id='factor-invitation'", [], |row| row.get(0)).unwrap();
+            assert!(accepted.is_none());
+            db.execute("INSERT INTO totp_credentials(account_id,secret_ciphertext_b64,enabled,created_at_utc)
+                VALUES(?1,'synthetic verified credential',1,?2)", params![invitee,now]).unwrap();
+            db.execute("INSERT INTO session_mfa(token_hash_hex,proof_id,verified_at_utc,credential_fingerprint)
+                VALUES(?1,'synthetic invitation proof',?2,?3)", params![hash_token("device"),now,hash_token("synthetic verified credential")]).unwrap();
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(accept("device"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        drop(app);
+        drop(state);
+        cleanup(root);
+    }
 
     #[tokio::test]
     async fn membership_roles_and_origins_are_enforced() {

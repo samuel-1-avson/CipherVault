@@ -6,7 +6,9 @@ use crate::{
     api_account_device_enrollment_handler, api_account_invitation_accept_handler,
     api_account_invitations_get_handler, api_account_invitations_post_handler,
     api_account_login_handler, api_account_logout_handler, api_account_membership_revoke_handler,
-    api_account_memberships_get_handler, api_account_recovery_codes_handler,
+    api_account_memberships_get_handler, api_account_mfa_get_handler,
+    api_account_mfa_patch_handler, api_account_mfa_recovery_reset_handler,
+    api_account_mfa_step_up_handler, api_account_recovery_codes_handler,
     api_account_register_handler, api_account_resource_get_handler,
     api_account_session_challenge_handler, api_account_session_handler,
     api_account_session_handoff_consume_handler, api_account_session_handoff_handler,
@@ -117,6 +119,18 @@ pub(crate) fn private_ui_router() -> axum::Router {
             axum::routing::post(api_account_register_handler),
         )
         .route("/api/account/session", get(api_account_session_handler))
+        .route(
+            "/api/account/session/mfa/totp",
+            axum::routing::post(api_account_mfa_step_up_handler),
+        )
+        .route(
+            "/api/account/:account_id/mfa",
+            get(api_account_mfa_get_handler).patch(api_account_mfa_patch_handler),
+        )
+        .route(
+            "/api/account/:account_id/mfa/recovery-reset",
+            axum::routing::post(api_account_mfa_recovery_reset_handler),
+        )
         .route(
             "/api/account/sessions/challenge",
             axum::routing::post(api_account_session_challenge_handler),
@@ -488,6 +502,18 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             axum::routing::post(api_account_register_handler),
         )
         .route("/api/account/session", get(api_account_session_handler))
+        .route(
+            "/api/account/session/mfa/totp",
+            axum::routing::post(api_account_mfa_step_up_handler),
+        )
+        .route(
+            "/api/account/:account_id/mfa",
+            get(api_account_mfa_get_handler).patch(api_account_mfa_patch_handler),
+        )
+        .route(
+            "/api/account/:account_id/mfa/recovery-reset",
+            axum::routing::post(api_account_mfa_recovery_reset_handler),
+        )
         .route(
             "/api/account/sessions/challenge",
             axum::routing::post(api_account_session_challenge_handler),
@@ -1036,6 +1062,102 @@ mod tests {
         }
     }
 
+    /// Verify actual method/path/credential forwarding for the browser MFA
+    /// API. The upstream is an isolated loopback echo, never the hosted API.
+    #[tokio::test]
+    async fn account_mfa_routes_forward_methods_paths_and_credentials() {
+        struct EndpointGuard(Option<std::ffi::OsString>);
+        impl Drop for EndpointGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CIPHERVAULT_ACCOUNT_ENDPOINT", value),
+                    None => std::env::remove_var("CIPHERVAULT_ACCOUNT_ENDPOINT"),
+                }
+            }
+        }
+        async fn echo(request: axum::extract::Request) -> axum::Json<serde_json::Value> {
+            let (parts, body) = request.into_parts();
+            let body = axum::body::to_bytes(body, 4096).await.unwrap();
+            axum::Json(serde_json::json!({
+                "path":parts.uri.path(), "method":parts.method.as_str(),
+                "authorization":parts.headers.get("authorization").and_then(|value| value.to_str().ok()),
+                "cookie":parts.headers.get("cookie").and_then(|value| value.to_str().ok()),
+                "body":String::from_utf8_lossy(&body),
+            }))
+        }
+        let _serialized = serialized_router_test().await;
+        let _endpoint = EndpointGuard(std::env::var_os("CIPHERVAULT_ACCOUNT_ENDPOINT"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::env::set_var(
+            "CIPHERVAULT_ACCOUNT_ENDPOINT",
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        let upstream = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().fallback(echo))
+                .await
+                .unwrap();
+        });
+        let (server, base_url) = start_public_test_server().await;
+        let client = reqwest::Client::new();
+        let account = format!("cvacct_{}", "ab".repeat(16));
+        for (method, route, target, body) in [
+            (
+                reqwest::Method::POST,
+                "/api/account/session/mfa/totp".to_string(),
+                "/v1/sessions/mfa/totp".to_string(),
+                Some(serde_json::json!({"code":"123456"})),
+            ),
+            (
+                reqwest::Method::GET,
+                format!("/api/account/{account}/mfa"),
+                format!("/v1/accounts/{account}/mfa"),
+                None,
+            ),
+            (
+                reqwest::Method::PATCH,
+                format!("/api/account/{account}/mfa"),
+                format!("/v1/accounts/{account}/mfa"),
+                Some(serde_json::json!({"required":true})),
+            ),
+            (
+                reqwest::Method::POST,
+                format!("/api/account/{account}/mfa/recovery-reset"),
+                format!("/v1/accounts/{account}/mfa/recovery-reset"),
+                Some(serde_json::json!({"code":"synthetic-recovery"})),
+            ),
+        ] {
+            let mut request = client
+                .request(method.clone(), format!("{base_url}{route}"))
+                .header("authorization", "Bearer synthetic-session")
+                .header("cookie", "ciphervault_account_session=synthetic-cookie");
+            if let Some(value) = &body {
+                request = request.json(value);
+            }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{route}");
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            let echoed: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(echoed["path"], target);
+            assert_eq!(echoed["method"], method.as_str());
+            assert_eq!(echoed["authorization"], "Bearer synthetic-session");
+            assert_eq!(
+                echoed["cookie"],
+                "ciphervault_account_session=synthetic-cookie"
+            );
+            if let Some(value) = body {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(echoed["body"].as_str().unwrap())
+                        .unwrap(),
+                    value
+                );
+            }
+        }
+        server.abort();
+        upstream.abort();
+        let _ = server.await;
+        let _ = upstream.await;
+    }
+
     /// Malformed account IDs are rejected before any upstream URL is built,
     /// so a routed segment can never smuggle extra upstream path segments.
     /// Validation precedes proxying, hence no endpoint isolation is needed.
@@ -1048,6 +1170,7 @@ mod tests {
         for uri in [
             "/api/account/not-an-id/invitations".to_string(),
             "/api/account/ABC/memberships".to_string(),
+            "/api/account/not-an-id/mfa".to_string(),
             format!("/api/account/cvacct_{}/invitations", "ab".repeat(15)),
             format!("/api/account/{}/memberships", "zz".repeat(32)),
             "/api/account/abc%2Fdef/invitations".to_string(),

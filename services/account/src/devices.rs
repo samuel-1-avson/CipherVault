@@ -13,7 +13,7 @@ use crate::{
     db::account_exists,
     error::AccountServiceError,
     guards::{decode_32, normalize_account_id},
-    http::{authenticated_session, authenticated_session_with_db, error_response, service_error},
+    http::{authenticated_session_with_db, error_response, service_error},
     prune_expired, random_hex,
     recovery::propagate_device_revocation,
     state::{
@@ -196,6 +196,29 @@ pub async fn post_device_enrollment(
         &signature,
     )
     .is_ok();
+    if account_proof_valid {
+        match crate::mfa::policy_required(&db, &account_id) {
+            Ok(true) => {
+                let session = match authenticated_session_with_db(&db, &headers) {
+                    Ok(session) if session.account_id == account_id => session,
+                    _ => {
+                        return error_response(
+                            StatusCode::FORBIDDEN,
+                            "MFA_STEP_UP_REQUIRED",
+                            "Required MFA also protects account-signed device enrollment",
+                        )
+                    }
+                };
+                if let Err(response) =
+                    crate::guards::require_recent_strong_session(&session, now_utc())
+                {
+                    return *response;
+                }
+            }
+            Ok(false) => {}
+            Err(error) => return service_error(error.into()),
+        }
+    }
     // Recovery-only holders lost the account key with their devices. A valid,
     // unexpired recovery session authorizes the account, and a proof signed by
     // the new device key itself proves possession of the enrolled keypair.
@@ -333,25 +356,16 @@ pub async fn post_device_revoke(
         Ok(_) => device_id_hex.to_ascii_lowercase(),
         Err(error) => return service_error(error),
     };
-    let session = match authenticated_session(&state, &headers) {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if let Err(response) = crate::guards::require_recent_strong_session(&session, now_utc()) {
-        return *response;
-    }
-    if session.account_id != account_id {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "ACCOUNT_SCOPE_MISMATCH",
-            "Session is outside this account",
-        );
-    }
     let (public_key_hex, vault_ids, changed) = {
         let db = match state.connection() {
             Ok(db) => db,
             Err(error) => return service_error(error),
         };
+        if let Err(response) =
+            crate::guards::require_recent_account_session_with_db(&db, &headers, &account_id)
+        {
+            return *response;
+        }
         let public_key: Option<String> = match db
             .query_row(
                 "SELECT public_key_hex FROM devices WHERE account_id = ?1 AND device_id_hex = ?2 AND revoked_at_utc IS NULL",

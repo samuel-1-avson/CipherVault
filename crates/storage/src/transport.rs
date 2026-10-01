@@ -325,9 +325,8 @@ impl HttpTransport {
 
     /// Sends one idempotent GET with bounded retry: transport failures and
     /// retryable statuses (408/429/502/503/504) retry up to three attempts
-    /// with linear backoff. Writes are never retried here — POST/PUT rely
-    /// on pool failover, since a replayed non-idempotent write could
-    /// double-apply.
+    /// with linear backoff. Non-idempotent writes rely on pool failover;
+    /// content-addressed object PUT has its own bounded capacity retry.
     async fn get_with_retry(
         &self,
         url: &str,
@@ -380,6 +379,70 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 mod http_response_limit_tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn object_put_retries_capacity_with_identical_bytes_and_a_fixed_attempt_limit() {
+        for statuses in [vec![503, 200], vec![503, 503, 503], vec![403]] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let payload = b"synthetic immutable object".to_vec();
+            let cid = compute_digest(&payload);
+            let expected_path = format!("PUT /v1/objects/{} HTTP/1.1", hex::encode(cid));
+            let expected = payload.clone();
+            let sequence = statuses.clone();
+            let server = tokio::spawn(async move {
+                for status in sequence {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 4096];
+                    let header_end = loop {
+                        let n = socket.read(&mut buffer).await.unwrap();
+                        assert!(n > 0 && request.len() < 8192);
+                        request.extend_from_slice(&buffer[..n]);
+                        if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    assert!(headers.starts_with(&expected_path));
+                    assert!(headers
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer synthetic-session"));
+                    assert!(headers
+                        .to_ascii_lowercase()
+                        .contains(&format!("content-length: {}", expected.len())));
+                    while request.len() < header_end + expected.len() {
+                        let n = socket.read(&mut buffer).await.unwrap();
+                        assert!(n > 0);
+                        request.extend_from_slice(&buffer[..n]);
+                    }
+                    assert_eq!(&request[header_end..], expected.as_slice());
+                    socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                }
+            });
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                HttpTransport::new(endpoint).put_object("synthetic-session", &cid, payload),
+            )
+            .await
+            .unwrap();
+            if statuses.last() == Some(&200) {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(result, Err(StorageError::ServerError { status, .. })
+                    if status == *statuses.last().unwrap())
+                );
+            }
+            closed(server).await;
+        }
+        // Invalid caller credentials must remain a normal build error rather
+        // than a panic while preparing the reusable request.
+        let result = HttpTransport::new("http://127.0.0.1:1".into())
+            .put_object("invalid\nheader", &[1; 32], vec![1])
+            .await;
+        assert!(matches!(result, Err(StorageError::HttpError(_))));
+    }
 
     /// Keep incomplete responses open after their payload. An unbounded client
     /// would wait for EOF; a bounded client must abort and close the connection.
@@ -634,16 +697,30 @@ impl OperatorTransport for HttpTransport {
         Box::pin(async move {
             let cid_hex = hex::encode(cid);
             let url = format!("{}/v1/objects/{}", self.endpoint, cid_hex);
-            Self::check_ok(
-                self.with_vault_scope(self.http.put(&url))
-                    .header(header::AUTHORIZATION, format!("Bearer {}", token))
-                    .header(header::CONTENT_TYPE, "application/octet-stream")
-                    .body(data)
-                    .send()
-                    .await?,
-            )
-            .await?;
-            Ok(())
+            let request = self
+                .with_vault_scope(self.http.put(&url))
+                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .body(data)
+                .build()?;
+            for attempt in 1..=GET_RETRY_ATTEMPTS {
+                // A Vec-backed request body is reusable; cloning shares the
+                // immutable bytes. CID PUT is idempotent. Retry capacity 503
+                // only; never replay leases or recovery-log append operations.
+                let response = self
+                    .http
+                    .execute(request.try_clone().expect("reusable object PUT body"))
+                    .await?;
+                if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    || attempt == GET_RETRY_ATTEMPTS
+                {
+                    Self::check_ok(response).await?;
+                    return Ok(());
+                }
+                drop(response);
+                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt))).await;
+            }
+            unreachable!("final PUT attempt returns its response")
         })
     }
 

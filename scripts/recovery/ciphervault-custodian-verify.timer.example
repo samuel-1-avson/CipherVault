@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify CipherVault custody copies daily after production upload (UTC)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+Unit=ciphervault-custodian-verify.service
+
+[Install]
+WantedBy=timers.target
