@@ -365,6 +365,22 @@ pub(crate) fn export_audit_log(
     Ok(out)
 }
 
+/// Verify and materialize one pinned SQLite snapshot. Requiring a transaction
+/// keeps independent connections from appending between the report and JSONL.
+/// A broken chain never produces an export body.
+pub(crate) fn verify_and_export_audit_log(
+    snapshot: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> Result<(ChainReport, String), rusqlite::Error> {
+    let report = verify_chain(snapshot, tenant_id)?;
+    let jsonl = if report.valid {
+        export_audit_log(snapshot, tenant_id)?
+    } else {
+        String::new()
+    };
+    Ok((report, jsonl))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,6 +499,77 @@ mod tests {
             AuditEventType::parse("secret.rebound"),
             AuditEventType::SecretRebound
         );
+    }
+
+    #[test]
+    fn verified_export_uses_snapshot_before_an_independent_writer_commit() {
+        let (root, state, app) = test_app("audit-export-snapshot");
+        let mut db = state.connection().unwrap();
+        emit(
+            &db,
+            "secret.read",
+            "t1",
+            "alice",
+            "before",
+            "success",
+            "",
+            100,
+        );
+        let mut writer = Connection::open(root.join("accounts.sqlite3")).unwrap();
+        writer
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            writer
+                .query_row("PRAGMA synchronous", [], |row| row.get::<_, u64>(0))
+                .unwrap(),
+            2,
+            "independent writes retain FULL durability",
+        );
+        let snapshot = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+            .unwrap();
+        let before = verify_chain(&snapshot, "t1").unwrap();
+        assert_eq!(before.event_count, 1);
+        let write = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        emit(
+            &write,
+            "secret.read",
+            "t1",
+            "alice",
+            "committed-after-snapshot",
+            "success",
+            "",
+            101,
+        );
+        write.commit().unwrap();
+        assert_eq!(verify_chain(&writer, "t1").unwrap().event_count, 2);
+
+        // Exercise the production export helper after a real independent
+        // commit. It must preserve the pinned report and exclude that row.
+        let (report, jsonl) = verify_and_export_audit_log(&snapshot, "t1").unwrap();
+        assert_eq!(report, before);
+        assert_eq!(jsonl.lines().count(), report.event_count);
+        assert!(!jsonl.contains("committed-after-snapshot"));
+        let row: serde_json::Value = serde_json::from_str(jsonl.lines().last().unwrap()).unwrap();
+        assert_eq!(row["event_hash_hex"], hex::encode(&report.head_hash));
+        snapshot.commit().unwrap();
+
+        let next = db.transaction().unwrap();
+        let (after, jsonl) = verify_and_export_audit_log(&next, "t1").unwrap();
+        assert_eq!(after.event_count, 2);
+        assert!(after.valid);
+        assert_ne!(after.head_hash, before.head_hash);
+        assert_eq!(jsonl.lines().count(), 2);
+        assert!(jsonl.contains("committed-after-snapshot"));
+        next.commit().unwrap();
+        drop(writer);
+        drop(db);
+        drop(app);
+        drop(state);
+        cleanup(root);
     }
 
     #[test]

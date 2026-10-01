@@ -15,6 +15,9 @@ an audit record.
   descriptors owned by active SQLite connections. This preserves POSIX database
   and shared-memory locks, preventing other connections from unlinking an active
   WAL and causing an online backup to miss committed data.
+- Audit exports verify the chain and build their response from one SQLite read
+  snapshot, so concurrent writes cannot make the event count or head hash differ
+  from the exported body.
 - Account owners can require fresh TOTP verification after signing-key or passkey
   authentication. Proof is bound to the exact session and active authenticator;
   handoffs and new logins require a new code. Derived scope tokens bind the proof

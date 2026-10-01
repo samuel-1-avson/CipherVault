@@ -118,6 +118,18 @@ that an older `VACUUM INTO` test inherited NOFOLLOW while using the system's
 `/var` alias; its existing temporary parent is now canonicalized before forming
 the new output path. Production link rejection remains enabled.
 
+The next [optimized run](https://github.com/samuel-1-avson/CipherVault/actions/runs/36921149212),
+on source `5672b4b12fe44fffd4e5960c5b4846b8ec69d558`, passed all backup and
+integrity gates but failed one audit-export response at concurrency sixty-four.
+The service verified its chain under one database guard, released it and generated
+the JSONL body under another guard. A concurrent append could therefore make the
+count/head headers describe an earlier chain than the body. The correction must
+hold both one mutex guard and one SQLite read transaction across verification
+and export, protecting against both same-process and independent writers.
+Failed-run JSON SHA-256:
+`63147bdb1590cc5bbd9f9aa2f5db8c7cae160ef71411cc4b5c6212fc96b89c78`.
+The gate is retained unchanged; another final-source run is required.
+
 ## Pre-deployment account recovery
 
 The exact signed v1.0.26 account image created an online backup with
