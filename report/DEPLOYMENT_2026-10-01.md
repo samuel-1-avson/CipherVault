@@ -4,17 +4,25 @@ Date: 1 October 2026 (UTC / Africa/Accra)
 
 ## Current status
 
-Deployment is held. Production remains on v1.0.26. PR #16 passed all checks and
+Deployment is awaiting the required review or a specifically authorized
+administrator exception for corrective PR
+[#17](https://github.com/samuel-1-avson/CipherVault/pull/17).
+All final CI and optimized capacity checks passed on source
+`5a968a1e395d32e871a2961ad1935edefc226a32`, preparing v1.0.28.
+Production remains on v1.0.26. PR #16 passed all checks and
 merged as `d91656a7b17e9c57b740e44a2a7441d7e0e5ef8f`; its v1.0.27 tag passed the
 mandatory pre-release gate. Publication was stopped after the optimized capacity
 run exposed an incomplete first account backup. No v1.0.27 production promotion
-occurred. Corrective work and verification are in progress.
+occurred. The corrections are committed and pushed; no v1.0.28 release tag,
+publication or production promotion has occurred yet.
 
 The user authorized deployment and a one-time administrator merge of PR
 [#16](https://github.com/samuel-1-avson/CipherVault/pull/16) after all checks pass.
 The repository ruleset requires one approving review; neither review bot supplied
 one, and the PR author is the only listed repository collaborator. This exception
 does not establish peer review or independent security assurance.
+That one-time exception was used for PR #16 and does not authorize a second
+administrator merge. PR #17 currently has no qualifying approving review.
 
 ## Release scope
 
@@ -129,6 +137,81 @@ and export, protecting against both same-process and independent writers.
 Failed-run JSON SHA-256:
 `63147bdb1590cc5bbd9f9aa2f5db8c7cae160ef71411cc4b5c6212fc96b89c78`.
 The gate is retained unchanged; another final-source run is required.
+
+## Final corrective candidate validation
+
+Final source: `5a968a1e395d32e871a2961ad1935edefc226a32`.
+Tree: `95180e0e3367ab8ad304a4a758ad738fb35b8cd4`.
+
+The [full cross-platform CI](https://github.com/samuel-1-avson/CipherVault/actions/runs/36923240538),
+[security scans](https://github.com/samuel-1-avson/CipherVault/actions/runs/36923240586),
+[ergonomics checks](https://github.com/samuel-1-avson/CipherVault/actions/runs/36923240624)
+and [optimized capacity workflow](https://github.com/samuel-1-avson/CipherVault/actions/runs/36923242823)
+all passed. Windows, Linux and macOS Rust suites, browser CSP, Rust 1.89,
+Solidity, throughput, DCO and secret checks are successful. The internal final
+review found no remaining concrete blocker in these corrections; this does not
+replace a qualifying GitHub approval or independent external security review.
+
+The audit regression pins a read transaction, commits another event through an
+independent FULL-durability SQLite connection and checks that the current export
+excludes it while the next snapshot includes it. The HTTP regression performs
+eight exports during independent writes and validates body counts, every
+previous-hash link and the final hash against response headers. Dual-control,
+quota and broken-chain rejection remain enabled.
+
+The final [capacity JSON](capacity-linux-release-v1.0.28-2026-10-01.json) passed
+all seven gates. All 1,080 account requests succeeded, including 48 audit exports
+and 120 required-MFA reads. A fresh primary session without factor proof received
+404 without a value.
+
+| Account concurrency | Successful requests/s | p99 ms | Backup ms | Backup versions | Backup audit events |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 409.23 | 13.08 | 15.71 | 50 | 65 |
+| 8 | 403.79 | 70.14 | 49.69 | 98 | 519 |
+| 32 | 408.40 | 155.23 | 55.37 | 146 | 958 |
+| 64 | 263.56 | 444.14 | 98.55 | 194 | 1,402 |
+
+Every overlapping backup included all fifty initial secrets, the encryption key,
+one verified audit chain and account/session/project metadata. Operator overload
+accepted 25 and rejected 103 requests with capacity 503, with no unexpected
+failures. All 355 stored object CIDs verified. The default limiter accepted 599
+and returned 41 HTTP 429 responses. Final SQLite integrity was `ok`, retaining
+242 versions and 1,948 audit events.
+
+This is a short isolated synthetic run on a four-CPU, approximately 16 GB Linux
+runner. It does not establish a production throughput ceiling, sustained SLO,
+soak, disk-pressure or rotation-overlap qualification. FULL durability remains
+configured; the observer connection's synchronous value is not live service
+telemetry.
+
+SHA-256 evidence:
+
+- Final capacity JSON: `5c8885669c58ccb0c8093b568d864dca2d45bc9be730dac7346901e8e003a3d1`.
+- Account binary: `391cd5acd4a12b20aa582a5449eb03929df35700c91da2cbc009c41606410c62`.
+- Operator binary: `79f75739441a7066dc70a96ea3b7d9daab6957bc8a43030ea7f507dc8fa191f6`.
+- Verified 346-file source review ZIP: `2ea34c65c1d78663a454fdf743b2e3f8b9ea1b15b5af66ac080db97ad7e33654`.
+
+The source ZIP is saved outside the repository at
+`C:\Users\samue\AppData\Local\Temp\CipherVault-assurance-source-20261001-5a968a1e395d.zip`.
+These source/binary hashes establish evidence identity, not signed release
+container digests or security certification.
+
+## Prepared production rollout
+
+The v1.0.28 rollout helpers preserve metadata and signed v1.0.26 rollback pins.
+They remain unexecuted. The planned sequence stages and verifies exact v1.0.28
+release signatures, disables/stops the web unit, verifies that no SQLite writer
+or other descriptor holder remains, and preserves the stopped database/WAL/SHM
+before opening any maintenance connection. Disabling the unit prevents the old
+image from starting during reboot before metadata bootstrap rewrites its refs.
+The volume is retained; no production database is replaced by an old backup.
+
+A corrected image then creates a backup from the read-only source volume and
+tests an isolated restore using separately mounted existing key files. Private
+workstation and create-only GCS copies are checksum-verified. The web/account
+services promote first, followed by the three operators sequentially. Live
+version/digest/user/health/MFA-capability checks and a post-deployment recovery
+rehearsal are required before marking deployment complete.
 
 ## Pre-deployment account recovery
 
