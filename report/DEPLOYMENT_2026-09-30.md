@@ -15,7 +15,7 @@ The authorized remediation was merged, released, and deployed to the operator fl
 
 PR [#13](https://github.com/samuel-1-avson/CipherVault/pull/13) merged as 4966a5ce057b81ac0ee8795881133cad91f8c3ac. Its code and release tag v1.0.26 passed the main-branch checks. The release workflow [36779365526](https://github.com/samuel-1-avson/CipherVault/actions/runs/36779365526) completed successfully: the full pre-release gate, six supported binary archive builds, all four container builds, vulnerability scans, Cosign signing, GitHub release publication, and package-manager hash generation.
 
-The [v1.0.26 release](https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.26) contains the six platform bundles and a V2-authenticated SHA256SUMS file. The signed image identities were verified against the exact release workflow at refs/tags/v1.0.26. The scan gate rejects unfixed High and Critical findings.
+The [v1.0.26 release](https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.26) contains the six platform bundles and a V2-authenticated SHA256SUMS file. The signed image identities were verified against the exact release workflow at refs/tags/v1.0.26. The scan gate rejects fixable High and Critical findings.
 
 The package-manager hash update PR [#14](https://github.com/samuel-1-avson/CipherVault/pull/14) merged as 30acd4a210ef73a2c29a4e08c494783088d63fb4 after DCO, GitGuardian, and Sourcery review checks passed.
 
