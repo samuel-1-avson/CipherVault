@@ -1,9 +1,9 @@
 //! Account service state: database, schema, views, and shared helpers.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,6 +56,23 @@ pub fn sqlite_busy_retries() -> u64 {
     SQLITE_BUSY_RETRIES.load(Ordering::Relaxed)
 }
 
+fn lock_database_files(data_dir: &Path) -> Result<PathBuf, AccountServiceError> {
+    let database =
+        crate::disaster_recovery::checked_database_path(&data_dir.join("accounts.sqlite3"))?;
+    for suffix in crate::disaster_recovery::DATABASE_FILE_SUFFIXES {
+        let path = data_dir.join(format!("accounts.sqlite3{suffix}"));
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                crate::disaster_recovery::checked_regular_database_path(&path)?;
+                ciphervault_file_lock::lock_secret_file(&path)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(database)
+}
+
 impl AccountState {
     pub fn open(data_dir: impl Into<PathBuf>) -> Result<Self, AccountServiceError> {
         let data_dir = data_dir.into();
@@ -66,12 +83,20 @@ impl AccountState {
         match ciphervault_file_lock::create_secret_file(&db_path) {
             Ok(file) => file.sync_all()?,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = ciphervault_file_lock::open_regular_file(&db_path)?;
+                crate::disaster_recovery::checked_regular_database_path(&db_path)?;
                 ciphervault_file_lock::lock_secret_file(&db_path)?;
             }
             Err(error) => return Err(error.into()),
         }
-        let connection = Connection::open(db_path.clone())?;
+        // Reject unsafe existing sidecars before SQLite touches them. Closing
+        // any raw descriptor for a live SQLite inode releases its POSIX locks,
+        // even when SQLite owns another descriptor in this process. Metadata
+        // checks and path-based permission changes preserve those locks.
+        let db_path = lock_database_files(&data_dir)?;
+        let connection = Connection::open_with_flags(
+            &db_path,
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
         connection.busy_handler(Some(counting_busy_handler))?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -292,13 +317,7 @@ impl AccountState {
         }
         // The owner-only parent protects future sidecars too; tighten current
         // WAL/SHM files before traffic so old deployments migrate safely.
-        for suffix in ["", "-wal", "-shm"] {
-            let path = data_dir.join(format!("accounts.sqlite3{suffix}"));
-            if path.try_exists()? {
-                let _ = ciphervault_file_lock::open_regular_file(&path)?;
-                ciphervault_file_lock::lock_secret_file(&path)?;
-            }
-        }
+        lock_database_files(&data_dir)?;
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),
             http: reqwest::Client::builder()
@@ -630,4 +649,179 @@ pub(crate) fn default_session_kind() -> String {
 
 pub(crate) fn default_recovery_code_count() -> usize {
     8
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use rusqlite::OpenFlags;
+
+    use super::*;
+
+    const CHILD_MODE: &str = "CV_ACCOUNT_WAL_TEST_CHILD_MODE";
+    const CHILD_DATABASE: &str = "CV_ACCOUNT_WAL_TEST_CHILD_DATABASE";
+    const TEST_NAME: &str = "state::tests::wal_visibility_survives_database_path_validation";
+
+    fn insert_marker(db: &Connection, marker: &str, public_key: &str) {
+        db.execute(
+            "INSERT INTO accounts VALUES(?1, 'WAL visibility regression', ?2, 1)",
+            [marker, public_key],
+        )
+        .unwrap();
+    }
+
+    fn run_child(database: &Path, mode: &str) {
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_MODE, mode)
+            .env(CHILD_DATABASE, database)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "independent SQLite {mode} failed:\n{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        );
+    }
+
+    #[test]
+    fn wal_visibility_survives_database_path_validation() {
+        if let Ok(mode) = std::env::var(CHILD_MODE) {
+            let database = std::env::var_os(CHILD_DATABASE).unwrap();
+            match mode.as_str() {
+                "writer" => {
+                    // A different process closing its last SQLite connection
+                    // must not remove the live account service's WAL.
+                    let db = Connection::open(database).unwrap();
+                    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                    insert_marker(&db, "child", &"22".repeat(32));
+                    drop(db);
+                }
+                "reader" => {
+                    let db =
+                        Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                            .unwrap();
+                    let rows: u64 = db
+                        .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+                        .unwrap();
+                    assert_eq!(
+                        rows, 3,
+                        "committed rows must be visible before checkpointing"
+                    );
+                    let after: u64 = db
+                        .query_row(
+                            "SELECT COUNT(*) FROM accounts WHERE account_id = 'after'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(after, 1);
+                }
+                _ => panic!("unexpected child mode"),
+            }
+            return;
+        }
+
+        for operation in ["startup", "reopen", "backup"] {
+            let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+                "cv-account-wal-{operation}-{}",
+                crate::util::random_hex(8)
+            ));
+            let data_dir = root.join("source");
+            let state = AccountState::open(&data_dir).unwrap();
+            {
+                let db = state.connection().unwrap();
+                // Keep committed rows in the WAL until the independent reader
+                // checks visibility; a checkpoint would hide this regression.
+                db.execute_batch("PRAGMA wal_autocheckpoint=0").unwrap();
+                insert_marker(&db, "before", &"11".repeat(32));
+            }
+            let second_state = match operation {
+                "reopen" => Some(AccountState::open(&data_dir).unwrap()),
+                "backup" => {
+                    let receipt =
+                        crate::disaster_recovery::backup_accounts(&data_dir, &root.join("backup"))
+                            .unwrap();
+                    assert_eq!(receipt.table_rows["accounts"], 1);
+                    None
+                }
+                _ => None,
+            };
+            let database = data_dir.join("accounts.sqlite3");
+            run_child(&database, "writer");
+            {
+                let db = state.connection().unwrap();
+                insert_marker(&db, "after", &"33".repeat(32));
+                let rows: u64 = db
+                    .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(rows, 3);
+            }
+            run_child(&database, "reader");
+            drop(second_state);
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn unsafe_database_paths_are_rejected_before_sqlite_opens() {
+        use std::os::unix::fs::symlink;
+
+        for suffix in crate::disaster_recovery::DATABASE_FILE_SUFFIXES {
+            for kind in ["symlink", "dangling-symlink", "directory"] {
+                let root = std::env::temp_dir()
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("cv-account-path-{}", crate::util::random_hex(8)));
+                let data_dir = root.join("source");
+                fs::create_dir_all(&data_dir).unwrap();
+                let path = data_dir.join(format!("accounts.sqlite3{suffix}"));
+                let target = root.join("external-file");
+                match kind {
+                    "symlink" => {
+                        fs::write(&target, b"must remain untouched").unwrap();
+                        symlink(&target, &path).unwrap();
+                    }
+                    "dangling-symlink" => symlink(&target, &path).unwrap(),
+                    "directory" => fs::create_dir(&path).unwrap(),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    matches!(
+                        AccountState::open(&data_dir),
+                        Err(AccountServiceError::Invalid(_))
+                    ),
+                    "unsafe SQLite path {suffix:?} ({kind}) must be rejected before opening",
+                );
+                if kind == "symlink" {
+                    assert_eq!(fs::read(&target).unwrap(), b"must remain untouched");
+                } else {
+                    assert!(!target.exists());
+                }
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn validated_system_alias_supports_sqlite_nofollow() {
+        // checked_existing permits Darwin's immutable /tmp -> /private/tmp
+        // alias. SQLite NOFOLLOW also checks ancestors, so its input must be
+        // canonicalized after validation rather than rejecting this layout.
+        let root = Path::new("/tmp").join(format!(
+            "cv-account-system-alias-{}",
+            crate::util::random_hex(8)
+        ));
+        let state = AccountState::open(&root).unwrap();
+        let receipt =
+            crate::disaster_recovery::backup_accounts(&root, &root.join("backup")).unwrap();
+        assert_eq!(receipt.table_rows["accounts"], 0);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::abuse::{
     check_quota, quota_failure_response, API_BUCKET, EXPORT_BUCKET, MINT_BUCKET, READ_VALUE_BUCKET,
 };
-use crate::audit_chain::{export_audit_log, verify_chain, AuditEventType};
+use crate::audit_chain::{verify_and_export_audit_log, AuditEventType};
 use crate::guards::{require_recent_strong_session, STEP_UP_MAX_AGE_SECONDS};
 use crate::http::{
     authenticated_session, bearer_token, error_response, service_error, session_token,
@@ -1482,15 +1482,27 @@ pub async fn get_audit_export(
             return quota_failure_response(failure);
         }
     }
-    let report = {
-        let db = match state.connection() {
+    let (report, jsonl) = {
+        let mut db = match state.connection() {
             Ok(db) => db,
             Err(error) => return service_error(error),
         };
-        match verify_chain(&db, &tenant) {
-            Ok(report) => report,
+        // Quota writes and token verification finish before this read-only
+        // snapshot. Retain both the mutex and transaction through export so
+        // same-process and independent writers cannot change the body after
+        // its event count and head have been verified.
+        let snapshot = match db.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred) {
+            Ok(snapshot) => snapshot,
             Err(error) => return service_error(error.into()),
+        };
+        let export = match verify_and_export_audit_log(&snapshot, &tenant) {
+            Ok(export) => export,
+            Err(error) => return service_error(error.into()),
+        };
+        if let Err(error) = snapshot.commit() {
+            return service_error(error.into());
         }
+        export
     };
     if !report.valid {
         return error_response(
@@ -1502,16 +1514,6 @@ pub async fn get_audit_export(
             ),
         );
     }
-    let jsonl = {
-        let db = match state.connection() {
-            Ok(db) => db,
-            Err(error) => return service_error(error),
-        };
-        match export_audit_log(&db, &tenant) {
-            Ok(jsonl) => jsonl,
-            Err(error) => return service_error(error.into()),
-        }
-    };
     let mut out_headers = HeaderMap::new();
     out_headers.insert(
         axum::http::header::CONTENT_TYPE,
@@ -3251,6 +3253,112 @@ mod tests {
             .unwrap()
             .to_vec();
         (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn audit_export_headers_and_body_match_during_independent_writes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        test_env();
+        let (root, state, app) = test_app("audit-export-concurrent");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "shop", "account:alice", ProjectRole::Admin);
+            grant_project_role(
+                &db,
+                &fixture.project,
+                "account:auditor",
+                ProjectRole::Auditor,
+                "root",
+                1,
+            )
+            .unwrap();
+            (tenant, fixture)
+        };
+        let admin = mint(&tenant, &fixture.project, None, "account:alice");
+        let second = mint(&tenant, &fixture.project, None, "account:auditor");
+        let uri = format!("/v1/projects/{}/audit/export", fixture.project);
+        let database = root.join("accounts.sqlite3");
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_stop = stop.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let writer = std::thread::spawn(move || {
+            let mut db = rusqlite::Connection::open(database).unwrap();
+            db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(
+                db.query_row("PRAGMA synchronous", [], |row| row.get::<_, u64>(0))
+                    .unwrap(),
+                2,
+            );
+            let mut written = 0;
+            for index in 0..512 {
+                if writer_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let write = db
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .unwrap();
+                audit_secret_event(
+                    &write,
+                    &SecretAuditEvent {
+                        event_type: "secret.read",
+                        tenant_id: &tenant,
+                        project_id: Some(&fixture.project),
+                        environment_id: Some(&fixture.env),
+                        secret_id: None,
+                        secret_version: None,
+                        principal_id: "account:writer",
+                        request_id: &format!("concurrent-export-{index}"),
+                        source: "test",
+                        result: "success",
+                        reason: "",
+                    },
+                    1000,
+                )
+                .unwrap();
+                write.commit().unwrap();
+                written += 1;
+                if index == 0 {
+                    started_tx.send(()).unwrap();
+                }
+                std::thread::yield_now();
+            }
+            written
+        });
+        started_rx.recv().unwrap();
+        // Eight exports fit the existing ten-request quota; no throttling or
+        // durability setting is changed for this concurrency regression.
+        for _ in 0..8 {
+            let (status, headers, body) =
+                export_raw(app.clone(), &uri, &admin, Some(&second), None).await;
+            assert_eq!(status, StatusCode::OK);
+            let text = String::from_utf8(body).unwrap();
+            let rows: Vec<serde_json::Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                rows.len(),
+                headers["x-audit-events"]
+                    .to_str()
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap(),
+            );
+            let mut head = "00".repeat(32);
+            for row in &rows {
+                assert_eq!(row["prev_hash_hex"], head);
+                head = row["event_hash_hex"].as_str().unwrap().to_string();
+            }
+            assert_eq!(head, headers["x-audit-head"].to_str().unwrap());
+        }
+        stop.store(true, Ordering::Relaxed);
+        assert!(writer.join().unwrap() > 0);
+        drop(app);
+        drop(state);
+        cleanup(root);
     }
 
     #[tokio::test]

@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 use crate::{key_lifecycle::VersionedKekService, AccountServiceError};
 
 const DATABASE: &str = "accounts.sqlite3";
+pub(crate) const DATABASE_FILE_SUFFIXES: &[&str] = &["", "-wal", "-shm", "-journal"];
 const RECEIPT: &str = "backup-receipt.json";
 const MAX_KEY_FILE_BYTES: u64 = 64 * 1024;
 const TABLES: &[&str] = &[
@@ -121,10 +122,44 @@ fn new_private_directory(path: &Path) -> Result<PathBuf, AccountServiceError> {
     Ok(absolute)
 }
 
-fn readonly_database(path: &Path) -> Result<Connection, AccountServiceError> {
+/// Validate SQLite paths without opening/closing a raw descriptor. On POSIX,
+/// closing a second descriptor can release locks held by a live connection.
+pub(crate) fn checked_regular_database_path(path: &Path) -> Result<PathBuf, AccountServiceError> {
     let path = checked_existing(path)?;
-    let _file = open_regular_file(&path)?;
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    if !fs::symlink_metadata(&path)?.is_file() {
+        return Err(invalid("SQLite paths must be regular files"));
+    }
+    // Resolve permitted immutable macOS aliases only after rejecting unsafe
+    // caller-controlled links, so SQLite's NOFOLLOW also sees safe ancestors.
+    Ok(fs::canonicalize(path)?)
+}
+
+/// Check existing SQLite sidecars too, without opening files or changing the
+/// source's permissions. A dangling symlink is unsafe even when exists() is
+/// false. The private parent directory protects subsequent SQLite creation.
+pub(crate) fn checked_database_path(path: &Path) -> Result<PathBuf, AccountServiceError> {
+    let database = checked_regular_database_path(path)?;
+    for suffix in &DATABASE_FILE_SUFFIXES[1..] {
+        let mut sidecar = database.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        match fs::symlink_metadata(&sidecar) {
+            Ok(_) => {
+                checked_regular_database_path(&sidecar)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(database)
+}
+
+fn readonly_database(path: &Path) -> Result<Connection, AccountServiceError> {
+    let path = checked_database_path(path)?;
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
     db.busy_timeout(Duration::from_secs(5))?;
     Ok(db)
 }
@@ -845,5 +880,78 @@ mod tests {
         drop(app);
         drop(state);
         cleanup(root);
+    }
+
+    #[test]
+    fn backup_rejects_unsafe_database_files_without_source_changes() {
+        let kinds: &[&str] = if cfg!(unix) {
+            &["symlink", "dangling-symlink", "directory"]
+        } else {
+            &["directory"]
+        };
+        for suffix in DATABASE_FILE_SUFFIXES {
+            for kind in kinds {
+                let root = std::env::temp_dir()
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("cv-backup-path-{}", crate::util::random_hex(8)));
+                let source = root.join("source");
+                // Close SQLite before installing unsafe paths: this is an
+                // intact, self-contained fixture rather than a corrupt DB.
+                let state = crate::AccountState::open(&source).unwrap();
+                drop(state);
+                let database = source.join(DATABASE);
+                let path = source.join(format!("{DATABASE}{suffix}"));
+                let external = root.join("external-file");
+                if suffix.is_empty() {
+                    if *kind == "dangling-symlink" {
+                        fs::remove_file(&database).unwrap();
+                    } else {
+                        fs::rename(&database, &external).unwrap();
+                    }
+                }
+                match *kind {
+                    #[cfg(unix)]
+                    "symlink" => {
+                        if !external.exists() {
+                            fs::write(&external, b"outside target must remain untouched").unwrap();
+                        }
+                        std::os::unix::fs::symlink(&external, &path).unwrap();
+                    }
+                    #[cfg(unix)]
+                    "dangling-symlink" => {
+                        std::os::unix::fs::symlink(&external, &path).unwrap();
+                    }
+                    "directory" => fs::create_dir(&path).unwrap(),
+                    _ => unreachable!(),
+                }
+                let database_before = fs::read(&database).ok();
+                let external_before = fs::read(&external).ok();
+                let permissions = |path: &Path| fs::metadata(path).ok().map(|m| m.permissions());
+                let database_permissions_before = permissions(&database);
+                let external_permissions_before = permissions(&external);
+                let entries = || {
+                    let mut names: Vec<_> = fs::read_dir(&source)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().file_name())
+                        .collect();
+                    names.sort();
+                    names
+                };
+                let entries_before = entries();
+                let output = root.join("rejected-backup");
+                assert!(
+                    matches!(backup_accounts(&source, &output), Err(AccountServiceError::Invalid(_))),
+                    "unsafe backup input {suffix:?} ({kind}) must be rejected before opening SQLite",
+                );
+                assert!(!output.exists());
+                assert_eq!(fs::read(&database).ok(), database_before);
+                assert_eq!(fs::read(&external).ok(), external_before);
+                assert_eq!(permissions(&database), database_permissions_before);
+                assert_eq!(permissions(&external), external_permissions_before);
+                assert_eq!(entries(), entries_before);
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
     }
 }
