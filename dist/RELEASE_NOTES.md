@@ -13,6 +13,8 @@ recovery-custody tooling and a reproducible isolated capacity workload.
 - Sensitive account mutations recheck session, MFA policy and role under their
   storage connection. TOTP verification consumes codes and rechecks the failure
   budget transactionally, including across separate service connections.
+  Both MFA ceremonies initialize their rate-limit records inside that transaction
+  to prevent concurrent first requests from racing a unique-key insertion.
 - Dashboard controls expose verification and explicit policy activation. Enabling
   the policy requires unused recovery codes. Emergency reset consumes a code,
   revokes the authenticator and every session, and requires a new login.

@@ -11,7 +11,7 @@ use crate::guards::{
     normalize_account_id, require_recent_primary_session, STEP_UP_MAX_AGE_SECONDS,
 };
 use crate::http::{
-    auth_rate_allowed, auth_rate_failure_with_db, auth_rate_key, auth_rate_success_with_db,
+    auth_rate_failure_with_db, auth_rate_key, auth_rate_success_with_db,
     authenticated_session_with_db, clear_session_cookie, error_response, service_error,
     session_token,
 };
@@ -140,14 +140,13 @@ pub async fn post_step_up(
     Json(request): Json<TotpCodeRequest>,
 ) -> Response {
     // Lookup once for the rate-limit key, then repeat inside the immediate transaction.
+    // Limiter initialization must also happen there: separate connections can
+    // otherwise both observe a missing key and race its unique-key insertion.
     let session = match crate::http::authenticated_session(&state, &headers) {
         Ok(session) => session,
         Err(response) => return response,
     };
     let rate_key = auth_rate_key(&headers, &session.account_id, "mfa-totp");
-    if let Err(response) = auth_rate_allowed(&state, &rate_key) {
-        return *response;
-    }
     let mut db = match state.connection() {
         Ok(db) => db,
         Err(error) => return service_error(error),
@@ -400,9 +399,6 @@ pub async fn post_recovery_reset(
         Err(error) => return service_error(error),
     };
     let rate_key = auth_rate_key(&headers, &account_id, "mfa-recovery");
-    if let Err(response) = auth_rate_allowed(&state, &rate_key) {
-        return *response;
-    }
     if request.code.len() > 128 || !request.code.trim().starts_with("cvrc_") {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -862,40 +858,49 @@ mod tests {
     async fn failed_step_up_guesses_are_limited_across_connections() {
         let _lock = TOTP_ENV_LOCK.lock().await;
         let _key = KeyEnvironment::set();
-        let (root, state, app, _id, token, _secret) = fixture("mfa-rate").await;
+        let (root, state, app, id, token, _secret) = fixture("mfa-rate").await;
         let second = AccountState::open(&root).unwrap();
         let second_app = crate::create_router(second.clone());
-        let mut tasks = tokio::task::JoinSet::new();
-        for index in 0..16 {
-            let target = if index % 2 == 0 {
-                app.clone()
-            } else {
-                second_app.clone()
-            };
-            let token = token.clone();
-            tasks.spawn(async move {
-                call(
-                    &target,
-                    "POST",
-                    "/v1/sessions/mfa/totp",
-                    &token,
-                    serde_json::json!({"code":"invalid"}),
-                )
-                .await
-                .status()
-            });
-        }
-        let mut denied = 0;
-        let mut limited = 0;
-        while let Some(result) = tasks.join_next().await {
-            match result.unwrap() {
-                StatusCode::UNAUTHORIZED => denied += 1,
-                StatusCode::TOO_MANY_REQUESTS => limited += 1,
-                other => panic!("unexpected {other}"),
+        for (path, code) in [
+            ("/v1/sessions/mfa/totp".to_string(), "invalid"),
+            (
+                format!("/v1/accounts/{id}/mfa/recovery-reset"),
+                "cvrc_synthetic_unknown_code",
+            ),
+        ] {
+            let mut tasks = tokio::task::JoinSet::new();
+            for index in 0..16 {
+                let target = if index % 2 == 0 {
+                    app.clone()
+                } else {
+                    second_app.clone()
+                };
+                let token = token.clone();
+                let path = path.clone();
+                tasks.spawn(async move {
+                    call(
+                        &target,
+                        "POST",
+                        &path,
+                        &token,
+                        serde_json::json!({"code":code}),
+                    )
+                    .await
+                    .status()
+                });
             }
+            let mut denied = 0;
+            let mut limited = 0;
+            while let Some(result) = tasks.join_next().await {
+                match result.unwrap() {
+                    StatusCode::UNAUTHORIZED => denied += 1,
+                    StatusCode::TOO_MANY_REQUESTS => limited += 1,
+                    other => panic!("unexpected {other} for {path}"),
+                }
+            }
+            assert_eq!(denied, 5, "{path}");
+            assert_eq!(limited, 11, "{path}");
         }
-        assert_eq!(denied, 5);
-        assert_eq!(limited, 11);
         drop(second_app);
         drop(second);
         drop(app);

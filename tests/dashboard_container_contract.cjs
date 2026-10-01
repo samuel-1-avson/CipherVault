@@ -189,6 +189,7 @@ assert.ok(rollbackGuard, 'the promotion must include its read-only account rollb
 const guardSource = Buffer.from(rollbackGuard[1], 'utf8').toString('base64');
 const guardFixtures = `
 import base64
+import os
 import pathlib
 import sqlite3
 import tempfile
@@ -196,7 +197,10 @@ ns = {"__name__": "guard_fixture"}
 exec(base64.b64decode("${guardSource}"), ns)
 inspect = ns["inspect_database"]
 with tempfile.TemporaryDirectory(prefix="ciphervault-rollback-") as root:
-    database = pathlib.Path(root) / "accounts.sqlite3"
+    # macOS aliases /var to /private/var. The fixture uses a canonical root;
+    # production paths retain the guard's strict rejection of symlinks.
+    fixture_root = pathlib.Path(root).resolve()
+    database = fixture_root / "accounts.sqlite3"
     try:
         inspect(database)
         raise AssertionError("missing database allowed rollback")
@@ -206,6 +210,17 @@ with tempfile.TemporaryDirectory(prefix="ciphervault-rollback-") as root:
     db.executescript("CREATE TABLE accounts(account_id TEXT); CREATE TABLE sessions(token_hash_hex TEXT);")
     db.commit()
     assert inspect(database), "legacy schema must remain rollback-compatible"
+    if os.name == "posix":
+        linked_database = fixture_root / "linked.sqlite3"
+        linked_database.symlink_to(database)
+        linked_directory = fixture_root / "linked-directory"
+        linked_directory.symlink_to(fixture_root, target_is_directory=True)
+        for linked_path in (linked_database, linked_directory / "accounts.sqlite3"):
+            try:
+                inspect(linked_path)
+                raise AssertionError("symlink path allowed rollback")
+            except RuntimeError:
+                pass
     db.executescript("CREATE TABLE account_mfa_policy(account_id TEXT, required INTEGER);")
     db.commit()
     assert inspect(database), "empty optional policy must allow rollback"

@@ -125,14 +125,17 @@ const server = http.createServer((request, response) => {
     let output = '', diagnostics = '';
     child.stdout.on('data', data => { output += data; });
     child.stderr.on('data', data => { diagnostics += data; });
-    const timer = setTimeout(() => child.kill(), 25000);
+    const wallTimeoutMs = process.env.GITHUB_ACTIONS === 'true' ? 60000 : 25000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, wallTimeoutMs);
     const {code, signal} = await new Promise((resolve, reject) => {
-      child.on('error', reject);
-      child.on('exit', (code, signal) => resolve({code, signal}));
-    });
-    clearTimeout(timer);
+      child.once('error', reject);
+      // `close` follows stdio closure; `exit` can precede the final DOM output.
+      child.once('close', (code, signal) => resolve({code, signal}));
+    }).finally(() => clearTimeout(timer));
     const diagnosticSummary = diagnostics.length <= 3000 ? diagnostics
       : diagnostics.slice(0, 1500) + '\n... diagnostics truncated ...\n' + diagnostics.slice(-1500);
+    assert.equal(timedOut, false, `Browser exceeded ${wallTimeoutMs} ms (signal ${signal}): ${diagnosticSummary}`);
     assert.equal(code, 0, `Browser failed (signal ${signal}): ${diagnosticSummary}`);
     const encoded = output.match(/data-csp-test="([^"]+)"/);
     assert(encoded, `Browser test did not complete. DOM output: ${output.slice(-2500)}\nDiagnostics: ${diagnosticSummary}`);
