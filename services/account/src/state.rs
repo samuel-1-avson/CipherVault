@@ -56,8 +56,10 @@ pub fn sqlite_busy_retries() -> u64 {
     SQLITE_BUSY_RETRIES.load(Ordering::Relaxed)
 }
 
-fn lock_database_files(data_dir: &Path) -> Result<(), AccountServiceError> {
-    for suffix in ["", "-wal", "-shm"] {
+fn lock_database_files(data_dir: &Path) -> Result<PathBuf, AccountServiceError> {
+    let database =
+        crate::disaster_recovery::checked_database_path(&data_dir.join("accounts.sqlite3"))?;
+    for suffix in crate::disaster_recovery::DATABASE_FILE_SUFFIXES {
         let path = data_dir.join(format!("accounts.sqlite3{suffix}"));
         match fs::symlink_metadata(&path) {
             Ok(_) => {
@@ -68,7 +70,7 @@ fn lock_database_files(data_dir: &Path) -> Result<(), AccountServiceError> {
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(())
+    Ok(database)
 }
 
 impl AccountState {
@@ -90,8 +92,7 @@ impl AccountState {
         // any raw descriptor for a live SQLite inode releases its POSIX locks,
         // even when SQLite owns another descriptor in this process. Metadata
         // checks and path-based permission changes preserve those locks.
-        lock_database_files(&data_dir)?;
-        let db_path = crate::disaster_recovery::checked_regular_database_path(&db_path)?;
+        let db_path = lock_database_files(&data_dir)?;
         let connection = Connection::open_with_flags(
             &db_path,
             OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -770,7 +771,7 @@ mod tests {
     fn unsafe_database_paths_are_rejected_before_sqlite_opens() {
         use std::os::unix::fs::symlink;
 
-        for suffix in ["", "-wal", "-shm"] {
+        for suffix in crate::disaster_recovery::DATABASE_FILE_SUFFIXES {
             for kind in ["symlink", "dangling-symlink", "directory"] {
                 let root = std::env::temp_dir()
                     .canonicalize()

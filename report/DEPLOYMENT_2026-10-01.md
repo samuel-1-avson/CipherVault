@@ -102,6 +102,22 @@ Operator binary SHA-256:
 These are failed-run evidence, not final release digests or production capacity
 certification. Sustained SLO and production-equivalent qualification remain open.
 
+The first corrected [optimized run](https://github.com/samuel-1-avson/CipherVault/actions/runs/36919878541)
+on source `468eeab9300a0d23c15824d98d770ef0f843929d` passed all seven gates.
+Its first backup included all fifty initial secrets and versions, the encryption
+key and sixty-five audit events; all four backups verified one audit chain and
+overlapped requests. Account p99 at concurrency 1/8/32/64 was
+6.20/38.55/145.18/308.04 ms. JSON SHA-256:
+`e9571558580ed4173c7350a5910d413d5d94e058bd149bf34a86d5b236039177`.
+This confirms the lock correction for the measured workload. Final source still
+requires another run after the backup sidecar guards identified during review.
+Review required the read-only backup path to share database/WAL/shared-memory/
+rollback-journal validation with startup. Regression cases reject unsafe paths
+without changing source bytes or external targets. The first macOS CI also found
+that an older `VACUUM INTO` test inherited NOFOLLOW while using the system's
+`/var` alias; its existing temporary parent is now canonicalized before forming
+the new output path. Production link rejection remains enabled.
+
 ## Pre-deployment account recovery
 
 The exact signed v1.0.26 account image created an online backup with

@@ -828,7 +828,9 @@ mod tests {
         let before = export_audit_log(&db, "t1").unwrap();
         let backup_dir = root.join("restore-drill");
         std::fs::create_dir_all(&backup_dir).unwrap();
-        let backup_path = backup_dir.join("accounts.sqlite3");
+        // SQLite inherits NOFOLLOW into VACUUM targets. Resolve the existing
+        // temporary parent so immutable macOS system aliases remain supported.
+        let backup_path = backup_dir.canonicalize().unwrap().join("accounts.sqlite3");
         let literal = backup_path.to_str().unwrap().replace('\'', "''");
         db.execute(&format!("VACUUM INTO '{literal}'"), []).unwrap();
         drop(db);
