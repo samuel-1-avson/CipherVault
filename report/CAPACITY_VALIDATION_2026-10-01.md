@@ -6,6 +6,35 @@ The project now has a repeatable isolated TCP capacity harness, documented gates
 
 Account capacity is still a measured limitation. In the final debug run, increasing mixed-workload concurrency from 8 to 64 reduced successful throughput from 165.72 to 119.57 requests/second while p99 latency increased from 110.05 to 1,137.56 ms. The workload included value reads, five-value materialization, rotations, audit-chain exports and concurrent consistent backups. The single account SQLite connection/global mutex remains a scaling bottleneck. Preserve `FULL` durability and validate larger production-equivalent workloads before replacing that architecture.
 
+## Follow-up: optimized Linux CI on the v1.0.28 release source
+
+The manual [Isolated Capacity Validation run](https://github.com/samuel-1-avson/CipherVault/actions/runs/36935230687)
+completed successfully for source commit `38de126d46518e2c19e0af10c5b5434d4c2f20ae`,
+the exact v1.0.28 release source. Its Linux x64 runner had four logical CPUs
+and approximately 15.6 GiB of memory. The account/operator binaries were optimized
+release builds; fixtures used synthetic databases and local TCP services, with no
+production or cloud calls. All seven gates passed: no unexpected failures, no
+account rejections, latency within the configured 2-second p99 budget, SQLite
+integrity, operator object integrity, backup audit checks and required overload
+rejection.
+
+The mixed account phases completed 240/240 requests at concurrency 1, 8, 32 and
+64, with p99 latency of 5.69, 47.85, 140.00 and 275.73 ms respectively. A real
+synthetic enrollment and policy ceremony then served 120/120 required-MFA reads
+at concurrency 8 (p99 73.79 ms); a new primary-authenticated session without
+factor proof received HTTP 404 and no secret value. The overload phase admitted
+95 of 128 simultaneous 1 MiB writes and rejected 33 with capacity responses,
+with zero unexpected failures. All 429 stored operator objects passed CID
+integrity checks. SQLite integrity returned `ok`; four backups overlapped the
+workload and each checked one audit chain. The default test limiter separately
+returned 599 successful responses and 41 expected HTTP 429s from 640 requests.
+
+These are useful optimized-build and release-source measurements, and they close
+the previously pending final-source synthetic Linux run. The short, closed-loop
+test does not establish sustained arrival-rate behavior, production SLOs, fleet
+capacity, multi-region performance, disk-pressure recovery or multi-hour soak
+stability. Production-equivalent qualification therefore remains open.
+
 ## Evidence and scope
 
 - [Valid legacy baseline JSON](capacity-legacy-baseline-2026-10-01.json): October 1, 08:57–08:58 UTC; existing September 30 debug binaries.
