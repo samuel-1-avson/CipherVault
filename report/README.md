@@ -8,6 +8,7 @@ This directory contains empirical verification reports, production readiness rev
 
 | Report | Date | Scope & Key Findings |
 |---|---|---|
+| [**`DEPLOYMENT_2026-10-02.md`**](./DEPLOYMENT_2026-10-02.md) | 2026-10-02 | v1.0.28 production rollout, live digest/health verification, recovery evidence, capacity results and remaining assurance gaps. |
 | [**`DEPLOYMENT_2026-09-30.md`**](./DEPLOYMENT_2026-09-30.md) | 2026-09-30 | 1.0.26 release, deployment evidence, backups, rollout gates and remaining limitations. |
 | [**`AUDIT_REMEDIATION_2026-09-30.md`**](./AUDIT_REMEDIATION_2026-09-30.md) | 2026-09-30 | Implementation and verification ledger for audit fixes, added features, rollout requirements, and outstanding assurance. |
 | [**`PROJECT_AUDIT_2026-09-30.md`**](./PROJECT_AUDIT_2026-09-30.md) | 2026-09-30 | Current whole-project audit: 6.3/10 engineering score, authorization/recovery findings, bottlenecks, feature recommendations, and local verification. |
