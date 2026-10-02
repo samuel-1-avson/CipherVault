@@ -17,8 +17,11 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+  initAudienceModeSwitch();
   initThemeSystem();
+  initFlashcardSystem();
   initTabsNavigation();
+  initPillarsAccordion();
   initFastCdcSimulator();
   initBenchmarkGauges();
   initInteractivePipeline();
@@ -29,7 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initLiveTelemetryStream();
   initInteractiveRepl();
   initInstallSnippets();
-  initCrtToggle();
   initCryptoDonations();
   initMobileNavigation();
   initKeyboardShortcuts();
@@ -328,34 +330,90 @@ async function cvProbeHttps(url, timeoutMs) {
   }
 }
 
+/* Safe local storage helpers (protect against private browsing exceptions) */
+function cvSafeStorageGet(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function cvSafeStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    /* Silent catch if storage is partitioned or blocked */
+  }
+}
+
 /* ==============================================================================
-   1. Multi-Theme Switching System (Cyber | Dark | Light | Mono)
+   1. Audience Mode Switcher: Plain English (Default) vs. Deep Tech / Spec
+   ============================================================================== */
+function initAudienceModeSwitch() {
+  const btnSimple = document.getElementById('btn-mode-simple');
+  const btnTech = document.getElementById('btn-mode-tech');
+  const drawerBtnSimple = document.getElementById('drawer-btn-mode-simple');
+  const drawerBtnTech = document.getElementById('drawer-btn-mode-tech');
+  const bannerLinkTech = document.getElementById('banner-link-switch-tech');
+  const bannerLinkSimple = document.getElementById('banner-link-switch-simple');
+
+  const applyMode = (mode) => {
+    const validMode = (mode === 'tech') ? 'tech' : 'simple';
+    document.documentElement.setAttribute('data-view-mode', validMode);
+    cvSafeStorageSet('ciphervault-view-mode', validMode);
+
+    const isSimple = (validMode === 'simple');
+    if (btnSimple) {
+      btnSimple.classList.toggle('active', isSimple);
+      btnSimple.setAttribute('aria-pressed', isSimple ? 'true' : 'false');
+    }
+    if (btnTech) {
+      btnTech.classList.toggle('active', !isSimple);
+      btnTech.setAttribute('aria-pressed', !isSimple ? 'true' : 'false');
+    }
+    if (drawerBtnSimple) {
+      drawerBtnSimple.classList.toggle('active', isSimple);
+    }
+    if (drawerBtnTech) {
+      drawerBtnTech.classList.toggle('active', !isSimple);
+    }
+  };
+
+  const savedMode = cvSafeStorageGet('ciphervault-view-mode', 'simple');
+  applyMode(savedMode);
+
+  if (btnSimple) btnSimple.addEventListener('click', () => applyMode('simple'));
+  if (btnTech) btnTech.addEventListener('click', () => applyMode('tech'));
+  if (drawerBtnSimple) drawerBtnSimple.addEventListener('click', () => applyMode('simple'));
+  if (drawerBtnTech) drawerBtnTech.addEventListener('click', () => applyMode('tech'));
+  if (bannerLinkTech) bannerLinkTech.addEventListener('click', (e) => { e.preventDefault(); applyMode('tech'); });
+  if (bannerLinkSimple) bannerLinkSimple.addEventListener('click', (e) => { e.preventDefault(); applyMode('simple'); });
+}
+
+/* ==============================================================================
+   2. Theme Switching System (Light | Mono)
    ============================================================================== */
 function initThemeSystem() {
   const themeButtons = document.querySelectorAll('.theme-pill-btn');
   const drawerThemePills = document.querySelectorAll('.drawer-theme-pill');
-  const crtOverlay = document.getElementById('crt-scanlines');
-  const crtBtn = document.getElementById('btn-toggle-crt');
 
   const applyTheme = (themeName) => {
-    document.documentElement.setAttribute('data-theme', themeName);
-    localStorage.setItem('ciphervault-theme', themeName);
+    const validTheme = (themeName === 'mono') ? 'mono' : 'light';
+    document.documentElement.setAttribute('data-theme', validTheme);
+    cvSafeStorageSet('ciphervault-theme', validTheme);
 
     themeButtons.forEach(btn => {
-      btn.classList.toggle('active', btn.getAttribute('data-theme') === themeName);
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === validTheme);
     });
 
     drawerThemePills.forEach(btn => {
-      btn.classList.toggle('active', btn.getAttribute('data-theme') === themeName);
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === validTheme);
     });
-
-    // Default scanlines to OFF across all themes so text is crisp and luminous
-    if (crtOverlay) crtOverlay.classList.add('disabled');
-    if (crtBtn) crtBtn.textContent = '[CRT: OFF]';
   };
 
-  // Restore saved theme or default to Cyber
-  const savedTheme = localStorage.getItem('ciphervault-theme') || 'cyber';
+  // Restore saved theme or default to clean Warm Paper Light
+  const savedTheme = cvSafeStorageGet('ciphervault-theme', 'light');
   applyTheme(savedTheme);
 
   themeButtons.forEach(btn => {
@@ -369,6 +427,116 @@ function initThemeSystem() {
     btn.addEventListener('click', () => {
       const theme = btn.getAttribute('data-theme');
       applyTheme(theme);
+    });
+  });
+}
+
+/* ==============================================================================
+   Flashcard Interaction System (Minimalist 3D Flips: Crises & Everyday Scenarios)
+   ============================================================================== */
+function initFlashcardSystem() {
+  const dilemmaCards = document.querySelectorAll('.flashcard-item');
+  const scenarioCards = document.querySelectorAll('.scenario-flashcard');
+  const btnShowCrises = document.getElementById('btn-flashcard-show-crises');
+  const btnShowSolutions = document.getElementById('btn-flashcard-show-solutions');
+  const btnFlipAll = document.getElementById('btn-flashcard-flip-all');
+
+  const flipCard = (card) => {
+    card.classList.toggle('flipped');
+    const isFlipped = card.classList.contains('flipped');
+    card.setAttribute('aria-expanded', isFlipped ? 'true' : 'false');
+  };
+
+  // Dilemma Flashcards (Pane 2)
+  dilemmaCards.forEach(card => {
+    card.addEventListener('click', () => {
+      flipCard(card);
+    });
+
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        flipCard(card);
+      }
+    });
+  });
+
+  // Everyday Developer Scenario Cards (Pane 1)
+  scenarioCards.forEach(card => {
+    card.addEventListener('click', () => {
+      flipCard(card);
+    });
+
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        flipCard(card);
+      }
+    });
+  });
+
+  // Dilemma Deck Toolbar Controls
+  if (btnShowCrises) {
+    btnShowCrises.addEventListener('click', () => {
+      dilemmaCards.forEach(c => {
+        c.classList.remove('flipped');
+        c.setAttribute('aria-expanded', 'false');
+      });
+    });
+  }
+
+  if (btnShowSolutions) {
+    btnShowSolutions.addEventListener('click', () => {
+      dilemmaCards.forEach(c => {
+        c.classList.add('flipped');
+        c.setAttribute('aria-expanded', 'true');
+      });
+    });
+  }
+
+  if (btnFlipAll) {
+    btnFlipAll.addEventListener('click', () => {
+      const anyUnflipped = Array.from(dilemmaCards).some(c => !c.classList.contains('flipped'));
+      dilemmaCards.forEach(c => {
+        if (anyUnflipped) {
+          c.classList.add('flipped');
+          c.setAttribute('aria-expanded', 'true');
+        } else {
+          c.classList.remove('flipped');
+          c.setAttribute('aria-expanded', 'false');
+        }
+      });
+    });
+  }
+}
+
+/* ==============================================================================
+   1b. Capability Pillars Accordion Controller (Dropdown Animation)
+   ============================================================================== */
+function initPillarsAccordion() {
+  const cards = document.querySelectorAll('.tui-pillars-grid .pillar-card');
+  if (!cards.length) return;
+
+  cards.forEach(card => {
+    const toggleAction = () => {
+      const isOpen = card.classList.contains('is-open');
+      card.classList.toggle('is-open');
+      card.setAttribute('aria-expanded', String(!isOpen));
+    };
+
+    card.addEventListener('click', (e) => {
+      // Don't toggle if the user is selecting text or clicking inside the drawer
+      if (e.target.closest('.pillar-dropdown-drawer')) {
+        return;
+      }
+      toggleAction();
+    });
+
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleAction();
+      }
     });
   });
 }
@@ -620,9 +788,7 @@ function initMobileNavigation() {
   const closeDrawerBtn = document.getElementById('btn-close-mobile-drawer');
   const drawer = document.getElementById('mobile-nav-drawer');
   const backdrop = document.getElementById('mobile-nav-backdrop');
-  const mobileDonateBtn = document.getElementById('btn-mobile-donate');
   const drawerDonateBtn = document.getElementById('drawer-btn-donate');
-  const drawerCrtBtn = document.getElementById('drawer-btn-crt');
   const drawerTabs = document.querySelectorAll('.drawer-tab-btn');
 
   function openDrawer() {
@@ -673,28 +839,12 @@ function initMobileNavigation() {
     }
   });
 
-  // Mobile Donate pill in topbar
-  if (mobileDonateBtn) {
-    mobileDonateBtn.addEventListener('click', () => {
-      const openDonate = document.getElementById('btn-open-donate');
-      if (openDonate) openDonate.click();
-    });
-  }
-
   // Drawer Donate button
   if (drawerDonateBtn) {
     drawerDonateBtn.addEventListener('click', () => {
       closeDrawer();
       const openDonate = document.getElementById('btn-open-donate');
       if (openDonate) openDonate.click();
-    });
-  }
-
-  // Drawer CRT toggle
-  if (drawerCrtBtn) {
-    drawerCrtBtn.addEventListener('click', () => {
-      const crtBtn = document.getElementById('btn-toggle-crt');
-      if (crtBtn) crtBtn.click();
     });
   }
 
@@ -1572,7 +1722,7 @@ function initLiveTelemetryStream() {
   const CRYPTO_VERIFY_EVENTS = [
     'AUDIT-LEDGER: Verified block #4 SHA-256 chain integrity (0 warnings) — services/account/audit_chain.rs',
     'ENVELOPE-AEAD: Generated ephemeral 256-bit DEK under XChaCha20-Poly1305 · ZeroizeOnDrop',
-    'SCOPE-BOUND: AAD verified for acme-corp/checkout-api/production · Poly1305 tag matched',
+    'SCOPE-BOUND: AAD verified for apex-fintech/checkout-api/production · Poly1305 tag matched',
     'DPOP-LITE: Handshake client public key bound to RFC 9449 thumbprint · Replay rejected',
     'FASTCDC-SLICER: Content-defined cut discovered @ 16,384 B (Gear rolling hash dual-mask hit)',
     'POS-DURABILITY: Proof-of-Storage 461-byte challenge verified against 3/3 storage operators',
@@ -2077,35 +2227,15 @@ function initInstallSnippets() {
   if (heroCopyBtn && heroCmd) {
     heroCopyBtn.addEventListener('click', () => {
       navigator.clipboard.writeText(heroCmd.textContent.trim()).then(() => {
-        heroCopyBtn.textContent = '[COPIED ✓]';
+        heroCopyBtn.textContent = 'Copied ✓';
         if (heroAlert) {
           heroAlert.classList.add('show');
           setTimeout(() => { heroAlert.classList.remove('show'); }, 2200);
         }
-        setTimeout(() => { heroCopyBtn.textContent = '[COPY]'; }, 2000);
+        setTimeout(() => { heroCopyBtn.textContent = 'Copy'; }, 2000);
       });
     });
   }
-}
-
-/* ==============================================================================
-   11. Retro CRT Scanline Toggle
-   ============================================================================== */
-function initCrtToggle() {
-  const btn = document.getElementById('btn-toggle-crt');
-  const crtOverlay = document.getElementById('crt-scanlines');
-  if (!btn || !crtOverlay) return;
-
-  btn.addEventListener('click', () => {
-    const isCurrentlyDisabled = crtOverlay.classList.contains('disabled');
-    if (isCurrentlyDisabled) {
-      crtOverlay.classList.remove('disabled');
-      btn.textContent = '[CRT: ON]';
-    } else {
-      crtOverlay.classList.add('disabled');
-      btn.textContent = '[CRT: OFF]';
-    }
-  });
 }
 
 /* Utility */
@@ -2362,7 +2492,7 @@ function initScopedSimulator() {
     }
 
     // Compute live Scope-bound AAD & real SHA-256 digest
-    const aadStr = `tenant:acme-corp|project:checkout-api|env:${envKey}|secret:DATABASE_URL|v:4`;
+    const aadStr = `tenant:apex-fintech|project:checkout-api|env:${envKey}|secret:DATABASE_URL|v:4`;
     if (aadElem) aadElem.textContent = aadStr;
 
     const aadHash = cvSha256Hex(te.encode(aadStr));
@@ -2377,7 +2507,7 @@ function initScopedSimulator() {
 
     // Live Scope token preview
     if (tokenElem) {
-      tokenElem.textContent = `cvst1_acme_checkout_api_${cfg.prefix}_${aadHash.substring(0, 10)}...`;
+      tokenElem.textContent = `cvst1_apex_checkout_api_${cfg.prefix}_${aadHash.substring(0, 10)}...`;
     }
   };
 
@@ -2413,10 +2543,10 @@ function initAuditChainSimulator() {
   const te = new TextEncoder();
 
   // Genuine Merkle Hash Preimages (exact formula matching services/account/src/audit_chain.rs)
-  const GENESIS_PREIMAGE = 'CIPHERVAULT_AUDIT_V2_TENANT_ACME_CORP_GENESIS_ROOT';
+  const GENESIS_PREIMAGE = 'CIPHERVAULT_AUDIT_V2_TENANT_APEX_FINTECH_GENESIS_ROOT';
   const h0 = cvSha256Hex(te.encode(GENESIS_PREIMAGE));
 
-  const p1 = `${h0}|type:secret.created|actor:admin-alice@acme.corp|target:DATABASE_URL|v:1|res:ok`;
+  const p1 = `${h0}|type:secret.created|actor:admin-alice@apex.fintech|target:DATABASE_URL|v:1|res:ok`;
   const h1 = cvSha256Hex(te.encode(p1));
 
   const p2_authentic = `${h1}|type:secret.read|actor:ci-runner-88|target:DATABASE_URL|v:1|res:ok`;
