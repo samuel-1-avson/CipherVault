@@ -3788,6 +3788,7 @@ mod tests {
         let names = std::sync::Arc::new(names);
         let per_worker = reads.div_ceil(concurrency);
         let busy_before = crate::state::sqlite_busy_retries();
+        let lock_before = crate::state::db_lock_wait_stats();
         let started = std::time::Instant::now();
         let mut tasks = Vec::with_capacity(concurrency);
         for worker in 0..concurrency {
@@ -3832,14 +3833,19 @@ mod tests {
         };
         let (p50, p99) = (percentile(50), percentile(99));
         let busy_delta = crate::state::sqlite_busy_retries().saturating_sub(busy_before);
+        let lock_after = crate::state::db_lock_wait_stats();
+        let lock_delta_n = lock_after.0.saturating_sub(lock_before.0);
+        let lock_delta_us = lock_after.1.saturating_sub(lock_before.1);
         println!(
             "load: {} reads across {} secrets ({} workers) in {:?} ({:.0} reads/s); \
-             p50={p50}ms p99={p99}ms failures={failures} sqlite_busy_retries={busy_delta}",
+             p50={p50}ms p99={p99}ms failures={failures} sqlite_busy_retries={busy_delta} \
+             lock_acquisitions={lock_delta_n} lock_wait_us={lock_delta_us} lock_max_us={}",
             latencies.len(),
             names.len(),
             concurrency,
             wall,
             latencies.len() as f64 / wall.as_secs_f64().max(0.001),
+            lock_after.2,
         );
         assert_eq!(failures, 0, "every paced read must succeed");
         assert!(
