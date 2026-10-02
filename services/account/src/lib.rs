@@ -68,12 +68,13 @@ use secret_routes::*;
 use sessions::*;
 use state::*;
 pub use state::{
-    sqlite_busy_retries, AccountState, AccountView, AuditEventView, ChallengeView,
-    CreateAccountRequest, DeviceChallengeRequest, DeviceEnrollmentRequest, DeviceView, ErrorBody,
-    InvitationAcceptRequest, InvitationRequest, InvitationView, LinkVaultRequest,
-    LoginChallengeRequest, MembershipView, RecoveryCodesRequest, RecoveryRedeemRequest,
-    RevocationResponse, SessionHandoffConsumeRequest, SessionHandoffResponse, SessionLoginRequest,
-    SessionResponse, SessionView, TotpAuthenticationOptionsRequest, TotpAuthenticationOptionsView,
+    db_lock_wait_stats, sqlite_busy_retries, AccountState, AccountView, AuditEventView,
+    ChallengeView, CreateAccountRequest, DeviceChallengeRequest, DeviceEnrollmentRequest,
+    DeviceView, ErrorBody, InvitationAcceptRequest, InvitationRequest, InvitationView,
+    LinkVaultRequest, LoginChallengeRequest, MembershipView, RecoveryCodesRequest,
+    RecoveryRedeemRequest, RevocationResponse, SessionHandoffConsumeRequest,
+    SessionHandoffResponse, SessionLoginRequest, SessionResponse, SessionView,
+    TotpAuthenticationOptionsRequest, TotpAuthenticationOptionsView,
     TotpAuthenticationVerifyRequest, TotpCodeRequest, TotpEnrollmentView, VaultLinkView,
     WebAuthnAuthenticationOptionsRequest, WebAuthnAuthenticationVerifyRequest,
     WebAuthnCredentialView, WebAuthnOptionsView, WebAuthnRegistrationVerifyRequest,
@@ -355,6 +356,24 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower05::ServiceExt;
+
+    #[test]
+    fn connection_lock_wait_stats_count_acquisitions() {
+        // Counters are process-wide and tests run in parallel, so assert
+        // only the delta our own acquisitions guarantee.
+        let (root, state, _app) = test_app("lock-wait-stats");
+        let before = crate::state::db_lock_wait_stats();
+        drop(state.connection().expect("first acquisition"));
+        drop(state.connection().expect("second acquisition"));
+        let after = crate::state::db_lock_wait_stats();
+        assert!(
+            after.0 - before.0 >= 2,
+            "expected at least two acquisitions, got {after:?} from {before:?}"
+        );
+        assert!(after.1 >= before.1, "total wait must not decrease");
+        assert!(after.2 >= before.2, "max wait must not decrease");
+        cleanup(root);
+    }
 
     #[tokio::test]
     async fn role_matrix_covers_gated_routes() {

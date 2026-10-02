@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use super::error::AccountServiceError;
 use crate::totp_wrapping_key;
@@ -54,6 +54,36 @@ pub(crate) fn counting_busy_handler(prior_waits: i32) -> bool {
 /// Total SQLite busy-handler waits since process start.
 pub fn sqlite_busy_retries() -> u64 {
     SQLITE_BUSY_RETRIES.load(Ordering::Relaxed)
+}
+
+/// Time-to-acquire samples for the single global connection mutex (Step 0 of
+/// the production soak plan): acquisition count, cumulative wait, and maximum
+/// observed wait. Read via [`db_lock_wait_stats`]; soak analysis compares the
+/// average and maximum against arrival rate and audit-history size.
+pub(crate) static DB_LOCK_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DB_LOCK_WAIT_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DB_LOCK_WAIT_MICROS_MAX: AtomicU64 = AtomicU64::new(0);
+/// Waits at or above this threshold also log one stderr line each, keeping
+/// contention visible in canary logs without a metrics pipeline.
+pub(crate) const DB_LOCK_WAIT_LOG_THRESHOLD_MICROS: u64 = 10_000;
+
+/// (acquisitions, total wait micros, max wait micros) since process start.
+pub fn db_lock_wait_stats() -> (u64, u64, u64) {
+    (
+        DB_LOCK_ACQUISITIONS.load(Ordering::Relaxed),
+        DB_LOCK_WAIT_MICROS_TOTAL.load(Ordering::Relaxed),
+        DB_LOCK_WAIT_MICROS_MAX.load(Ordering::Relaxed),
+    )
+}
+
+fn record_db_lock_wait(elapsed: std::time::Duration) {
+    let micros = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
+    DB_LOCK_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+    DB_LOCK_WAIT_MICROS_TOTAL.fetch_add(micros, Ordering::Relaxed);
+    DB_LOCK_WAIT_MICROS_MAX.fetch_max(micros, Ordering::Relaxed);
+    if micros >= DB_LOCK_WAIT_LOG_THRESHOLD_MICROS {
+        eprintln!("account database lock wait {micros}us exceeds threshold; contention rising");
+    }
 }
 
 fn lock_database_files(data_dir: &Path) -> Result<PathBuf, AccountServiceError> {
@@ -334,7 +364,10 @@ impl AccountState {
         // error here would wedge every later request. SQLite itself finds
         // no partial transaction (rusqlite rolls back on unwind), and the
         // stderr line keeps the recovery honest.
-        match self.db.lock() {
+        let started = Instant::now();
+        let guard = self.db.lock();
+        record_db_lock_wait(started.elapsed());
+        match guard {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
                 eprintln!("account database lock poisoned; recovering with prior state");

@@ -14,12 +14,14 @@ holds the mutex across its whole transaction. Mixed-workload p99 already
 degrades with concurrency (CI: 5.69 ms at c1 to 275.73 ms at c64; longer local
 runs reached 1,137 ms). Keep SQLite `FULL` durability throughout.
 
-## Step 0: instrument lock wait (before the soak)
+## Step 0: instrument lock wait (done)
 
-The soak is only diagnostic if mutex contention is measurable. Add a lock-wait
-histogram (or log time-to-acquire above a threshold) around `connection()` and
-export it with existing telemetry. Re-run the CI harness once to confirm the
-new metric moves with concurrency. Do not redesign the database yet.
+`AccountState::connection()` now records every mutex acquisition:
+`db_lock_wait_stats()` returns (acquisitions, total wait micros, max wait
+micros), waits at or above 10 ms also log one stderr line each, and the
+secret-routes load test prints per-run lock deltas next to
+`sqlite_busy_retries`. Re-run the CI harness once to confirm the new metric
+moves with concurrency. Do not redesign the database yet.
 
 ## Canary setup (isolated, production-shaped)
 
