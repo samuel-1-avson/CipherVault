@@ -344,6 +344,9 @@ audit export verify-first. systemd unit
   step-up token must be unbound. 403 `DUAL_CONTROL_REQUIRED` covers
   every step-up failure (no oracle). Ship the JSONL to append-only
   cold storage on a cron; the export self-verifies (`x-audit-head`).
+  Paged: `?limit=` (default 10,000, max 50,000) bounds each response;
+  follow `x-audit-next` cursors (`?after=<event_id>`) until the header
+  disappears for the full chain. Each page verifies its own linkage.
 - DPoP-lite: mint CI tokens bound to an ed25519 key
   (`bind_pubkey_ed25519_hex`); every use then needs a `DPoP` proof
   (single-use, ±60s). 401 `DPOP_REQUIRED` = proof missing;
