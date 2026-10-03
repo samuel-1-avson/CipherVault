@@ -462,10 +462,28 @@ function initAccountControls() {
       openHostedTotpModal();
     });
   }
+  // The device card performs login directly instead of forwarding a click
+  // to the hidden login button: that button is disabled whenever no vault
+  // is linked, and .click() on a disabled button is a silent no-op.
+  const performDeviceLogin = async () => {
+    if (loginButton) loginButton.disabled = true;
+    try {
+      const response = await workspaceFetch('/api/account/login', { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.status === 'error') {
+        throw new Error(payload.error || `Sign-in failed (${response.status})`);
+      }
+      showToast('Device session signed in.');
+      await fetchAllData();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Device sign-in failed');
+      if (loginButton) loginButton.disabled = false;
+    }
+  };
   if (btnSigninDevice) {
     btnSigninDevice.addEventListener('click', () => {
       closeSigninMenu();
-      if (loginButton) loginButton.click();
+      performDeviceLogin();
     });
   }
   if (btnSigninCli) {
@@ -475,20 +493,8 @@ function initAccountControls() {
     });
   }
   if (loginButton) {
-    loginButton.addEventListener('click', async () => {
-      loginButton.disabled = true;
-      try {
-        const response = await workspaceFetch('/api/account/login', { method: 'POST' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload.status === 'error') {
-          throw new Error(payload.error || `Sign-in failed (${response.status})`);
-        }
-        showToast('Device session signed in.');
-        await fetchAllData();
-      } catch (error) {
-        showToast(error instanceof Error ? error.message : 'Device sign-in failed');
-        loginButton.disabled = false;
-      }
+    loginButton.addEventListener('click', () => {
+      performDeviceLogin();
     });
   }
   if (connectButton) connectButton.addEventListener('click', openHostedAccountConnectModal);

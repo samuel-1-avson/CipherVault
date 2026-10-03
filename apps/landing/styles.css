@@ -5170,6 +5170,367 @@ html[data-theme="light"] .flashcard-flip-prompt {
 }
 
 /* ==============================================================================
+   PANE 7: INSTALLATION & QUICKSTART (LIGHT THEME OVERRIDES)
+   ============================================================================== */
+html[data-theme="light"] .install-snippet-box {
+  background: #FFFFFF;
+  border-color: #E2E8F0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme="light"] .snippet-tab {
+  background: #F1F5F9;
+  border: 1px solid #CBD5E1;
+  color: #475467;
+}
+
+html[data-theme="light"] .snippet-tab:hover {
+  background: #E2E8F0;
+  color: #0F172A;
+  border-color: #94A3B8;
+}
+
+html[data-theme="light"] .snippet-tab.active {
+  background: #0F172A;
+  color: #FFFFFF;
+  border-color: #0F172A;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
+}
+
+html[data-theme="light"] .snippet-code-wrap {
+  background: #090D16;
+  border: 1px solid #1E293B;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+}
+
+html[data-theme="light"] .snippet-code-pre code {
+  color: #E2E8F0;
+}
+
+html[data-theme="light"] .snippet-copy-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #F8FAFC;
+}
+
+html[data-theme="light"] .snippet-copy-btn:hover {
+  background: #FFFFFF;
+  color: #0F172A;
+  border-color: #FFFFFF;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+html[data-theme="light"] .direct-downloads-box {
+  background: #FFFFFF;
+  border-color: #E2E8F0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme="light"] .direct-downloads-box .title-meta.text-mint {
+  color: #166534;
+}
+
+html[data-theme="light"] .download-deck-desc {
+  color: #475467;
+}
+
+html[data-theme="light"] .bin-download-card {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme="light"] .bin-download-card:hover {
+  background: #FAFAFA;
+  border-color: #CBD5E1;
+  box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.1);
+  transform: translateY(-3px);
+}
+
+html[data-theme="light"] .bin-download-card.all-assets {
+  background: #F8FAFC;
+  border-color: #CBD5E1;
+}
+
+html[data-theme="light"] .bin-download-card.all-assets:hover {
+  background: #F1F5F9;
+  border-color: #94A3B8;
+}
+
+html[data-theme="light"] .bin-os-badge.os-win {
+  background: #E1F3FE;
+  color: #026AA2;
+  border: 1px solid rgba(2, 106, 162, 0.25);
+}
+
+html[data-theme="light"] .bin-os-badge.os-linux {
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px solid rgba(146, 64, 14, 0.25);
+}
+
+html[data-theme="light"] .bin-os-badge.os-mac {
+  background: #F3E8FF;
+  color: #6B21A8;
+  border: 1px solid rgba(107, 33, 168, 0.25);
+}
+
+html[data-theme="light"] .bin-os-badge.os-all {
+  background: #DCFCE7;
+  color: #166534;
+  border: 1px solid rgba(22, 101, 52, 0.25);
+}
+
+html[data-theme="light"] .bin-arch {
+  color: #64748B;
+}
+
+html[data-theme="light"] .bin-card-name {
+  color: #0F172A;
+}
+
+html[data-theme="light"] .bin-card-meta {
+  color: #475467;
+}
+
+html[data-theme="light"] .bin-download-action {
+  color: #0284C7;
+}
+
+html[data-theme="light"] .bin-download-card:hover .bin-download-action {
+  color: #0369A1;
+  text-shadow: none;
+}
+
+html[data-theme="light"] .step-card {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme="light"] .step-card:hover {
+  border-color: #CBD5E1;
+  box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px);
+}
+
+html[data-theme="light"] .step-idx {
+  color: #92400E;
+}
+
+html[data-theme="light"] .step-card-title {
+  color: #0F172A;
+}
+
+html[data-theme="light"] .step-card-desc {
+  color: #475467;
+}
+
+html[data-theme="light"] .step-cmd {
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  color: #026AA2;
+}
+
+html[data-theme="light"] .operator-node-box {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-left: 4px solid #0284C7;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme="light"] .node-box-desc {
+  color: #475467;
+}
+
+html[data-theme="light"] .node-cmd-wrap {
+  background: #090D16;
+  border: 1px solid #1E293B;
+  color: #F8FAFC;
+}
+
+html[data-theme="light"] .faq-question {
+  color: #0F172A;
+}
+
+html[data-theme="light"] .faq-answer {
+  color: #475467;
+}
+
+html[data-theme="light"] .faq-answer strong {
+  color: #0F172A;
+}
+
+html[data-theme="light"] .faq-answer code {
+  background: #F1F5F9;
+  border: 1px solid #E2E8F0;
+  color: #026AA2;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ==============================================================================
+   PANE 7: INSTALLATION & QUICKSTART (MONO THEME OVERRIDES)
+   ============================================================================== */
+html[data-theme="mono"] .install-snippet-box {
+  background: #000000;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="mono"] .snippet-tab {
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .snippet-tab:hover {
+  background: #18181b;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+html[data-theme="mono"] .snippet-tab.active {
+  background: #ffffff;
+  color: #000000;
+  border-color: #ffffff;
+  font-weight: 700;
+}
+
+html[data-theme="mono"] .snippet-code-wrap {
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+html[data-theme="mono"] .snippet-code-pre code {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .snippet-copy-btn {
+  background: #ffffff;
+  color: #000000;
+  border-color: #ffffff;
+  font-weight: 700;
+}
+
+html[data-theme="mono"] .snippet-copy-btn:hover {
+  background: #e4e4e7;
+}
+
+html[data-theme="mono"] .direct-downloads-box {
+  background: #000000;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="mono"] .download-deck-desc {
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .bin-download-card {
+  background: #0a0a0a;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="mono"] .bin-download-card:hover {
+  background: #18181b;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="mono"] .bin-download-card.all-assets {
+  border-style: dashed;
+}
+
+html[data-theme="mono"] .bin-os-badge {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+html[data-theme="mono"] .bin-arch {
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .bin-card-name {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .bin-card-meta {
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .bin-download-action {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .bin-download-card:hover .bin-download-action {
+  color: #ffffff;
+  text-decoration: underline;
+  text-shadow: none;
+}
+
+html[data-theme="mono"] .step-card {
+  background: #0a0a0a;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="mono"] .step-card:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="mono"] .step-idx {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .step-card-title {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .step-card-desc {
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .step-cmd {
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .operator-node-box {
+  background: #0a0a0a;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-left: 4px solid #ffffff;
+}
+
+html[data-theme="mono"] .node-box-desc {
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .node-cmd-wrap {
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .faq-question {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .faq-answer {
+  color: #a1a1aa;
+}
+
+html[data-theme="mono"] .faq-answer strong {
+  color: #ffffff;
+}
+
+html[data-theme="mono"] .faq-answer code {
+  background: #18181b;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ==============================================================================
    Bottom Collapsible REPL Console
    ============================================================================== */
 .tui-bottom-repl {

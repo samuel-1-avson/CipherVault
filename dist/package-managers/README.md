@@ -48,10 +48,10 @@ Install via [Windows Package Manager (`winget`)](https://learn.microsoft.com/en-
 
 ```powershell
 # Local testing:
-winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.17/
+winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.28/
 
 # Upstream publication:
-wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.17/
+wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.28/
 ```
 
 ---
