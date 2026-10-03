@@ -1660,7 +1660,7 @@ function initPaperKit() {
 }
 
 /* ==============================================================================
-   7b. Passphrase-Wrapped Vault-Key Backup Simulator (CVKB1 Format, ADR-012)
+   7b. Passphrase-Wrapped Vault-Key Backup Simulator (CVKB1 Format)
    ==============================================================================
    Demonstrates client-side derivation of the content-addressed locator for an
    immutable CVKB1 envelope (Argon2id + XChaCha20-Poly1305).
@@ -1899,7 +1899,7 @@ const REPL_RESPONSES = {
   ],
   repo: [
     'Immutable VCS repository bindings (v1.0.28):',
-    '  ciphervault repo link --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID>',
+    '  ciphervault repo bind --project <PROJ> --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID> --name <ORG/REPO> --url <URL>',
     '  ciphervault repo list [--project <PROJ>]',
     '  What it really does: Binds projects to Git repositories by immutable numeric provider ID',
     '  rather than volatile repository names. Survives renames, transfers, and monorepos',
@@ -2011,8 +2011,8 @@ const REPL_RESPONSES = {
     '  Drill it first: ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>'
   ],
   recovery: [
-    'Sovereign clean-machine recovery & passphrase key backup (v1.0.28, ADR-012):',
-    '  ciphervault recovery key-backup [--passphrase <TEXT>]',
+    'Sovereign clean-machine recovery & passphrase key backup (v1.0.28):',
+    '  ciphervault recovery key-backup --kit <KIT.txt> [--replicas N]',
     '  ciphervault recovery key-restore --locator <HEX_SHA256> [--output <PATH>]',
     '  ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>',
     '  What it really does: Derives 256-bit encryption key with Argon2id (64 MiB RAM, 3 passes, 4 lanes),',
@@ -2022,12 +2022,12 @@ const REPL_RESPONSES = {
   ],
   mfa: [
     'Enforced Multi-Factor Authentication & Session Binding (v1.0.28):',
-    '  ciphervault mfa setup [--type totp] [--issuer CipherVault]',
-    '  ciphervault mfa verify <6_DIGIT_CODE> [--freshness-window 300s]',
-    '  ciphervault mfa recovery-code [--generate | --use <CODE>]',
+    '  Managed account-side: enroll a device/passkey plus a TOTP authenticator,',
+    '  then approve scoped sessions with a fresh TOTP step-up (strict attempt limits).',
     '  What it really does: Enforces RFC 6238 TOTP step-up authentication after passkey sign-in.',
-    '  Binds dynamic session scope tokens (cvst1...) with an isolated rate limit (5 attempts/min),',
-    '  tamper-evident audit chain logging, and single-use emergency recovery codes.'
+    '  Drills stay honest: verify clean-machine rebuilds with ciphervault audit --recovery-drill.',
+    '  Binds dynamic session scope tokens (cvst1...) with tamper-evident audit chain logging',
+    '  and single-use emergency recovery codes. No CLI flags — enforced by the account service.'
   ],
   donate: [
     'Support CipherVault Open-Source Infrastructure (address from docs/CRYPTO_DONATION_PLAN.md):',
@@ -2285,7 +2285,7 @@ function initInstallSnippets() {
   const HERO_SNIPPETS = {
     cargo: {
       cmd: 'cargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli',
-      label: 'RECOMMENDED (RUST 1.80+)'
+      label: 'RECOMMENDED (RUST 1.89+)'
     },
     win: {
       cmd: 'irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex',

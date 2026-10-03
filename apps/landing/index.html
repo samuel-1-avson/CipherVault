@@ -230,7 +230,7 @@
               <span class="d-tab-num">[6]</span>
               <div class="d-tab-content">
                 <span class="d-tab-title">Clean-Machine Recovery</span>
-                <span class="d-tab-desc">Shamir 3-of-5 threshold ceremony &amp; paper kit</span>
+                <span class="d-tab-desc">Shamir M-of-N threshold guardians &amp; paper kit</span>
               </div>
               <span class="d-tab-arrow">➔</span>
             </button>
@@ -474,7 +474,7 @@
                 <button class="hero-target-pill" data-install-target="docker" role="tab" aria-selected="false">Docker</button>
               </div>
               <div class="install-header-meta">
-                <span class="os-label-badge" id="tui-os-label">RECOMMENDED (RUST 1.80+)</span>
+                <span class="os-label-badge" id="tui-os-label">RECOMMENDED (RUST 1.89+)</span>
                 <span class="install-hint">Press C to copy</span>
               </div>
             </div>
@@ -571,7 +571,7 @@
                     Editing one key only encrypts and syncs that tiny change—saving bandwidth and time.
                   </p>
                   <p class="pillar-desc mode-tech-only">
-                    FastCDC Gear-rolling hashing (4–64 KiB). Only modified delta chunks re-encrypt and sync.
+                    FastCDC Gear-rolling hashing (4–64 KiB). Only modified delta chunks re-encrypt and sync (chunk protocol v2, opt-in).
                   </p>
                 </div>
               </div>
@@ -1630,7 +1630,7 @@ if !no_gitignore {
                 </div>
                 <div class="m-step-title">Collision Check</div>
                 <p class="m-step-desc">Detects name collisions or invalid slugs; isolates conflicts into a non-destructive quarantine.</p>
-                <code class="m-step-cmd">migrate resolve --entry &lt;id&gt;</code>
+                <code class="m-step-cmd">migrate resolve --migration-id &lt;ID&gt; --entry &lt;id&gt;</code>
               </div>
 
               <div class="migration-card">
@@ -1700,7 +1700,7 @@ if !no_gitignore {
               </p>
               <div class="vcs-code-wrap">
                 <pre class="tui-code-block"><code># Bind GitHub repo with signed HMAC-SHA256 webhooks
-ciphervault repo link --provider github --repo-id 84920194 --project checkout-api
+ciphervault repo bind --project checkout-api --provider github --repo-id 84920194 --name apex/checkout --url https://github.com/apex/checkout
 
 # Confine secret to specific repository binding or service
 ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code></pre>
@@ -1731,8 +1731,8 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                   <span class="cmd-desc">Fail-closed zero-disk RAM injection</span>
                 </div>
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-mint">ciphervault mfa verify &lt;CODE&gt;</span>
-                  <span class="cmd-desc">Enforce TOTP session binding &amp; scope token</span>
+                  <span class="cmd-label text-mint">ciphervault audit --recovery-drill</span>
+                  <span class="cmd-desc">Verify head rebuild in zeroizing memory</span>
                 </div>
                 <div class="cli-cmd-cell">
                   <span class="cmd-label text-cyan">ciphervault recovery key-backup</span>
@@ -1771,7 +1771,7 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
             </h2>
             <p class="pane-desc">
               <span class="mode-simple-only">Because CipherVault runs directly on your computer instead of waiting for slow cloud servers, operations happen in milliseconds with zero lag.</span>
-              <span class="mode-tech-only">Empirical benchmarks measured on x86_64 across 63 test suites, ~290 automated tests, and live multi-region nodes.</span>
+              <span class="mode-tech-only">Empirical benchmarks measured on x86_64 release builds, backed by 150+ workspace test files and live multi-region nodes.</span>
             </p>
           </div>
 
@@ -2353,7 +2353,7 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
           <!-- Method C: Passphrase-Wrapped Vault-Key Backup (CVKB1 Format) -->
           <div class="tui-box recovery-box-cvkb">
             <div class="card-accent-tag tag-cyan">
-              <span class="accent-dot cyan">●</span> CLIENT-SEALED KDF • ARGON2ID + XCHACHA20-POLY1305 (ADR-012)
+              <span class="accent-dot cyan">●</span> CLIENT-SEALED KDF • ARGON2ID + XCHACHA20-POLY1305
             </div>
             <div class="tui-box-title">METHOD C: PASSPHRASE-WRAPPED VAULT-KEY BACKUP (CVKB1)</div>
             <p class="recovery-desc">
