@@ -3,12 +3,17 @@
 Source commit `fe901c9` (contains `c883acc` explorer guidance). Edge build
 run 37132439045 in progress at prep time — grab digests when green.
 
-## New digests (fill in from the green run)
+## New digests (run 37132439045, SUCCESS, tags `main-fe901c9`)
 
 ```powershell
-$DASH_NEW  = "ghcr.io/samuel-1-avson/ciphervault-dashboard@sha256:<from main-fe901c9 tag>"
-$ACCT_NEW  = "ghcr.io/samuel-1-avson/ciphervault-account@sha256:<from main-fe901c9 tag>"
+$DASH_NEW  = "ghcr.io/samuel-1-avson/ciphervault-dashboard@sha256:9b6e7a965d047fddf96ec1103d207854a28b1b9e446e63eca0801d71f4db990a"
+$ACCT_NEW  = "ghcr.io/samuel-1-avson/ciphervault-account@sha256:12763ece46599f66cf5e95d94515c8c6d52dcf5741be999e182099eb967599c0"
 ```
+
+Sequencing note: these images predate PR #25 (audit-export paging). To
+roll out once, merge #25 first and promote the edge build of the new main
+instead — re-resolve the digests from the fresh `main-<sha>` tags at that
+time. The cosign step in the script is mandatory either way.
 
 Resolve via: `gh api
 repos/samuel-1-avson/CipherVault/packages/container/ciphervault-dashboard/versions`
