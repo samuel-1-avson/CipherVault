@@ -4633,6 +4633,17 @@ select.form-input option,
   flex: 0 0 auto;
   color: var(--signal);
 }
+.hosted-session-summary {
+  flex-wrap: wrap;
+  align-items: center;
+  margin: -16px 0 24px;
+}
+.hosted-session-summary strong {
+  color: var(--ok);
+}
+.hosted-session-summary button {
+  margin-left: auto;
+}
 .guardian-local-guidance {
   display: flex;
   flex-wrap: wrap;

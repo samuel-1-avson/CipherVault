@@ -373,6 +373,11 @@
           <strong>Public cluster explorer</strong>
           <span>This view shows sanitized operator health and checkpoint evidence. Vault files, history, recovery material, and administrative actions are available only from a local private workspace.</span>
         </section>
+        <section class="public-explorer-notice hosted-session-summary" id="hosted-session-summary" role="status" aria-live="polite" hidden>
+          <strong>Signed in</strong>
+          <span id="hosted-session-summary-text">Loading signed-in session…</span>
+          <button class="btn-action secondary small" id="btn-open-account-manage" type="button">Manage account</button>
+        </section>
 
         <!-- Active Page Context Bar -->
         <header class="page-context-bar" id="page-context-bar" aria-label="Current Page Context">
@@ -1067,6 +1072,10 @@
       </div>
 
       <div class="recovery-sheet-card" id="printable-recovery-kit">
+        <div class="public-explorer-notice" id="recovery-public-note" role="status" hidden>
+          <strong>Local vault only</strong>
+          <span>Recovery sheets live with your vault keys on your own machine. Open <code>ciphervault ui --local</code> there to view them here.</span>
+        </div>
         <div class="warning-banner">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>

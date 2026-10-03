@@ -800,6 +800,41 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert.equal(getElementById('approvals-status').textContent, 'Approval queue is available only in a local private workspace.');
   context.fetch = stockFetch;
 
+  // 24. Public-explorer guidance: the Recovery tab explains its local-only
+  // data, and hosted-signed-in visitors get a session summary.
+  assert(shellHtml.match(/id="recovery-public-note"[^>]*role="status"/), 'Recovery tab must carry a public-mode notice');
+  assert(shellHtml.match(/id="hosted-session-summary"[^>]*role="status"/), 'Public explorer must carry a hosted session summary');
+  assert(shellHtml.match(/id="btn-open-account-manage"/), 'Session summary must offer Manage account');
+  vm.runInContext(`
+    state.accessMode = 'public_explorer';
+    state.accountService = null;
+    state.account = null;
+    state.accountMfa = null;
+    applyAccessContext({ mode: 'public_explorer' });
+  `, context);
+  assert.equal(getElementById('recovery-public-note').hidden, false);
+  assert.equal(getElementById('hosted-session-summary').hidden, true, 'summary stays hidden until hosted sign-in');
+  vm.runInContext(`applyAccessContext({ mode: 'local_private' })`, context);
+  assert.equal(getElementById('recovery-public-note').hidden, true);
+  vm.runInContext(`
+    state.accessMode = 'public_explorer';
+    state.accountMfa = null;
+    state.account = { vaults: [] };
+    state.accountService = { authenticated: true, session: { account_id: 'cvacct_c6da30342f8b9d0601c15c8fcb3edc43', mfa_required: true, mfa_verified_at_utc: 1790714600 }, directory: { vaults: [{ vault_id_hex: 'aa' }, { vault_id_hex: 'bb' }] } };
+    renderHostedSessionSummary();
+  `, context);
+  assert.equal(getElementById('hosted-session-summary').hidden, false);
+  const summaryText = getElementById('hosted-session-summary-text').textContent;
+  assert(summaryText.includes('cvacct_c6da30'), 'summary must name the account head');
+  assert(summaryText.includes('3edc43'), 'summary must name the account tail');
+  assert(summaryText.includes('2 linked vaults'), 'summary must count linked vaults');
+  assert(summaryText.includes('verified this session'), 'summary must reflect step-up state');
+  vm.runInContext(`
+    state.accessMode = 'local_private';
+    renderHostedSessionSummary();
+  `, context);
+  assert.equal(getElementById('hosted-session-summary').hidden, true, 'summary is public-mode only');
+
   // These DOM contracts complement the actual browser CSP test; they are
   // not a full accessibility certification.
   assert(!/\bon\w+\s*=\s*["']/.test(shellHtml), 'HTML must not contain inline event attributes');

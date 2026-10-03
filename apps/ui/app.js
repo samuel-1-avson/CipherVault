@@ -229,6 +229,21 @@ async function fetchHostedAccountState() {
         required: false,
       };
     }
+    if (state.accountService.authenticated && isPublicExplorer()
+        && state.accountService.directoryAccountId !== state.accountService.session.account_id) {
+      try {
+        const directoryResponse = await workspaceFetch(`/api/account/${encodeURIComponent(state.accountService.session.account_id)}`, { credentials: 'same-origin' });
+        if (directoryResponse.ok) {
+          const directory = await directoryResponse.json().catch(() => null);
+          if (directory && typeof directory === 'object') {
+            state.accountService.directory = directory;
+            state.accountService.directoryAccountId = state.accountService.session.account_id;
+          }
+        }
+      } catch (error) {
+        console.debug('Hosted account directory unavailable:', error);
+      }
+    }
     renderAccountStatus(state.account);
   } catch (error) {
     state.accountService = null;
@@ -323,6 +338,7 @@ function renderSyncHealth(health) {
 
 function renderAccountStatus(account) {
   renderHostedMfaPolicy();
+  renderHostedSessionSummary();
   const text = document.getElementById('account-status-text');
   const dot = document.getElementById('account-pulse-dot');
   const loginButton = document.getElementById('btn-account-login');
@@ -401,6 +417,38 @@ function renderAccountStatus(account) {
       headerSignInBtn.title = 'Sign in to CipherVault account';
     }
   }
+}
+
+function hostedMfaSummary() {
+  const policy = state.accountMfa;
+  const session = (state.accountService && state.accountService.session) || {};
+  const required = policy ? policy.required === true : session.mfa_required === true;
+  const verifiedAt = policy ? policy.verified_at_utc : session.mfa_verified_at_utc;
+  if (!policy && session.mfa_required !== true && session.mfa_required !== false) return 'MFA status unavailable';
+  if (!required) return 'MFA optional';
+  return verifiedAt != null ? 'MFA enforced · verified this session' : 'MFA enforced · step-up needed';
+}
+
+function renderHostedSessionSummary() {
+  const panel = document.getElementById('hosted-session-summary');
+  if (!panel) return;
+  const service = state.accountService;
+  const session = (service && service.session) || {};
+  const authenticated = isPublicExplorer() && service && service.authenticated === true
+    && typeof session.account_id === 'string' && session.account_id.length > 0;
+  panel.hidden = !authenticated;
+  if (!authenticated) return;
+  const text = document.getElementById('hosted-session-summary-text');
+  if (!text) return;
+  const directoryVaults = service.directory && Array.isArray(service.directory.vaults)
+    ? service.directory.vaults : null;
+  const accountVaults = state.account && Array.isArray(state.account.vaults)
+    ? state.account.vaults : null;
+  const vaults = directoryVaults || accountVaults;
+  const vaultText = vaults === null
+    ? 'linked vaults loading…'
+    : `${vaults.length} linked vault${vaults.length === 1 ? '' : 's'}`;
+  text.textContent = `${truncateHash(session.account_id, 13, 6)} · ${hostedMfaSummary()} · ${vaultText}`;
 }
 
 function initAccountControls() {
@@ -517,6 +565,8 @@ function initAccountControls() {
     });
   }
   if (manageButton) manageButton.addEventListener('click', () => openAccountManagementModal());
+  const openAccountManageButton = document.getElementById('btn-open-account-manage');
+  if (openAccountManageButton) openAccountManageButton.addEventListener('click', () => openAccountManagementModal());
   const passkeyModal = document.getElementById('modal-account-passkey');
   const passkeySubmit = document.getElementById('btn-submit-account-passkey');
   const passkeyCancel = document.getElementById('btn-cancel-modal-account-passkey');
@@ -1317,6 +1367,8 @@ function applyAccessContext(context) {
 
   const publicNotice = document.getElementById('public-explorer-notice');
   if (publicNotice) publicNotice.hidden = !publicExplorer;
+  const recoveryPublicNote = document.getElementById('recovery-public-note');
+  if (recoveryPublicNote) recoveryPublicNote.hidden = !publicExplorer;
 
   // The enrolled-device-key ceremony signs with this machine's local vault
   // keystore, which a remote explorer cannot reach. Hide the option on the
@@ -1371,6 +1423,7 @@ function applyAccessContext(context) {
   if (typeof updateCategoryPillCounts === 'function') {
     updateCategoryPillCounts();
   }
+  renderHostedSessionSummary();
 }
 
 function captureSearchFilters() {
