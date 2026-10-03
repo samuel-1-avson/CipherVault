@@ -817,7 +817,8 @@ Restore drill (run quarterly; automated by
 1. Copy a snapshot to a staging host as `accounts.sqlite3` in a fresh
    data dir; start the service (it runs migrations idempotently).
 2. `GET /v1/projects/$PID/audit/export` (dual-control) must return
-   200 — the chain verifies on the restored copy.
+   200 — the first page verifies on the restored copy. Walk
+   `x-audit-next` cursors for full-chain assurance on large tenants.
 3. Spot-read one secret per environment; compare against the canary
    values recorded at backup time.
 

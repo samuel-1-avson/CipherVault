@@ -41,7 +41,7 @@
 //!   audit rows by construction (`SecretValue` has no `Display`/
 //!   `Serialize` and a redacted `Debug`).
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 /// The 12 canonical scoped-audit event types (§20/G-spec).
@@ -240,9 +240,34 @@ struct AuditRow {
     created_at_utc: i64,
 }
 
+/// Checks one row's link and v2 digest against the running head. Shared by
+/// full-chain verification and paged export so both fail on the same rows.
+fn row_linkage_ok(row: &AuditRow, running: &[u8]) -> bool {
+    let recomputed = principal_from_actor(&row.actor_json).map(|principal| {
+        chain_digest(&ChainFields {
+            prev: running,
+            event_type: &row.event_type,
+            tenant_id: &row.tenant_id,
+            project_id: row.project_id.as_deref(),
+            environment_id: row.environment_id.as_deref(),
+            secret_id: row.secret_id.as_deref(),
+            secret_version: row.secret_version,
+            principal_id: &principal,
+            request_id: &row.request_id,
+            source: &row.source,
+            result: &row.result,
+            reason: &row.reason,
+            now: row.created_at_utc as u64,
+        })
+    });
+    row.prev_hash == running
+        && recomputed.as_ref().map(|d| d.as_slice()) == Some(row.event_hash.as_slice())
+}
+
 /// Recomputes a tenant's hash chain in append order
 /// (`created_at_utc, rowid` — the same order the writer uses to find the
-/// head). Stops at the first break; the report names it.
+/// head). Stops at the first break; the report names it. Rows stream one at
+/// a time: verification never holds the full chain in memory.
 pub(crate) fn verify_chain(
     db: &Connection,
     tenant_id: &str,
@@ -253,55 +278,42 @@ pub(crate) fn verify_chain(
                 prev_hash, event_hash, created_at_utc
          FROM secret_access_events WHERE tenant_id = ?1 ORDER BY created_at_utc, rowid",
     )?;
-    let rows: Vec<AuditRow> = stmt
-        .query_map(params![tenant_id], |row| {
-            Ok(AuditRow {
-                event_id: row.get(0)?,
-                event_type: row.get(1)?,
-                tenant_id: row.get(2)?,
-                project_id: row.get(3)?,
-                environment_id: row.get(4)?,
-                secret_id: row.get(5)?,
-                secret_version: row.get(6)?,
-                actor_json: row.get(7)?,
-                request_id: row.get(8)?,
-                source: row.get(9)?,
-                result: row.get(10)?,
-                reason: row.get(11)?,
-                prev_hash: row.get(12)?,
-                event_hash: row.get(13)?,
-                created_at_utc: row.get(14)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    // Total first: `event_count` covers the whole tenant chain even past a
+    // break. Rows then stream one at a time instead of collecting.
+    let total: i64 = db.query_row(
+        "SELECT COUNT(*) FROM secret_access_events WHERE tenant_id = ?1",
+        params![tenant_id],
+        |row| row.get(0),
+    )?;
+    let mut mapped = stmt.query_map(params![tenant_id], |row| {
+        Ok(AuditRow {
+            event_id: row.get(0)?,
+            event_type: row.get(1)?,
+            tenant_id: row.get(2)?,
+            project_id: row.get(3)?,
+            environment_id: row.get(4)?,
+            secret_id: row.get(5)?,
+            secret_version: row.get(6)?,
+            actor_json: row.get(7)?,
+            request_id: row.get(8)?,
+            source: row.get(9)?,
+            result: row.get(10)?,
+            reason: row.get(11)?,
+            prev_hash: row.get(12)?,
+            event_hash: row.get(13)?,
+            created_at_utc: row.get(14)?,
+        })
+    })?;
     let mut report = ChainReport {
-        event_count: rows.len(),
+        event_count: total.max(0) as usize,
         valid: true,
         first_bad_event_id: None,
         head_hash: GENESIS_HASH.to_vec(),
     };
     let mut running: Vec<u8> = GENESIS_HASH.to_vec();
-    for row in &rows {
-        let recomputed = principal_from_actor(&row.actor_json).map(|principal| {
-            chain_digest(&ChainFields {
-                prev: &running,
-                event_type: &row.event_type,
-                tenant_id: &row.tenant_id,
-                project_id: row.project_id.as_deref(),
-                environment_id: row.environment_id.as_deref(),
-                secret_id: row.secret_id.as_deref(),
-                secret_version: row.secret_version,
-                principal_id: &principal,
-                request_id: &row.request_id,
-                source: &row.source,
-                result: &row.result,
-                reason: &row.reason,
-                now: row.created_at_utc as u64,
-            })
-        });
-        if row.prev_hash != running
-            || recomputed.as_ref().map(|d| d.as_slice()) != Some(row.event_hash.as_slice())
-        {
+    for row in &mut mapped {
+        let row = row?;
+        if !row_linkage_ok(&row, &running) {
             report.valid = false;
             report.first_bad_event_id = Some(row.event_id.clone());
             break;
@@ -312,49 +324,87 @@ pub(crate) fn verify_chain(
     Ok(report)
 }
 
+/// Column list shared by the full and paged export SELECTs (positional
+/// indices feed [`audit_row_from_export_row`]; keep the two in sync).
+const AUDIT_EXPORT_COLUMNS: &str = "event_id, event_type, created_at_utc, tenant_id, project_id, environment_id, secret_id, secret_version, actor_json, result, reason, request_id, source, prev_hash, event_hash";
+
+/// Default and maximum page sizes for the HTTP export. At ~1 KiB per JSONL
+/// line, the largest page holds ~50 MiB — safe on an e2-micro, unlike the
+/// unbounded full-chain materialization that OOM-killed the 2026-10-03 soak
+/// canary at 703 MiB RSS.
+pub(crate) const AUDIT_EXPORT_DEFAULT_LIMIT: usize = 10_000;
+pub(crate) const AUDIT_EXPORT_MAX_LIMIT: usize = 50_000;
+
+fn audit_row_from_export_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditRow> {
+    Ok(AuditRow {
+        event_id: row.get(0)?,
+        event_type: row.get(1)?,
+        created_at_utc: row.get(2)?,
+        tenant_id: row.get(3)?,
+        project_id: row.get(4)?,
+        environment_id: row.get(5)?,
+        secret_id: row.get(6)?,
+        secret_version: row.get(7)?,
+        actor_json: row.get(8)?,
+        result: row.get(9)?,
+        reason: row.get(10)?,
+        request_id: row.get(11)?,
+        source: row.get(12)?,
+        prev_hash: row.get(13)?,
+        event_hash: row.get(14)?,
+    })
+}
+
+/// Renders one chain row as JSONL in the §20 shape (plus chain hashes and a
+/// `canonical` taxonomy flag). Single definition shared by the full and
+/// paged exporters so their lines are byte-identical.
+fn audit_row_json(row: &AuditRow) -> String {
+    let actor: serde_json::Value = serde_json::from_str(&row.actor_json)
+        .unwrap_or_else(|_| serde_json::Value::String(row.actor_json.clone()));
+    let canonical = AuditEventType::parse(&row.event_type).is_canonical();
+    serde_json::json!({
+        "event_id": row.event_id,
+        "event_type": row.event_type,
+        "canonical": canonical,
+        "timestamp_utc": row.created_at_utc,
+        "tenant_id": row.tenant_id,
+        "project_id": row.project_id,
+        "environment": row.environment_id,
+        "secret_id": row.secret_id,
+        "secret_version": row.secret_version,
+        "actor": actor,
+        "action_result": row.result,
+        "reason": row.reason,
+        "request_id": row.request_id,
+        "source": row.source,
+        "prev_hash_hex": hex::encode(&row.prev_hash),
+        "event_hash_hex": hex::encode(&row.event_hash),
+    })
+    .to_string()
+}
+
 /// Exports a tenant's chain as JSONL in the §20 shape (plus chain hashes
 /// and a `canonical` taxonomy flag) for off-host append-only cold storage.
 /// Every line carries the full preimage, so an off-host verifier can
 /// recompute the chain without database access (proven by
 /// `export_verifies_off_host`).
+///
+/// Test-only oracle: the HTTP route serves bounded pages via
+/// [`verify_and_export_audit_page`] (the unbounded full-chain
+/// materialization OOM-killed the 2026-10-03 soak canary).
+#[cfg(test)]
 pub(crate) fn export_audit_log(
     db: &Connection,
     tenant_id: &str,
 ) -> Result<String, rusqlite::Error> {
-    let mut stmt = db.prepare(
-        "SELECT event_id, event_type, created_at_utc, tenant_id, project_id, environment_id,
-                secret_id, secret_version, actor_json, result, reason, request_id, source,
-                prev_hash, event_hash
-         FROM secret_access_events WHERE tenant_id = ?1 ORDER BY created_at_utc, rowid",
-    )?;
+    let sql = format!(
+        "SELECT {AUDIT_EXPORT_COLUMNS} FROM secret_access_events \
+         WHERE tenant_id = ?1 ORDER BY created_at_utc, rowid"
+    );
+    let mut stmt = db.prepare(&sql)?;
     let lines: Vec<String> = stmt
         .query_map(params![tenant_id], |row| {
-            let actor_raw: String = row.get(8)?;
-            let actor: serde_json::Value =
-                serde_json::from_str(&actor_raw).unwrap_or(serde_json::Value::String(actor_raw));
-            let prev: Vec<u8> = row.get(13)?;
-            let hash: Vec<u8> = row.get(14)?;
-            let event_type: String = row.get(1)?;
-            let canonical = AuditEventType::parse(&event_type).is_canonical();
-            Ok(serde_json::json!({
-                "event_id": row.get::<_, String>(0)?,
-                "event_type": event_type,
-                "canonical": canonical,
-                "timestamp_utc": row.get::<_, i64>(2)?,
-                "tenant_id": row.get::<_, String>(3)?,
-                "project_id": row.get::<_, Option<String>>(4)?,
-                "environment": row.get::<_, Option<String>>(5)?,
-                "secret_id": row.get::<_, Option<String>>(6)?,
-                "secret_version": row.get::<_, Option<i64>>(7)?,
-                "actor": actor,
-                "action_result": row.get::<_, String>(9)?,
-                "reason": row.get::<_, String>(10)?,
-                "request_id": row.get::<_, String>(11)?,
-                "source": row.get::<_, String>(12)?,
-                "prev_hash_hex": hex::encode(&prev),
-                "event_hash_hex": hex::encode(&hash),
-            })
-            .to_string())
+            audit_row_from_export_row(row).map(|audit| audit_row_json(&audit))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut out = String::new();
@@ -365,9 +415,136 @@ pub(crate) fn export_audit_log(
     Ok(out)
 }
 
+/// Failure modes of [`verify_and_export_audit_page`].
+#[derive(Debug)]
+pub(crate) enum AuditExportError {
+    Db(rusqlite::Error),
+    UnknownCursor,
+}
+
+impl From<rusqlite::Error> for AuditExportError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Db(error)
+    }
+}
+
+/// One verified page of a tenant's chain.
+#[derive(Debug)]
+pub(crate) struct AuditExportPage {
+    /// Events in this page (0 when invalid or exhausted).
+    pub event_count: usize,
+    /// Hash of the last event in this page (the exported prefix head), or
+    /// the seed hash when the page is empty.
+    pub head_hash: Vec<u8>,
+    /// Cursor for the next page (last event id); `None` when the export is
+    /// complete. Clients walk pages until it disappears.
+    pub next_cursor: Option<String>,
+    pub jsonl: String,
+    /// Whether every link and digest in this page recomputed cleanly. A
+    /// broken page ships no body (`jsonl` is empty).
+    pub valid: bool,
+    pub first_bad_event_id: Option<String>,
+}
+
+/// Verifies and exports one bounded page of a tenant's chain from a pinned
+/// snapshot. `after` is an exclusive event-id cursor (`None` starts at
+/// genesis); at most `limit` events are verified and rendered, so memory and
+/// mutex hold time stay bounded no matter how large the chain grows.
+///
+/// Each page verifies its own linkage (seeded from the cursor event's stored
+/// hash, or genesis): a break inside the page fails closed exactly like the
+/// full export. A break *before* the cursor is not re-detected on later
+/// pages — full-chain assurance means walking from genesis.
+pub(crate) fn verify_and_export_audit_page(
+    snapshot: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    after: Option<&str>,
+    limit: usize,
+) -> Result<AuditExportPage, AuditExportError> {
+    // Clamp defensively; the route enforces 1..=MAX first.
+    let limit = limit.clamp(1, AUDIT_EXPORT_MAX_LIMIT);
+    let (seed, position): (Vec<u8>, Option<(i64, i64)>) = match after {
+        None => (GENESIS_HASH.to_vec(), None),
+        Some(event_id) => {
+            let found: Option<(Vec<u8>, i64, i64)> = snapshot
+                .query_row(
+                    "SELECT event_hash, created_at_utc, rowid FROM secret_access_events \
+                     WHERE tenant_id = ?1 AND event_id = ?2",
+                    params![tenant_id, event_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            match found {
+                Some((hash, created_at_utc, rowid)) => (hash, Some((created_at_utc, rowid))),
+                None => return Err(AuditExportError::UnknownCursor),
+            }
+        }
+    };
+    // Over-fetch one row to detect truncation without a second query.
+    let overfetch = limit.saturating_add(1) as i64;
+    let sql = match position {
+        None => format!(
+            "SELECT {AUDIT_EXPORT_COLUMNS} FROM secret_access_events \
+             WHERE tenant_id = ?1 ORDER BY created_at_utc, rowid LIMIT ?2"
+        ),
+        Some(_) => format!(
+            "SELECT {AUDIT_EXPORT_COLUMNS} FROM secret_access_events \
+             WHERE tenant_id = ?1 \
+             AND (created_at_utc > ?2 OR (created_at_utc = ?2 AND rowid > ?3)) \
+             ORDER BY created_at_utc, rowid LIMIT ?4"
+        ),
+    };
+    let mut stmt = snapshot.prepare(&sql)?;
+    let rows: Vec<AuditRow> = match position {
+        None => stmt
+            .query_map(params![tenant_id, overfetch], audit_row_from_export_row)?
+            .collect::<Result<Vec<_>, _>>()?,
+        Some((created_at_utc, rowid)) => stmt
+            .query_map(
+                params![tenant_id, created_at_utc, rowid, overfetch],
+                audit_row_from_export_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let has_more = rows.len() > limit;
+    let mut running = seed;
+    let mut out = String::new();
+    let mut last_id: Option<String> = None;
+    let mut emitted = 0usize;
+    for row in rows.iter().take(limit) {
+        if !row_linkage_ok(row, &running) {
+            return Ok(AuditExportPage {
+                event_count: 0,
+                head_hash: running,
+                next_cursor: None,
+                jsonl: String::new(),
+                valid: false,
+                first_bad_event_id: Some(row.event_id.clone()),
+            });
+        }
+        out.push_str(&audit_row_json(row));
+        out.push('\n');
+        running = row.event_hash.clone();
+        last_id = Some(row.event_id.clone());
+        emitted += 1;
+    }
+    Ok(AuditExportPage {
+        event_count: emitted,
+        head_hash: running,
+        next_cursor: if has_more { last_id } else { None },
+        jsonl: out,
+        valid: true,
+        first_bad_event_id: None,
+    })
+}
+
 /// Verify and materialize one pinned SQLite snapshot. Requiring a transaction
 /// keeps independent connections from appending between the report and JSONL.
 /// A broken chain never produces an export body.
+///
+/// Test-only oracle alongside [`export_audit_log`]; the route pages through
+/// [`verify_and_export_audit_page`].
+#[cfg(test)]
 pub(crate) fn verify_and_export_audit_log(
     snapshot: &rusqlite::Transaction<'_>,
     tenant_id: &str,

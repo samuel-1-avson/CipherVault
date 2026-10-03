@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 use crate::abuse::{
     check_quota, quota_failure_response, API_BUCKET, EXPORT_BUCKET, MINT_BUCKET, READ_VALUE_BUCKET,
 };
-use crate::audit_chain::{verify_and_export_audit_log, AuditEventType};
+use crate::audit_chain::{
+    verify_and_export_audit_page, AuditEventType, AuditExportError, AUDIT_EXPORT_DEFAULT_LIMIT,
+    AUDIT_EXPORT_MAX_LIMIT,
+};
 use crate::guards::{require_recent_strong_session, STEP_UP_MAX_AGE_SECONDS};
 use crate::http::{
     authenticated_session, bearer_token, error_response, service_error, session_token,
@@ -1357,11 +1360,24 @@ pub async fn delete_scope_token(
     }
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ExportQuery {
+    after: Option<String>,
+    limit: Option<String>,
+}
+
 /// Exports the tenant's audit chain as JSONL for off-host append-only cold
-/// storage (T-901). Admins and auditors only; the chain is verified first
-/// and a broken chain fails closed (500, no partial ship). The export
+/// storage (T-901). Admins and auditors only; each page is verified first
+/// and a broken page fails closed (500, no partial ship). The export
 /// itself is not audited: it carries digests and metadata, never values
 /// (reads are only audited for value access).
+///
+/// Paging: `?limit=` bounds the page (default 10,000, max 50,000) and
+/// `?after=<event_id>` resumes after a cursor. `x-audit-events` counts this
+/// page, `x-audit-head` is this page's head hash, and `x-audit-next` carries
+/// the next cursor — absent when the export is complete. Walk pages from
+/// genesis for full-chain assurance; a later page only re-verifies its own
+/// linkage, not the prefix before its cursor.
 ///
 /// Dual control (T-902): bulk export additionally requires a second
 /// credential — `x-step-up-authorization: Bearer <token>` holding a valid
@@ -1372,6 +1388,7 @@ pub async fn get_audit_export(
     State(state): State<AccountState>,
     headers: HeaderMap,
     Path(project_id): Path<String>,
+    Query(query): Query<ExportQuery>,
 ) -> Response {
     let auth = match authenticate(&state, &headers, &project_id, None) {
         Ok(auth) => auth,
@@ -1451,7 +1468,7 @@ pub async fn get_audit_export(
             );
         }
     };
-    {
+    let validated_paging = {
         let db = match state.connection() {
             Ok(db) => db,
             Err(error) => return service_error(error),
@@ -1471,7 +1488,27 @@ pub async fn get_audit_export(
                 "Bulk export requires a second authorized principal (x-step-up-authorization)",
             );
         }
-        // Bulk export + full-chain recompute per call: quota-tight.
+        // Validate paging before quota: malformed input must not burn quota.
+        let limit = match query.limit.as_deref() {
+            None => AUDIT_EXPORT_DEFAULT_LIMIT,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if (1..=AUDIT_EXPORT_MAX_LIMIT).contains(&n) => n,
+                _ => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "INVALID_EXPORT_LIMIT",
+                        format!("limit must be an integer 1..={AUDIT_EXPORT_MAX_LIMIT}"),
+                    )
+                }
+            },
+        };
+        let after = query
+            .after
+            .as_deref()
+            .map(str::trim)
+            .filter(|cursor| !cursor.is_empty());
+        // Bounded page export + verify per call; a full-chain walk costs one
+        // quota unit per page.
         if let Err(failure) = check_quota(
             &db,
             &EXPORT_BUCKET,
@@ -1481,8 +1518,11 @@ pub async fn get_audit_export(
         ) {
             return quota_failure_response(failure);
         }
-    }
-    let (report, jsonl) = {
+        // Stash validated paging for the snapshot block below.
+        (limit, after)
+    };
+    let (limit, after) = validated_paging;
+    let page = {
         let mut db = match state.connection() {
             Ok(db) => db,
             Err(error) => return service_error(error),
@@ -1495,22 +1535,29 @@ pub async fn get_audit_export(
             Ok(snapshot) => snapshot,
             Err(error) => return service_error(error.into()),
         };
-        let export = match verify_and_export_audit_log(&snapshot, &tenant) {
-            Ok(export) => export,
-            Err(error) => return service_error(error.into()),
+        let page = match verify_and_export_audit_page(&snapshot, &tenant, after, limit) {
+            Ok(page) => page,
+            Err(AuditExportError::UnknownCursor) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_EXPORT_CURSOR",
+                    "unknown audit cursor; restart the export from the first page",
+                )
+            }
+            Err(AuditExportError::Db(error)) => return service_error(error.into()),
         };
         if let Err(error) = snapshot.commit() {
             return service_error(error.into());
         }
-        export
+        page
     };
-    if !report.valid {
+    if !page.valid {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "AUDIT_CHAIN_BROKEN",
             format!(
                 "Audit chain verification failed at event {}",
-                report.first_bad_event_id.as_deref().unwrap_or("unknown")
+                page.first_bad_event_id.as_deref().unwrap_or("unknown")
             ),
         );
     }
@@ -1519,13 +1566,18 @@ pub async fn get_audit_export(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
     );
-    if let Ok(count) = axum::http::HeaderValue::from_str(&report.event_count.to_string()) {
+    if let Ok(count) = axum::http::HeaderValue::from_str(&page.event_count.to_string()) {
         out_headers.insert("x-audit-events", count);
     }
-    if let Ok(head) = axum::http::HeaderValue::from_str(&hex::encode(&report.head_hash)) {
+    if let Ok(head) = axum::http::HeaderValue::from_str(&hex::encode(&page.head_hash)) {
         out_headers.insert("x-audit-head", head);
     }
-    (StatusCode::OK, out_headers, jsonl).into_response()
+    if let Some(cursor) = page.next_cursor.as_deref() {
+        if let Ok(next) = axum::http::HeaderValue::from_str(cursor) {
+            out_headers.insert("x-audit-next", next);
+        }
+    }
+    (StatusCode::OK, out_headers, page.jsonl).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -3496,6 +3548,254 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(error["code"], "AUDIT_CHAIN_BROKEN");
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn audit_export_pages_walk_the_full_chain() {
+        test_env();
+        let (root, state, app) = test_app("audit-export-pages");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "shop", "account:alice", ProjectRole::Admin);
+            grant_project_role(
+                &db,
+                &fixture.project,
+                "account:auditor",
+                ProjectRole::Auditor,
+                "root",
+                1,
+            )
+            .unwrap();
+            for index in 0..5 {
+                audit_secret_event(
+                    &db,
+                    &SecretAuditEvent {
+                        event_type: "secret.read",
+                        tenant_id: &tenant,
+                        project_id: Some(&fixture.project),
+                        environment_id: Some(&fixture.env),
+                        secret_id: None,
+                        secret_version: None,
+                        principal_id: "account:alice",
+                        request_id: &format!("page-seed-{index}"),
+                        source: "test",
+                        result: "success",
+                        reason: "",
+                    },
+                    1000 + index as u64,
+                )
+                .unwrap();
+            }
+            (tenant, fixture)
+        };
+        let admin = mint(&tenant, &fixture.project, None, "account:alice");
+        let second = mint(&tenant, &fixture.project, None, "account:auditor");
+        let uri = format!("/v1/projects/{}/audit/export", fixture.project);
+
+        // Unpaged export is the oracle: everything fits the default limit.
+        let (status, full_headers, full_body) =
+            export_raw(app.clone(), &uri, &admin, Some(&second), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(full_headers.get("x-audit-next").is_none());
+        let full_text = String::from_utf8(full_body).unwrap();
+        assert!(full_text.lines().count() >= 5);
+
+        // Walk in pages of two; concatenated pages must equal the oracle.
+        let mut walked = String::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let page_uri = match &cursor {
+                None => format!("{uri}?limit=2"),
+                Some(cursor) => format!("{uri}?limit=2&after={cursor}"),
+            };
+            let (status, headers, body) =
+                export_raw(app.clone(), &page_uri, &admin, Some(&second), None).await;
+            assert_eq!(status, StatusCode::OK);
+            let text = String::from_utf8(body).unwrap();
+            let count: usize = headers["x-audit-events"].to_str().unwrap().parse().unwrap();
+            assert_eq!(text.lines().count(), count);
+            let lines: Vec<serde_json::Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert!(!lines.is_empty());
+            assert_eq!(
+                lines.last().unwrap()["event_hash_hex"],
+                headers["x-audit-head"].to_str().unwrap()
+            );
+            walked.push_str(&text);
+            pages += 1;
+            match headers.get("x-audit-next") {
+                Some(next) => {
+                    let next = next.to_str().unwrap().to_string();
+                    assert_eq!(next, lines.last().unwrap()["event_id"]);
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+            assert!(pages < 10, "paging must terminate");
+        }
+        assert!(pages >= 3);
+        assert_eq!(walked, full_text);
+
+        // Linkage holds across page boundaries.
+        let mut head = "00".repeat(32);
+        for line in walked.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(row["prev_hash_hex"], head);
+            head = row["event_hash_hex"].as_str().unwrap().to_string();
+        }
+
+        // A cursor at the end yields an empty complete page.
+        let last_row: serde_json::Value =
+            serde_json::from_str(walked.lines().last().unwrap()).unwrap();
+        let last_seen = last_row["event_id"].as_str().unwrap();
+        let (status, headers, body) = export_raw(
+            app.clone(),
+            &format!("{uri}?limit=2&after={last_seen}"),
+            &admin,
+            Some(&second),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["x-audit-events"], "0");
+        assert!(headers.get("x-audit-next").is_none());
+        assert!(body.is_empty());
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn audit_export_rejects_bad_page_params() {
+        test_env();
+        let (root, state, app) = test_app("audit-export-bad-params");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "shop", "account:alice", ProjectRole::Admin);
+            grant_project_role(
+                &db,
+                &fixture.project,
+                "account:auditor",
+                ProjectRole::Auditor,
+                "root",
+                1,
+            )
+            .unwrap();
+            (tenant, fixture)
+        };
+        let admin = mint(&tenant, &fixture.project, None, "account:alice");
+        let second = mint(&tenant, &fixture.project, None, "account:auditor");
+        let uri = format!("/v1/projects/{}/audit/export", fixture.project);
+
+        for limit in ["0", "50001", "abc", "-3", ""] {
+            let (status, _, body) = export_raw(
+                app.clone(),
+                &format!("{uri}?limit={limit}"),
+                &admin,
+                Some(&second),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "limit={limit}");
+            let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error["code"], "INVALID_EXPORT_LIMIT", "limit={limit}");
+        }
+        let (status, _, body) = export_raw(
+            app.clone(),
+            &format!("{uri}?after=evt_no_such_event"),
+            &admin,
+            Some(&second),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "INVALID_EXPORT_CURSOR");
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn audit_export_tampered_page_fails_closed_without_partial_ship() {
+        test_env();
+        let (root, state, app) = test_app("audit-export-tampered-page");
+        let (tenant, fixture) = {
+            let db = state.connection().unwrap();
+            let tenant = seed_org(&db);
+            let fixture = seed_project(&db, &tenant, "shop", "account:alice", ProjectRole::Admin);
+            grant_project_role(
+                &db,
+                &fixture.project,
+                "account:auditor",
+                ProjectRole::Auditor,
+                "root",
+                1,
+            )
+            .unwrap();
+            for index in 0..3 {
+                audit_secret_event(
+                    &db,
+                    &SecretAuditEvent {
+                        event_type: "secret.read",
+                        tenant_id: &tenant,
+                        project_id: Some(&fixture.project),
+                        environment_id: Some(&fixture.env),
+                        secret_id: None,
+                        secret_version: None,
+                        principal_id: "account:alice",
+                        request_id: &format!("tamper-seed-{index}"),
+                        source: "test",
+                        result: "success",
+                        reason: "",
+                    },
+                    1000 + index as u64,
+                )
+                .unwrap();
+            }
+            (tenant, fixture)
+        };
+        let admin = mint(&tenant, &fixture.project, None, "account:alice");
+        let second = mint(&tenant, &fixture.project, None, "account:auditor");
+        let uri = format!("/v1/projects/{}/audit/export", fixture.project);
+
+        // Tamper the middle event's reason (digest input).
+        {
+            let db = state.connection().unwrap();
+            db.execute("DROP TRIGGER secret_access_events_no_update", [])
+                .unwrap();
+            db.execute(
+                "UPDATE secret_access_events SET reason = 'forged' WHERE request_id = 'tamper-seed-1'",
+                [],
+            )
+            .unwrap();
+        }
+        // A page covering the break fails closed with no body.
+        let (status, _, body) = export_raw(
+            app.clone(),
+            &format!("{uri}?limit=10"),
+            &admin,
+            Some(&second),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "AUDIT_CHAIN_BROKEN");
+        // The pre-break prefix still verifies on its own.
+        let (status, _, body) = export_raw(
+            app.clone(),
+            &format!("{uri}?limit=1"),
+            &admin,
+            Some(&second),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert_eq!(text.lines().count(), 1);
         cleanup(root);
     }
 
