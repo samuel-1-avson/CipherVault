@@ -610,7 +610,7 @@
 
             <div class="pillar-card" tabindex="0" role="button" aria-expanded="false" aria-controls="pillar-drawer-4">
               <div class="pillar-top-meta">
-                <span class="pillar-num">04 · DISASTER RECOVERY</span>
+                <span class="pillar-num">04 · RECOVERY</span>
                 <span class="pillar-badge badge-gold">AIR-GAPPED</span>
               </div>
               <h3 class="pillar-title">
@@ -619,7 +619,8 @@
               </h3>
               <div class="pillar-stat-line">
                 <span class="pillar-val text-gold">30-Second Restore</span>
-                <span class="pillar-lbl">Zero Vendor Dependency</span>
+                <span class="pillar-lbl mode-simple-only">Zero vendor dependency</span>
+                <span class="pillar-lbl mode-tech-only">Offline Shamir paper kit</span>
               </div>
               <div class="pillar-toggle-bar">
                 <span class="pillar-toggle-text mode-simple-only">How it works</span>
@@ -890,7 +891,7 @@
             <div class="dual-banner-right">
               <span class="dual-banner-hint">Managing discrete runtime KV credentials?</span>
               <button class="tui-btn-action dual-jump-btn" id="btn-jump-to-scoped" data-target="pane-scoped" title="Switch to Scoped Secrets &amp; Envelope Encryption workstation">
-                [04] Scoped Secrets &amp; Envelope Encryption →
+                <span>[04] Scoped Secrets &amp; Envelope Encryption</span> <span class="jump-arrow">→</span>
               </button>
             </div>
           </div>
@@ -913,7 +914,29 @@
 
             <div class="fastcdc-sim-content">
               <div class="analogy-notice-box mode-simple-only">
-                <strong>Smart Sync:</strong> When you update a 32-byte key in a 128 KiB file, CipherVault only re-encrypts and syncs that 1 changed block (reusing the other 25 blocks untouched). Try picking an edit scenario below:
+                <div class="analogy-notice-header">
+                  <div class="analogy-badge-wrap">
+                    <span class="analogy-badge">SMART DEDUPLICATION</span>
+                  </div>
+                  <p class="analogy-lead">
+                    Modifying a 32-byte key in a 128 KiB file re-encrypts only that single variable slice. All untouched blocks are verified in-place and reused without wire upload.
+                  </p>
+                  <button type="button" class="analogy-toggle-btn" id="btn-toggle-fastcdc-expl" aria-expanded="false" title="Expand deep-dive explanation">
+                    <span>How it works</span> <span class="toggle-chevron">▾</span>
+                  </button>
+                </div>
+                <div class="analogy-expandable-content" id="fastcdc-expl-drawer">
+                  <div class="analogy-expl-grid">
+                    <div class="expl-col">
+                      <span class="expl-col-title">Traditional Fixed-Chunking Flaw</span>
+                      <p>Fixed 4 KiB boundaries shift completely when bytes are inserted mid-file, destroying all subsequent chunk hashes and forcing 100% re-upload.</p>
+                    </div>
+                    <div class="expl-col">
+                      <span class="expl-col-title">FastCDC Gear Rolling Hash</span>
+                      <p>Dual-mask Gear hashing dynamically aligns cuts with byte content itself, isolating edits locally (0% boundary cascade, &gt;80% bandwidth saved).</p>
+                    </div>
+                  </div>
+                </div>
               </div>
               <!-- Edit Scenarios / Presets Strip (each performs a real byte-level edit) -->
               <div class="sim-presets-deck">
@@ -960,6 +983,7 @@
                       <span class="code-key">API_KEY_ROTATE=</span>
                       <input type="text" class="sim-input" id="sim-input-editor" value="ROTATED_API_KEY_32B_SECRET_VALUE" spellcheck="false" aria-label="File edit value (spliced into the payload and re-chunked)">
                       <span class="code-cursor-blink"></span>
+                      <span class="editor-live-badge" title="Type any text to re-slice FastCDC chunks live">✎ Live Editable</span>
                     </div>
                     <div class="code-line-dim">DATABASE_URL=postgres://vault_op:******@127.0.0.1:5432/secrets</div>
                   </div>
@@ -969,7 +993,7 @@
               <!-- Chunk Visualization Grid Header & Legend -->
               <div class="chunk-grid-header">
                 <div class="grid-header-title">
-                  <span>CONTENT-DEFINED VARIABLE SLICES (26 TOTAL)</span>
+                  <span id="chunk-grid-title-count">CONTENT-DEFINED VARIABLE SLICES (6 CHUNKS · 128 KiB)</span>
                   <span class="grid-sub-hint">Click or hover any block to inspect cryptographic chunk metadata</span>
                 </div>
                 <div class="chunk-legend">
@@ -1183,19 +1207,19 @@
                   <span class="inspector-kicker" id="insp-kicker">STAGE [01] DEEP-DIVE SPECIFICATION</span>
                   <h3 class="inspector-heading" id="insp-heading">Developer Working Tree Enrollment</h3>
                 </div>
-                <button class="btn-close-inspector" id="btn-close-inspector" title="Minimize inspector (Esc)">[MINIMIZE / ESC ✕]</button>
+                <button class="btn-close-inspector" id="btn-close-inspector" title="Minimize inspector (Esc)">Minimize <kbd class="esc-kbd">Esc ✕</kbd></button>
               </div>
 
               <div class="inspector-grid">
                 <!-- Column 1: Core Mechanics & Security Invariant -->
                 <div class="inspector-col">
-                  <div class="insp-section">
+                  <div class="insp-section insp-mechanics-box">
                     <div class="insp-label text-cyan">CRYPTOGRAPHIC & ARCHITECTURAL MECHANICS:</div>
                     <p class="insp-body" id="insp-mechanics">
                       CipherVault tracks secret files out-of-band from Git. During enrollment via <code class="tui-code">ciphervault track .env</code>, the path is registered in the local SQLite WAL ledger and appended to <code class="tui-code">.gitignore</code> (skip with <code class="tui-code">--no-gitignore</code>). Content digests bind at snapshot time, not at enrollment.
                     </p>
                   </div>
-                  <div class="insp-section">
+                  <div class="insp-section insp-security-box">
                     <div class="insp-label text-gold">SECURITY INVARIANT GUARANTEE:</div>
                     <p class="insp-body" id="insp-security">
                       Guarantees zero accidental staging into Git commits (<code class="tui-code">git add .</code> will never expose secrets). Host OS hardware keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R.
