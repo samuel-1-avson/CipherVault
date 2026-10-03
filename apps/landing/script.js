@@ -949,6 +949,18 @@ function initFastCdcSimulator() {
   const inspChunkGear = document.getElementById('insp-chunk-gear');
   const inspChunkSync = document.getElementById('insp-chunk-sync');
 
+  // Explanatory dropdown toggle
+  const explBtn = document.getElementById('btn-toggle-fastcdc-expl');
+  const explDrawer = document.getElementById('fastcdc-expl-drawer');
+  if (explBtn && explDrawer) {
+    explBtn.addEventListener('click', () => {
+      const isOpen = explDrawer.classList.toggle('open');
+      explBtn.setAttribute('aria-expanded', String(isOpen));
+      const chevron = explBtn.querySelector('.toggle-chevron');
+      if (chevron) chevron.textContent = isOpen ? '▴' : '▾';
+    });
+  }
+
   if (!grid || !input) return;
 
   // Real baseline: chunk the 128 KiB payload with production parameters and
@@ -1038,6 +1050,11 @@ function initFastCdcSimulator() {
       statModSub.textContent = modCount === 0
         ? 'Pristine: 0 Chunks Synced'
         : `${modCount} Chunk${modCount === 1 ? '' : 's'} Synced (${(deltaBytes / 1024).toFixed(1)} KiB delta)`;
+    }
+
+    const titleCount = document.getElementById('chunk-grid-title-count');
+    if (titleCount) {
+      titleCount.textContent = `CONTENT-DEFINED VARIABLE SLICES (${totalChunks} CHUNKS · ${(currentPayload.length / 1024).toFixed(0)} KiB)`;
     }
 
     for (let i = 0; i < totalChunks; i++) {
