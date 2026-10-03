@@ -29,6 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initAuditChainSimulator();
   initShamirSimulator();
   initPaperKit();
+  initPassphraseKeyBackup();
   initLiveTelemetryStream();
   initInteractiveRepl();
   initInstallSnippets();
@@ -1659,6 +1660,70 @@ function initPaperKit() {
 }
 
 /* ==============================================================================
+   7b. Passphrase-Wrapped Vault-Key Backup Simulator (CVKB1 Format, ADR-012)
+   ==============================================================================
+   Demonstrates client-side derivation of the content-addressed locator for an
+   immutable CVKB1 envelope (Argon2id + XChaCha20-Poly1305).
+   The locator is sha256(envelope) — an operator object reference with zero server
+   unwrap oracle.
+   ============================================================================== */
+function initPassphraseKeyBackup() {
+  const passInput = document.getElementById('cvkb-passphrase-input');
+  const btnGenerate = document.getElementById('btn-cvkb-generate');
+  const locatorPreview = document.getElementById('cvkb-locator-preview');
+  const restoreCmd = document.getElementById('cvkb-restore-cmd');
+  const btnCopy = document.getElementById('btn-copy-cvkb-cmd');
+  const copyToast = document.getElementById('cvkb-copy-toast');
+
+  if (!passInput) return;
+
+  const deriveLocator = (passphrase) => {
+    const text = (passphrase || '').trim() || 'correct-horse-battery-staple-vault-2026';
+    const te = new TextEncoder();
+    // Simulate deterministic CVKB1 container format: magic (5B) + salt (16B) + nonce (24B) + ciphertext + tag
+    const containerPreimage = te.encode(`CVKB1:v1:argon2id_m65536_t3_p4:${text}:poly1305_envelope_payload`);
+    const locatorHex = cvSha256Hex(containerPreimage);
+
+    if (locatorPreview) {
+      locatorPreview.textContent = `sha256:${locatorHex}`;
+    }
+    if (restoreCmd) {
+      restoreCmd.textContent = `ciphervault recovery key-restore --locator ${locatorHex} --output recovery-kit.txt`;
+    }
+  };
+
+  passInput.addEventListener('input', () => {
+    deriveLocator(passInput.value);
+  });
+
+  if (btnGenerate) {
+    btnGenerate.addEventListener('click', () => {
+      deriveLocator(passInput.value);
+    });
+  }
+
+  if (btnCopy && restoreCmd) {
+    let copyTimer = null;
+    btnCopy.addEventListener('click', () => {
+      const textToCopy = restoreCmd.textContent.trim();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textToCopy).catch(() => {});
+      }
+      if (copyToast) {
+        copyToast.classList.add('visible');
+        if (copyTimer) clearTimeout(copyTimer);
+        copyTimer = setTimeout(() => {
+          copyToast.classList.remove('visible');
+        }, 2200);
+      }
+    });
+  }
+
+  // Derive initial preview
+  deriveLocator(passInput.value);
+}
+
+/* ==============================================================================
    8. Live Fleet Reachability Telemetry Stream (real HTTPS probes)
    ==============================================================================
    Probes the production operator health endpoints and the public explorer
@@ -1773,6 +1838,8 @@ const REPL_RESPONSES = {
     '    repo <link|list>     - Bind VCS repositories to project by immutable ID',
     '    scope <token|create> - Manage cryptographic scope tokens with DPoP binding',
     '    context <show|set>   - Inspect and switch active project/environment context',
+    '    mfa <setup|verify>   - Enforced MFA & fresh TOTP session binding',
+    '    recovery <key-backup|key-restore> - Passphrase-wrapped vault-key envelope (CVKB1)',
     '  Local vault commands (run in your terminal; this console shows usage):',
     '    init                 - Initialize local vault & print emergency paper kit',
     '    track <paths...>     - Enroll confidential files into the SQLite WAL ledger',
@@ -1865,9 +1932,10 @@ const REPL_RESPONSES = {
   push: [
     'Runs on your machine against your vault + operators.',
     '  ciphervault push -m "message" [--touch] [--local] [--anchor] [--concurrency N]',
-    '  What it really does: FastCDC-chunks tracked files (4/16/64 KiB), encrypts',
-    '  each chunk with XChaCha20-Poly1305 + AAD, and replicates to a 3-operator',
-    '  quorum. Reference dedup measured: 96.15% (25/26 chunks) on a middle edit.'
+    '  Automated sync backstops: Linux systemd (ciphervault-push.timer) or Windows Task Scheduler',
+    '  (register-push-task.ps1) run background push cycles; `watch` replicates file deltas continuously.',
+    '  What it really does: FastCDC-chunks tracked files (4/16/64 KiB), encrypts each chunk with',
+    '  XChaCha20-Poly1305 + AAD, and replicates to quorum. Reference dedup: 96.15% (25/26 chunks).'
   ],
   pull: [
     'Runs on your machine against your vault + operators.',
@@ -1936,10 +2004,30 @@ const REPL_RESPONSES = {
     'Runs on a clean machine with your offline kit (Recover-then-Rebuild):',
     '  ciphervault recover --kit <KIT.txt> --to <DIR>     (paper kit path)',
     '  ciphervault recover --shares g1.txt g2.txt --to <DIR>  (2-of-3 guardian path)',
+    '  ciphervault recovery key-restore --locator <HEX>   (passphrase-wrapped CVKB1 path)',
     '  1. Validates the kit CRC32, rebuilds vault.db at the epoch (init_vault_at_epoch)',
     '  2. Mints a recovery-signed device certificate at authority generation',
     '  3. Pulls the active head snapshot and decrypts files without manual config',
     '  Drill it first: ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>'
+  ],
+  recovery: [
+    'Sovereign clean-machine recovery & passphrase key backup (v1.0.28, ADR-012):',
+    '  ciphervault recovery key-backup [--passphrase <TEXT>]',
+    '  ciphervault recovery key-restore --locator <HEX_SHA256> [--output <PATH>]',
+    '  ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>',
+    '  What it really does: Derives 256-bit encryption key with Argon2id (64 MiB RAM, 3 passes, 4 lanes),',
+    '  wraps root credentials in an authenticated XChaCha20-Poly1305 envelope (CVKB1 format),',
+    '  stores the immutable ciphertext content-addressed by sha256(envelope) on operator nodes.',
+    '  Zero server unwrap oracle — restore on any clean machine with only your memorable passphrase.'
+  ],
+  mfa: [
+    'Enforced Multi-Factor Authentication & Session Binding (v1.0.28):',
+    '  ciphervault mfa setup [--type totp] [--issuer CipherVault]',
+    '  ciphervault mfa verify <6_DIGIT_CODE> [--freshness-window 300s]',
+    '  ciphervault mfa recovery-code [--generate | --use <CODE>]',
+    '  What it really does: Enforces RFC 6238 TOTP step-up authentication after passkey sign-in.',
+    '  Binds dynamic session scope tokens (cvst1...) with an isolated rate limit (5 attempts/min),',
+    '  tamper-evident audit chain logging, and single-use emergency recovery codes.'
   ],
   donate: [
     'Support CipherVault Open-Source Infrastructure (address from docs/CRYPTO_DONATION_PLAN.md):',
@@ -2083,7 +2171,8 @@ function initInteractiveRepl() {
       else if (lower.startsWith('cont')) responseLines = REPL_RESPONSES['context'];
       else if (lower.startsWith('bench')) responseLines = REPL_RESPONSES['bench'];
       else if (lower.startsWith('comp')) responseLines = REPL_RESPONSES['compare'];
-      else if (lower.startsWith('rec')) responseLines = REPL_RESPONSES['recover'];
+      else if (lower.startsWith('rec') || lower.startsWith('cvkb')) responseLines = REPL_RESPONSES['recovery'];
+      else if (lower.startsWith('mfa') || lower.startsWith('totp')) responseLines = REPL_RESPONSES['mfa'];
       else if (lower.startsWith('anch')) responseLines = REPL_RESPONSES['anchor'];
       else if (lower.startsWith('ver')) responseLines = REPL_RESPONSES['verify_anchor'];
       else if (lower.startsWith('inv')) responseLines = REPL_RESPONSES['invite'];

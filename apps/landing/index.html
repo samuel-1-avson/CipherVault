@@ -502,6 +502,8 @@
                 <span class="trust-badge"><span class="badge-dot cyan">●</span> 100% Client-Side</span>
                 <span class="trust-badge"><span class="badge-dot purple">●</span> DPoP Key Bound</span>
                 <span class="trust-badge"><span class="badge-dot gold">●</span> MIT / Apache-2.0</span>
+                <span class="trust-badge"><span class="badge-dot green">●</span> Auto-Push Timers</span>
+                <span class="trust-badge"><span class="badge-dot cyan">●</span> CVKB1 Passphrase Key</span>
               </div>
             </div>
           </div>
@@ -611,7 +613,7 @@
             <div class="pillar-card" tabindex="0" role="button" aria-expanded="false" aria-controls="pillar-drawer-4">
               <div class="pillar-top-meta">
                 <span class="pillar-num">04 · RECOVERY</span>
-                <span class="pillar-badge badge-gold">AIR-GAPPED</span>
+                <span class="pillar-badge badge-gold">AIR-GAPPED &amp; CVKB1</span>
               </div>
               <h3 class="pillar-title">
                 <span class="mode-simple-only">Disaster Restore</span>
@@ -620,7 +622,7 @@
               <div class="pillar-stat-line">
                 <span class="pillar-val text-gold">30-Second Restore</span>
                 <span class="pillar-lbl mode-simple-only">Zero vendor dependency</span>
-                <span class="pillar-lbl mode-tech-only">Offline Shamir paper kit</span>
+                <span class="pillar-lbl mode-tech-only">Paper kit, Shamir, or CVKB1</span>
               </div>
               <div class="pillar-toggle-bar">
                 <span class="pillar-toggle-text mode-simple-only">How it works</span>
@@ -632,10 +634,10 @@
               <div class="pillar-dropdown-drawer" id="pillar-drawer-4">
                 <div class="pillar-dropdown-inner">
                   <p class="pillar-desc mode-simple-only">
-                    Reconstruct your workspace on any clean PC in 30 seconds via offline paper kit or guardians.
+                    Reconstruct your workspace on any clean PC in 30 seconds via offline paper kit, trusted guardians, or client-side passphrase backup.
                   </p>
                   <p class="pillar-desc mode-tech-only">
-                    Reconstruct environment on wiped machines via Paper Kit or M-of-N Shamir shares over GF(2^8).
+                    Reconstruct environment on wiped machines via CVKB1 Argon2id passphrase envelopes, Paper Kit, or M-of-N Shamir shares over GF(2^8).
                   </p>
                 </div>
               </div>
@@ -754,11 +756,11 @@
                     </div>
                     <div class="flashcard-title">Clean-Machine Recovery</div>
                     <p class="flashcard-body">
-                      Reconstruct your complete secret tree on any clean machine in 30 seconds via offline Paper Kit or Shamir guardians.
+                      Reconstruct your complete secret tree on any clean machine in 30 seconds via offline Paper Kit, Shamir guardians, or client-side passphrase key backup (CVKB1).
                     </p>
                   </div>
                   <div class="flashcard-footer">
-                    <span class="flashcard-hint-text">100% Offline Derby</span>
+                    <span class="flashcard-hint-text">3-Way Sovereign Restore</span>
                     <span class="flashcard-flip-prompt">View Crisis ⟳</span>
                   </div>
                 </div>
@@ -1708,7 +1710,7 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
             <!-- Scoped CLI Cheatsheet -->
             <div class="tui-box scoped-cli-cheatsheet">
               <div class="tui-box-title">
-                <span>SCOPED SECRETS CLI COMMAND REFERENCE</span>
+                <span>SCOPED SECRETS &amp; SESSION CLI REFERENCE</span>
                 <span class="badge-gold">v1.0.28 NATIVE</span>
               </div>
               <div class="cli-cheatsheet-grid">
@@ -1727,6 +1729,14 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                 <div class="cli-cmd-cell">
                   <span class="cmd-label text-purple">ciphervault run --env prod -- &lt;cmd&gt;</span>
                   <span class="cmd-desc">Fail-closed zero-disk RAM injection</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-mint">ciphervault mfa verify &lt;CODE&gt;</span>
+                  <span class="cmd-desc">Enforce TOTP session binding &amp; scope token</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-cyan">ciphervault recovery key-backup</span>
+                  <span class="cmd-desc">Seal root keys into Argon2id CVKB1 envelope</span>
                 </div>
               </div>
             </div>
@@ -1990,6 +2000,9 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
               <div class="summary-pill">
                 <span class="summary-dot gold">●</span> <strong>Enterprise Scale</strong>: 574 reads/s concurrent load gate with full SQLite WAL fsync durability.
               </div>
+              <div class="summary-pill">
+                <span class="summary-dot mint">●</span> <strong>Bounded Admission (503 Shedding)</strong>: Disk permits &amp; client backoff prevent I/O thrashing during quorum bursts.
+              </div>
             </div>
           </div>
 
@@ -2035,7 +2048,7 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                   </tr>
                   <tr>
                     <td><strong>Disaster Recovery</strong></td>
-                    <td class="col-highlight text-mint">Paper Kit / Shamir</td>
+                    <td class="col-highlight text-mint">Paper Kit / Shamir / CVKB1</td>
                     <td class="text-danger">Cloud Account Auth</td>
                     <td class="text-warning">3-of-5 Unseal Keys</td>
                     <td class="text-danger">Account PDF Key</td>
@@ -2337,6 +2350,79 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
 
           </div>
 
+          <!-- Method C: Passphrase-Wrapped Vault-Key Backup (CVKB1 Format) -->
+          <div class="tui-box recovery-box-cvkb">
+            <div class="card-accent-tag tag-cyan">
+              <span class="accent-dot cyan">●</span> CLIENT-SEALED KDF • ARGON2ID + XCHACHA20-POLY1305 (ADR-012)
+            </div>
+            <div class="tui-box-title">METHOD C: PASSPHRASE-WRAPPED VAULT-KEY BACKUP (CVKB1)</div>
+            <p class="recovery-desc">
+              Back up your root keys into an immutable, content-addressed operator object protected by your memorable master passphrase. 
+              Derived purely client-side via memory-hard <strong class="text-gold">Argon2id</strong> (64 MiB RAM, 3 passes, 4 lanes) and sealed with authenticated <strong class="text-mint">XChaCha20-Poly1305</strong>. 
+              Zero server unwrap oracle — restore on any wiped PC with only your passphrase.
+            </p>
+
+            <!-- Interactive CVKB1 Workstation Simulator -->
+            <div class="cvkb-interactive-card">
+              <div class="cvkb-header-row">
+                <div class="cvkb-tag-title">
+                  <span class="cvkb-kicker">INTERACTIVE SIMULATOR:</span>
+                  <span>CLIENT-SIDE CVKB1 ENVELOPE &amp; LOCATOR DERIVATION</span>
+                </div>
+                <span class="cvkb-spec-badge">CVKB1 · ARGON2ID + XCHACHA20</span>
+              </div>
+
+              <div class="cvkb-simulator-body">
+                <div class="cvkb-input-group">
+                  <label for="cvkb-passphrase-input" class="cvkb-input-label">TEST PASSPHRASE (SEALED LOCALLY IN VOLATILE MEMORY):</label>
+                  <div class="cvkb-input-wrap">
+                    <input type="text" id="cvkb-passphrase-input" class="cvkb-text-input" value="correct-horse-battery-staple-vault-2026" placeholder="Enter memorable passphrase (min 12 chars)" autocomplete="off" spellcheck="false">
+                    <button class="tui-btn-action" id="btn-cvkb-generate">[SEAL &amp; DERIVE LOCATOR]</button>
+                  </div>
+                </div>
+
+                <div class="cvkb-derived-details">
+                  <div class="cvkb-detail-row">
+                    <span class="detail-label">CONTENT-ADDRESSED LOCATOR:</span>
+                    <code class="detail-val text-cyan" id="cvkb-locator-preview">sha256(envelope) calculating...</code>
+                  </div>
+                  <div class="cvkb-detail-row">
+                    <span class="detail-label">ENVELOPE FORMAT:</span>
+                    <span class="detail-val text-mint">CVKB1 (Magic: 0x43564B4231) • Salt: 16B • Nonce: 24B • Tag: 16B Poly1305</span>
+                  </div>
+                </div>
+
+                <div class="cvkb-restore-cmd-box">
+                  <div class="restore-cmd-header">
+                    <span>CLEAN-MACHINE CLI RESTORATION COMMAND:</span>
+                    <button class="tui-btn-copy-mini" id="btn-copy-cvkb-cmd" title="Copy CLI restore command">[COPY CMD]</button>
+                  </div>
+                  <div class="restore-cmd-code-line">
+                    <span class="tui-prompt">$</span>
+                    <code class="cmd-text" id="cvkb-restore-cmd">ciphervault recovery key-restore --locator … --output recovery-kit.txt</code>
+                  </div>
+                </div>
+                <div class="cvkb-copy-toast" id="cvkb-copy-toast">✓ RESTORE COMMAND COPIED TO CLIPBOARD</div>
+              </div>
+
+              <!-- Feature Bullets -->
+              <div class="recovery-feature-strip">
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-cyan">✓</span>
+                  <span>64 MiB Argon2id client memory-hardness</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-cyan">✓</span>
+                  <span>Content-addressed immutable storage</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-cyan">✓</span>
+                  <span>Zero server decrypt or oracle capabilities</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Recover-then-Rebuild Architecture Highlight -->
           <div class="tui-box recovery-rebuild-box">
             <div class="tui-box-title">
@@ -2487,6 +2573,13 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               <div class="step-cmd">ciphervault run -- npm start</div>
             </div>
 
+            <div class="step-card">
+              <div class="step-idx">STEP 06</div>
+              <div class="step-card-title">Seal Key Backup &amp; Verify</div>
+              <p class="step-card-desc">Back up root keys into an Argon2id CVKB1 envelope and monitor continuous replication health.</p>
+              <div class="step-cmd">ciphervault recovery key-backup &amp;&amp; ciphervault status</div>
+            </div>
+
           </div>
 
           <!-- Run a Storage Operator Node Callout -->
@@ -2531,6 +2624,20 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
                 <div class="faq-question">Is CipherVault free? Are there monthly subscription fees?</div>
                 <div class="faq-answer">
                   <strong>100% free and open-source</strong> under dual Apache-2.0 and MIT licenses. No monthly fees, no credit cards, zero vendor lock-in.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">What happens if my laptop is stolen or wiped? Can I recover without paper?</div>
+                <div class="faq-answer">
+                  <strong>Yes.</strong> In addition to offline paper kits and Shamir guardian shares, CipherVault v1.0.28 supports passphrase-wrapped vault-key backups (<code>CVKB1</code>). Your keys are sealed client-side with Argon2id and stored content-addressed on operator nodes. Recover on any wiped laptop with <code>ciphervault recovery key-restore --locator &lt;HEX&gt;</code> and your memorable passphrase.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Do I have to remember to run "push" manually every time?</div>
+                <div class="faq-answer">
+                  <strong>No.</strong> CipherVault includes automated scheduled push timers (<code>ciphervault-push.timer</code> on Linux systemd or <code>register-push-task.ps1</code> on Windows Task Scheduler) plus <code>ciphervault watch</code> for continuous, automatic zero-lag secret replication.
                 </div>
               </div>
 
