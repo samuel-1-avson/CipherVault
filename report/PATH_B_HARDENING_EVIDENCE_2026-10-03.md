@@ -13,8 +13,8 @@ deliberately NOT used — it would, correctly, refuse this shape.
   project `gen-lang-client-0627244320`, 0 instances).
 - Bucket `gs://cv-account-recovery-108687509435`: EU multi-region, uniform
   access, public-access-prevention enforced, versioning on, 30-day
-  retention SET BUT NOT LOCKED (lock is irreversible — awaiting separate
-  owner authorization), 7-day soft-delete.
+  retention SET AND LOCKED 2026-10-03 (`isLocked: true`, verified;
+  lock authorized by owner same day), 7-day soft-delete.
 - IAM: `serviceAccount:cv-web-runtime@gen-lang-client-0022105784...`
   has ONLY `roles/storage.objectCreator` + project role
   `cvRecoveryPolicyReader` (buckets.get/getIamPolicy) — no read, no
@@ -64,7 +64,7 @@ deliberately NOT used — it would, correctly, refuse this shape.
 
 ## Deliberate gaps (Path B limits)
 
-- Retention is set, not locked. Lock only after owner re-authorization.
+- Retention locked 2026-10-03 (was: set, not locked). No further action.
 - No automated verify-side: decryption needs the owner's offline secret,
   which must never live on prod. Verification is a quarterly manual owner
   drill (below), not a timer.
