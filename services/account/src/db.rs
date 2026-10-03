@@ -52,7 +52,7 @@ pub(crate) fn account_view(
     }
     let mut vaults = Vec::new();
     let mut vault_statement = db.prepare(
-        "SELECT vault_id_hex, alias, role, linked_at_utc
+        "SELECT vault_id_hex, alias, role, linked_at_utc, key_backup_locator_hex, key_backup_at_utc
          FROM vault_links WHERE account_id = ?1 ORDER BY linked_at_utc",
     )?;
     let mut rows = vault_statement.query(params![account_id])?;
@@ -62,6 +62,8 @@ pub(crate) fn account_view(
             alias: row.get(1)?,
             role: row.get(2)?,
             linked_at_utc: row.get::<_, i64>(3)? as u64,
+            key_backup_locator_hex: row.get(4)?,
+            key_backup_at_utc: row.get::<_, Option<i64>>(5)?.map(|value| value as u64),
         });
     }
     let mut webauthn_credentials = Vec::new();

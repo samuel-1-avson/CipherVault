@@ -242,6 +242,17 @@ pub(crate) async fn cmd_push(
     match rep_result {
         Ok(issued) => {
             record_replication_receipts(&store, &issued);
+            let snapshot_hex = hex::encode(&output.record.snapshot_id);
+            let _ = store.record_activity(
+                "PUSH_OK",
+                &format!("Push replicated snapshot {snapshot_hex}"),
+                &serde_json::json!({
+                    "snapshot_id": snapshot_hex,
+                    "replicas": issued.len(),
+                    "required_replicas": required_replicas,
+                })
+                .to_string(),
+            );
             if issued.len() >= required_replicas {
                 println!(
                     "  Durability:     {} ({}/{} independent replicas verified and read back)",

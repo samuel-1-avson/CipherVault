@@ -23,6 +23,67 @@ struct LeaseStatusJson {
     expired: bool,
 }
 
+/// Durable replication health: last operator-confirmed snapshot plus the
+/// live backlog. Drives the CLI status section and the dashboard pill.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct SyncHealthJson {
+    last_ok_at_utc: Option<i64>,
+    last_ok_kind: Option<String>,
+    last_ok_snapshot_hex: Option<String>,
+    pending: u64,
+    failed: u64,
+    oldest_pending_at_utc: Option<i64>,
+    last_error: Option<String>,
+    key_backup_locator_hex: Option<String>,
+    key_backup_at_utc: Option<i64>,
+}
+
+pub(crate) fn build_sync_health(
+    store: &ciphervault_local_store::LocalVaultStore,
+) -> Result<SyncHealthJson> {
+    let latest = store.latest_sync_success()?;
+    let summary = store.pending_upload_summary()?;
+    let last_error = if summary.failed_count > 0 {
+        store
+            .list_pending_uploads()?
+            .into_iter()
+            .find(|upload| upload.attempts > 0)
+            .and_then(|upload| upload.last_error)
+    } else {
+        None
+    };
+    let (kind, at, snapshot) = match latest {
+        Some(entry) => {
+            let snap = serde_json::from_str::<serde_json::Value>(&entry.details_json)
+                .ok()
+                .and_then(|value| value.get("snapshot_id")?.as_str().map(str::to_string));
+            (Some(entry.event_type), Some(entry.created_at_utc), snap)
+        }
+        None => (None, None, None),
+    };
+    let key_backup = store.latest_key_backup()?;
+    let (key_locator, key_at) = match key_backup {
+        Some(entry) => {
+            let locator = serde_json::from_str::<serde_json::Value>(&entry.details_json)
+                .ok()
+                .and_then(|value| value.get("locator")?.as_str().map(str::to_string));
+            (locator, Some(entry.created_at_utc))
+        }
+        None => (None, None),
+    };
+    Ok(SyncHealthJson {
+        last_ok_at_utc: at,
+        last_ok_kind: kind,
+        last_ok_snapshot_hex: snapshot,
+        pending: summary.count,
+        failed: summary.failed_count,
+        oldest_pending_at_utc: summary.oldest_created_at_utc,
+        last_error,
+        key_backup_locator_hex: key_locator,
+        key_backup_at_utc: key_at,
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 struct StatusReport {
     vault_id_hex: String,
@@ -33,6 +94,7 @@ struct StatusReport {
     tracked_files: usize,
     operators: Vec<String>,
     pending_uploads: usize,
+    sync_health: SyncHealthJson,
     active_epoch_age_days: Option<u64>,
     active_epoch_stale: bool,
     leases: Vec<LeaseStatusJson>,
@@ -51,6 +113,7 @@ impl StatusReport {
         tracked_files: usize,
         operators: Vec<String>,
         pending_uploads: usize,
+        sync_health: SyncHealthJson,
         active_epoch_created_at: Option<u64>,
         warn_days: u64,
         now_utc: u64,
@@ -72,6 +135,7 @@ impl StatusReport {
                 .map(|op| mask_operator_endpoint(op))
                 .collect::<Vec<_>>(),
             pending_uploads,
+            sync_health,
             active_epoch_age_days: age_days,
             active_epoch_stale: stale,
             leases,
@@ -305,6 +369,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         })
         .collect();
 
+    let sync_health = build_sync_health(&store)?;
     if json {
         let report = StatusReport::new(
             &vault_id,
@@ -315,6 +380,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
             tracked.len(),
             operators,
             pending_uploads,
+            sync_health,
             epoch_created_at,
             DEFAULT_REKEY_WARN_DAYS,
             now_utc,
@@ -398,7 +464,73 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         }
     }
 
+    print_sync_health(&sync_health, now_utc);
+
     Ok(())
+}
+
+fn print_sync_health(health: &SyncHealthJson, now_utc: u64) {
+    let state = if health.failed > 0 {
+        "Degraded".red().bold()
+    } else if health.pending > 0 {
+        "Behind".yellow().bold()
+    } else if health.last_ok_at_utc.is_some() {
+        "Healthy".green().bold()
+    } else {
+        "Never replicated".red().bold()
+    };
+    println!("\nReplication Health: {state}");
+    match health.last_ok_at_utc {
+        Some(at) => {
+            let age = now_utc.saturating_sub(at.max(0) as u64);
+            let kind = health.last_ok_kind.as_deref().unwrap_or("sync");
+            let snap = health
+                .last_ok_snapshot_hex
+                .as_ref()
+                .map(|hex| short_hex(&hex::decode(hex).unwrap_or_default(), 12))
+                .unwrap_or_else(|| "-".to_string());
+            println!("  Last confirmed: {kind} {snap} ({} ago)", humane_age(age));
+        }
+        None => println!(
+            "  Last confirmed: {}",
+            "none — run 'ciphervault push' or start 'ciphervault watch --sync'".dimmed()
+        ),
+    }
+    if health.pending > 0 {
+        println!(
+            "  Backlog:        {} pending ({} failed)",
+            health.pending, health.failed
+        );
+        if let Some(err) = &health.last_error {
+            println!(
+                "  Last error:     {}",
+                err.chars().take(160).collect::<String>()
+            );
+        }
+    }
+    match (&health.key_backup_locator_hex, health.key_backup_at_utc) {
+        (Some(locator), Some(at)) => {
+            let age = now_utc.saturating_sub(at.max(0) as u64);
+            let short: String = locator.chars().take(12).collect();
+            println!("  Key backup:     {short}… ({} ago)", humane_age(age));
+        }
+        _ => println!(
+            "  Key backup:     {}",
+            "none — run 'ciphervault recovery key-backup'".dimmed()
+        ),
+    }
+}
+
+fn humane_age(secs: u64) -> String {
+    if secs < 90 {
+        format!("{secs}s")
+    } else if secs < 5400 {
+        format!("{}m", secs / 60)
+    } else if secs < 172800 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
 }
 
 struct DoctorCheck {
@@ -597,6 +729,17 @@ mod tests {
             2,
             vec!["http://192.0.2.10:8101".to_string()],
             1,
+            SyncHealthJson {
+                last_ok_at_utc: Some(2_000_000_000 - 60),
+                last_ok_kind: Some("PUSH_OK".to_string()),
+                last_ok_snapshot_hex: Some("ab".repeat(32)),
+                pending: 1,
+                failed: 0,
+                oldest_pending_at_utc: Some(2_000_000_000 - 30),
+                last_error: None,
+                key_backup_locator_hex: Some("cc".repeat(32)),
+                key_backup_at_utc: Some(2_000_000_000 - 3600),
+            },
             Some(2_000_000_000 - 100 * 86_400),
             90,
             2_000_000_000,
@@ -616,6 +759,12 @@ mod tests {
         assert_eq!(json["active_head_hex"], serde_json::json!("33".repeat(32)));
         assert_eq!(json["tracked_files"], serde_json::json!(2));
         assert_eq!(json["pending_uploads"], serde_json::json!(1));
+        assert_eq!(
+            json["sync_health"]["last_ok_kind"],
+            serde_json::json!("PUSH_OK")
+        );
+        assert_eq!(json["sync_health"]["pending"], serde_json::json!(1));
+        assert_eq!(json["sync_health"]["failed"], serde_json::json!(0));
         assert_eq!(json["active_epoch_age_days"], serde_json::json!(100));
         assert_eq!(json["active_epoch_stale"], serde_json::json!(true));
         assert_eq!(
@@ -632,6 +781,17 @@ mod tests {
             0,
             Vec::new(),
             0,
+            SyncHealthJson {
+                last_ok_at_utc: None,
+                last_ok_kind: None,
+                last_ok_snapshot_hex: None,
+                pending: 0,
+                failed: 0,
+                oldest_pending_at_utc: None,
+                last_error: None,
+                key_backup_locator_hex: None,
+                key_backup_at_utc: None,
+            },
             None,
             90,
             2_000_000_000,

@@ -154,6 +154,8 @@ impl AccountState {
                  alias TEXT NOT NULL,
                  role TEXT NOT NULL,
                  linked_at_utc INTEGER NOT NULL,
+                 key_backup_locator_hex TEXT,
+                 key_backup_at_utc INTEGER,
                  PRIMARY KEY (account_id, vault_id_hex),
                  FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
              );
@@ -327,6 +329,24 @@ impl AccountState {
                 [],
             )?;
         }
+        let has_key_backup: bool = connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pragma_table_info('vault_links')
+                 WHERE name = 'key_backup_locator_hex'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_key_backup {
+            connection.execute(
+                "ALTER TABLE vault_links ADD COLUMN key_backup_locator_hex TEXT",
+                [],
+            )?;
+            connection.execute(
+                "ALTER TABLE vault_links ADD COLUMN key_backup_at_utc INTEGER",
+                [],
+            )?;
+        }
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_device
              ON webauthn_credentials(account_id, device_id_hex)",
@@ -408,6 +428,8 @@ pub struct VaultLinkView {
     pub alias: String,
     pub role: String,
     pub linked_at_utc: u64,
+    pub key_backup_locator_hex: Option<String>,
+    pub key_backup_at_utc: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -585,6 +607,8 @@ pub struct LinkVaultRequest {
     pub alias: String,
     #[serde(default = "default_vault_role")]
     pub role: String,
+    #[serde(default)]
+    pub key_backup_locator_hex: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

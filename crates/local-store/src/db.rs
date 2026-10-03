@@ -1189,6 +1189,42 @@ impl LocalVaultStore {
         Ok(out)
     }
 
+    /// Latest successful replication record (manual push or watcher sync),
+    /// or `None` when no snapshot has ever been confirmed on operators.
+    pub fn latest_sync_success(&self) -> Result<Option<ActivityEntry>, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event_type, summary, details_json, created_at_utc FROM activity_log WHERE event_type IN ('PUSH_OK','WATCH_SYNC_OK') ORDER BY created_at_utc DESC, id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok(ActivityEntry {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                summary: row.get(2)?,
+                details_json: row.get(3)?,
+                created_at_utc: row.get(4)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Latest passphrase-sealed key backup record, or `None` when no
+    /// `key-backup` has ever confirmed on operators from this store.
+    pub fn latest_key_backup(&self) -> Result<Option<ActivityEntry>, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event_type, summary, details_json, created_at_utc FROM activity_log WHERE event_type = 'KEYBACKUP_OK' ORDER BY created_at_utc DESC, id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok(ActivityEntry {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                summary: row.get(2)?,
+                details_json: row.get(3)?,
+                created_at_utc: row.get(4)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
     /// Retrieves chunks for a list of chunk CIDs.
     pub fn get_chunks(&self, cids: &[[u8; 32]]) -> Result<Vec<ChunkWireObject>, LocalStoreError> {
         let mut chunks = Vec::new();
@@ -2274,6 +2310,41 @@ mod tests {
                 oldest_created_at_utc: Some(200),
             }
         );
+    }
+
+    #[test]
+    fn test_latest_sync_success_reports_newest_ok_only() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        assert!(store.latest_sync_success().unwrap().is_none());
+        store
+            .record_activity("WATCH_SYNC_FAILED", "boom", "{}")
+            .unwrap();
+        store
+            .record_activity("PUSH_OK", "first", r#"{"snapshot_id":"aa"}"#)
+            .unwrap();
+        store
+            .record_activity("WATCH_SYNC_OK", "second", r#"{"snapshot_id":"bb"}"#)
+            .unwrap();
+        let latest = store.latest_sync_success().unwrap().unwrap();
+        assert_eq!(latest.event_type, "WATCH_SYNC_OK");
+        assert!(latest.details_json.contains("bb"));
+    }
+
+    #[test]
+    fn test_latest_key_backup_is_none_until_recorded() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        assert!(store.latest_key_backup().unwrap().is_none());
+        store.record_activity("PUSH_OK", "snapshot", "{}").unwrap();
+        assert!(store.latest_key_backup().unwrap().is_none());
+        store
+            .record_activity(
+                "KEYBACKUP_OK",
+                "sealed backup",
+                r#"{"locator":"cc","replicas":2}"#,
+            )
+            .unwrap();
+        let latest = store.latest_key_backup().unwrap().unwrap();
+        assert!(latest.details_json.contains("cc"));
     }
 
     #[test]

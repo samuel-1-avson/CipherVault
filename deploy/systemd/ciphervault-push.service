@@ -1,0 +1,27 @@
+[Unit]
+Description=CipherVault Periodic Snapshot Push Service
+Documentation=https://github.com/samuel-1-avson/CipherVault
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ciphervault
+Group=ciphervault
+# Must be the vault home whose snapshots should replicate. Prefer the
+# file watcher (`ciphervault watch --sync`) for live machines; this timer
+# is the backstop that closes the "forgot to push" hole.
+WorkingDirectory=/var/lib/ciphervault
+ExecStart=/usr/local/bin/ciphervault push
+StandardOutput=journal
+StandardError=journal
+
+# Security Sandboxing
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true

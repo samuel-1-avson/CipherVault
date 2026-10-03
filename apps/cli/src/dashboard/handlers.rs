@@ -55,6 +55,24 @@ pub(crate) async fn api_account_status_handler() -> axum::Json<serde_json::Value
     axum::Json(current_account_context())
 }
 
+pub(crate) async fn api_sync_health_handler() -> axum::Json<serde_json::Value> {
+    match get_vault_store()
+        .and_then(|store| crate::commands::inspect::build_sync_health(&store))
+        .and_then(|health| serde_json::to_value(&health).map_err(anyhow::Error::from))
+    {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("available".to_string(), serde_json::Value::Bool(true));
+            }
+            axum::Json(value)
+        }
+        Err(error) => axum::Json(serde_json::json!({
+            "available": false,
+            "error": format!("{error:#}"),
+        })),
+    }
+}
+
 pub(crate) async fn api_account_login_handler() -> axum::response::Response {
     use axum::response::IntoResponse;
 

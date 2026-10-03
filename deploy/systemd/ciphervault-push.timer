@@ -1,0 +1,12 @@
+[Unit]
+Description=CipherVault Periodic Snapshot Push Timer (15min backstop)
+Documentation=https://github.com/samuel-1-avson/CipherVault
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
