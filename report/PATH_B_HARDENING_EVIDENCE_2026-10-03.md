@@ -74,6 +74,23 @@ deliberately NOT used — it would, correctly, refuse this shape.
 - SA impersonation by the owner is impossible (empty SA IAM policy) —
   deliberately left that way.
 
+## First owner drill (executed 2026-10-03, PASS)
+
+- Downloaded `account-hardening/20261003T163300Z-first-a8f3c1/account-backup.tar.gz.age`,
+  sha256 `78cd6ccc...` matched byte-for-byte.
+- Keeper identity verified by derived public key only
+  (`age-keygen -y` → `age14v9...essuh`); secret never printed.
+- `age --decrypt` exit 0; bundle untarred to `accounts.sqlite3`
+  (450,560 bytes, sha256 `ac5ae832...` per receipt) + `backup-receipt.json`.
+- `ciphervault-account restore-rehearsal` (binary 1.0.28 built from
+  merged main) with Secret Manager KEK copies:
+  `verified_isolated_restore`, 2 TOTP seeds decrypted, 1 copied
+  session revoked, `production_modified: false` — matches the
+  first-backup rehearsal exactly.
+- Plaintext bundle, decrypted tar, KEK copies, and rehearsal output
+  deleted after (only the age distribution left in scratch).
+- Next drill due: quarterly (~2027-01-03), or on demand.
+
 ## Owner decrypt drill (run quarterly, or on demand)
 
 On the owner's machine with `keeper-key.txt` present:
