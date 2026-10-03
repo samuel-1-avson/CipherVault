@@ -357,6 +357,15 @@ impl VaultWatcher {
             {
                 Ok(_) => {
                     let _ = self.store.mark_upload_completed(&snap_id_arr);
+                    let _ = self.store.record_activity(
+                        "WATCH_SYNC_OK",
+                        &format!("Watcher replicated snapshot {snapshot_hex}"),
+                        &serde_json::json!({
+                            "snapshot_id": snapshot_hex,
+                            "operators": self.config.operators.len(),
+                        })
+                        .to_string(),
+                    );
                     println!("Agent: Complete recovery set verified on three operators");
                 }
                 Err(e) => {

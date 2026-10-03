@@ -32,9 +32,9 @@ use crate::{
     api_relayer_anchor_handler, api_relayer_checkpoints_handler, api_scoped_context_handler,
     api_scoped_project_handler, api_scoped_projects_handler, api_scoped_secrets_handler,
     api_snapshot_manifest_handler, api_snapshots_handler, api_snapshots_restore_handler,
-    api_stream_handler, api_token_handler, api_vault_handler, api_workspaces_handler,
-    api_workspaces_scan_handler, api_workspaces_switch_handler, private_ui_request_guard,
-    UI_APP_JS, UI_INDEX_HTML, UI_STYLES_CSS,
+    api_stream_handler, api_sync_health_handler, api_token_handler, api_vault_handler,
+    api_workspaces_handler, api_workspaces_scan_handler, api_workspaces_switch_handler,
+    private_ui_request_guard, UI_APP_JS, UI_INDEX_HTML, UI_STYLES_CSS,
 };
 
 /// Content-Security-Policy for the UI shell document. The bundle is a
@@ -109,6 +109,7 @@ pub(crate) fn private_ui_router() -> axum::Router {
 
     ui_shell_router()
         .route("/api/context", get(api_private_context_handler))
+        .route("/api/sync/health", get(api_sync_health_handler))
         .route("/api/account/status", get(api_account_status_handler))
         .route(
             "/api/account/capabilities",

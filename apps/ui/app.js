@@ -168,6 +168,7 @@ async function fetchAllData() {
       requests.push(fetchOperatorJobs());
     }
 
+    if (!isPublicExplorer()) requests.push(fetchSyncHealth());
     if (canAccessPrivateFeature('snapshot_history')) requests.push(fetchSnapshots());
     if (canAccessPrivateFeature('my_data')) requests.push(fetchOverview());
     if (canAccessPrivateFeature('vault_workspace')) requests.push(fetchGuardians(), fetchActivity(), fetchFleet());
@@ -278,6 +279,46 @@ async function fetchContext() {
   } catch (error) {
     console.debug('Dashboard context unavailable; private controls remain unavailable:', error);
   }
+}
+
+async function fetchSyncHealth() {
+  try {
+    const response = await workspaceFetch('/api/sync/health');
+    if (!response.ok) return;
+    const health = await response.json();
+    if (!health || typeof health !== 'object') return;
+    state.syncHealth = health;
+    renderSyncHealth(health);
+  } catch (error) {
+    console.debug('Replication health unavailable:', error);
+  }
+}
+
+function renderSyncHealth(health) {
+  const text = document.getElementById('sync-health-text');
+  const dot = document.getElementById('sync-pulse-dot');
+  const badge = document.getElementById('sync-health-indicator');
+  if (!text) return;
+  let label = 'Replication: unknown';
+  let color = 'var(--ash)';
+  if (health.available === false) {
+    label = 'Replication: unavailable';
+  } else if (health.failed > 0) {
+    label = `Replication: degraded (${health.failed} failed)`;
+    color = 'var(--signal)';
+  } else if (health.pending > 0) {
+    label = `Replication: ${health.pending} behind`;
+    color = 'var(--warn, #e0a800)';
+  } else if (health.last_ok_at_utc != null) {
+    label = 'Replication: healthy';
+    color = 'var(--ok)';
+  } else {
+    label = 'Replication: never pushed';
+    color = 'var(--signal)';
+  }
+  text.textContent = label;
+  if (dot) dot.style.background = color;
+  if (badge) badge.title = health.last_error || label;
 }
 
 function renderAccountStatus(account) {
@@ -557,6 +598,12 @@ function initAccountControls() {
     if (event.target === accountManageModal) closeAccountManagementModal();
   });
   document.getElementById('btn-submit-account-invite')?.addEventListener('click', submitAccountInvitation);
+  document.getElementById('btn-record-locator')?.addEventListener('click', submitRecordLocator);
+  document.getElementById('btn-copy-restore-command')?.addEventListener('click', copyRestoreCommand);
+  document.getElementById('select-record-vault')?.addEventListener('change', updateRestoreCommand);
+  document.getElementById('input-record-locator')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') document.getElementById('btn-record-locator')?.click();
+  });
   document.getElementById('btn-refresh-approvals')?.addEventListener('click', fetchApprovals);
   document.getElementById('btn-generate-recovery-codes')?.addEventListener('click', generateHostedRecoveryCodes);
   document.getElementById('btn-start-totp-enrollment')?.addEventListener('click', startTotpEnrollment);
@@ -701,9 +748,94 @@ async function refreshAccountManagement(accountId) {
       });
       list.textContent = lines.length ? lines.join('\n') : 'No memberships or pending invitations.';
     }
+    renderLinkedVaults(account);
   } catch (error) {
     if (list) list.textContent = error instanceof Error ? error.message : 'Account details unavailable';
   }
+}
+
+function linkedVaults() {
+  const account = state.account || {};
+  return Array.isArray(account.vaults) ? account.vaults : [];
+}
+
+function renderLinkedVaults(account) {
+  const list = document.getElementById('account-vault-list');
+  const select = document.getElementById('select-record-vault');
+  const vaults = Array.isArray(account?.vaults) ? account.vaults : [];
+  const localBackup = state.syncHealth?.key_backup_locator_hex || null;
+  if (list) {
+    const lines = vaults.map(vault => {
+      const short = String(vault.vault_id_hex || '').slice(0, 12);
+      const backup = vault.key_backup_locator_hex
+        ? `key-backup ${String(vault.key_backup_locator_hex).slice(0, 12)}…`
+        : 'no key-backup recorded';
+      const match = vault.key_backup_locator_hex && localBackup
+        ? (vault.key_backup_locator_hex === localBackup ? ' · matches this device' : ' · DIFFERS from this device')
+        : '';
+      return `${vault.alias || 'vault'} · ${vault.role || '?'} · ${short}${match}\n  ${backup}`;
+    });
+    list.textContent = lines.length ? lines.join('\n') : 'No vaults linked to this account yet.';
+  }
+  if (select) {
+    const previous = select.value;
+    select.innerHTML = '';
+    vaults.forEach((vault, index) => {
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = `${vault.alias || 'vault'} (${String(vault.vault_id_hex || '').slice(0, 12)}…)`;
+      select.appendChild(option);
+    });
+    if (previous && select.querySelector(`option[value="${previous}"]`)) select.value = previous;
+  }
+  updateRestoreCommand();
+}
+
+function updateRestoreCommand() {
+  const select = document.getElementById('select-record-vault');
+  const output = document.getElementById('input-restore-command');
+  if (!output) return;
+  const vault = select && linkedVaults()[Number(select.value)];
+  const locator = vault?.key_backup_locator_hex;
+  if (!locator) {
+    output.value = '';
+    output.placeholder = 'Select a vault with a recorded backup';
+    return;
+  }
+  const endpoint = (state.operators || []).map(operator => operator?.endpoint).find(value => typeof value === 'string' && value) || 'https://op1.cipherv.online';
+  output.value = `ciphervault recovery key-restore --locator ${locator} --operator ${endpoint} --output kit.txt`;
+}
+
+async function submitRecordLocator() {
+  const status = document.getElementById('record-locator-status');
+  const select = document.getElementById('select-record-vault');
+  const input = document.getElementById('input-record-locator');
+  const accountId = state.account?.account_id;
+  const vault = select && linkedVaults()[Number(select.value)];
+  const locator = (input?.value || '').trim().toLowerCase();
+  if (!accountId || !vault) { if (status) status.textContent = 'Select a linked vault first.'; return; }
+  if (!/^[0-9a-f]{64}$/.test(locator)) { if (status) status.textContent = 'Locator must be 64 hex characters.'; return; }
+  if (status) status.textContent = 'Recording…';
+  try {
+    const response = await workspaceFetch(`/api/account/${encodeURIComponent(accountId)}/vaults`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ vault_id_hex: vault.vault_id_hex, alias: vault.alias, role: vault.role, key_backup_locator_hex: locator }),
+    });
+    if (!response.ok) throw new Error(`Record rejected (${response.status})`);
+    if (input) input.value = '';
+    if (status) status.textContent = 'Recorded.';
+    await refreshAccountManagement(accountId);
+  } catch (error) {
+    if (status) status.textContent = error instanceof Error ? error.message : 'Record failed';
+  }
+}
+
+function copyRestoreCommand() {
+  const output = document.getElementById('input-restore-command');
+  if (!output?.value) return;
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(output.value).catch(() => output.select());
+  else output.select();
 }
 
 function supportsHostedMfa() {

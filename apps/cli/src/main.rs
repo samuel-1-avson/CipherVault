@@ -1768,6 +1768,34 @@ enum RecoverySubcommand {
         #[arg(short, long, help = "Test directory to restore into")]
         to: PathBuf,
     },
+
+    /// Seal the recovery kit with a passphrase and store it on operators
+    KeyBackup {
+        #[arg(short, long, help = "Path to the emergency recovery kit text file")]
+        kit: Option<PathBuf>,
+
+        #[arg(
+            short,
+            long,
+            help = "Guardian share sheet (repeatable; threshold shares combine into the kit)"
+        )]
+        share: Vec<PathBuf>,
+
+        #[arg(long, help = "Required confirming replicas (defaults to fleet quorum)")]
+        replicas: Option<usize>,
+    },
+
+    /// Fetch a passphrase-sealed kit backup from operators
+    KeyRestore {
+        #[arg(short, long, help = "64-hex locator printed at backup time")]
+        locator: String,
+
+        #[arg(long, help = "Operator endpoint to fetch from (repeatable)")]
+        operator: Vec<String>,
+
+        #[arg(short, long, help = "Output kit file (must not exist)")]
+        output: PathBuf,
+    },
 }
 
 /// Real entry point, on a roomy thread: the 40+-subcommand clap tree
@@ -1955,6 +1983,16 @@ async fn run(cli: Cli) -> Result<()> {
                 out_dir,
             } => cmd_recovery_split(threshold, shares, kit, out_dir).await,
             RecoverySubcommand::Test { kit, to } => cmd_recovery_test(kit, to).await,
+            RecoverySubcommand::KeyBackup {
+                kit,
+                share,
+                replicas,
+            } => cmd_recovery_key_backup(kit, share, replicas).await,
+            RecoverySubcommand::KeyRestore {
+                locator,
+                operator,
+                output,
+            } => cmd_recovery_key_restore(locator, operator, output).await,
         },
         Commands::Token { sub } => cmd_token(sub).await,
         Commands::Anchor {
@@ -2798,6 +2836,22 @@ mod help_template_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn full_command_tree_passes_clap_debug_asserts() {
+        // Top-level help rendering never builds nested subcommands, so a
+        // short-flag collision (e.g. recovery key-restore) would slip past
+        // every other test and panic only at real use. Build the whole tree.
+        std::thread::Builder::new()
+            .name("clap-debug-assert-test".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                Cli::command().debug_assert();
+            })
+            .expect("spawn assert thread")
+            .join()
+            .expect("assert thread");
     }
 
     #[test]

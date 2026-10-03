@@ -10,6 +10,7 @@ pub mod error;
 pub mod hsm;
 pub mod kdf;
 pub mod keys;
+pub mod passphrase_backup;
 pub mod password;
 pub mod piv;
 pub mod sealed_box;
