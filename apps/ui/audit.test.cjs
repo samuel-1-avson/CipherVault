@@ -914,5 +914,45 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
     assert(shellHtml.includes(`id="${id}"`), `${id} exists in the production shell`);
   }
   assert(shellHtml.includes('aria-describedby="account-mfa-help"'));
+  // Audit 2026-10-03 regressions: unknown-by-default health, TOTP
+  // residue clearing, truncated-hash escaping, corrected docs.
+  vm.runInContext(`
+    state.audit = null; state.vault = null; state.snapshots = [];
+    renderSecretHealth({});
+  `, context);
+  assert.equal(getElementById('val-health-score').textContent, '--', 'Empty vault must not show a health score');
+  assert(getElementById('health-status-quorum').textContent.includes('NOT ASSESSED'), 'Quorum card must not claim verified without an audit');
+  assert(!getElementById('card-health-staleness').classList.contains('ok'), 'Health cards must not be green without data');
+  vm.runInContext(`
+    state.audit = { healthy: true, recoverable_operators: ['a', 'b', 'c'], objects: {} };
+    renderSecretHealth({ tracked_files: [{ path: 'x', size_bytes: 1 }], snapshots: [{ timestamp_utc: Math.floor(Date.now() / 1000) }] });
+  `, context);
+  assert(getElementById('val-health-score').textContent.includes('%'), 'Assessed vault must show a score');
+  assert(getElementById('health-status-quorum').textContent.includes('VERIFIED'), 'Healthy audit must verify the quorum card');
+
+  getElementById('totp-enrollment-secret').textContent = 'JBSWY3DPEHPK3PXP';
+  getElementById('input-enrollment-totp-code').value = '123456';
+  vm.runInContext('clearTotpEnrollmentSecrets()', context);
+  assert.equal(getElementById('totp-enrollment-secret').textContent, '', 'TOTP secret must be cleared from the DOM');
+  assert.equal(getElementById('input-enrollment-totp-code').value, '', 'TOTP code must be cleared from the DOM');
+
+  vm.runInContext(`
+    renderOperators([{ operator_id: 'evil', endpoint: 'https://x', status: 'online', latency_ms: 1,
+      transport_security: 'https', operator_signing_pk_hex: 'ab"><img src=x onerror=alert(1)>' }]);
+  `, context);
+  assert(!getElementById('operators-grid').innerHTML.includes('<img'), 'Operator keys must be HTML-escaped');
+  vm.runInContext(`
+    renderSnapshots([{ snapshot_id_hex: 'ab"><img src=y>', manifest_cid_hex: 'cd', device_id_hex: 'ef', message: 'm', timestamp_utc: 1 }]);
+  `, context);
+  assert(!getElementById('dag-list').innerHTML.includes('<img'), 'Snapshot hashes must be HTML-escaped');
+
+  assert(shellHtml.includes('ciphervault recover --kit recovery_kit.txt --to ./restored'), 'Recovery command must include required --to');
+  assert(!shellHtml.includes('Switch tabs (Operators, DAG, Diff'), 'Shortcuts help must not list the stale tab order');
+  assert(!shellHtml.includes('Toggle terminal console'), 'Help must not document a nonexistent console');
+  assert(shellHtml.match(/id="btn-copy-anchor-tx"[^>]*aria-label/), 'Anchor copy button must have an accessible name');
+  assert(shellHtml.includes('data-code="ciphervault recover --kit recovery_kit.txt --to ./restored"'), 'Secret copy button must copy the recovery command');
+  assert(!shellHtml.includes('>Reveal Secret<'), 'Secret toggle must not promise a reveal');
+  assert(!shellHtml.includes('to Arbitrum One'), 'Anchor copy must not claim mainnet');
+
   console.log('Dashboard behavior, DOM, accessibility and session-bound MFA regressions passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -3,7 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
 pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
-    // If Help modal is open, any key closes it
+    // If Help modal is open, Esc / ? / Enter closes it (other keys ignored).
     if app.show_help {
         if let KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter = key.code {
             app.show_help = false;

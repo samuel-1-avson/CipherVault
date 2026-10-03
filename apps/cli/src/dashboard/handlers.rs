@@ -7,7 +7,7 @@ use std::fs;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::{future::join_all, stream};
 
-use ciphervault_crypto::{generate_signing_key, HardwareSecurityModule};
+use ciphervault_crypto::HardwareSecurityModule;
 use ciphervault_local_store::{AccountStore, LocalVaultStore};
 use ciphervault_maintenance::MaintenanceDb;
 use ciphervault_storage::OperatorClient;
@@ -490,10 +490,12 @@ pub(crate) async fn api_vault_handler() -> impl axum::response::IntoResponse {
     };
 
     let vault_id = store.get_vault_id().unwrap_or([0u8; 32]);
-    let (device_id, _signing_key, device_counter, epoch) =
-        store
-            .get_device_state()
-            .unwrap_or(([0u8; 32], generate_signing_key(), 0, 1));
+    // The device signing key is never served here; project it away so the
+    // error fallback cannot mint (and immediately drop) a real key.
+    let (device_id, device_counter, epoch) = store
+        .get_device_state()
+        .map(|(id, _key, counter, epoch)| (id, counter, epoch))
+        .unwrap_or(([0u8; 32], 0, 1));
     let tracked = store.list_tracked_files().unwrap_or_default();
     let operators = get_configured_operators();
 

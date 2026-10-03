@@ -753,6 +753,7 @@ function closeHostedAccountConnectModal() {
 function closeAccountManagementModal() {
   const code = document.getElementById('input-account-mfa-code');
   if (code) code.value = '';
+  clearTotpEnrollmentSecrets();
   const modal = document.getElementById('modal-account-manage');
   if (!modal) return;
   closeModal(modal);
@@ -1229,6 +1230,16 @@ async function startTotpEnrollment() {
   }
 }
 
+function clearTotpEnrollmentSecrets() {
+  for (const id of ['totp-enrollment-uri', 'totp-enrollment-secret']) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '';
+  }
+  const code = document.getElementById('input-enrollment-totp-code');
+  if (code) code.value = '';
+  state.totpEnrollment = null;
+}
+
 async function confirmTotpEnrollment() {
   const accountId = state.account && state.account.account_id;
   const code = document.getElementById('input-enrollment-totp-code')?.value.trim();
@@ -1242,7 +1253,7 @@ async function confirmTotpEnrollment() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `Authenticator confirmation failed (${response.status})`);
-    state.totpEnrollment = null;
+    clearTotpEnrollmentSecrets();
     const panel = document.getElementById('totp-enrollment-panel');
     if (panel) panel.hidden = true;
     showToast('Authenticator app enabled for this account.');
@@ -1847,7 +1858,7 @@ function renderOperators(operators) {
           <div class="op-meta-row">
             <span class="op-meta-label">Public Key</span>
             <span class="op-meta-val" title="${escapeHtml(op.operator_signing_pk_hex || '')}">
-              ${pkDisplay}
+              ${escapeHtml(pkDisplay)}
               ${op.operator_signing_pk_hex ? `
                 <button class="btn-copy" data-copy="${escapeHtml(op.operator_signing_pk_hex)}" title="Copy Public Key">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2142,9 +2153,9 @@ function renderSnapshots(snapshots) {
             <span class="dag-time">${timeDisplay}</span>
           </div>
           <div class="dag-hashes">
-            <span>Snapshot CID: <strong class="hash-click cv-layout-1f11651c92" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${snapIdTrunc}</strong></span>
-            <span>Manifest CID: <strong class="cv-layout-2ff40d572e">${manifestTrunc}</strong></span>
-            <span>Device: <strong class="cv-layout-ac902d93a5">${deviceTrunc}</strong></span>
+            <span>Snapshot CID: <strong class="hash-click cv-layout-1f11651c92" data-copy="${escapeHtml(snap.snapshot_id_hex)}" title="Click to copy">${escapeHtml(snapIdTrunc)}</strong></span>
+            <span>Manifest CID: <strong class="cv-layout-2ff40d572e">${escapeHtml(manifestTrunc)}</strong></span>
+            <span>Device: <strong class="cv-layout-ac902d93a5">${escapeHtml(deviceTrunc)}</strong></span>
           </div>
           <div class="cv-layout-6276fe9bb2">
             <button class="btn-action-ghost btn-drawer-inspect cv-layout-7b878cbd3e" data-snap-id="${escapeHtml(snap.snapshot_id_hex)}">
@@ -2496,7 +2507,7 @@ function renderGuardians(data) {
           </div>
           <div class="guardian-meta-item">
             <span class="key">Signing PK:</span>
-            <span class="val" title="${escapeHtml(sheet.recovery_signing_pk)}">${pkDisplay}</span>
+            <span class="val" title="${escapeHtml(sheet.recovery_signing_pk)}">${escapeHtml(pkDisplay)}</span>
           </div>
           <div class="guardian-meta-item">
             <span class="key">Locator:</span>
@@ -3484,14 +3495,14 @@ function initSecretToggle() {
       if (isRevealed) {
         secretDisplay.textContent = "Zero-Knowledge Protected: Master recovery secret is never exposed to the web dashboard. Run 'ciphervault recovery export' directly in your local terminal.";
         secretDisplay.className = "secret-key-revealed";
-        toggleBtn.textContent = "Mask Info";
-        if (copyBtn) copyBtn.style.display = "none";
+        toggleBtn.textContent = "Hide explanation";
+        if (copyBtn) copyBtn.style.display = "";
         showToast("Zero-Knowledge: Secret never leaves your secure terminal", "info");
       } else {
         secretDisplay.textContent = "•••• •••• •••• •••• •••• •••• •••• ••••";
         secretDisplay.className = "secret-key-masked";
-        toggleBtn.textContent = "Reveal Secret";
-        if (copyBtn) copyBtn.style.display = "none";
+        toggleBtn.textContent = "Why is this hidden?";
+        if (copyBtn) copyBtn.style.display = "";
       }
     });
   }
@@ -5303,6 +5314,32 @@ function renderSecretHealth(overview) {
   const files = (overview?.tracked_files || state.vault?.tracked_files || []);
   const fileCount = Array.isArray(files) ? files.length : (typeof files === 'number' ? files : 0);
   const snapshots = overview?.snapshots || state.snapshots || [];
+  const hasHealthData = (Array.isArray(files) ? files.length : fileCount) > 0
+    || snapshots.length > 0 || !!state.audit;
+
+  const cardQuorum = document.getElementById('card-health-quorum');
+  const quorumStatusEl = document.getElementById('health-status-quorum');
+  const descQuorum = document.getElementById('health-desc-quorum');
+  const setUnknown = (card, statusEl, descEl, desc) => {
+    if (statusEl) statusEl.textContent = '○ NOT ASSESSED';
+    if (descEl) descEl.textContent = desc;
+    if (card && card.classList) card.classList.remove('ok', 'warn', 'bad');
+  };
+  const setHealthStatusLabel = (id, status, okWord) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = status === 'ok' ? `✓ ${okWord}` : (status === 'warn' ? '⚠ CHECK' : '✗ ACTION NEEDED');
+  };
+  if (!hasHealthData) {
+    scoreVal.textContent = '--';
+    if (scoreVal.style) scoreVal.style.color = '';
+    const noData = 'Not assessed — no vault data loaded.';
+    setUnknown(cardQuorum, quorumStatusEl, descQuorum, 'Not assessed — no recovery audit has run yet.');
+    setUnknown(cardStaleness, document.getElementById('health-status-staleness'), descStaleness, noData);
+    setUnknown(cardCerts, document.getElementById('health-status-certs'), descCerts, noData);
+    setUnknown(cardHygiene, document.getElementById('health-status-hygiene'), descHygiene, noData);
+    return;
+  }
 
   let score = 100;
   let stalenessStatus = 'ok';
@@ -5357,6 +5394,18 @@ function renderSecretHealth(overview) {
     if (descHygiene) descHygiene.textContent = 'Zero test or dummy secret naming patterns observed.';
   }
 
+  const audit = state.audit;
+  if (audit && audit.healthy) {
+    if (quorumStatusEl) quorumStatusEl.textContent = '✓ VERIFIED';
+    if (descQuorum) descQuorum.textContent = `Verified ${(audit.recoverable_operators || []).length} complete recovery sets across operators.`;
+    if (cardQuorum && cardQuorum.classList) { cardQuorum.classList.remove('warn', 'bad'); cardQuorum.classList.add('ok'); }
+  } else if (audit) {
+    if (quorumStatusEl) quorumStatusEl.textContent = '⚠ DEGRADED';
+    if (descQuorum) descQuorum.textContent = 'Last recovery audit reported missing or degraded objects.';
+    if (cardQuorum && cardQuorum.classList) { cardQuorum.classList.remove('ok', 'bad'); cardQuorum.classList.add('warn'); }
+  } else {
+    setUnknown(cardQuorum, quorumStatusEl, descQuorum, 'No completed recovery verification.');
+  }
   scoreVal.textContent = `${Math.max(10, score)}%`;
   if (scoreVal.style) {
     scoreVal.style.color = score >= 90 ? 'var(--ok)' : (score >= 75 ? 'var(--signal)' : 'var(--bad)');
@@ -5367,8 +5416,11 @@ function renderSecretHealth(overview) {
     el.classList.remove('ok', 'warn', 'bad');
     el.classList.add(status);
   };
+  setHealthStatusLabel('health-status-staleness', stalenessStatus, 'FRESH');
   updateCardClass(cardStaleness, stalenessStatus);
+  setHealthStatusLabel('health-status-certs', certsStatus, 'VALID');
   updateCardClass(cardCerts, certsStatus);
+  setHealthStatusLabel('health-status-hygiene', hygieneStatus, 'PASS');
   updateCardClass(cardHygiene, hygieneStatus);
 }
 

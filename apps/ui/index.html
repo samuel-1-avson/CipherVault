@@ -303,7 +303,7 @@
           </div>
 
           <div class="topbar-actions-group">
-            <button class="btn-action secondary small btn-topbar-ghost" id="btn-trigger-anchor" data-private-action title="Anchor current head commitment to Arbitrum One">
+            <button class="btn-action secondary small btn-topbar-ghost" id="btn-trigger-anchor" data-private-action title="Anchor current head commitment to Arbitrum (Sepolia testnet)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
                 <polyline points="2 17 12 22 22 17"></polyline>
@@ -515,29 +515,29 @@
           </div>
           <div class="health-score-badge" id="health-overall-badge">
             <span class="health-score-label">HYGIENE</span>
-            <span class="health-score-val" id="val-health-score">100%</span>
+            <span class="health-score-val" id="val-health-score">--</span>
           </div>
         </div>
         <div class="health-grid" id="health-items-grid">
-          <div class="health-item-card ok">
-            <div class="health-item-status">✓ VERIFIED</div>
+          <div class="health-item-card" id="card-health-quorum">
+            <div class="health-item-status" id="health-status-quorum">○ NOT ASSESSED</div>
             <div class="health-item-title">Quorum Replication</div>
-            <div class="health-item-desc" id="health-desc-quorum">Verified active 3/3 replica redundancy across operators.</div>
+            <div class="health-item-desc" id="health-desc-quorum">Not assessed — no recovery audit has run yet.</div>
           </div>
-          <div class="health-item-card ok" id="card-health-staleness">
-            <div class="health-item-status" id="health-status-staleness">✓ FRESH</div>
+          <div class="health-item-card" id="card-health-staleness">
+            <div class="health-item-status" id="health-status-staleness">○ NOT ASSESSED</div>
             <div class="health-item-title">Rotation Staleness</div>
-            <div class="health-item-desc" id="health-desc-staleness">All secret files updated within active policy window.</div>
+            <div class="health-item-desc" id="health-desc-staleness">Not assessed — no vault data loaded.</div>
           </div>
-          <div class="health-item-card ok" id="card-health-certs">
-            <div class="health-item-status" id="health-status-certs">✓ VALID</div>
+          <div class="health-item-card" id="card-health-certs">
+            <div class="health-item-status" id="health-status-certs">○ NOT ASSESSED</div>
             <div class="health-item-title">Certificate Validity</div>
-            <div class="health-item-desc" id="health-desc-certs">No tracked certificates near expiration (&gt;30d).</div>
+            <div class="health-item-desc" id="health-desc-certs">Not assessed — no vault data loaded.</div>
           </div>
-          <div class="health-item-card ok" id="card-health-hygiene">
-            <div class="health-item-status" id="health-status-hygiene">✓ PASS</div>
+          <div class="health-item-card" id="card-health-hygiene">
+            <div class="health-item-status" id="health-status-hygiene">○ NOT ASSESSED</div>
             <div class="health-item-title">Hygiene &amp; Entropy</div>
-            <div class="health-item-desc" id="health-desc-hygiene">No placeholder values or unmasked test credentials detected.</div>
+            <div class="health-item-desc" id="health-desc-hygiene">Not assessed — no vault data loaded.</div>
           </div>
         </div>
       </section>
@@ -877,7 +877,7 @@
           <span class="op-meta-label">Transaction Hash</span>
           <span class="op-meta-val" id="anchor-tx-hash-wrap">
             <span id="anchor-tx-hash" class="cv-layout-376b92ecd2">--</span>
-            <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash" disabled aria-disabled="true">
+            <button class="btn-copy" id="btn-copy-anchor-tx" title="Copy Tx Hash" aria-label="Copy anchor transaction hash" disabled aria-disabled="true">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -1153,8 +1153,8 @@
             </div>
           </div>
           <div class="secret-box-actions cv-layout-65d1f1c3d7">
-            <button id="btn-toggle-secret" class="btn-toggle-secret">Reveal Secret</button>
-            <button id="btn-copy-secret" class="btn-copy-secret" title="Copy Secret Key">Copy Key</button>
+            <button id="btn-toggle-secret" class="btn-toggle-secret">Why is this hidden?</button>
+            <button id="btn-copy-secret" class="btn-copy-secret btn-copy-code" data-code="ciphervault recover --kit recovery_kit.txt --to ./restored" title="Copy recovery command">Copy Command</button>
           </div>
         </div>
 
@@ -1166,8 +1166,8 @@
             <li>Execute the clean recovery command with your paper recovery secret:</li>
           </ol>
           <div class="cli-code-pill cv-layout-f2835880c5">
-            <code id="rec-cli-command">ciphervault recover --kit recovery_kit.txt</code>
-            <button class="btn-copy-code" data-code="ciphervault recover --kit recovery_kit.txt">Copy</button>
+            <code id="rec-cli-command">ciphervault recover --kit recovery_kit.txt --to ./restored</code>
+            <button class="btn-copy-code" data-code="ciphervault recover --kit recovery_kit.txt --to ./restored">Copy</button>
           </div>
         </div>
       </div>
@@ -1893,10 +1893,10 @@
       <div class="modal-body">
         <div class="shortcuts-list">
           <div class="shortcut-row"><kbd>Ctrl</kbd> + <kbd>K</kbd> / <kbd>Cmd</kbd> + <kbd>K</kbd> <span>Open Spotlight Command Palette</span></div>
-          <div class="shortcut-row"><kbd>1</kbd> - <kbd>8</kbd> <span>Switch tabs (Operators, DAG, Diff, Files, Guardians, Relayer, Fleet, FastCDC)</span></div>
+          <div class="shortcut-row"><kbd>1</kbd> - <kbd>9</kbd> <span>Switch to visible tabs by position (tabs past 9 need clicks)</span></div>
           <div class="shortcut-row"><kbd>/</kbd> <span>Focus search input</span></div>
           <div class="shortcut-row"><kbd>r</kbd> <span>Force refresh cluster state</span></div>
-          <div class="shortcut-row"><kbd>`</kbd> <span>Toggle terminal console</span></div>
+          <div class="shortcut-row"><kbd>[</kbd> / <kbd>]</kbd> <span>Cycle through visible tabs</span></div>
           <div class="shortcut-row"><kbd>?</kbd> <span>Open this shortcuts help modal</span></div>
           <div class="shortcut-row"><kbd>Esc</kbd> <span>Close active modal or drawer</span></div>
         </div>
