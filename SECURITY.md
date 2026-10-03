@@ -13,7 +13,7 @@ Only the latest release on the primary development branch and explicitly tagged 
 | Version / Branch | Supported | Security Patch Policy |
 | :--- | :--- | :--- |
 | `main` (active development) | :white_check_mark: Yes | Immediate hotfix / rolling patch |
-| Latest tagged `v1.0.x` release (currently `v1.0.25`) | :white_check_mark: Yes | Fixes ship in the next tagged release; local remediation changes require verification and release |
+| Latest tagged `v1.0.x` release (currently `v1.0.28`) | :white_check_mark: Yes | Fixes ship in the next tagged release; local remediation changes require verification and release |
 | Earlier tags, including `v0.1.x` | :x: No | Upgrade to the latest supported release |
 
 ---
