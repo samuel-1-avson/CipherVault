@@ -47,10 +47,25 @@ offline seed, fresh anchor evidence, re-pin + fresh feed staged.
 - Fleet watcher: red run during the restart window (37157424522),
   then green on manual trigger 37159914271 (`success`).
 
+## Broadcast follow-up (same day, done)
+
+- `cast send publish(bytes32)` 0x9a31d8… from payer 0xaCc4… (funded
+  0.1 Sepolia ETH via faucet): tx
+  `0x8daf8526397dc372ee0c2edf8c828f8c0617ac8b2d6636442353e013486659b3`,
+  block 315494446, status success, `CommitmentPublished` log verified.
+- Receipt bound (`anchor --tx-hash`): `SequencerConfirmed (Verified
+  On-Chain Contract Inclusion)`; `verify-anchor`: L2 Confirmed,
+  receipt independently verified.
+- Feed re-published (1 record, same pin) and swapped live with no
+  restart (directory mount + per-request reads; previous feed kept in
+  `last-good`): `/api/relayer/checkpoints` now shows canary `ok`,
+  `publisher_signed`, finality `deeply_confirmed` (L2, ≥64 confs).
+- Foundry nightly 1.6.0 installed at
+  `AppData\Local\foundry\bin` for the broadcast.
+
 ## Follow-ups
 
-- Broadcast the anchor (`cast send publish(bytes32)` + `--tx-hash`
-  record) so finality graduates from `unverified`; needs payer key.
+- ~~Broadcast the anchor~~ done (see above).
 - Republish the feed before it ages past 7 days (weekly rhythm or
   automate with the seed in Secret Manager).
 - Driver used: `C:\tmp\rollout-publisher-rotation*.ps1` (scratch).
