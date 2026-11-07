@@ -15,6 +15,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use crate::metrics::OperatorMetrics;
 use crate::swarm::repair::{TokenBucket, DEFAULT_REPAIR_BUDGET_PER_SEC};
 use crate::swarm::SwarmHandle;
+use ciphervault_chain::sync::ChainSyncHub;
+use ciphervault_chain::{ChainSyncEnvelope, SovereignLedger, ValidatorSet, SOVEREIGN_CHAIN_ID_STR};
 use ciphervault_crypto::signatures::sign_with_domain;
 use ciphervault_format::{
     compute_digest, from_canonical_cbor, DeviceCertificate, EpochEnvelope, GenesisRecord,
@@ -374,6 +376,15 @@ enum JoinAuth {
 
 type AccountDeviceBinding = (Option<String>, Option<String>);
 
+/// Sovereign chain sync state (Phase 2 item 3). The hub is absent until the
+/// fleet validator set is installed; its ledger opens from local blocks
+/// when present and adopts certified tips otherwise.
+#[derive(Debug, Default)]
+pub struct ChainSyncSlot {
+    pub validators: Option<ValidatorSet>,
+    pub hub: Option<ChainSyncHub>,
+}
+
 pub struct OperatorState {
     pub operator_id: String,
     pub signing_key: SigningKey,
@@ -438,6 +449,11 @@ pub struct OperatorState {
     // Live P2P swarm handle (dual mode only): set once at boot so HTTP
     // handlers can report the peer id and listeners. Memory-only.
     swarm_handle: Mutex<Option<SwarmHandle>>,
+    // Sovereign chain sync slot (Phase 2 item 3): fleet validator set +
+    // hub replica. The hub is absent until the set is installed; its
+    // ledger opens from data_dir/chain when present and adopts certified
+    // tips otherwise (unready until backfilled to genesis).
+    chain_sync: Mutex<ChainSyncSlot>,
     // Out-of-band authorization challenges: challenge_id -> (ApprovalChallenge, Vec<SignedApprovalReceipt>)
     pub approval_challenges: Mutex<
         HashMap<
@@ -448,6 +464,41 @@ pub struct OperatorState {
             ),
         >,
     >,
+}
+
+/// Pre-consensus admission verdict for one chain envelope. Shared by the
+/// gossip path and the HTTP publish endpoint so both enforce the same
+/// rule: no validator set or wrong chain is ignored, everything else that
+/// fails (unparsable, non-member, bad seal) is rejected.
+pub enum ChainAdmission {
+    Admitted {
+        sender: [u8; 32],
+        msg: ciphervault_chain::sync::ChainSyncMsg,
+    },
+    Reject(String),
+    Ignore,
+}
+
+impl OperatorState {
+    /// Parses, membership-checks, and seal-verifies one envelope against
+    /// the configured fleet set. Does NOT touch the hub.
+    pub fn admit_chain_envelope(&self, envelope: &ChainSyncEnvelope) -> ChainAdmission {
+        let slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        let Some(set) = slot.validators.as_ref() else {
+            return ChainAdmission::Ignore;
+        };
+        let msg = match envelope.open(set) {
+            Ok(msg) => msg.clone(),
+            Err(e) => return ChainAdmission::Reject(e.to_string()),
+        };
+        if msg.chain_id() != SOVEREIGN_CHAIN_ID_STR {
+            return ChainAdmission::Ignore;
+        }
+        ChainAdmission::Admitted {
+            sender: envelope.validator,
+            msg,
+        }
+    }
 }
 
 impl OperatorState {
@@ -498,6 +549,7 @@ impl OperatorState {
             vouchers_required: AtomicBool::new(false),
             repair_budget: Mutex::new(TokenBucket::new(DEFAULT_REPAIR_BUDGET_PER_SEC)),
             swarm_handle: Mutex::new(None),
+            chain_sync: Mutex::new(ChainSyncSlot::default()),
         };
         state.load_enrolled_identities();
         state.load_sessions();
@@ -519,6 +571,132 @@ impl OperatorState {
     /// Clones the live swarm handle, if P2P is enabled on this node.
     pub fn swarm_handle(&self) -> Option<SwarmHandle> {
         lock_or_recover(&self.swarm_handle, "swarm_handle").clone()
+    }
+
+    /// Installs the fleet validator set authorizing chain-sync gossip. Opens
+    /// the hub replica from `data_dir/chain` when blocks are present
+    /// (complete when no tip snapshot lingers); otherwise the hub is
+    /// created on the first adopted certified tip.
+    pub fn set_chain_validators(&self, validators: ValidatorSet) {
+        let mut slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        let dir = self.data_dir.join("chain");
+        if dir.join("blocks").exists() {
+            if let Ok(ledger) =
+                SovereignLedger::open(SOVEREIGN_CHAIN_ID_STR, validators.clone(), &dir)
+            {
+                let mut hub = ChainSyncHub::new(ledger);
+                if dir.join("tip.json").exists() {
+                    hub.mark_syncing();
+                }
+                slot.hub = Some(hub);
+            }
+        }
+        slot.validators = Some(validators);
+    }
+
+    /// Feeds an admitted chain message to the hub replica, adopting the
+    /// first certified tip when no hub exists yet. `sender` is the envelope
+    /// sealer (the hub re-verifies endorsements cryptographically and
+    /// rejects relayed votes). Returns the hub outcome.
+    pub fn ingest_chain_msg(
+        &self,
+        sender: [u8; 32],
+        msg: ciphervault_chain::sync::ChainSyncMsg,
+    ) -> ciphervault_chain::sync::IngestOutcome {
+        use ciphervault_chain::sync::{ChainSyncHub, IngestOutcome};
+        let mut slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        if slot.hub.is_none() {
+            let (Some(validators), ciphervault_chain::sync::ChainSyncMsg::CertifiedBlock(block)) =
+                (slot.validators.clone(), &msg)
+            else {
+                return IngestOutcome::Rejected(
+                    "no chain replica yet: only certified tips bootstrap".to_string(),
+                );
+            };
+            let dir = self.data_dir.join("chain");
+            match ChainSyncHub::adopt_tip(
+                SOVEREIGN_CHAIN_ID_STR,
+                validators,
+                block.clone(),
+                Some(dir),
+            ) {
+                Ok(hub) => {
+                    let height = hub.ledger().height();
+                    let hash = hex::encode(hub.ledger().latest_block().header.block_hash());
+                    slot.hub = Some(hub);
+                    return IngestOutcome::Committed { height, hash };
+                }
+                Err(e) => {
+                    return IngestOutcome::Rejected(format!("tip adoption failed: {e}"));
+                }
+            }
+        }
+        let hub = slot.hub.as_mut().expect("hub present");
+        hub.ingest_msg(sender, &msg)
+    }
+
+    /// Rebuilds the hub replica from backfilled blocks (marks complete).
+    pub fn chain_backfill(
+        &self,
+        blocks: Vec<ciphervault_chain::CipherChainBlock>,
+    ) -> Result<(), String> {
+        let mut slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        let hub = slot.hub.as_mut().ok_or("no chain hub".to_string())?;
+        hub.backfill(blocks).map_err(|e| e.to_string())
+    }
+
+    /// Hub replica height, if a hub exists (adopted or full).
+    pub fn chain_hub_height(&self) -> Option<u64> {
+        let slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        slot.hub.as_ref().map(|hub| hub.ledger().height())
+    }
+
+    /// Whether the hub replica holds genesis-anchored history.
+    pub fn chain_hub_complete(&self) -> bool {
+        let slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        slot.hub
+            .as_ref()
+            .map(|hub| hub.is_complete())
+            .unwrap_or(false)
+    }
+
+    /// Backfill target when the hub exists but is unanchored; `None` when
+    /// complete or absent. Single-flight is enforced by the event loop.
+    pub fn chain_needs_backfill(&self) -> Option<u64> {
+        let slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        let hub = slot.hub.as_ref()?;
+        if hub.is_complete() {
+            None
+        } else {
+            Some(hub.ledger().height())
+        }
+    }
+
+    /// Serves a chain catch-up window from the hub replica. Returns the
+    /// blocks plus the earliest locally held height (tip snapshot when
+    /// unbackfilled, genesis otherwise).
+    pub fn chain_block_range(
+        &self,
+        from_height: u64,
+        limit: u64,
+    ) -> (Vec<ciphervault_chain::CipherChainBlock>, u64) {
+        let slot = lock_or_recover(&self.chain_sync, "chain_sync");
+        let Some(hub) = slot.hub.as_ref() else {
+            return (Vec::new(), 0);
+        };
+        let limit = (limit.min(256)) as usize;
+        let mut blocks = Vec::new();
+        let mut height = from_height;
+        while blocks.len() < limit {
+            match hub.ledger().block_at_height(height) {
+                Some(block) => {
+                    blocks.push(block.clone());
+                    height += 1;
+                }
+                None => break,
+            }
+        }
+        (blocks, hub.ledger().earliest_height())
     }
 
     fn identity_store_path(&self) -> PathBuf {

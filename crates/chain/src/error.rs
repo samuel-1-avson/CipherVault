@@ -46,8 +46,26 @@ pub enum ChainError {
     #[error("Block height {0} not found")]
     BlockNotFound(u64),
 
+    #[error(
+        "Fork detected at height {height}: certified {existing} conflicts with incoming {incoming}"
+    )]
+    ForkDetected {
+        height: u64,
+        existing: String,
+        incoming: String,
+    },
+
     #[error("Commitment {0} not found in sovereign chain state")]
     CommitmentNotFound(String),
+
+    #[error(
+        "Stale transaction nonce: got {nonce} but last committed nonce for {pubkey} is {last}"
+    )]
+    StaleNonce {
+        pubkey: String,
+        nonce: u64,
+        last: u64,
+    },
 
     #[error("IO error: {0}")]
     Io(String),

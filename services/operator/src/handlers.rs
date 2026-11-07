@@ -656,6 +656,94 @@ pub async fn post_peer_announce(
     })))
 }
 
+/// Accepts one sealed chain-sync envelope over HTTP, feeds the operator's
+/// chain replica, and relays it onto chain gossip when the swarm is up.
+///
+/// Public like `/v1/peers/announce`: envelopes self-authenticate (fleet
+/// membership + device-key seal is verified in `admit_chain_envelope`), so
+/// no service token is required. Gossip and HTTP enforce the same admission
+/// rule. HTTP 200 always means "accepted into the replica" (including
+/// `duplicate` and `stale`); 400 means the envelope failed admission and
+/// 422 means consensus logic rejected it.
+pub async fn post_chain_publish(
+    State(state): State<Arc<OperatorState>>,
+    Json(envelope): Json<ciphervault_chain::ChainSyncEnvelope>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    use crate::state::ChainAdmission;
+    use ciphervault_chain::sync::IngestOutcome;
+    let (sender, msg) = match state.admit_chain_envelope(&envelope) {
+        ChainAdmission::Admitted { sender, msg } => (sender, msg),
+        ChainAdmission::Reject(reason) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("chain envelope rejected: {reason}"),
+            ));
+        }
+        ChainAdmission::Ignore => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "chain envelope not for this fleet".to_string(),
+            ));
+        }
+    };
+    let outcome = state.ingest_chain_msg(sender, msg);
+    let (name, detail) = match &outcome {
+        IngestOutcome::ProposalAccepted { height, hash } => (
+            "proposal_accepted",
+            serde_json::json!({ "height": height, "hash": hash }),
+        ),
+        IngestOutcome::VoteCollected {
+            height,
+            count,
+            required,
+        } => (
+            "vote_collected",
+            serde_json::json!({ "height": height, "count": count, "required": required }),
+        ),
+        IngestOutcome::Committed { height, hash } => (
+            "committed",
+            serde_json::json!({ "height": height, "hash": hash }),
+        ),
+        IngestOutcome::Duplicate => ("duplicate", serde_json::json!({})),
+        IngestOutcome::Stale => ("stale", serde_json::json!({})),
+        IngestOutcome::NeedCatchup { height, latest } => (
+            "need_catchup",
+            serde_json::json!({ "height": height, "latest": latest }),
+        ),
+        IngestOutcome::ForkRejected {
+            height,
+            existing,
+            incoming,
+        } => (
+            "fork_rejected",
+            serde_json::json!({ "height": height, "existing": existing, "incoming": incoming }),
+        ),
+        IngestOutcome::EquivocationDetected(equivocation) => (
+            "equivocation_detected",
+            serde_json::json!({ "evidence": format!("{equivocation:?}") }),
+        ),
+        IngestOutcome::Rejected(reason) => {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("chain message rejected: {reason}"),
+            ));
+        }
+    };
+    let raw = serde_json::to_vec(&envelope)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let gossip_published = if let Some(handle) = state.swarm_handle() {
+        handle.publish_chain(raw).await.is_ok()
+    } else {
+        false
+    };
+    Ok(Json(serde_json::json!({
+        "status": "accepted",
+        "outcome": name,
+        "detail": detail,
+        "gossip_published": gossip_published,
+    })))
+}
+
 pub async fn get_peers(
     State(state): State<Arc<OperatorState>>,
     headers: HeaderMap,

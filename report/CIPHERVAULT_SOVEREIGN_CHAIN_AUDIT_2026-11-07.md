@@ -279,3 +279,126 @@ Explicitly NOT recommended: EVM re-anchoring ("checkpoint to Arbitrum" bridges r
 **Deliberately left for follow-up:** TUI doc-comments mentioning Arbitrum cost (user has uncommitted TUI work in flight); `apps/ui` chain-label fallbacks for 42161/421614 (harmless display mapping for old evidence); operator `relayed-checkpoints.json` files on existing disks (code no longer reads them); `CIPHERVAULT_FINALITY_CONFIRMATIONS` deploy plumbing (no reader; inert).
 
 **Next (awaiting approval):** Phase 2 — persistent operator/device keys, per-pubkey nonce table, gossipsub block propagation + quorum-cert aggregation, median timestamps, blinded vault refs.
+
+---
+
+## Phase 2 progress log — items 1–2 done (persistent keys + nonces)
+
+**1. Persistent device key.** `ConsensusSigner::load_or_create(path)` (`crates/chain/src/consensus.rs`): reads a 32-byte seed file or generates + stores one (0600 on Unix); corrupt files are rejected, never overwritten. `anchor`/`verify-anchor` share `load_device_and_validators()`: one persistent `chain/device.key`, one explicit `chain/validators.json` (solo bootstrapped from the device key; fleets edit the file to add members). No more per-run throwaway keys.
+
+**2. Per-pubkey nonce table.** `SovereignLedger` tracks last committed nonce per client key (`crates/chain/src/ledger.rs`), enforced in both `propose_block` and `commit_block_internal` via `CommitmentTx::check_nonce` (new `ChainError::StaleNonce`). Table is derived state — rebuilt on `open()` replay, no sidecar. `anchor` uses `ledger.next_nonce()` instead of wall-clock. Pre-Phase-2 local chains (throwaway genesis keys) fail to verify under the persistent set: they are renamed to `chain.pre-phase2-<millis>` (never deleted) and replaced with a fresh genesis, with a notice.
+
+**Verified:** 3 new chain tests (key roundtrip + corrupt rejection, replay/lower-nonce rejection + advance, reopen persistence) — 8/8 chain tests green; `chain_anchoring` + chaos drill green; storage suite green; `cargo check`, clippy (no new warnings), and `cargo fmt --check` clean on touched files.
+
+**Still open (items 3–4):** gossipsub block propagation + quorum-cert aggregation across nodes; median timestamps.
+
+---
+
+## Phase 2 progress log — item 3 core done (consensus wire protocol + vote aggregation)
+
+**New module `crates/chain/src/sync.rs` (transport-agnostic).** JSON `ChainSyncEnvelope`s
+(sealed with the validator device key, domain `CIPHERVAULT_SYNC_V1:`, topic
+`ciphervault/chain/1`) carry three messages: `Proposal` (full block, proposer
+endorsement only), `Vote` (header + endorsement, no relaying), `CertifiedBlock`
+(full quorum block for catch-up). `ChainSyncHub::ingest(bytes)` is the single
+transport seam: admission checks membership + signature + chain, then routes.
+
+**Quorum-cert aggregation.** `VoteCollector` accumulates endorsements keyed by
+(proposal hash); `ChainSyncHub` assembles certificates once 2N/3+1 is reached
+and commits. Certificate signatures are sorted by validator so every honest hub
+assembles the identical block. Replays read as `Duplicate`/`Stale`, conflicting
+certified blocks as `ForkRejected`, unknown senders/tampered bytes/wrong chain
+as `Rejected`, double-votes as `EquivocationDetected` (evidence retained).
+
+**Ledger support.** `commit_block_internal` split into pure `check_block`
+(structure/linkage/txs/nonces/roots, used to vet remote proposals) + quorum +
+apply; new `ValidatorSet::verify_proposer_signature` (pre-quorum endorsement
+check), `block_at_height`, `ConsensusSigner::sign_raw` /
+`verify_raw_signature`, `ChainError::ForkDetected`.
+
+**Verified:** 5 new in-process multi-node tests (3-node round → identical
+committed blocks on all hubs; vote-before-proposal; equivocation; fork
+rejection + certified catch-up; hostile inputs) — 13/13 chain tests green;
+`chain_anchoring` + storage suites green; workspace check, clippy, and
+`cargo fmt` clean.
+
+**Explicitly next (transport slice):** subscribe `ciphervault/chain/1` in the
+operator swarm, map Strict-validation verdicts onto `IngestOutcome`, add
+`GetBlocks` catch-up RPC, and wire `anchor` proposal publication — all call
+`hub.ingest` and need no consensus changes. *(Done 2026-11-07 — see log below;
+`GetBlocks` + CLI publication remain.)*
+
+---
+
+## Phase 2 progress log — transport slice done (gossip admission + live tests)
+
+**Operator swarm carries chain envelopes.** `ciphervault/chain/1` subscribed at
+boot (`behaviour.rs`); `SwarmHandle::publish_chain` +
+`Command::PublishChain` mirror the control path with the same 64 KiB cap;
+inbound gossip is routed by topic hash to the new `accept_chain_message`
+gate: parse → validator-set membership → device-key signature → sovereign
+chain match. Accept relays well-formed fleet messages, Reject penalizes
+forgeries/non-members, Ignore passes over wrong-chain payloads and the
+unset-validator case. Per-node `ChainStats { accepted, rejected, ignored }`
+via `Command::ChainStats`. Deliberately no commits in the event loop —
+consensus stays in `ChainSyncHub` (next: hub attachment + `GetBlocks`
+catch-up + CLI publication).
+
+**Verified:** new `swarm_chain.rs` live two-swarm suite (3 tests: vote +
+proposal propagate and admit; tampered/outsider rejected, wrong-chain and
+disabled ignored; 70 KiB publish refused) — all green, twice in a row;
+operator check/clippy/fmt clean; full operator suite running.
+
+**Item 4 done — validator-voted median timestamps (protocol v2).**
+Committed block time is now the quorum median of voter-observed times,
+not the proposer's stamp. `PROTOCOL_VERSION` bumped to 2 with a
+version gate: v1 blocks (timestamp inside the signed bytes) keep
+verifying byte-for-byte; v2 signatures cover everything EXCEPT the
+timestamp, votes carry `observed_ms`, assembly substitutes the median,
+and `block_hash` commits to it. Voter rules documented on `VoteMsg`:
+endorse only within 60s skew (`proposal_time_acceptable`), clamp
+observations past the parent (`vote_observed_ms`). Solo CLI path
+unchanged in behavior (median of one = own time) via version-aware
+sign/verify. No operator/CLI changes needed beyond the shared rule.
+
+**Verified:** 3 new chain tests (median replaces suggestion 9000→4000
+with identical hashes on all hubs; v1 round keeps proposer time;
+median/skew/clamp helpers) — 18/18 chain green; `swarm_chain` (4/4),
+`chain_publish` (2/2), `chain_anchoring` (2/2), CLI anchor unit tests
+(3/3) green; workspace check clean; fmt clean; clippy clean except the
+pre-existing `tui/app.rs` warning (untouched, user's in-flight work);
+full operator suite green (all binaries, 0 failures).
+
+---
+
+## Phase 2 progress log — hub attachment + catch-up done
+
+**Operator-hosted hub replica.** `OperatorState::chain_sync` holds the fleet
+validator set + `ChainSyncHub`. `SetChainValidators` opens `data_dir/chain`
+when present (complete unless `tip.json` lingers) and otherwise arms adoption
+of the first certified tip. Inbound gossip now feeds `ingest_chain_msg`:
+proposals/votes aggregate toward quorum commits; certified tips bootstrap
+empty replicas; forks reject; `NeedCatchup` triggers backfill.
+
+**Catch-up loop.** New P2P-only `GetChainBlocks{from,limit}` RPC (bounded,
+unauthenticated public data like gossip) served from the hub replica.
+`NeedCatchup` — or any incomplete hub that sees traffic — starts a
+single-flight sequential fetch (0..=tip, 256-block chunks, contiguity-checked);
+completion calls `hub.backfill`, which rebuilds genesis-anchored history with
+full validation, persists it, and clears the tip snapshot. Failures drop the
+fetch and retry on the next trigger; hub-less nodes relay well-formed traffic
+instead of rejecting it.
+
+**Chain-crate support.** `from_certified_tip` (quorum + tx-sig verified tip
+adoption with tip snapshot), `rebuild_from_blocks` (full revalidation +
+persist, clears the snapshot), tip-aware `open()` (resumes from `tip.json`),
+`hub.adopt_tip` / `hub.backfill` / `is_complete` gating (incomplete hubs
+collect votes but never assemble), `check_block` extraction reused by
+proposals.
+
+**Verified:** 3 new chain tests (adopt→refuse→backfill→commit round;
+gap/wrong-chain backfill rejection; tip snapshot resume + rebuild persist) —
+16/16 chain tests green; 1 new live two-swarm backfill test (empty node
+adopts a gossiped tip, fetches history over RPC, completes, snapshot
+cleared) — 4/4 swarm_chain green, twice in a row; operator check/clippy/fmt
+clean; full operator suite running.

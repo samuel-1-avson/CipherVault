@@ -18,6 +18,8 @@ use libp2p::{
 };
 use serde::{Deserialize, Serialize};
 
+use ciphervault_chain::sync::CHAIN_SYNC_TOPIC;
+use ciphervault_chain::CipherChainBlock;
 use ciphervault_storage::types::{
     ChallengeRequest, ChallengeResponse, LeaseReceipt, OperatorInfo, PeerDescriptor,
     PendingApprovalChallenge, ProofOfStorageReceipt, SessionRequest, SessionResponse,
@@ -133,6 +135,13 @@ pub enum OperatorRpcBody {
         recipient_operator_id: String,
         signature_hex: String,
     },
+    /// Sovereign chain catch-up (Phase 2 item 3). P2P-only: the event
+    /// loop's backfill task uses it directly; no HTTP route and no
+    /// `OperatorTransport` method — clients never backfill.
+    GetChainBlocks {
+        from_height: u64,
+        limit: u64,
+    },
 }
 
 /// One success variant per operation plus a status-carrying error that maps
@@ -176,6 +185,11 @@ pub enum OperatorRpcResponse {
         /// False when the recipient already held identical bytes
         /// (idempotent re-push): still a success, still stops retry.
         stored: bool,
+    },
+    ChainBlocks {
+        blocks: Vec<CipherChainBlock>,
+        /// Lowest height the server holds (tip snapshot when unbackfilled).
+        earliest_height: u64,
     },
     Err {
         status: u16,
@@ -285,6 +299,9 @@ pub fn new_behaviour_parts(
     gossipsub
         .subscribe(&gossipsub::IdentTopic::new(CONTROL_TOPIC))
         .map_err(|e| SwarmError::Config(format!("control topic: {e}")))?;
+    gossipsub
+        .subscribe(&gossipsub::IdentTopic::new(CHAIN_SYNC_TOPIC))
+        .map_err(|e| SwarmError::Config(format!("chain topic: {e}")))?;
 
     let mdns = if enable_mdns {
         Toggle::from(Some(

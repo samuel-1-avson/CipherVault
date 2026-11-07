@@ -110,7 +110,7 @@ impl SovereignLightClient {
 
         // 6. Verify validator quorum threshold and Ed25519 signatures
         let required_quorum = self.quorum_threshold();
-        let signing_payload = proof.header.signing_bytes();
+        let signing_payload = proof.header.signing_payload();
 
         let mut valid_signatures = 0;
         let mut seen = HashSet::new();

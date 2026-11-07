@@ -602,6 +602,29 @@ pub(crate) fn get_configured_operators() -> Vec<String> {
         .collect()
 }
 
+/// Operators from explicit local configuration only (env var or
+/// `operators.json`) — WITHOUT the production defaults. Chain proposal
+/// federation requires explicit intent: default installs must never spray
+/// proposals at the public fleet, and offline tests stay offline.
+pub(crate) fn get_explicitly_configured_operators() -> Vec<String> {
+    if let Ok(env_ops) = std::env::var("CIPHERVAULT_OPERATORS") {
+        return env_ops
+            .split([',', ';', ' '])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    let config_path = get_vault_directory().join(OPERATORS_FILE);
+    if config_path.exists() {
+        if let Ok(content) = fs::read_to_string(config_path) {
+            if let Ok(ops) = serde_json::from_str::<Vec<String>>(&content) {
+                return ops;
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// Returns the public collector's endpoint/region pairs. Operators can be
 /// grouped with `CIPHERVAULT_OPERATOR_REGIONS` using
 /// `region=url1,url2;other-region=url3`. When unset, the legacy operator list

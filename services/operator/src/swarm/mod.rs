@@ -224,6 +224,16 @@ enum Command {
         data: Vec<u8>,
         respond_to: oneshot::Sender<Result<String, String>>,
     },
+    PublishChain {
+        data: Vec<u8>,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    SetChainValidators {
+        validators: ciphervault_chain::ValidatorSet,
+    },
+    ChainStats {
+        respond_to: oneshot::Sender<ChainStats>,
+    },
     LivePeers {
         respond_to: oneshot::Sender<Vec<PeerId>>,
     },
@@ -305,6 +315,28 @@ const MAX_REPAIR_TRACKED_CIDS: usize = 4096;
 /// the DHT every tick.
 const REPAIR_REQUEUE_COOLDOWN: Duration = Duration::from_secs(5);
 
+/// Admission counters for the chain-sync gossip topic.
+/// Membership/signature/chain admission happens at the transport layer;
+/// consensus decisions belong to `ciphervault_chain::sync::ChainSyncHub`
+/// (attached in a later slice).
+#[derive(Debug, Clone, Default)]
+pub struct ChainStats {
+    pub accepted: u64,
+    pub rejected: u64,
+    pub ignored: u64,
+}
+
+/// In-flight chain backfill: sequential `GetChainBlocks` chunks from one
+/// peer, rebuilding a genesis-anchored replica from height 0. One fetch at
+/// a time; a failed fetch is retried on the next `NeedCatchup` trigger.
+#[derive(Debug)]
+struct ChainBackfillFetch {
+    peer: PeerId,
+    next_height: u64,
+    target: u64,
+    collected: Vec<ciphervault_chain::CipherChainBlock>,
+}
+
 /// Mutable event-loop state, bundled so the swarm event handler stays under
 /// the argument-count lint as behaviours keep landing.
 struct LoopState {
@@ -320,6 +352,10 @@ struct LoopState {
     heartbeat_seq: u64,
     heartbeat: HeartbeatConfig,
     repair: RepairState,
+    /// Admission counters for the chain-sync gossip topic.
+    chain_stats: ChainStats,
+    /// In-flight chain backfill fetch keyed by outbound request id.
+    pending_chain_backfill: HashMap<OutboundRequestId, ChainBackfillFetch>,
 }
 
 impl Default for LoopState {
@@ -342,6 +378,8 @@ impl Default for LoopState {
                 timeout: liveness::DEFAULT_HEARTBEAT_TIMEOUT,
             },
             repair: RepairState::new(RepairConfig::default()),
+            chain_stats: ChainStats::default(),
+            pending_chain_backfill: HashMap::new(),
         }
     }
 }
@@ -556,6 +594,35 @@ impl SwarmHandle {
         rx.await
             .map_err(|_| SwarmError::Shutdown)?
             .map_err(SwarmError::Publish)
+    }
+
+    /// Publishes `data` on the chain-sync topic (same signed transport and
+    /// size cap as control). Returns the gossipsub message id on success.
+    pub async fn publish_chain(&self, data: Vec<u8>) -> Result<String, SwarmError> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Command::PublishChain {
+            data,
+            respond_to: tx,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| SwarmError::Shutdown)?
+            .map_err(SwarmError::Publish)
+    }
+
+    /// Installs the fleet validator set authorizing chain-sync gossip.
+    pub async fn set_chain_validators(
+        &self,
+        validators: ciphervault_chain::ValidatorSet,
+    ) -> Result<(), SwarmError> {
+        self.send(Command::SetChainValidators { validators }).await
+    }
+
+    /// Admission counters for the chain-sync topic.
+    pub async fn chain_stats(&self) -> Result<ChainStats, SwarmError> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Command::ChainStats { respond_to: tx }).await?;
+        rx.await.map_err(|_| SwarmError::Shutdown)
     }
 
     /// Peers with a verified heartbeat inside the liveness timeout,
@@ -812,6 +879,162 @@ fn accept_control_message(
             }
         }
     }
+}
+
+/// Classifies one inbound chain-sync payload, feeds the hub replica, and
+/// applies its effect. Returns the gossipsub verdict plus a backfill target
+/// when the hub is behind (`NeedCatchup`).
+///
+/// Admission is shared with the HTTP publish endpoint
+/// (`OperatorState::admit_chain_envelope`): no validator set or wrong chain
+/// is ignored, everything else that fails is rejected. Admitted messages go
+/// to `OperatorState::ingest_chain_msg` (tip adoption included); consensus
+/// decisions stay in `ciphervault_chain::sync::ChainSyncHub`.
+fn accept_chain_message(
+    state: &OperatorState,
+    loop_state: &mut LoopState,
+    data: &[u8],
+) -> (libp2p::gossipsub::MessageAcceptance, Option<u64>) {
+    use crate::state::ChainAdmission;
+    use ciphervault_chain::sync::IngestOutcome;
+    use libp2p::gossipsub::MessageAcceptance;
+    let stats = &mut loop_state.chain_stats;
+    let envelope: ciphervault_chain::sync::ChainSyncEnvelope = match serde_json::from_slice(data) {
+        Ok(envelope) => envelope,
+        Err(_) => {
+            stats.rejected += 1;
+            return (MessageAcceptance::Reject, None);
+        }
+    };
+    let (sender, msg) = match state.admit_chain_envelope(&envelope) {
+        ChainAdmission::Admitted { sender, msg } => (sender, msg),
+        ChainAdmission::Reject(_) => {
+            stats.rejected += 1;
+            return (MessageAcceptance::Reject, None);
+        }
+        ChainAdmission::Ignore => {
+            stats.ignored += 1;
+            return (MessageAcceptance::Ignore, None);
+        }
+    };
+    // No replica yet and nothing to adopt: relay well-formed fleet traffic
+    // without consensus effect (certified tips adopt below).
+    if !matches!(
+        msg,
+        ciphervault_chain::sync::ChainSyncMsg::CertifiedBlock(_)
+    ) && state.chain_hub_height().is_none()
+    {
+        stats.accepted += 1;
+        return (MessageAcceptance::Accept, None);
+    }
+    match state.ingest_chain_msg(sender, msg) {
+        IngestOutcome::Committed { .. }
+        | IngestOutcome::ProposalAccepted { .. }
+        | IngestOutcome::VoteCollected { .. }
+        | IngestOutcome::Duplicate => {
+            stats.accepted += 1;
+            (MessageAcceptance::Accept, None)
+        }
+        IngestOutcome::EquivocationDetected(_) => {
+            // Byzantine evidence is valuable gossip: relay it.
+            stats.accepted += 1;
+            (MessageAcceptance::Accept, None)
+        }
+        IngestOutcome::Stale => {
+            stats.ignored += 1;
+            (MessageAcceptance::Ignore, None)
+        }
+        IngestOutcome::NeedCatchup { height, .. } => {
+            stats.accepted += 1;
+            (MessageAcceptance::Accept, Some(height))
+        }
+        IngestOutcome::ForkRejected { .. } | IngestOutcome::Rejected(_) => {
+            stats.rejected += 1;
+            (MessageAcceptance::Reject, None)
+        }
+    }
+}
+
+/// Maximum `GetChainBlocks` window per request (matches the serve-side cap).
+const CHAIN_BACKFILL_CHUNK: u64 = 256;
+
+/// Starts a sequential backfill fetch (0..=target) from one peer unless one
+/// is already in flight. Single-peer, single-flight: a failed fetch is
+/// retried on the next `NeedCatchup` trigger.
+fn start_chain_backfill(
+    swarm: &mut Swarm<Behaviour>,
+    loop_state: &mut LoopState,
+    peer: PeerId,
+    target: u64,
+) {
+    if !loop_state.pending_chain_backfill.is_empty() {
+        return;
+    }
+    let request = OperatorRpcRequest {
+        auth: P2pAuth::default(),
+        body: OperatorRpcBody::GetChainBlocks {
+            from_height: 0,
+            limit: CHAIN_BACKFILL_CHUNK,
+        },
+    };
+    let request_id = swarm.behaviour_mut().rpc.send_request(&peer, request);
+    loop_state.pending_chain_backfill.insert(
+        request_id,
+        ChainBackfillFetch {
+            peer,
+            next_height: 0,
+            target,
+            collected: Vec::new(),
+        },
+    );
+}
+
+/// Advances one in-flight backfill fetch. Chunks are appended only on a
+/// contiguous window; completion rebuilds the hub replica genesis-anchored.
+/// Drops the fetch (retry on next trigger) on any anomaly.
+fn handle_chain_backfill_response(
+    swarm: &mut Swarm<Behaviour>,
+    state: &Arc<OperatorState>,
+    loop_state: &mut LoopState,
+    request_id: OutboundRequestId,
+    response: &OperatorRpcResponse,
+) {
+    let Some(mut fetch) = loop_state.pending_chain_backfill.remove(&request_id) else {
+        return;
+    };
+    let OperatorRpcResponse::ChainBlocks {
+        blocks,
+        earliest_height,
+    } = response
+    else {
+        return;
+    };
+    if *earliest_height > 0 || blocks.is_empty() {
+        // Serving peer lacks genesis-anchored history; wait for a full peer.
+        return;
+    }
+    let contiguous = blocks
+        .first()
+        .map(|b| b.header.height == fetch.next_height)
+        .unwrap_or(false);
+    if !contiguous {
+        return;
+    }
+    fetch.next_height += blocks.len() as u64;
+    fetch.collected.extend(blocks.iter().cloned());
+    if fetch.next_height > fetch.target {
+        let _ = state.chain_backfill(fetch.collected);
+        return;
+    }
+    let request = OperatorRpcRequest {
+        auth: P2pAuth::default(),
+        body: OperatorRpcBody::GetChainBlocks {
+            from_height: fetch.next_height,
+            limit: CHAIN_BACKFILL_CHUNK,
+        },
+    };
+    let next_id = swarm.behaviour_mut().rpc.send_request(&fetch.peer, request);
+    loop_state.pending_chain_backfill.insert(next_id, fetch);
 }
 
 /// One repair-scan tick: prune expired cooldowns (and their failure
@@ -1251,6 +1474,25 @@ async fn run_loop(
                             .map_err(|e| e.to_string());
                         let _ = respond_to.send(result);
                     }
+                    Command::PublishChain { data, respond_to } => {
+                        let topic = libp2p::gossipsub::IdentTopic::new(
+                            ciphervault_chain::sync::CHAIN_SYNC_TOPIC,
+                        );
+                        let result = swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(topic, data)
+                            .map(|id| hex::encode(id.0))
+                            .map_err(|e| e.to_string());
+                        let _ = respond_to.send(result);
+                    }
+                    Command::SetChainValidators { validators } => {
+                        loop_state.chain_stats = ChainStats::default();
+                        state.set_chain_validators(validators);
+                    }
+                    Command::ChainStats { respond_to } => {
+                        let _ = respond_to.send(loop_state.chain_stats.clone());
+                    }
                     Command::LivePeers { respond_to } => {
                         let _ = respond_to.send(
                             loop_state.liveness.live_peers(loop_state.heartbeat.timeout),
@@ -1348,6 +1590,12 @@ async fn handle_swarm_event(
                         request_id,
                         response,
                     } => {
+                        if loop_state.pending_chain_backfill.contains_key(&request_id) {
+                            handle_chain_backfill_response(
+                                swarm, state, loop_state, request_id, &response,
+                            );
+                            return;
+                        }
                         if let Some(cid) = loop_state.repair.inflight.remove(&request_id) {
                             handle_repair_response(state, loop_state, cid, &response);
                             return;
@@ -1360,6 +1608,8 @@ async fn handle_swarm_event(
                 ReqEvent::OutboundFailure {
                     request_id, error, ..
                 } => {
+                    // Dropped backfill fetches retry on the next NeedCatchup.
+                    loop_state.pending_chain_backfill.remove(&request_id);
                     if let Some(cid) = loop_state.repair.inflight.remove(&request_id) {
                         // Transport failure (peer gone mid-push): paced
                         // retry; the next assessment sees new membership.
@@ -1378,16 +1628,30 @@ async fn handle_swarm_event(
         }
         SwarmEvent::Behaviour(behaviour::BehaviourEvent::Gossipsub(gossip_event)) => {
             use libp2p::gossipsub::Event as GossipEvent;
-            // Strict validation mode: EVERY control message gets an
-            // explicit verdict, or it stays pending in the mesh cache.
-            // (We subscribe to exactly one topic, so no topic check.)
+            // Strict validation mode: EVERY gossip message gets an explicit
+            // verdict, or it stays pending in the mesh cache. Route by topic:
+            // control liveness vs chain-sync consensus envelopes.
             if let GossipEvent::Message {
                 propagation_source,
                 message_id,
                 message,
             } = gossip_event
             {
-                let acceptance = accept_control_message(state, loop_state, &message.data);
+                let chain_hash =
+                    libp2p::gossipsub::IdentTopic::new(ciphervault_chain::sync::CHAIN_SYNC_TOPIC)
+                        .hash();
+                let (acceptance, backfill_target) = if message.topic == chain_hash {
+                    accept_chain_message(state, loop_state, &message.data)
+                } else {
+                    (
+                        accept_control_message(state, loop_state, &message.data),
+                        None,
+                    )
+                };
+                let fetch = backfill_target.or_else(|| state.chain_needs_backfill());
+                if let Some(target) = fetch {
+                    start_chain_backfill(swarm, loop_state, propagation_source, target);
+                }
                 swarm
                     .behaviour_mut()
                     .gossipsub

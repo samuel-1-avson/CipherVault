@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
@@ -86,7 +88,7 @@ impl ValidatorSet {
 
         // 3. Duplicate and authorization checks
         let mut seen = HashSet::new();
-        let signing_payload = header.signing_bytes();
+        let signing_payload = header.signing_payload();
 
         for sig in &header.signatures {
             if !self.contains(&sig.validator) {
@@ -119,6 +121,46 @@ impl ValidatorSet {
 
         Ok(())
     }
+
+    /// Verifies a pre-quorum proposal: the proposer must belong to the set and
+    /// at least one header signature must be a valid endorsement from them.
+    /// Unlike [`Self::verify_header_signatures`], no quorum count is required.
+    pub fn verify_proposer_signature(&self, header: &BlockHeader) -> Result<(), ChainError> {
+        if !self.contains(&header.proposer) {
+            return Err(ChainError::InvalidProposer(format!(
+                "Proposer {} is not in active validator set",
+                hex::encode(header.proposer)
+            )));
+        }
+        let signing_payload = header.signing_payload();
+        let verifying_key = VerifyingKey::from_bytes(&header.proposer).map_err(|e| {
+            ChainError::InvalidSignature(format!("Invalid proposer public key: {e}"))
+        })?;
+        let mut saw_proposer_sig = false;
+        for sig in &header.signatures {
+            if sig.validator != header.proposer {
+                continue;
+            }
+            saw_proposer_sig = true;
+            let signature = Signature::from_bytes(&sig.signature);
+            if verifying_key
+                .verify_strict(&signing_payload, &signature)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        if saw_proposer_sig {
+            return Err(ChainError::InvalidSignature(format!(
+                "Proposer {} endorsement failed verification",
+                hex::encode(header.proposer)
+            )));
+        }
+        Err(ChainError::InvalidProposer(format!(
+            "Proposal carries no endorsement from proposer {}",
+            hex::encode(header.proposer)
+        )))
+    }
 }
 
 /// Cryptographic signing authority held by an Operator node.
@@ -149,14 +191,66 @@ impl ConsensusSigner {
         }
     }
 
+    /// Loads a persistent consensus signer from a 32-byte seed file, generating
+    /// and storing a fresh key (owner-only permissions on Unix) when absent.
+    /// Corrupt (wrong-length) key files are rejected, never overwritten.
+    pub fn load_or_create(path: &Path) -> Result<Self, ChainError> {
+        if path.exists() {
+            let seed = fs::read(path).map_err(|e| ChainError::Io(e.to_string()))?;
+            if seed.len() != 32 {
+                return Err(ChainError::InvalidGenesis(format!(
+                    "Corrupt consensus key file {}: expected 32 bytes, found {}",
+                    path.display(),
+                    seed.len()
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&seed);
+            return Ok(Self::from_bytes(&arr));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| ChainError::Io(e.to_string()))?;
+        }
+        let signer = Self::generate();
+        Self::write_seed_file(path, &signer.signing_key.to_bytes())?;
+        Ok(signer)
+    }
+
+    fn write_seed_file(path: &Path, seed: &[u8; 32]) -> Result<(), ChainError> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| ChainError::Io(e.to_string()))?;
+            file.write_all(seed)
+                .map_err(|e| ChainError::Io(e.to_string()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            // No portable owner-only ACL via std; file lives under the vault dir.
+            fs::write(path, seed).map_err(|e| ChainError::Io(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Returns the public key of the signer.
     pub fn public_key(&self) -> [u8; 32] {
         self.public_key
     }
 
+    /// Signs opaque bytes (gossip envelopes, challenges) with the device key.
+    pub fn sign_raw(&self, payload: &[u8]) -> [u8; 64] {
+        self.signing_key.sign(payload).to_bytes()
+    }
+
     /// Endorses and cryptographically signs a block header.
     pub fn sign_header(&self, header: &BlockHeader) -> BlockSignature {
-        let payload = header.signing_bytes();
+        let payload = header.signing_payload();
         let signature = self.signing_key.sign(&payload);
         BlockSignature {
             validator: self.public_key,
@@ -171,4 +265,18 @@ impl ConsensusSigner {
         let signature = self.signing_key.sign(&payload);
         tx.signature = signature.to_bytes();
     }
+}
+
+/// Verifies an opaque device-key signature (gossip envelope admission).
+pub fn verify_raw_signature(
+    pubkey: &[u8; 32],
+    payload: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), ChainError> {
+    let verifying_key = VerifyingKey::from_bytes(pubkey)
+        .map_err(|e| ChainError::InvalidSignature(format!("Invalid validator key: {e}")))?;
+    let signature = Signature::from_bytes(signature);
+    verifying_key
+        .verify_strict(payload, &signature)
+        .map_err(|e| ChainError::InvalidSignature(format!("Envelope signature failure: {e}")))
 }

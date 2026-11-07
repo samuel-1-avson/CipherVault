@@ -32,6 +32,8 @@ pub struct SovereignLedger {
     cumulative_commitments: Vec<[u8; 32]>,
     commitments_index: HashMap<[u8; 32], CommitmentRecord>,
     cid_to_commitment: HashMap<[u8; 32], [u8; 32]>,
+    /// Last committed transaction nonce per client public key (replay protection).
+    nonces: HashMap<[u8; 32], u64>,
     state_merkle_tree: MerkleTree,
     storage_path: Option<PathBuf>,
 }
@@ -85,6 +87,7 @@ impl SovereignLedger {
             cumulative_commitments: Vec::new(),
             commitments_index: HashMap::new(),
             cid_to_commitment: HashMap::new(),
+            nonces: HashMap::new(),
             state_merkle_tree: MerkleTree::new(Vec::new()),
             storage_path,
         };
@@ -127,28 +130,56 @@ impl SovereignLedger {
             return Err(ChainError::BlockNotFound(0));
         }
 
-        let genesis_json =
+        let first_json =
             fs::read_to_string(&entries[0]).map_err(|e| ChainError::Io(e.to_string()))?;
-        let genesis_block: CipherChainBlock = serde_json::from_str(&genesis_json)
+        let first_block: CipherChainBlock = serde_json::from_str(&first_json)
             .map_err(|e| ChainError::Serialization(e.to_string()))?;
 
-        if genesis_block.header.height != 0 {
-            return Err(ChainError::InvalidHeight {
-                expected: 0,
-                found: genesis_block.header.height,
-            });
-        }
-        validator_set.verify_header_signatures(&genesis_block.header)?;
-
-        let mut ledger = Self {
-            chain_id: chain_id.to_string(),
-            validator_set: validator_set.clone(),
-            blocks: vec![genesis_block],
-            cumulative_commitments: Vec::new(),
-            commitments_index: HashMap::new(),
-            cid_to_commitment: HashMap::new(),
-            state_merkle_tree: MerkleTree::new(Vec::new()),
-            storage_path: Some(dir.to_path_buf()),
+        // Tip-snapshot replicas (adopted certified tips, not yet backfilled)
+        // resume from tip.json instead of requiring height 0 on disk.
+        let (mut ledger, skip_through) = if first_block.header.height == 0 {
+            validator_set.verify_header_signatures(&first_block.header)?;
+            (
+                Self {
+                    chain_id: chain_id.to_string(),
+                    validator_set: validator_set.clone(),
+                    blocks: vec![first_block],
+                    cumulative_commitments: Vec::new(),
+                    commitments_index: HashMap::new(),
+                    cid_to_commitment: HashMap::new(),
+                    nonces: HashMap::new(),
+                    state_merkle_tree: MerkleTree::new(Vec::new()),
+                    storage_path: Some(dir.to_path_buf()),
+                },
+                0,
+            )
+        } else {
+            let tip_path = dir.join("tip.json");
+            if !tip_path.exists() {
+                return Err(ChainError::InvalidHeight {
+                    expected: 0,
+                    found: first_block.header.height,
+                });
+            }
+            let tip_json =
+                fs::read_to_string(&tip_path).map_err(|e| ChainError::Io(e.to_string()))?;
+            let tip: CipherChainBlock = serde_json::from_str(&tip_json)
+                .map_err(|e| ChainError::Serialization(e.to_string()))?;
+            if tip.header.block_hash() != first_block.header.block_hash() {
+                return Err(ChainError::Serialization(
+                    "blocks dir conflicts with tip snapshot".to_string(),
+                ));
+            }
+            let tip_height = tip.header.height;
+            (
+                Self::from_certified_tip(
+                    chain_id,
+                    validator_set.clone(),
+                    tip,
+                    Some(dir.to_path_buf()),
+                )?,
+                tip_height,
+            )
         };
 
         for path in entries.into_iter().skip(1) {
@@ -156,9 +187,135 @@ impl SovereignLedger {
                 fs::read_to_string(&path).map_err(|e| ChainError::Io(e.to_string()))?;
             let block: CipherChainBlock = serde_json::from_str(&block_json)
                 .map_err(|e| ChainError::Serialization(e.to_string()))?;
+            if block.header.height <= skip_through {
+                let existing = ledger.block_at_height(block.header.height);
+                if existing.map(|b| b.header.block_hash()) != Some(block.header.block_hash()) {
+                    return Err(ChainError::Serialization(
+                        "blocks dir conflicts with ledger history".to_string(),
+                    ));
+                }
+                continue;
+            }
             ledger.commit_block_internal(block, false)?;
         }
 
+        Ok(ledger)
+    }
+
+    /// Adopts a fully-certified block as an unanchored tip (federated
+    /// catch-up). Verifies quorum signatures and tx signatures only: roots
+    /// and history are NOT verified, so the replica must backfill to
+    /// genesis (see [`Self::rebuild_from_blocks`]) before it may validate
+    /// new proposals. The tip snapshot is persisted (never as a fake
+    /// genesis) so restarts resume instead of re-adopting.
+    pub fn from_certified_tip(
+        chain_id: &str,
+        validator_set: ValidatorSet,
+        tip: CipherChainBlock,
+        storage_path: Option<PathBuf>,
+    ) -> Result<Self, ChainError> {
+        if tip.header.chain_id != chain_id {
+            return Err(ChainError::InvalidGenesis(format!(
+                "tip chain {} != {}",
+                tip.header.chain_id, chain_id
+            )));
+        }
+        validator_set.verify_header_signatures(&tip.header)?;
+        for tx in &tip.transactions {
+            tx.verify_signature(chain_id)?;
+        }
+        let block_hash = tip.header.block_hash();
+        let mut commitments_index = HashMap::new();
+        let mut cid_to_commitment = HashMap::new();
+        let mut nonces = HashMap::new();
+        for (idx, tx) in tip.transactions.iter().enumerate() {
+            let record = CommitmentRecord {
+                height: tip.header.height,
+                block_hash,
+                tx_index: idx,
+                timestamp_ms: tip.header.timestamp_ms,
+                vault_id: tx.vault_id,
+                salt: tx.salt,
+                head_cid: tx.head_cid,
+            };
+            commitments_index.insert(tx.commitment, record);
+            cid_to_commitment.insert(tx.head_cid, tx.commitment);
+            nonces.insert(tx.client_pubkey, tx.nonce);
+        }
+        let ledger = Self {
+            chain_id: chain_id.to_string(),
+            validator_set,
+            blocks: vec![tip.clone()],
+            cumulative_commitments: Vec::new(),
+            commitments_index,
+            cid_to_commitment,
+            nonces,
+            state_merkle_tree: MerkleTree::new(Vec::new()),
+            storage_path,
+        };
+        if let Some(ref path) = ledger.storage_path {
+            let blocks_dir = path.join("blocks");
+            if !blocks_dir.exists() {
+                fs::create_dir_all(&blocks_dir).map_err(|e| ChainError::Io(e.to_string()))?;
+            }
+            let tip_json = serde_json::to_string_pretty(&tip)
+                .map_err(|e| ChainError::Serialization(e.to_string()))?;
+            fs::write(path.join("tip.json"), tip_json)
+                .map_err(|e| ChainError::Io(e.to_string()))?;
+            ledger.persist_block(&tip, path)?;
+        }
+        Ok(ledger)
+    }
+
+    /// Rebuilds a complete replica from genesis-anchored blocks (backfill).
+    /// Validates the full sequence (quorum, linkage, nonces, roots),
+    /// persists the rebuilt history, and removes any tip snapshot.
+    /// Genesis must carry no transactions (enforced by `create_genesis`).
+    pub fn rebuild_from_blocks(
+        chain_id: &str,
+        validator_set: ValidatorSet,
+        blocks: Vec<CipherChainBlock>,
+        storage_path: Option<PathBuf>,
+    ) -> Result<Self, ChainError> {
+        let mut sorted = blocks;
+        sorted.sort_by_key(|b| b.header.height);
+        let genesis = sorted.first().ok_or(ChainError::BlockNotFound(0))?;
+        if genesis.header.height != 0 {
+            return Err(ChainError::InvalidHeight {
+                expected: 0,
+                found: genesis.header.height,
+            });
+        }
+        if !genesis.transactions.is_empty() {
+            return Err(ChainError::InvalidGenesis(
+                "backfill genesis must carry no transactions".to_string(),
+            ));
+        }
+        validator_set.verify_header_signatures(&genesis.header)?;
+        let mut ledger = Self {
+            chain_id: chain_id.to_string(),
+            validator_set: validator_set.clone(),
+            blocks: vec![genesis.clone()],
+            cumulative_commitments: Vec::new(),
+            commitments_index: HashMap::new(),
+            cid_to_commitment: HashMap::new(),
+            nonces: HashMap::new(),
+            state_merkle_tree: MerkleTree::new(Vec::new()),
+            storage_path,
+        };
+        for block in sorted.into_iter().skip(1) {
+            ledger.commit_block_internal(block, false)?;
+        }
+        if let Some(ref path) = ledger.storage_path {
+            let tip_path = path.join("tip.json");
+            if tip_path.exists() {
+                fs::remove_file(&tip_path).map_err(|e| ChainError::Io(e.to_string()))?;
+            }
+            let persisted = ledger.blocks.clone();
+            for block in &persisted {
+                ledger.persist_block(block, path)?;
+            }
+        }
         Ok(ledger)
     }
 
@@ -177,6 +334,22 @@ impl SovereignLedger {
         self.blocks.last().expect("Genesis block always present")
     }
 
+    /// Committed block at `height`, if the ledger has reached it.
+    pub fn block_at_height(&self, height: u64) -> Option<&CipherChainBlock> {
+        self.blocks.iter().find(|b| b.header.height == height)
+    }
+
+    /// Lowest committed height (0 for genesis-anchored replicas, higher for
+    /// adopted tips not yet backfilled).
+    pub fn earliest_height(&self) -> u64 {
+        self.blocks.first().map(|b| b.header.height).unwrap_or(0)
+    }
+
+    /// Disk backing directory, if any.
+    pub fn storage_path(&self) -> Option<PathBuf> {
+        self.storage_path.clone()
+    }
+
     /// Latest cumulative state Merkle root.
     pub fn state_root(&self) -> [u8; 32] {
         self.state_merkle_tree.root()
@@ -185,6 +358,16 @@ impl SovereignLedger {
     /// Validator set authorized on this ledger.
     pub fn validator_set(&self) -> &ValidatorSet {
         &self.validator_set
+    }
+
+    /// Last committed transaction nonce for a client public key (0 when unseen).
+    pub fn last_nonce(&self, client_pubkey: &[u8; 32]) -> u64 {
+        *self.nonces.get(client_pubkey).unwrap_or(&0)
+    }
+
+    /// Next usable transaction nonce for a client public key.
+    pub fn next_nonce(&self, client_pubkey: &[u8; 32]) -> u64 {
+        self.last_nonce(client_pubkey).saturating_add(1)
     }
 
     /// Proposes a new block packaging pending transactions.
@@ -209,9 +392,10 @@ impl SovereignLedger {
             });
         }
 
-        // Validate all transactions
+        // Validate all transactions: signatures plus strictly-increasing nonces.
         for tx in &txs {
             tx.verify_signature(&self.chain_id)?;
+            tx.check_nonce(*self.nonces.get(&tx.client_pubkey).unwrap_or(&0))?;
         }
 
         // Compute tx_root
@@ -253,11 +437,11 @@ impl SovereignLedger {
         self.commit_block_internal(block, true)
     }
 
-    fn commit_block_internal(
-        &mut self,
-        block: CipherChainBlock,
-        persist: bool,
-    ) -> Result<(), ChainError> {
+    /// Validates a block's structure, linkage, transactions, and state roots
+    /// WITHOUT checking quorum signatures or mutating state. Used to vet
+    /// remote proposals (which carry no quorum yet) before voting, and as
+    /// the pre-commit gate inside [`Self::commit_block_internal`].
+    pub fn check_block(&self, block: &CipherChainBlock) -> Result<(), ChainError> {
         let latest = self.latest_block();
 
         // 1. Verify height sequence
@@ -286,9 +470,10 @@ impl SovereignLedger {
             });
         }
 
-        // 4. Verify transactions and compute tx_root
+        // 4. Verify transactions (signatures + nonces) and compute tx_root
         for tx in &block.transactions {
             tx.verify_signature(&self.chain_id)?;
+            tx.check_nonce(*self.nonces.get(&tx.client_pubkey).unwrap_or(&0))?;
         }
         let tx_leaf_hashes: Vec<[u8; 32]> = block
             .transactions
@@ -316,17 +501,34 @@ impl SovereignLedger {
             });
         }
 
+        Ok(())
+    }
+
+    fn commit_block_internal(
+        &mut self,
+        block: CipherChainBlock,
+        persist: bool,
+    ) -> Result<(), ChainError> {
+        self.check_block(&block)?;
+
         // 6. Verify validator quorum signatures
         self.validator_set.verify_header_signatures(&block.header)?;
 
-        // 7. Persist block if disk backing is enabled
+        // 7. Persist block + nonce table if disk backing is enabled
         if persist {
             if let Some(ref path) = self.storage_path.clone() {
                 self.persist_block(&block, path)?;
             }
         }
 
-        // 8. Commit state transitions to memory indexes
+        // 8. Commit state transitions to memory indexes. The prospective
+        // roots were validated by check_block; recompute them here for apply
+        // (check_block is pure and returns nothing to keep proposal vetting
+        // side-effect free).
+        let mut prospective_commitments = self.cumulative_commitments.clone();
+        for tx in &block.transactions {
+            prospective_commitments.push(hash_leaf(&tx.commitment));
+        }
         let block_hash = block.header.block_hash();
         for (idx, tx) in block.transactions.iter().enumerate() {
             let record = CommitmentRecord {
@@ -340,12 +542,12 @@ impl SovereignLedger {
             };
             self.commitments_index.insert(tx.commitment, record);
             self.cid_to_commitment.insert(tx.head_cid, tx.commitment);
+            self.nonces.insert(tx.client_pubkey, tx.nonce);
         }
 
-        self.cumulative_commitments = prospective_commitments;
-        self.state_merkle_tree = prospective_state_tree;
+        self.cumulative_commitments = prospective_commitments.clone();
+        self.state_merkle_tree = MerkleTree::new(prospective_commitments);
         self.blocks.push(block);
-
         Ok(())
     }
 

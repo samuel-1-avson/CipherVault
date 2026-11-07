@@ -50,6 +50,9 @@ fn classify_route(path: &str) -> &'static str {
     if path.starts_with("/v1/auth/") {
         return "approvals";
     }
+    if path.starts_with("/v1/chain") {
+        return "chain";
+    }
     if path.starts_with("/v1/identities") {
         return "identities";
     }
@@ -324,6 +327,9 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/peers/membership", get(handlers::get_peer_membership))
         .route("/v1/peers/admissions", get(handlers::get_peer_admissions))
         .route("/v1/peers/:id/graduate", post(handlers::post_peer_graduate))
+        // Sovereign chain sync: catch-up reads are public; proposal
+        // publication is public too (envelopes self-authenticate).
+        .route("/v1/chain/publish", post(handlers::post_chain_publish))
         // Out-of-Band Cryptographic Approval routes
         .route(
             "/v1/auth/challenges",

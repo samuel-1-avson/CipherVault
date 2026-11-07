@@ -78,7 +78,22 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
     );
 
     let vault_id = store.get_vault_id().unwrap_or([0u8; 32]);
-    let client_signer = ciphervault_chain::ConsensusSigner::generate();
+
+    // Phase 2: persistent device key + explicit validator set (no throwaway keys).
+    let (chain_dir, device_signer, validator_set) = load_device_and_validators()?;
+    println!(
+        "  Device Key:        {}",
+        hex::encode(device_signer.public_key()).dimmed()
+    );
+    println!(
+        "  Validator Set:     {} key(s), quorum {}",
+        validator_set.len(),
+        validator_set.quorum_threshold()
+    );
+
+    let mut ledger = open_or_fresh_genesis(&chain_dir, &validator_set, &device_signer)?;
+
+    let now_ms = Utc::now().timestamp_millis() as u64;
     let mut tx = ciphervault_chain::CommitmentTx {
         vault_id,
         salt,
@@ -86,36 +101,14 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
         commitment,
         client_pubkey: [0u8; 32],
         signature: [0u8; 64],
-        nonce: Utc::now().timestamp_millis() as u64,
-        timestamp_ms: Utc::now().timestamp_millis() as u64,
+        nonce: ledger.next_nonce(&device_signer.public_key()),
+        timestamp_ms: now_ms,
     };
-    client_signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
+    device_signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
+    println!("  Tx Nonce:          {}", tx.nonce);
 
-    let chain_dir = crate::util::get_vault_directory().join("chain");
-    let op_signer = ciphervault_chain::ConsensusSigner::generate();
-    let validator_set = ciphervault_chain::ValidatorSet::new(vec![op_signer.public_key()])?;
-
-    let mut ledger = if chain_dir.join("blocks").exists() {
-        ciphervault_chain::SovereignLedger::open(
-            ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
-            validator_set.clone(),
-            &chain_dir,
-        )?
-    } else {
-        ciphervault_chain::SovereignLedger::create_genesis(
-            ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
-            validator_set.clone(),
-            &[&op_signer],
-            Utc::now().timestamp_millis() as u64,
-            Some(chain_dir.clone()),
-        )?
-    };
-
-    let proposed_block = ledger.propose_block(
-        &op_signer,
-        vec![tx],
-        Utc::now().timestamp_millis() as u64 + 10,
-    )?;
+    let proposed_block =
+        ledger.propose_block(&device_signer, vec![tx], now_ms.saturating_add(10))?;
     ledger.commit_block(proposed_block.clone())?;
 
     let block_hash = proposed_block.header.block_hash();
@@ -159,7 +152,59 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
         "{}",
         "=======================================================".cyan()
     );
+    // Federate the proposal: publish the sealed envelope to every
+    // explicitly-configured operator (best-effort; the local commit above
+    // is already durable). Skipped unless operators are explicitly
+    // configured, so default installs never spray proposals at the
+    // public fleet.
+    let operators = crate::util::get_explicitly_configured_operators();
+    if operators.is_empty() {
+        println!("  Fleet Publish:     skipped (no explicitly configured operators)");
+    } else {
+        let envelope = ciphervault_chain::ChainSyncEnvelope::seal(
+            &device_signer,
+            ciphervault_chain::ChainSyncMsg::Proposal(ciphervault_chain::ProposalMsg {
+                block: proposed_block.clone(),
+            }),
+        );
+        let body = serde_json::to_value(&envelope)?;
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        let accepted = publish_proposal_to_operators(&http, &operators, &body).await;
+        println!(
+            "  Fleet Publish:     {accepted}/{} operator(s) accepted the proposal",
+            operators.len()
+        );
+    }
     Ok(())
+}
+
+/// POSTs one sealed proposal body to every operator's `/v1/chain/publish`
+/// endpoint. Best-effort: unreachable operators and non-2xx answers are
+/// ignored. Returns the number of accepting operators. `CIPHERVAULT_*`
+/// service-token headers are attached by `operator_service_request` when
+/// set, but the endpoint is public (envelopes self-authenticate).
+pub(crate) async fn publish_proposal_to_operators(
+    http: &reqwest::Client,
+    operators: &[String],
+    body: &serde_json::Value,
+) -> usize {
+    let mut accepted = 0;
+    for op in operators {
+        let url = format!("{}/v1/chain/publish", op.trim_end_matches('/'));
+        if let Ok(resp) = crate::util::operator_service_request(http.post(&url))
+            .json(body)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                accepted += 1;
+            }
+        }
+    }
+    accepted
 }
 
 pub(crate) async fn cmd_verify_anchor(head_hex_opt: Option<String>) -> Result<()> {
@@ -218,9 +263,7 @@ pub(crate) async fn cmd_verify_anchor(head_hex_opt: Option<String>) -> Result<()
             }
         );
 
-        let chain_dir = crate::util::get_vault_directory().join("chain");
-        let op_signer = ciphervault_chain::ConsensusSigner::generate();
-        let validator_set = ciphervault_chain::ValidatorSet::new(vec![op_signer.public_key()])?;
+        let (chain_dir, _device_signer, validator_set) = load_device_and_validators()?;
 
         if chain_dir.join("blocks").exists() {
             let mut salt_arr = [0u8; 32];
@@ -321,4 +364,191 @@ pub(crate) async fn cmd_verify_anchor(head_hex_opt: Option<String>) -> Result<()
     );
 
     Ok(())
+}
+
+/// Loads the persistent device consensus key and the explicit validator set.
+/// Shared by anchor and verify so both operate on the same fleet identity.
+fn load_device_and_validators() -> Result<(
+    std::path::PathBuf,
+    ciphervault_chain::ConsensusSigner,
+    ciphervault_chain::ValidatorSet,
+)> {
+    let chain_dir = crate::util::get_vault_directory().join("chain");
+    let device_signer =
+        ciphervault_chain::ConsensusSigner::load_or_create(&chain_dir.join("device.key"))
+            .context("Failed to load device consensus key")?;
+    let validator_set = load_validator_set(&chain_dir, &device_signer)?;
+    Ok((chain_dir, device_signer, validator_set))
+}
+
+/// Reads the explicit fleet validator set (`validators.json`), or bootstraps a
+/// solo set from the local device key and persists it for transparency.
+fn load_validator_set(
+    chain_dir: &std::path::Path,
+    local: &ciphervault_chain::ConsensusSigner,
+) -> Result<ciphervault_chain::ValidatorSet> {
+    let path = chain_dir.join("validators.json");
+    if path.exists() {
+        let raw: Vec<String> = serde_json::from_str(
+            &std::fs::read_to_string(&path).context("Failed to read validators.json")?,
+        )
+        .context("validators.json must be a JSON array of hex public keys")?;
+        let mut keys = Vec::with_capacity(raw.len());
+        for (i, h) in raw.iter().enumerate() {
+            let bytes = hex::decode(h.trim().trim_start_matches("0x"))
+                .with_context(|| format!("validators.json entry {i} is not hex"))?;
+            if bytes.len() != 32 {
+                bail!("validators.json entry {i} must be 32 bytes");
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            keys.push(arr);
+        }
+        return Ok(ciphervault_chain::ValidatorSet::new(keys)?);
+    }
+    let set = ciphervault_chain::ValidatorSet::new(vec![local.public_key()])?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&vec![hex::encode(local.public_key())])?,
+    )?;
+    Ok(set)
+}
+
+/// Opens the existing local ledger, or creates a fresh genesis when none exists.
+/// Pre-Phase-2 chains (throwaway genesis keys) fail to verify against the
+/// persistent set: they are renamed aside (never deleted) and replaced.
+fn open_or_fresh_genesis(
+    chain_dir: &std::path::Path,
+    validator_set: &ciphervault_chain::ValidatorSet,
+    device_signer: &ciphervault_chain::ConsensusSigner,
+) -> Result<ciphervault_chain::SovereignLedger> {
+    if chain_dir.join("blocks").exists() {
+        match ciphervault_chain::SovereignLedger::open(
+            ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
+            validator_set.clone(),
+            chain_dir,
+        ) {
+            Ok(ledger) => return Ok(ledger),
+            Err(e) if is_legacy_key_mismatch(&e) => {
+                let backup = chain_dir
+                    .with_extension(format!("pre-phase2-{}", Utc::now().timestamp_millis()));
+                std::fs::rename(chain_dir, &backup)
+                    .context("Failed to back up legacy pre-Phase-2 chain")?;
+                eprintln!(
+                    "Notice: pre-Phase-2 local chain (throwaway keys) backed up to {}. Starting fresh genesis.",
+                    backup.display()
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    ciphervault_chain::SovereignLedger::create_genesis(
+        ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
+        validator_set.clone(),
+        &[device_signer],
+        Utc::now().timestamp_millis() as u64,
+        Some(chain_dir.to_path_buf()),
+    )
+    .map_err(Into::into)
+}
+
+/// Key-identity failures (as opposed to corruption) marking a pre-Phase-2
+/// throwaway chain that cannot verify under the persistent validator set.
+fn is_legacy_key_mismatch(e: &ciphervault_chain::ChainError) -> bool {
+    use ciphervault_chain::ChainError as E;
+    matches!(
+        e,
+        E::InvalidGenesis(_)
+            | E::InvalidProposer(_)
+            | E::InvalidSignature(_)
+            | E::InsufficientQuorum { .. }
+            | E::UnauthorizedValidator(_)
+            | E::DuplicateValidatorSignature(_)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::publish_proposal_to_operators;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal HTTP responder: reads one request (headers + body), counts
+    /// it, answers 200. Runs until aborted.
+    async fn serve_ok_forever(
+        listener: tokio::net::TcpListener,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let mut req = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        req.extend_from_slice(&buf[..n]);
+                        if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let headers_end = req
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| p + 4)
+                .unwrap_or(req.len());
+            let header_text = String::from_utf8_lossy(&req[..headers_end]).to_lowercase();
+            let want: usize = header_text
+                .split("content-length:")
+                .nth(1)
+                .and_then(|v| {
+                    v.split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .and_then(|v| v.trim().parse().ok())
+                })
+                .unwrap_or(0);
+            let mut have = req.len().saturating_sub(headers_end);
+            while have < want {
+                match socket.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => have += n,
+                    Err(_) => break,
+                }
+            }
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: close\r\n\r\n{\"status\":\"ok\"}",
+                )
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_publish_proposal_counts_accepts_and_ignores_dead() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_url = format!("http://{}", listener.local_addr().unwrap());
+        // A port that is bound now but closed before the request lands.
+        let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_url = format!("http://{}", closed_listener.local_addr().unwrap());
+        drop(closed_listener);
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task = tokio::spawn(serve_ok_forever(listener, hits.clone()));
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let body = serde_json::json!({"sealed": true});
+        let accepted = publish_proposal_to_operators(&http, &[mock_url, closed_url], &body).await;
+        assert_eq!(accepted, 1);
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        task.abort();
+    }
 }

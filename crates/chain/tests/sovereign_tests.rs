@@ -207,3 +207,125 @@ fn test_byzantine_fault_tolerance_rejection() {
     let err_rogue = ledger.commit_block(block).unwrap_err();
     assert!(format!("{}", err_rogue).contains("Unauthorized validator"));
 }
+
+fn test_support_dir(name: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "ciphervault-chain-test-{}-{}-{}",
+        name,
+        std::process::id(),
+        nanos
+    ));
+    dir
+}
+
+fn signed_tx(
+    client: &ConsensusSigner,
+    chain_id: &str,
+    salt_byte: u8,
+    cid_byte: u8,
+    nonce: u64,
+    ts: u64,
+) -> CommitmentTx {
+    let salt = [salt_byte; 32];
+    let head_cid = [cid_byte; 32];
+    let commitment = CommitmentTx::calculate_commitment(&salt, &head_cid);
+    let mut tx = CommitmentTx {
+        vault_id: [9u8; 32],
+        salt,
+        head_cid,
+        commitment,
+        client_pubkey: [0u8; 32],
+        signature: [0u8; 64],
+        nonce,
+        timestamp_ms: ts,
+    };
+    client.sign_tx(&mut tx, chain_id);
+    tx
+}
+
+#[test]
+fn test_consensus_key_persistence_roundtrip() {
+    let dir = test_support_dir("keys");
+    let key_path = dir.join("device.key");
+
+    let first = ConsensusSigner::load_or_create(&key_path).expect("create key");
+    let second = ConsensusSigner::load_or_create(&key_path).expect("reload key");
+    assert_eq!(first.public_key(), second.public_key());
+    assert_eq!(std::fs::metadata(&key_path).expect("key file").len(), 32);
+
+    let other = ConsensusSigner::load_or_create(&dir.join("other.key")).expect("second key");
+    assert_ne!(other.public_key(), first.public_key());
+
+    std::fs::write(&key_path, [0u8; 16]).expect("corrupt key");
+    assert!(ConsensusSigner::load_or_create(&key_path).is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_nonce_replay_protection() {
+    let chain_id = "ciphervault-nonce-test";
+    let op = ConsensusSigner::generate();
+    let validator_set = ValidatorSet::new(vec![op.public_key()]).unwrap();
+    let mut ledger =
+        SovereignLedger::create_genesis(chain_id, validator_set, &[&op], 1_000, None).unwrap();
+    let client = ConsensusSigner::generate();
+
+    // First transaction with nonce 5 commits fine.
+    let tx1 = signed_tx(&client, chain_id, 0xaa, 0xbb, 5, 1_100);
+    let block1 = ledger.propose_block(&op, vec![tx1], 2_000).unwrap();
+    ledger.commit_block(block1).unwrap();
+    assert_eq!(ledger.last_nonce(&client.public_key()), 5);
+    assert_eq!(ledger.next_nonce(&client.public_key()), 6);
+
+    // Exact replay is rejected.
+    let replay = signed_tx(&client, chain_id, 0xaa, 0xbb, 5, 1_200);
+    let err = ledger.propose_block(&op, vec![replay], 2_100).unwrap_err();
+    assert!(format!("{err}").contains("Stale"));
+
+    // Lower nonce is rejected too.
+    let lower = signed_tx(&client, chain_id, 0xcc, 0xdd, 3, 1_300);
+    let err_lower = ledger.propose_block(&op, vec![lower], 2_200).unwrap_err();
+    assert!(format!("{err_lower}").contains("Stale"));
+
+    // Higher nonce commits and advances the table.
+    let tx2 = signed_tx(&client, chain_id, 0xee, 0xff, 6, 1_400);
+    let block2 = ledger.propose_block(&op, vec![tx2], 3_000).unwrap();
+    ledger.commit_block(block2).unwrap();
+    assert_eq!(ledger.height(), 2);
+    assert_eq!(ledger.last_nonce(&client.public_key()), 6);
+}
+
+#[test]
+fn test_nonce_table_survives_reopen() {
+    let chain_id = "ciphervault-nonce-reopen-test";
+    let dir = test_support_dir("reopen");
+    let op = ConsensusSigner::generate();
+    let validator_set = ValidatorSet::new(vec![op.public_key()]).unwrap();
+    let mut ledger = SovereignLedger::create_genesis(
+        chain_id,
+        validator_set.clone(),
+        &[&op],
+        1_000,
+        Some(dir.clone()),
+    )
+    .unwrap();
+    let client = ConsensusSigner::generate();
+
+    let tx = signed_tx(&client, chain_id, 0x11, 0x22, 5, 1_100);
+    let block = ledger.propose_block(&op, vec![tx], 2_000).unwrap();
+    ledger.commit_block(block).unwrap();
+    drop(ledger);
+
+    let reopened = SovereignLedger::open(chain_id, validator_set, &dir).unwrap();
+    assert_eq!(reopened.height(), 1);
+    assert_eq!(reopened.last_nonce(&client.public_key()), 5);
+    assert_eq!(reopened.next_nonce(&client.public_key()), 6);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

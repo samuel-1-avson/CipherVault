@@ -303,6 +303,15 @@ pub fn serve_operator_rpc(
                 peers: state.get_active_peers(),
             }
         }
+        // Chain catch-up serves public gossip data (no auth): any peer may
+        // serve or fetch committed blocks. Bounded server-side.
+        OperatorRpcBody::GetChainBlocks { from_height, limit } => {
+            let (blocks, earliest_height) = state.chain_block_range(*from_height, *limit);
+            OperatorRpcResponse::ChainBlocks {
+                blocks,
+                earliest_height,
+            }
+        }
         // mirrors get_pending_challenges; the wire mirror converts exactly
         // like the HTTP JSON deserialization does, failing closed on drift
         OperatorRpcBody::GetPendingApprovals => {

@@ -13,6 +13,7 @@ pub mod error;
 pub mod ledger;
 pub mod light_client;
 pub mod merkle;
+pub mod sync;
 pub mod types;
 
 pub use consensus::{ConsensusSigner, ValidatorSet};
@@ -20,8 +21,13 @@ pub use error::ChainError;
 pub use ledger::{CommitmentRecord, SovereignLedger};
 pub use light_client::{SovereignLightClient, SovereignVerificationResult};
 pub use merkle::{hash_leaf, hash_nodes, InclusionProof, MerkleTree, EMPTY_TREE_ROOT};
+pub use sync::{
+    ChainSyncEnvelope, ChainSyncHub, ChainSyncMsg, Equivocation, IngestOutcome, ProposalMsg,
+    VoteCollector, VoteMsg, VoteOutcome, CHAIN_SYNC_TOPIC, SYNC_ENVELOPE_DOMAIN,
+};
 pub use types::{
-    AnchorProofResponse, BlockHeader, BlockSignature, CipherChainBlock, CommitmentTx,
-    BLOCK_SIGNING_DOMAIN, PROTOCOL_VERSION, SOVEREIGN_CHAIN_ID_NUM, SOVEREIGN_CHAIN_ID_STR,
+    median_timestamp_ms, proposal_time_acceptable, vote_observed_ms, AnchorProofResponse,
+    BlockHeader, BlockSignature, CipherChainBlock, CommitmentTx, BLOCK_SIGNING_DOMAIN,
+    MAX_PROPOSAL_CLOCK_SKEW_MS, PROTOCOL_VERSION, SOVEREIGN_CHAIN_ID_NUM, SOVEREIGN_CHAIN_ID_STR,
     TX_SIGNING_DOMAIN,
 };
