@@ -20,4 +20,5 @@ ReadOnlyPaths=/var/lib/ciphervault-account /run/secrets /etc/ciphervault
 # short-lived credentials; do not reuse the interactive operator's login.
 Environment=CLOUDSDK_CONFIG=/var/lib/ciphervault-custody/gcloud
 ReadWritePaths=/var/lib/ciphervault-custody
-# Configure an approved OnFailure handler separately; none is installed here.
+# Dispatches failure alerts to configured webhook/healthcheck/PagerDuty destination.
+OnFailure=ciphervault-account-custody-failure@%n.service

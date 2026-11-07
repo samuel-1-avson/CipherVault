@@ -30,21 +30,23 @@ pub struct SnapshotOutput {
     pub captured_file_hashes: Vec<(PathBuf, Option<[u8; 32]>)>,
 }
 
-/// V2 writing remains an explicit deployment opt-in pending independent review.
+/// Chunk protocol write version. V2 is the standard default protocol, offering
+/// content-defined deduplication, keyed identifiers, and domain-isolated KDFs.
+/// Legacy V1 is retained for backwards compatibility when explicitly selected.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkWriteVersion {
     #[default]
-    LegacyV1,
     V2,
+    LegacyV1,
 }
 
 impl ChunkWriteVersion {
     pub fn from_setting(value: Option<&str>) -> Result<Self, SnapshotError> {
         match value {
-            None | Some("0") => Ok(Self::LegacyV1),
-            Some("1") => Ok(Self::V2),
+            None | Some("1") => Ok(Self::V2),
+            Some("0") => Ok(Self::LegacyV1),
             _ => Err(SnapshotError::InvalidInput(
-                "CIPHERVAULT_CHUNK_V2_WRITE must be exactly 0 or 1; unset defaults to legacy v1"
+                "CIPHERVAULT_CHUNK_V2_WRITE must be exactly 0 or 1; unset defaults to chunk protocol v2"
                     .into(),
             )),
         }
@@ -863,28 +865,28 @@ mod tests {
     }
 
     #[test]
-    fn capture_write_gate_defaults_to_compatible_v1_and_rejects_invalid_settings() {
+    fn capture_write_gate_defaults_to_v2_and_supports_legacy_v1_opt_out() {
         assert_eq!(
             ChunkWriteVersion::from_setting(None).unwrap(),
-            ChunkWriteVersion::LegacyV1
-        );
-        assert_eq!(
-            ChunkWriteVersion::from_setting(Some("0")).unwrap(),
-            ChunkWriteVersion::LegacyV1
+            ChunkWriteVersion::V2
         );
         assert_eq!(
             ChunkWriteVersion::from_setting(Some("1")).unwrap(),
             ChunkWriteVersion::V2
         );
+        assert_eq!(
+            ChunkWriteVersion::from_setting(Some("0")).unwrap(),
+            ChunkWriteVersion::LegacyV1
+        );
         for value in ["", "true", "false", "2", " 1", "1\n"] {
             assert!(ChunkWriteVersion::from_setting(Some(value)).is_err());
         }
         let root =
-            std::env::temp_dir().join(format!("cv-v1-default-{:032x}", rand::random::<u128>()));
+            std::env::temp_dir().join(format!("cv-v2-default-{:032x}", rand::random::<u128>()));
         fs::create_dir_all(&root).unwrap();
         // macOS temp paths may include /var -> /private/var; resolve the fixture root.
         let root = fs::canonicalize(root).unwrap();
-        let bytes = b"SYNTHETIC_DEFAULT_CAPTURE=compatible\n";
+        let bytes = b"SYNTHETIC_DEFAULT_CAPTURE=protocol_v2\n";
         fs::write(root.join("synthetic.env"), bytes).unwrap();
         let vault = [51; 32];
         let key = VaultEpochKey::from_bytes([52; 32]);
@@ -902,15 +904,10 @@ mod tests {
             ChunkWriteVersion::default(),
         )
         .unwrap();
-        let legacy = chunk_and_encrypt_file(&vault, 1, &key, bytes).unwrap();
-        assert_eq!(
-            capture.chunks, legacy.chunks,
-            "Default must preserve v1 ciphertext addresses"
-        );
         assert!(capture
             .chunks
             .iter()
-            .all(|chunk| chunk.version == PROTOCOL_VERSION));
+            .all(|chunk| chunk.version == CHUNK_WIRE_VERSION_V2));
         assert_eq!(
             decrypt_snapshot(
                 &vault,
@@ -923,6 +920,31 @@ mod tests {
                 .plaintext,
             bytes
         );
+
+        // Also verify explicit LegacyV1 opt-out works as expected
+        let legacy_capture = create_snapshot_with_write_version(
+            &root,
+            &[(PathBuf::from("synthetic.env"), [53; 32])],
+            &vault,
+            1,
+            &key,
+            vec![],
+            &[54; 32],
+            1,
+            1,
+            &generate_signing_key(),
+            ChunkWriteVersion::LegacyV1,
+        )
+        .unwrap();
+        let legacy = chunk_and_encrypt_file(&vault, 1, &key, bytes).unwrap();
+        assert_eq!(
+            legacy_capture.chunks, legacy.chunks,
+            "Legacy opt-out must preserve v1 ciphertext addresses"
+        );
+        assert!(legacy_capture
+            .chunks
+            .iter()
+            .all(|chunk| chunk.version == PROTOCOL_VERSION));
         fs::remove_dir_all(root).unwrap();
     }
 

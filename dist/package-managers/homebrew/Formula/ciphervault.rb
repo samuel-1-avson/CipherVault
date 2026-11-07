@@ -26,6 +26,7 @@ class Ciphervault < Formula
 
   def install
     bin.install "bin/ciphervault"
+    bin.install "bin/cv"
     bin.install "bin/ciphervault-operator"
     bin.install "bin/ciphervault-agent"
     bin.install "bin/ciphervault-maintenance"
@@ -37,17 +38,18 @@ class Ciphervault < Formula
 
   def caveats
     <<~EOS
-      Quick Start:
-        ciphervault init
-        ciphervault track .env
-        ciphervault push -m "Initial commit"
-        ciphervault diff
-        ciphervault run -- npm start
-        ciphervault peers
+      Quick Start (cv and ciphervault are the same tool):
+        cv init
+        cv track .env
+        cv push -m "Initial commit"
+        cv diff
+        cv run -- npm start
+        cv peers
     EOS
   end
 
   test do
     assert_match "Decentralized, encrypted version control", shell_output("#{bin}/ciphervault --help")
+    assert_match "cv node setup", shell_output("#{bin}/cv --help")
   end
 end

@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 ciphervault-crypto = { path = "../crypto" }
 ciphervault-format = { path = "../format" }
+ciphervault-chain = { path = "../chain" }
 reqwest.workspace = true
 tokio.workspace = true
 serde.workspace = true

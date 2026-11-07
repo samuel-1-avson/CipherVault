@@ -4,7 +4,7 @@
 # Optional env knobs: CIPHERVAULT_VERSION=v1.0.28 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=/opt/cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
-# node = CLI+operator+maintenance for guided `ciphervault node setup`).
+# node = CLI+operator+maintenance for guided `cv node setup`).
 set -euo pipefail
 
 # Verification uses an independently installed OpenSSL; release downloads are
@@ -152,14 +152,25 @@ for name in $WANT; do
   [ -n "$BINARY" ] || { echo "Verified release archive has no $name binary" >&2; exit 1; }
   install -m 0755 "$BINARY" "$INSTALL_DIR/$name"
 done
+# `cv` is the short alias of `ciphervault` (same tool). Current release
+# archives ship both names; older archives predate the alias, so install
+# it leniently and keep the canonical binary as the hard requirement.
+CLI_BIN="ciphervault"
+CV_BINARY="$(find "$TMP_DIR" -type f -name "cv" | head -n 1)"
+if [ -n "$CV_BINARY" ]; then
+  install -m 0755 "$CV_BINARY" "$INSTALL_DIR/cv"
+  CLI_BIN="cv"
+else
+  echo "NOTE: this release predates the 'cv' short alias; 'ciphervault' is installed and works the same."
+fi
 echo "CipherVault $TAG ($ROLE) installed to $INSTALL_DIR"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) echo "NOTE: $INSTALL_DIR is not on PATH. Add: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 if [ "$ROLE" = "node" ]; then
-  echo "Next: 'ciphervault node setup' for guided node onboarding."
+  echo "Next: '$CLI_BIN node setup' for guided node onboarding."
 else
-  echo "Next: 'ciphervault init' (new vault), 'ciphervault --help' (command groups), or bare 'ciphervault' (guided TUI)."
+  echo "Next: '$CLI_BIN init' (new vault), '$CLI_BIN --help' (command groups), or bare '$CLI_BIN' (guided TUI)."
 fi
-echo "To update later, run 'ciphervault update' or rerun this installer."
+echo "To update later, run '$CLI_BIN update' or rerun this installer."

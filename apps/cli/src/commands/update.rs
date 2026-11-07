@@ -132,6 +132,12 @@ const COMPANION_BINARY_STEMS: &[&str] = &[
     "ciphervault-maintenance",
 ];
 
+/// Both CLI entry points share one verified install: whichever name invoked
+/// the updater is required from the archive (fail closed, as before); the
+/// sibling entry point is refreshed leniently like the companions, so `cv`
+/// and `ciphervault` can never drift apart across updates.
+const CLI_BINARY_STEMS: &[&str] = &["ciphervault", "cv"];
+
 fn platform_binary_name(stem: &str) -> String {
     if cfg!(windows) {
         format!("{stem}.exe")
@@ -657,11 +663,25 @@ pub(crate) async fn apply_update(
     if !extracted_tree_has_no_symlinks(&extract_dir) {
         bail!("release archive contains symlinks");
     }
-    let cli_name = platform_binary_name("ciphervault");
-    let extracted_cli = find_binary_in(&extract_dir, &cli_name)
+    let current_exe = std::env::current_exe().context("locating the running CipherVault CLI")?;
+    let bin_dir = current_exe
+        .parent()
+        .context("locating the CipherVault install dir")?
+        .to_path_buf();
+    let current_cli_name = platform_binary_name(crate::bin_name_for_argv0(current_exe.as_os_str()));
+    let extracted_cli = find_binary_in(&extract_dir, &current_cli_name)
         .context("release archive must contain exactly one CipherVault CLI")?;
     let mut companions: Vec<(String, PathBuf)> = Vec::new();
-    for stem in COMPANION_BINARY_STEMS {
+    // The sibling CLI entry point rides along with the companions: every
+    // current release archive carries both names, and leniency here only
+    // ever keeps a previously installed copy, never installs anything new.
+    let mut extra_stems: Vec<&str> = CLI_BINARY_STEMS
+        .iter()
+        .copied()
+        .filter(|stem| platform_binary_name(stem) != current_cli_name)
+        .collect();
+    extra_stems.extend(COMPANION_BINARY_STEMS.iter().copied());
+    for stem in extra_stems {
         let name = platform_binary_name(stem);
         match find_binary_in(&extract_dir, &name) {
             Some(path) => companions.push((name, path)),
@@ -671,11 +691,6 @@ pub(crate) async fn apply_update(
         }
     }
     on_stage("Installing...");
-    let current_exe = std::env::current_exe().context("locating the running CipherVault CLI")?;
-    let bin_dir = current_exe
-        .parent()
-        .context("locating the CipherVault install dir")?
-        .to_path_buf();
     #[cfg(windows)]
     let outcome = {
         let cli_staged = current_exe.with_extension("exe.new");
@@ -742,17 +757,21 @@ pub(crate) async fn cmd_update(check_only: bool, reinstall: bool) -> Result<()> 
         return Ok(());
     };
     if check_only {
-        println!("Run `ciphervault update` to install the verified release.");
+        println!(
+            "Run `{} update` to install the verified release.",
+            crate::invoked_bin_name()
+        );
         return Ok(());
     }
     match apply_update(&pending, |_| {}).await? {
         InstallOutcome::Installed => {
             println!(
-                "Verified and installed CipherVault {} (CLI plus operator, agent, and maintenance binaries).",
+                "Verified and installed CipherVault {} (cv and ciphervault CLI plus operator, agent, and maintenance binaries).",
                 pending.tag
             );
             println!(
-                "Restart any running node (`ciphervault node stop` / `node start`) to use the new operator binary."
+                "Restart any running node (`{} node stop` / `node start`) to use the new operator binary.",
+                crate::invoked_bin_name()
             );
         }
         InstallOutcome::PendingRestart => {
@@ -761,7 +780,8 @@ pub(crate) async fn cmd_update(check_only: bool, reinstall: bool) -> Result<()> 
                 pending.tag
             );
             println!(
-                "If a node daemon is running, restart it afterwards (`ciphervault node stop` / `node start`)."
+                "If a node daemon is running, restart it afterwards (`{} node stop` / `node start`).",
+                crate::invoked_bin_name()
             );
         }
     }

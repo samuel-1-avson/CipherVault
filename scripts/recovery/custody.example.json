@@ -28,5 +28,10 @@
     "age_binary": "/usr/local/bin/age",
     "recipient": "REPLACE_WITH_AGE_X25519_PUBLIC_RECIPIENT",
     "identity_file": null
+  },
+  "alert": {
+    "webhook_url": null,
+    "healthcheck_url": null,
+    "pagerduty_routing_key": null
   }
 }

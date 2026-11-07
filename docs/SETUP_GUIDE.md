@@ -11,6 +11,7 @@ binaries, and docs are separated on purpose.
 | Deep docs | [WORKFLOW_GUIDE.md](./WORKFLOW_GUIDE.md), [CICD_INTEGRATION.md](./CICD_INTEGRATION.md) | [OPERATOR_PLAYBOOKS.md](./OPERATOR_PLAYBOOKS.md), [DEPLOYMENT_RUNBOOK.md](./DEPLOYMENT_RUNBOOK.md) |
 
 `ciphervault --help` lists every command under these same headings.
+Short on typing: `cv` is the same tool under a two-letter name — `cv init`, `cv push`, `cv --help` all work.
 
 ```mermaid
 flowchart TD
@@ -114,7 +115,7 @@ Prefer clicking? Run bare `ciphervault` for the guided terminal UI.
 
 Before remote push, enroll the vault's device identity on every strict operator and configure independently obtained operator signing-key pins. Strict operators require a service token for administrative enrollment; self-signed `/v1/info` is not an independent pin ceremony. See [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md#operator-authentication-and-pins).
 
-Captures default to legacy v1 while independent crypto review is open. Experimental v2 writing requires `CIPHERVAULT_CHUNK_V2_WRITE=1`; it provides encrypted reuse across edits and keyed identifiers for new objects. Default v1 and old history retain public candidate-file confirmation. Both versions remain readable. [Protocol details and gate](../crates/snapshot/CHUNK_PROTOCOL_V2.md).
+Captures default to chunk protocol v2 with encrypted chunk reuse across edits, keyed identifiers, and domain-isolated KDFs. Legacy v1 remains supported via `CIPHERVAULT_CHUNK_V2_WRITE=0`. Both versions remain readable. [Protocol details](../crates/snapshot/CHUNK_PROTOCOL_V2.md).
 
 ### Daily loop
 

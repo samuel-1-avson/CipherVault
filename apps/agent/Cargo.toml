@@ -13,7 +13,9 @@ ciphervault-snapshot = { path = "../../crates/snapshot" }
 ciphervault-local-store = { path = "../../crates/local-store" }
 ciphervault-storage = { path = "../../crates/storage" }
 ciphervault-recovery = { path = "../../crates/recovery" }
+ciphervault-redact = { path = "../../crates/redact" }
 ciphervault-file-lock.workspace = true
+walkdir.workspace = true
 
 tokio.workspace = true
 clap.workspace = true

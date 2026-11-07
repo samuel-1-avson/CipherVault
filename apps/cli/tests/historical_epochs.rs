@@ -208,13 +208,13 @@ fn writer_gate_is_fail_safe_in_real_cli_capture() {
             .collect::<Vec<_>>()
     };
     succeeds(cli(&root, &["push", "--local"]));
-    assert!(versions().iter().all(|version| *version == 1));
+    assert!(versions().iter().all(|version| *version == 2));
     succeeds(cli_with_write_setting(
         &root,
         &["push", "--local"],
-        Some("1"),
+        Some("0"),
     ));
-    assert!(versions().iter().all(|version| *version == 2));
+    assert!(versions().iter().all(|version| *version == 1));
     drop(store);
     fs::remove_dir_all(root).unwrap();
 }

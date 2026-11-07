@@ -1,0 +1,110 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: csi.ciphervault.io
+spec:
+  attachRequired: false
+  podInfoOnMount: true
+  volumeLifecycleModes:
+    - Ephemeral
+  fsGroupPolicy: File
+  requiresRepublish: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ciphervault-csi-node
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ciphervault-csi-node-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "serviceaccounts", "nodes"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["csi.ciphervault.io"]
+    resources: ["ciphervaultsecrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ciphervault-csi-node-binding
+subjects:
+  - kind: ServiceAccount
+    name: ciphervault-csi-node
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: ciphervault-csi-node-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ciphervault-csi-node
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: ciphervault-csi-driver
+spec:
+  selector:
+    matchLabels:
+      app: ciphervault-csi-node
+  template:
+    metadata:
+      labels:
+        app: ciphervault-csi-node
+    spec:
+      serviceAccountName: ciphervault-csi-node
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      priorityClassName: system-node-critical
+      containers:
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0
+          args:
+            - "--v=5"
+            - "--csi-address=/csi/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/csi.ciphervault.io/csi.sock"
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+        - name: ciphervault-csi-driver
+          image: ghcr.io/ciphervault/ciphervault-csi-driver:v1.0.28
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            allowPrivilegeEscalation: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CIPHERVAULT_OPERATORS
+              value: "http://ciphervault-operator.ciphervault.svc.cluster.local:8101"
+            - name: ZERO_DISK_ENFORCE
+              value: "true"
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+      volumes:
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.ciphervault.io/
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: Directory
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory

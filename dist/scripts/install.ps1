@@ -3,7 +3,7 @@
 # Optional env knobs: CIPHERVAULT_VERSION=v1.0.28 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
-# node = CLI+operator+maintenance for guided `ciphervault node setup`),
+# node = CLI+operator+maintenance for guided `cv node setup`),
 # CIPHERVAULT_INSTALL_NO_STOP=1 (never stop running CipherVault processes;
 # the install fails with instructions instead of replacing locked binaries).
 
@@ -73,12 +73,12 @@ $PrivateHint = "If the repo is private, set CIPHERVAULT_GITHUB_TOKEN (a token wi
 
 # Windows locks a running .exe, so replacing the bindir while a TUI, agent,
 # or node daemon runs from it fails in Copy-Item. These helpers only ever
-# touch ciphervault* processes executing from the install bindir itself -
+# touch ciphervault* and cv processes executing from the install bindir itself -
 # exactly the binaries this installer is about to replace.
 function Get-InstallDirProcesses {
     param([string]$BinDir)
     $found = @()
-    foreach ($proc in (Get-Process -Name "ciphervault*" -ErrorAction SilentlyContinue)) {
+    foreach ($proc in (Get-Process -Name "ciphervault*", "cv" -ErrorAction SilentlyContinue)) {
         if ($proc.Id -eq $PID) { continue }
         $procPath = $null
         try { $procPath = $proc.Path } catch { continue }
@@ -236,8 +236,24 @@ try {
 
     # Double-clicking a console executable is expected to close when it exits.
     # This wrapper gives PowerShell and Command Prompt users a stable entry point.
+    # `cv` is the short alias of `ciphervault` (same tool). Current release
+    # archives ship both names; older archives predate the alias, so install
+    # it leniently and keep the canonical binary as the hard requirement.
+    $CliBin = "ciphervault"
+    $cvSource = Get-ChildItem -LiteralPath $extract -Filter "cv.exe" -Recurse -File | Select-Object -First 1
+    if ($null -ne $cvSource) {
+        $justStopped = Install-BinaryWithLockHandling -Source $cvSource.FullName -Destination (Join-Path $BinDir "cv.exe") -BinDir $BinDir
+        if ($justStopped) { $stoppedProcesses += @($justStopped) }
+        $CliBin = "cv"
+    } else {
+        Write-Host "NOTE: this release predates the 'cv' short alias; 'ciphervault' is installed and works the same." -ForegroundColor Yellow
+    }
     $wrapper = Join-Path $BinDir "ciphervault.cmd"
     Set-Content -LiteralPath $wrapper -Value "@echo off`r`n`"%~dp0ciphervault.exe`" %*`r`n" -Encoding ASCII
+    if (Test-Path (Join-Path $BinDir "cv.exe")) {
+        $cvWrapper = Join-Path $BinDir "cv.cmd"
+        Set-Content -LiteralPath $cvWrapper -Value "@echo off`r`n`"%~dp0cv.exe`" %*`r`n" -Encoding ASCII
+    }
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -254,8 +270,8 @@ if ($stoppedProcesses.Count -gt 0) {
     Write-Host "Stopped for replacement: $($stoppedProcesses -join ', '). Restart anything you need (operator daemon, file-watcher agent, TUI)." -ForegroundColor Yellow
 }
 if ($Role -eq "node") {
-    Write-Host "Next (from a NEW terminal): 'ciphervault node setup' for guided node onboarding." -ForegroundColor Yellow
+    Write-Host "Next (from a NEW terminal): '$CliBin node setup' for guided node onboarding." -ForegroundColor Yellow
 } else {
-    Write-Host "Next (from a NEW terminal): 'ciphervault init' (new vault), 'ciphervault --help' (command groups), or bare 'ciphervault' (guided TUI)." -ForegroundColor Yellow
+    Write-Host "Next (from a NEW terminal): '$CliBin init' (new vault), '$CliBin --help' (command groups), or bare '$CliBin' (guided TUI)." -ForegroundColor Yellow
 }
-Write-Host "To update later, run 'ciphervault update' or rerun this installer." -ForegroundColor Yellow
+Write-Host "To update later, run '$CliBin update' or rerun this installer." -ForegroundColor Yellow

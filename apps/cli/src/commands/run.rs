@@ -41,6 +41,7 @@ pub(crate) async fn cmd_run(
     no_inherit: bool,
     dry_run: bool,
     quiet: bool,
+    json: bool,
     set_overrides: Option<Vec<String>>,
     command: Vec<String>,
 ) -> Result<()> {
@@ -71,6 +72,7 @@ pub(crate) async fn cmd_run(
             no_inherit,
             dry_run,
             quiet,
+            json,
             set_overrides,
             command,
         )
@@ -83,6 +85,7 @@ pub(crate) async fn cmd_run(
         no_inherit,
         dry_run,
         quiet,
+        json,
         set_overrides,
         command,
     )
@@ -113,6 +116,7 @@ async fn cmd_run_scoped(
     no_inherit: bool,
     dry_run: bool,
     quiet: bool,
+    json: bool,
     set_overrides: Option<Vec<String>>,
     command: Vec<String>,
 ) -> Result<()> {
@@ -120,7 +124,9 @@ async fn cmd_run_scoped(
     let token = resolve_token(token_flag)?;
     let client = http_client()?;
     let scope = resolve_scope(&client, &endpoint, &token, project_flag, env_flag, true).await?;
-    echo_scope(&scope);
+    if !json {
+        echo_scope(&scope);
+    }
     let scope_label = format!(
         "{}/{}",
         scope.project_slug,
@@ -171,6 +177,21 @@ async fn cmd_run_scoped(
     names.sort_by(|a, b| a.0.cmp(&b.0));
 
     if dry_run {
+        if json {
+            let res = serde_json::json!({
+                "status": "dry_run",
+                "mode": "scoped",
+                "scope": scope_label,
+                "secrets_count": names.len(),
+                "secrets": names.iter().map(|(n, v, s)| serde_json::json!({
+                    "name": n,
+                    "version": v,
+                    "status": s
+                })).collect::<Vec<_>>()
+            });
+            println!("{}", serde_json::to_string_pretty(&res)?);
+            return Ok(());
+        }
         println!(
             "{}",
             "=======================================================".cyan()
@@ -273,7 +294,15 @@ async fn cmd_run_scoped(
 
     // `--set` wins over fetched values; BTreeMap keeps last definition.
     let deduped_vars = apply_overrides(loaded_vars, set_overrides)?;
-    spawn_with_env(&command, deduped_vars, no_inherit, quiet, &scope_label).await
+    spawn_with_env(
+        &command,
+        deduped_vars,
+        no_inherit,
+        quiet,
+        json,
+        &scope_label,
+    )
+    .await
 }
 
 /// Applies `--set KEY=VALUE` overrides over loaded vars, last wins.
@@ -419,6 +448,7 @@ async fn cmd_run_snapshot(
     no_inherit: bool,
     dry_run: bool,
     quiet: bool,
+    json: bool,
     set_overrides: Option<Vec<String>>,
     command: Vec<String>,
 ) -> Result<()> {
@@ -428,7 +458,7 @@ async fn cmd_run_snapshot(
     let mut decrypted_files = bundle.files;
     // Snapshot mode is the legacy path (§F-§4): it keeps working behind the
     // `--legacy` compat flag; without it, warn on every invocation.
-    if !legacy && !quiet {
+    if !legacy && !quiet && !json {
         eprintln!(
             "{} LEGACY_PATH_DEPRECATED: snapshot-mode `run` is deprecated; migrate with `ciphervault migrate plan` (pass --legacy to silence this warning)",
             "[ciphervault]".bold().yellow(),
@@ -488,7 +518,7 @@ async fn cmd_run_snapshot(
         });
 
         if env_files.is_empty() {
-            if !quiet {
+            if !quiet && !json {
                 eprintln!(
                     "{}",
                     "⚠️  No .env files found in snapshot; running with existing environment only."
@@ -515,6 +545,25 @@ async fn cmd_run_snapshot(
 
     // Dry Run Mode
     if dry_run {
+        if json {
+            let res = serde_json::json!({
+                "status": "dry_run",
+                "mode": "snapshot",
+                "snapshot_id": hex::encode(snapshot_id),
+                "sources": loaded_from_files,
+                "secrets_count": deduped_vars.len(),
+                "secrets": deduped_vars.keys().map(|k| serde_json::json!({
+                    "name": k,
+                    "status": "active"
+                })).collect::<Vec<_>>()
+            });
+            println!("{}", serde_json::to_string_pretty(&res)?);
+            for f in &mut decrypted_files {
+                f.plaintext.zeroize();
+            }
+            return Ok(());
+        }
+
         println!(
             "{}",
             "=======================================================".cyan()
@@ -558,18 +607,22 @@ async fn cmd_run_snapshot(
     }
 
     let label = format!("snapshot {}", &hex::encode(snapshot_id)[..8]);
-    spawn_with_env(&command, deduped_vars, no_inherit, quiet, &label).await
+    spawn_with_env(&command, deduped_vars, no_inherit, quiet, json, &label).await
 }
 
-/// Shared child spawn: injects `vars`, honors `--no-inherit`/`--quiet`,
+/// Shared child spawn: injects `vars`, honors `--no-inherit`/`--quiet`/`--json`,
 /// and propagates the child exit code. `label` names the secret source.
 async fn spawn_with_env(
     command: &[String],
     vars: std::collections::BTreeMap<String, Zeroizing<String>>,
     no_inherit: bool,
     quiet: bool,
+    json: bool,
     label: &str,
 ) -> Result<()> {
+    let start_time = std::time::Instant::now();
+    let num_secrets = vars.len();
+
     // Configure Child Command
     let exe = &command[0];
     let raw_args = &command[1..];
@@ -618,6 +671,38 @@ async fn spawn_with_env(
             bail!("Invalid child environment entry '{key}'");
         }
         cmd.env(key, value.as_str());
+    }
+
+    if json {
+        // AI Agent Bridge: capture stdout and stderr, scrub outputs via ciphervault_redact
+        drop(vars);
+        let output = cmd
+            .output()
+            .with_context(|| format!("Failed to spawn command '{}'", exe))?;
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        let raw_stdout = String::from_utf8_lossy(&output.stdout);
+        let raw_stderr = String::from_utf8_lossy(&output.stderr);
+
+        let redacted_stdout = ciphervault_redact::redact_text(&raw_stdout);
+        let redacted_stderr = ciphervault_redact::redact_text(&raw_stderr);
+
+        let exit_code = output.status.code().unwrap_or(1);
+        let payload = serde_json::json!({
+            "status": if exit_code == 0 { "success" } else { "failed" },
+            "exit_code": exit_code,
+            "command": command,
+            "source": label,
+            "secrets_injected_count": num_secrets,
+            "stdout": redacted_stdout,
+            "stderr": redacted_stderr,
+            "duration_ms": duration_ms
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
     }
 
     if !quiet {

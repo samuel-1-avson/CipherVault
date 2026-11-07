@@ -1,0 +1,17 @@
+[Unit]
+Description=CipherVault Backup & Custody Failure Alert Notification
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ciphervault
+Group=ciphervault
+EnvironmentFile=-/etc/ciphervault/alert.env
+ExecStart=/usr/bin/python3 /opt/ciphervault/scripts/recovery/backup_alert.py \
+    --status failure \
+    --service "%i" \
+    --message "Systemd unit %i entered failed state on host %H" \
+    --config /etc/ciphervault/custody.json
+StandardOutput=journal
+StandardError=journal

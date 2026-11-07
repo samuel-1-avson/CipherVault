@@ -170,6 +170,7 @@ jobs:
           
           # Copy Binaries
           cp "$RELEASE/ciphervault$SUFFIX" "$PKG_NAME/bin/"
+          cp "$RELEASE/cv$SUFFIX" "$PKG_NAME/bin/"
           cp "$RELEASE/ciphervault-operator$SUFFIX" "$PKG_NAME/bin/"
           cp "$RELEASE/ciphervault-agent$SUFFIX" "$PKG_NAME/bin/"
           cp "$RELEASE/ciphervault-maintenance$SUFFIX" "$PKG_NAME/bin/"
@@ -183,6 +184,7 @@ jobs:
           DEV_PKG="ciphervault-dev-$TAG-$TARGET"
           mkdir -p "$DEV_PKG/bin" "$DEV_PKG/scripts"
           cp "$RELEASE/ciphervault$SUFFIX" "$DEV_PKG/bin/"
+          cp "$RELEASE/cv$SUFFIX" "$DEV_PKG/bin/"
           cp "$RELEASE/ciphervault-agent$SUFFIX" "$DEV_PKG/bin/"
           cp README.md "$DEV_PKG/"
           cp -r dist/scripts/* "$DEV_PKG/scripts/" 2>/dev/null || true
@@ -193,6 +195,7 @@ jobs:
           NODE_PKG="ciphervault-node-$TAG-$TARGET"
           mkdir -p "$NODE_PKG/bin" "$NODE_PKG/config" "$NODE_PKG/scripts"
           cp "$RELEASE/ciphervault$SUFFIX" "$NODE_PKG/bin/"
+          cp "$RELEASE/cv$SUFFIX" "$NODE_PKG/bin/"
           cp "$RELEASE/ciphervault-operator$SUFFIX" "$NODE_PKG/bin/"
           cp "$RELEASE/ciphervault-maintenance$SUFFIX" "$NODE_PKG/bin/"
           cp README.md "$NODE_PKG/"
@@ -251,12 +254,14 @@ jobs:
           find release-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec mv {} dist-release/ \;
           if ! compgen -G "dist-release/*" > /dev/null; then echo "ERROR: no release archives were downloaded" >&2; exit 1; fi
           # Extract standalone executables for direct downloads and the
-          # in-app updater (one single-file binary per target, no extraction).
+          # in-app updater (one single-file binary per CLI name per target, no extraction).
           # Role bundles also contain the CLI. Select the full bundle exactly:
           # a wildcard here expands to three archives and can publish an empty
           # executable when tar mistakes the extra archives for member names.
           unzip -j "dist-release/ciphervault-${TAG}-x86_64-pc-windows-msvc.zip" \
             "ciphervault-${TAG}-x86_64-pc-windows-msvc/bin/ciphervault.exe" -d dist-release/
+          unzip -j "dist-release/ciphervault-${TAG}-x86_64-pc-windows-msvc.zip" \
+            "ciphervault-${TAG}-x86_64-pc-windows-msvc/bin/cv.exe" -d dist-release/
           for entry in 'x86_64-unknown-linux-gnu:amd64' 'aarch64-unknown-linux-gnu:arm64' 'x86_64-unknown-linux-musl:amd64-musl' 'x86_64-apple-darwin:amd64' 'aarch64-apple-darwin:arm64'; do
             TARGET="${entry%%:*}"
             ARCH="${entry#*:}"
@@ -264,10 +269,15 @@ jobs:
             if [[ "$TARGET" == *apple-darwin ]]; then PLATFORM=macos; fi
             tar -xzf "dist-release/ciphervault-${TAG}-${TARGET}.tar.gz" \
               "ciphervault-${TAG}-${TARGET}/bin/ciphervault" -O > "dist-release/ciphervault-${PLATFORM}-${ARCH}"
+            tar -xzf "dist-release/ciphervault-${TAG}-${TARGET}.tar.gz" \
+              "ciphervault-${TAG}-${TARGET}/bin/cv" -O > "dist-release/cv-${PLATFORM}-${ARCH}"
             test -s "dist-release/ciphervault-${PLATFORM}-${ARCH}"
             chmod +x "dist-release/ciphervault-${PLATFORM}-${ARCH}"
+            test -s "dist-release/cv-${PLATFORM}-${ARCH}"
+            chmod +x "dist-release/cv-${PLATFORM}-${ARCH}"
           done
           test -s dist-release/ciphervault.exe
+          test -s dist-release/cv.exe
           cd dist-release
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt

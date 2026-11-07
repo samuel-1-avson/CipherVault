@@ -10,6 +10,7 @@
             "hash": "ea992c19d43be64f895995328822d59cc825e192fed9c2a6b10a6a8d49893129",
             "bin": [
                 "bin/ciphervault.exe",
+                "bin/cv.exe",
                 "bin/ciphervault-operator.exe",
                 "bin/ciphervault-agent.exe",
                 "bin/ciphervault-maintenance.exe"
@@ -17,11 +18,11 @@
         }
     },
     "notes": [
-        "To initialize a vault in your repository: ciphervault init",
-        "To track confidential files: ciphervault track .env",
-        "To inspect encrypted secret diffs: ciphervault diff",
-        "To run commands with zero-disk secrets: ciphervault run -- <command>",
-        "To launch the web dashboard: ciphervault ui"
+        "To initialize a vault in your repository: cv init (ciphervault works too)",
+        "To track confidential files: cv track .env",
+        "To inspect encrypted secret diffs: cv diff",
+        "To run commands with zero-disk secrets: cv run -- <command>",
+        "To launch the web dashboard: cv ui"
     ],
     "checkver": "github",
     "autoupdate": {

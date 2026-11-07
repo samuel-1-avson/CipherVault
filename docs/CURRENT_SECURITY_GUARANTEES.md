@@ -4,7 +4,7 @@ Updated 1 October 2026. This describes the working implementation, not independe
 
 ## Chunk versions and deployment gate
 
-The default writer remains **legacy chunk v1** pending independent review of v2. Set `CIPHERVAULT_CHUNK_V2_WRITE=1` explicitly to opt into v2 captures. Unset or exactly `0` selects v1; empty, other or non-Unicode values fail capture before file processing. Library callers can pass `ChunkWriteVersion` explicitly to `create_snapshot_with_write_version` or `create_snapshot_with_signer_and_write_version`, avoiding process environment changes. Readers accept v1 and v2 independently of this gate and reject unknown chunk versions. Recovery records, certificates and encrypted manifests retain protocol version 1.
+The default writer is **chunk protocol v2**. Set `CIPHERVAULT_CHUNK_V2_WRITE=0` to force legacy v1 captures. Unset or `1` selects protocol v2; empty, other or non-Unicode values fail capture before file processing. Library callers can pass `ChunkWriteVersion` explicitly to `create_snapshot_with_write_version` or `create_snapshot_with_signer_and_write_version`, avoiding process environment changes. Readers accept v1 and v2 independently of this gate and reject unknown chunk versions. Recovery records, certificates and encrypted manifests retain protocol version 1.
 
 V1 preserves historical IDs, KDFs and ciphertext addresses. Its public complete-file identifier permits an operator to confirm a candidate file using public vault/epoch fields. V1 also binds chunk encryption to the whole file version, preventing encrypted reuse across edits. These limitations remain in default captures and existing remote history; enabling v2 does not rewrite old objects.
 

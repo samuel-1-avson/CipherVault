@@ -29,4 +29,7 @@ pub enum StorageError {
 
     #[error("Operator unreachable: {endpoint} ({details})")]
     OperatorUnreachable { endpoint: String, details: String },
+
+    #[error("Sovereign blockchain error: {0}")]
+    ChainError(#[from] ciphervault_chain::ChainError),
 }

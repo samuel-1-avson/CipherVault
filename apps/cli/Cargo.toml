@@ -5,9 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+default-run = "ciphervault"
 
 [[bin]]
 name = "ciphervault"
+path = "src/main.rs"
+
+[[bin]]
+name = "cv"
 path = "src/main.rs"
 
 [dependencies]
@@ -27,7 +32,9 @@ ciphervault-format = { path = "../../crates/format" }
 ciphervault-snapshot = { path = "../../crates/snapshot" }
 ciphervault-local-store = { path = "../../crates/local-store" }
 ciphervault-recovery = { path = "../../crates/recovery" }
+ciphervault-redact = { path = "../../crates/redact" }
 ciphervault-storage = { path = "../../crates/storage" }
+ciphervault-chain = { path = "../../crates/chain" }
 ciphervault-maintenance = { path = "../../services/maintenance" }
 tokio.workspace = true
 x25519-dalek.workspace = true
@@ -46,4 +53,3 @@ rpassword = { workspace = true }
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }
-

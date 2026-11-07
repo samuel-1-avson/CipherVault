@@ -27,6 +27,7 @@ mod error;
 mod grants;
 mod grants_routes;
 mod guards;
+pub mod ha_store;
 mod http;
 mod key_lifecycle;
 mod memberships;

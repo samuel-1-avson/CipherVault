@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version: v1.0.28](https://img.shields.io/badge/Version-v1.0.28-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.29](https://img.shields.io/badge/Version-v1.0.29-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
@@ -14,9 +14,9 @@
 
 **Client-encrypted secret backup, version control, and clean-machine disaster recovery for confidential development files.**
 
-Captures default to legacy chunk v1. [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) requires explicit `CIPHERVAULT_CHUNK_V2_WRITE=1` opt-in pending independent cryptographic review; both versions remain readable. Default v1 and old history retain public candidate-file confirmation and lack encrypted chunk reuse across edits. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
+Captures default to [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) featuring content-defined chunk deduplication across edits, keyed identifiers (eliminating candidate-file confirmation attacks), and domain-isolated HKDF-SHA256 derivations. Legacy chunk v1 remains supported for backward compatibility (or via CIPHERVAULT_CHUNK_V2_WRITE=0); both versions remain transparently readable. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
 
-Use version 1.0.26 or newer for the 30 September remediation. Older 1.0.25 binaries do not contain these fixes. Upgrade every reader before enabling v2 writers; older binaries cannot read new v2 chunks.
+Use version 1.0.28 or newer for complete Protocol v2 defaults and Agentic AI in-memory credential protections. Upgrade reader nodes before deployment; older binaries cannot read newer v2 chunks.
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
@@ -112,7 +112,7 @@ flowchart TB
     end
 
     subgraph Settlement ["Immutable Settlement & Anchoring"]
-        Arbitrum["Arbitrum One (L2 Rollup)\nCipherVaultRegistry.sol (Salted Commitments)"]
+        CipherChain["CipherChain (Sovereign BFT PoA Ledger)\nciphervault-chain (Merkle State Accumulator)"]
     end
 
     subgraph Recovery ["Sovereign Clean-Machine Recovery"]
@@ -124,7 +124,7 @@ flowchart TB
     Crypto -.->|Capacitive Touch Presence| YubiKey
     Crypto ==>|Encrypted Chunks & PoS Challenges| Operators
     MaintDaemon -.->|Durability Audits & Re-replication| Operators
-    Crypto -.->|State Commitments| Arbitrum
+    Crypto -.->|State Commitments| CipherChain
     Recovery ==>|Bit-for-Bit Clean Reconstruction| Workstation
 
     classDef client fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
@@ -138,7 +138,7 @@ flowchart TB
     class Hardware,YubiKey hsm;
     class Operators,OP1,OP2,OP3,P2P ops;
     class Maintenance,MaintDaemon maint;
-    class Settlement,Arbitrum l2;
+    class Settlement,CipherChain l2;
     class Recovery,PaperKit,Shamir,Approval rec;
 ```
 
@@ -170,7 +170,8 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 | **Storage Operator** | `services/operator` | Rust (Axum, Tokio) | Zero-knowledge chunk store, PoS challenge responder, P2P peer gossip, and relayer proxy. |
 | **Maintenance Fleet** | `services/maintenance` | Rust (Tokio, Rusqlite) | Periodic replication auditor, node latency monitor, and autonomous self-repair scheduler. |
 | **Account Service** | `services/account` | Rust (Axum, WebAuthn) | Optional self-hosted multi-device synchronization, passkey enrollment, and TOTP alternate login. |
-| **L2 Registry** | `contracts/` | Solidity 0.8.28 (Foundry) | Immutable opaque commitment registry contract deployed on Arbitrum One. |
+| **Sovereign Ledger** | `crates/chain` | Rust (Ed25519, Sha2) | Zero-gas Proof-of-Authority consensus ledger, Merkle state accumulator, and sub-millisecond light client verifier. |
+| **L2 Migration Bridge** | `contracts/` | Solidity 0.8.28 (Foundry) | Legacy EVM commitment bridge for historical Arbitrum verification. |
 
 ---
 
@@ -220,7 +221,7 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 * **Pre-Commit Enforcement**: Installable Git pre-commit hook blocks accidental staging or committing of confidential files.
 
 ### ⛓️ Tamper-Evident L2 State Anchoring
-* **Arbitrum One Rollup Commitments**: Anchor cryptographic state commitments to an on-chain Solidity registry contract using salted state commitments; the contract does not validate EIP-712 signatures.
+* **Sovereign CipherChain Anchoring**: Anchor cryptographic state commitments directly to CipherVault's native zero-gas Proof-of-Authority blockchain with Byzantine fault tolerant quorum signatures, Merkle audit proofs, and sub-millisecond local verification (with legacy Arbitrum verification preserved).
 * **Immutable Sequencer Receipts**: Persist on-chain transaction receipts locally to mathematically prove vault state integrity at any historical point in time.
 
 ---
@@ -270,7 +271,7 @@ curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dis
 
 ### Option 2: Install via Cargo (Recommended for Rust Developers)
 
-Install the standalone `ciphervault` CLI binary directly from Git into your Cargo bin path:
+Install the CLI binaries (`ciphervault` plus its short alias `cv` — same tool, two names) directly from Git into your Cargo bin path:
 
 ```bash
 cargo install --git https://github.com/samuel-1-avson/CipherVault.git ciphervault-cli
@@ -294,6 +295,7 @@ cargo build --workspace --release --locked
 
 Compiled binaries will be available in `target/release/`:
 * `ciphervault` — Main developer CLI, embedded web dashboard, and Ratatui TUI.
+* `cv` — Short alias for the main CLI (same tool; use whichever name you prefer).
 * `ciphervault-operator` — Zero-knowledge federated storage node service.
 * `ciphervault-maintenance` — Autonomous replication auditor and self-repair daemon.
 * `ciphervault-agent` — Background filesystem watcher daemon.
@@ -301,22 +303,32 @@ Compiled binaries will be available in `target/release/`:
 
 ---
 
+### Short alias: `cv`
+
+Every install ships two names for the same tool: `cv` and `ciphervault`.
+`cv init`, `cv push`, `cv --help` all work, and `ciphervault` keeps working
+everywhere it always has. (Installs from before the alias shipped only have
+`ciphervault`; update, then rerun the installer once to pick up `cv`.)
+
+---
+
 ### Shell Autocompletions
 
-Generate native, high-performance autocompletions for your shell:
+Generate native, high-performance autocompletions for your shell.
+Each command name has its own script: `cv completions ...` completes `cv`, `ciphervault completions ...` completes `ciphervault`.
 
 ```bash
 # PowerShell (add to your $PROFILE)
-ciphervault completions powershell | Out-String | Invoke-Expression
+cv completions powershell | Out-String | Invoke-Expression
 
 # Bash
-eval "$(ciphervault completions bash)"
+eval "$(cv completions bash)"
 
 # Zsh
-eval "$(ciphervault completions zsh)"
+eval "$(cv completions zsh)"
 
 # Fish
-ciphervault completions fish > ~/.config/fish/completions/ciphervault.fish
+cv completions fish > ~/.config/fish/completions/cv.fish
 ```
 
 ---
@@ -564,8 +576,8 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive full-screen Terminal User Interface dashboard. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser] [--local]` | Launches embedded Web Dashboard and Visual Secrets Explorer. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
-| `ciphervault anchor` | `[--head <CID>] [--auto-relay] [--relayer-url <URL>] [--daemon]` | Computes a salted state commitment and submits to Arbitrum One L2 rollup. |
-| `ciphervault verify-anchor` | `[--head <CID>] [--rpc <URL>]` | Verifies on-chain commitment and finality on Arbitrum One. |
+| `ciphervault anchor` | `[--head <CID>] [--auto-relay] [--daemon]` | Computes a salted state commitment and anchors to CipherChain sovereign blockchain (or Arbitrum). |
+| `ciphervault verify-anchor` | `[--head <CID>]` | Verifies cryptographic state commitment, Merkle audit path, and operator quorum signatures locally in <1ms. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
 | `ciphervault audit` | `[-o/--operators <URL...>] [--recovery-drill] [--operator-pin <URL=64hex>]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
 | `ciphervault repair` | `[-o/--operators <URL...>] [--replicas <N>]` | Detects degraded replicas and self-heals by streaming missing chunks from surviving operators. |

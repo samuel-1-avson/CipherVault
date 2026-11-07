@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "ciphervault": {
+      "command": "python",
+      "args": [
+        "services/mcp/ciphervault_mcp_server.py"
+      ],
+      "env": {
+        "CIPHERVAULT_OPERATORS": "http://127.0.0.1:8101",
+        "NO_COLOR": "1"
+      },
+      "description": "CipherVault Zero-Disk Secret Bridge & Guardian for AI Coding Assistants"
+    }
+  }
+}

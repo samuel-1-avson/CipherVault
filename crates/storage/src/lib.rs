@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 pub use chain::{
     AnchorFinalityStage, AnchorRelayerClient, AnchorVerificationReport, ArbitrumAnchorClient,
-    RelayerReceipt,
+    RelayerReceipt, SovereignAnchorClient, SovereignAnchorReport,
 };
 pub use client::OperatorClient;
 pub use error::StorageError;

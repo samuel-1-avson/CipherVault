@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-account"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "anyhow",
  "axum",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-agent"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "anyhow",
  "chrono",
@@ -627,6 +627,7 @@ dependencies = [
  "ciphervault-format",
  "ciphervault-local-store",
  "ciphervault-recovery",
+ "ciphervault-redact",
  "ciphervault-snapshot",
  "ciphervault-storage",
  "clap",
@@ -637,19 +638,38 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "walkdir",
  "x25519-dalek 2.0.1",
  "zeroize",
 ]
 
 [[package]]
+name = "ciphervault-chain"
+version = "1.0.29"
+dependencies = [
+ "chrono",
+ "ciphervault-crypto",
+ "ciphervault-format",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "ciphervault-cli"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
  "chrono",
  "ciphervault-agent",
+ "ciphervault-chain",
  "ciphervault-crypto",
  "ciphervault-file-lock",
  "ciphervault-format",
@@ -657,6 +677,7 @@ dependencies = [
  "ciphervault-maintenance",
  "ciphervault-operator",
  "ciphervault-recovery",
+ "ciphervault-redact",
  "ciphervault-snapshot",
  "ciphervault-storage",
  "clap",
@@ -682,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-crypto"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "argon2",
  "blake2",
@@ -701,14 +722,14 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-file-lock"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "ciphervault-format"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "ciborium",
  "ciphervault-crypto",
@@ -726,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-local-store"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "anyhow",
  "ciphervault-crypto",
@@ -747,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-maintenance"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "anyhow",
  "axum",
@@ -772,11 +793,12 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-operator"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "axum",
  "chrono",
  "ciborium",
+ "ciphervault-chain",
  "ciphervault-crypto",
  "ciphervault-file-lock",
  "ciphervault-format",
@@ -804,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-recovery"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "anyhow",
  "chrono",
@@ -822,11 +844,11 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-redact"
-version = "1.0.28"
+version = "1.0.29"
 
 [[package]]
 name = "ciphervault-snapshot"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "chrono",
  "ciphervault-crypto",
@@ -844,10 +866,11 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-storage"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "chrono",
  "ciborium",
+ "ciphervault-chain",
  "ciphervault-crypto",
  "ciphervault-format",
  "ed25519-dalek 2.2.0",

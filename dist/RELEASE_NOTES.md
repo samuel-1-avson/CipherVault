@@ -1,3 +1,42 @@
+# CipherVault 1.0.29
+
+This release ships the `cv` short alias for the CLI, a sovereign
+proof-of-authority chain crate with Merkle state commitments, an
+HA database backend for the account service, TUI confirmation flows,
+deeper pre-commit leak checks, and chunk protocol v2 capture defaults.
+
+## Highlights
+
+- `cv` and `ciphervault` are the same tool under two names. Every
+  install ships both binaries; help, `--version`, and shell completions
+  follow the invoked name, and `update` refreshes both entry points so
+  they can never drift apart.
+- New `ciphervault-chain` crate: sovereign PoA consensus ledger and
+  Merkle state commitment engine for checkpoint evidence.
+- Account service gains an HA database store backend covering local
+  SQLite, LiteFS distributed clusters, and Postgres topologies, with
+  fail-closed read-replica write rejection.
+- The TUI stages destructive or expensive actions (L2 anchoring,
+  untracking) behind an explicit confirmation step instead of
+  executing on a single keypress.
+- `hook check --deep` adds suspicious-secret-file detection to the
+  pre-commit leak checks.
+- Captures default to chunk protocol v2 (encrypted reuse across
+  edits, keyed identifiers, domain-isolated KDFs). Legacy v1 remains
+  available via `CIPHERVAULT_CHUNK_V2_WRITE=0`.
+
+## Upgrade notes
+
+- Installs from before the alias shipped only have `ciphervault`.
+  Update, then rerun the installer once to pick up `cv`.
+- v2 chunks require upgraded readers: upgrade every reader node
+  before deploying v2 writers; older binaries cannot read new v2
+  chunks.
+- Release bundles now carry both CLI names plus per-name standalone
+  executables; package manifests install `cv` alongside `ciphervault`.
+
+---
+
 # CipherVault 1.0.28
 
 This release adds enforced account MFA, closes defects identified by the internal

@@ -1,4 +1,4 @@
-use super::app::{BoundaryKind, StatusLevel, TuiApp, TuiTab};
+use super::app::{BoundaryKind, ConfirmAction, StatusLevel, TuiApp, TuiTab};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -9,6 +9,13 @@ use ratatui::{
 
 pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
     let size = frame.area();
+
+    // Degraded terminals cannot fit the 3-row header, the content, and the
+    // 3-row footer. Say so instead of rendering zero-height tables.
+    if size.height < MIN_TERM_HEIGHT || size.width < MIN_TERM_WIDTH {
+        render_too_small(frame, app, size);
+        return;
+    }
 
     // Main layout: Header (3 rows), Content (flex), Footer (3 rows)
     let chunks = Layout::default()
@@ -34,8 +41,11 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
 
     render_footer(frame, app, chunks[2]);
 
-    // Render modals if active
-    if app.show_track_modal {
+    // Render modals if active. The confirm modal stages a destructive or
+    // expensive action, so it wins over every other overlay.
+    if app.confirm_action.is_some() {
+        render_confirm_modal(frame, app);
+    } else if app.show_track_modal {
         render_track_modal(frame, app);
     } else if app.show_explorer_search_modal {
         render_explorer_search_modal(frame, app);
@@ -123,20 +133,29 @@ fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
         )
     };
 
-    let badge = Paragraph::new(Line::from(vec![Span::styled(
-        badge_text,
+    // Without color the badge keeps its text label and renders as bold
+    // text instead of an inverted color block.
+    let badge_style = if use_color() {
         Style::default()
             .fg(Color::Black)
             .bg(badge_color)
-            .add_modifier(Modifier::BOLD),
-    )]))
-    .alignment(Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(badge_color)),
-    );
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    let badge_border = if use_color() {
+        badge_color
+    } else {
+        Color::Reset
+    };
+    let badge = Paragraph::new(Line::from(vec![Span::styled(badge_text, badge_style)]))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(badge_border)),
+        );
     frame.render_widget(badge, header_layout[2]);
 }
 
@@ -279,6 +298,10 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 }),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("Keys:           ", Style::default().fg(Color::Gray)),
+            Span::raw("[l] sign-in · [o] sign-out · [u] update · [/] object lookup"),
+        ]),
     ];
 
     let health_block = Paragraph::new(health_text).wrap(Wrap { trim: true }).block(
@@ -356,16 +379,14 @@ fn render_files_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
             };
 
             let row_style = if i == app.file_table_index {
-                Style::default()
-                    .bg(Color::Rgb(30, 58, 138))
-                    .add_modifier(Modifier::BOLD)
+                selection_style()
             } else {
                 Style::default()
             };
 
             Row::new(vec![
                 Span::raw(format!("{}", i + 1)),
-                Span::styled(&f.path, Style::default().fg(Color::White)),
+                Span::styled(sanitize_cell(&f.path), Style::default().fg(Color::White)),
                 Span::styled(format_bytes(f.size_bytes), Style::default().fg(Color::Cyan)),
                 Span::styled(&f.file_id_hex, Style::default().fg(Color::Yellow)),
                 status_span,
@@ -458,9 +479,7 @@ fn render_snapshots_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
             };
 
             let row_style = if i == app.snapshot_table_index {
-                Style::default()
-                    .bg(Color::Rgb(30, 58, 138))
-                    .add_modifier(Modifier::BOLD)
+                selection_style()
             } else {
                 Style::default()
             };
@@ -472,7 +491,9 @@ fn render_snapshots_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
                 Span::styled(&s.message, Style::default().fg(Color::White)),
                 Span::styled(&s.timestamp_rfc3339, Style::default().fg(Color::Yellow)),
                 Span::styled(
-                    format!("{} files", s.files_count),
+                    s.files_count
+                        .map(|c| format!("{c} files"))
+                        .unwrap_or_else(|| "unknown".to_string()),
                     Style::default().fg(Color::White),
                 ),
                 head_badge,
@@ -536,7 +557,11 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .enumerate()
         .map(|(i, op)| {
             let (status_span, latency_span) = if op.online {
-                let lat_color = if op.latency_ms < 50 {
+                // Latency tiers keep their millisecond text without color;
+                // the number itself is the signal, color is decoration.
+                let lat_color = if !use_color() {
+                    Color::Reset
+                } else if op.latency_ms < 50 {
                     Color::Green
                 } else if op.latency_ms < 200 {
                     Color::Yellow
@@ -544,16 +569,8 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     Color::Red
                 };
                 (
-                    Span::styled(
-                        "ONLINE",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{} ms", op.latency_ms),
-                        Style::default().fg(lat_color),
-                    ),
+                    Span::styled("ONLINE", fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{} ms", op.latency_ms), fg(lat_color)),
                 )
             } else if app.polls_completed == 0 {
                 (
@@ -572,28 +589,32 @@ fn render_operators_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        op.last_error.as_deref().unwrap_or("Unavailable"),
+                        sanitize_cell(op.last_error.as_deref().unwrap_or("Unavailable")),
                         Style::default().fg(Color::DarkGray),
                     ),
                 )
             };
 
             let row_style = if i == app.operator_table_index && !app.operators.is_empty() {
-                Style::default()
-                    .bg(Color::Rgb(30, 58, 138))
-                    .add_modifier(Modifier::BOLD)
+                selection_style()
             } else {
                 Style::default()
             };
 
             Row::new(vec![
                 Span::raw(format!("{}", i + 1)),
-                Span::styled(&op.operator_id, Style::default().fg(Color::White)),
-                Span::styled(&op.endpoint, Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    sanitize_cell(&op.operator_id),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    sanitize_cell(&op.endpoint),
+                    Style::default().fg(Color::Cyan),
+                ),
                 status_span,
                 latency_span,
                 Span::styled(
-                    op.retention_policy.as_deref().unwrap_or("Not observed"),
+                    sanitize_cell(op.retention_policy.as_deref().unwrap_or("Not observed")),
                     Style::default().fg(Color::Gray),
                 ),
             ])
@@ -658,7 +679,7 @@ fn render_operator_detail(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     .join(" ")
             };
             let error_line = match (&op.online, &op.last_error) {
-                (false, Some(error)) => format!("Last error: {error}"),
+                (false, Some(error)) => format!("Last error: {}", sanitize_cell(error)),
                 (false, None) if app.polls_completed == 0 => {
                     "Last error: none yet — first probe in flight.".to_string()
                 }
@@ -667,15 +688,17 @@ fn render_operator_detail(frame: &mut Frame, app: &TuiApp, area: Rect) {
             vec![
                 Line::from(vec![
                     Span::styled("Endpoint:  ", Style::default().fg(Color::Gray)),
-                    Span::styled(&op.endpoint, Style::default().fg(Color::Cyan)),
+                    Span::styled(sanitize_cell(&op.endpoint), Style::default().fg(Color::Cyan)),
                 ]),
                 Line::from(vec![
                     Span::styled("Operator:  ", Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!(
                             "{} | retention {}",
-                            op.operator_id,
-                            op.retention_policy.as_deref().unwrap_or("not observed")
+                            sanitize_cell(&op.operator_id),
+                            sanitize_cell(
+                                op.retention_policy.as_deref().unwrap_or("not observed")
+                            )
                         ),
                         Style::default().fg(Color::White),
                     ),
@@ -804,9 +827,7 @@ fn render_fastcdc_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
                 };
 
                 let row_style = if i == app.chunk_table_index {
-                    Style::default()
-                        .bg(Color::Rgb(30, 58, 138))
-                        .add_modifier(Modifier::BOLD)
+                    selection_style()
                 } else {
                     Style::default()
                 };
@@ -918,18 +939,24 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let readers_str = if status.readers.is_empty() {
         "None detected".to_string()
     } else {
-        status.readers.join(", ")
+        status
+            .readers
+            .iter()
+            .map(|reader| sanitize_cell(reader))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let hardware_line: String = if status.token_attached {
         status
             .token_label
-            .clone()
+            .as_deref()
+            .map(sanitize_cell)
             .unwrap_or_else(|| "PIV token attached".into())
     } else if status.probing {
         "Probing readers for a responsive PIV applet…".into()
     } else if let Some(error) = status.last_error.as_deref() {
-        format!("Probe error: {error}")
+        format!("Probe error: {}", sanitize_cell(error))
     } else if status.readers.is_empty() {
         "Waiting for hardware insertion".into()
     } else {
@@ -945,9 +972,12 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
     let slot_line = |ready: bool, detail: Option<&str>, purpose: &str| -> (String, Color) {
         match (ready, detail) {
-            (true, Some(detail)) => (format!("✓ Ready ({detail})"), Color::Green),
+            (true, Some(detail)) => (format!("✓ Ready ({})", sanitize_cell(detail)), Color::Green),
             (true, None) => ("✓ Ready".to_string(), Color::Green),
-            (false, Some(detail)) => (format!("✗ Not ready ({detail})"), Color::Yellow),
+            (false, Some(detail)) => (
+                format!("✗ Not ready ({})", sanitize_cell(detail)),
+                Color::Yellow,
+            ),
             (false, None) => (format!("· {purpose} (not probed)"), Color::DarkGray),
         }
     };
@@ -1331,11 +1361,20 @@ fn render_explorer_operators_table(frame: &mut Frame, app: &TuiApp, area: Rect) 
                 )
             };
             Row::new(vec![
-                Span::styled(&operator.display_name, Style::default().fg(Color::White)),
-                Span::styled(&operator.region, Style::default().fg(Color::Gray)),
+                Span::styled(
+                    sanitize_cell(&operator.display_name),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    sanitize_cell(&operator.region),
+                    Style::default().fg(Color::Gray),
+                ),
                 status_span,
                 latency_span,
-                Span::styled(&operator.identity, Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    sanitize_cell(&operator.identity),
+                    Style::default().fg(Color::Cyan),
+                ),
             ])
         })
         .collect();
@@ -1400,9 +1439,7 @@ fn render_explorer_checkpoints_table(frame: &mut Frame, app: &mut TuiApp, area: 
         .take(end - start)
         .map(|(i, checkpoint)| {
             let row_style = if i == app.explorer_checkpoint_index {
-                Style::default()
-                    .bg(Color::Rgb(30, 58, 138))
-                    .add_modifier(Modifier::BOLD)
+                selection_style()
             } else {
                 Style::default()
             };
@@ -1418,9 +1455,12 @@ fn render_explorer_checkpoints_table(frame: &mut Frame, app: &mut TuiApp, area: 
                     explorer_tx_snippet(checkpoint.tx_hash_hex.as_deref()),
                     Style::default().fg(Color::Yellow),
                 ),
-                Span::styled(&checkpoint.network, Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    checkpoint.finality_status.clone(),
+                    sanitize_cell(&checkpoint.network),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    sanitize_cell(&checkpoint.finality_status),
                     Style::default().fg(explorer_finality_color(&checkpoint.finality_status)),
                 ),
                 Span::styled(
@@ -1497,7 +1537,7 @@ fn render_explorer_search_modal(frame: &mut Frame, app: &TuiApp) {
     let input = Paragraph::new(Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Green)),
         Span::styled(
-            &app.explorer_search_buffer,
+            sanitize_cell(&app.explorer_search_buffer),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -1602,16 +1642,20 @@ fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let level_color = match app.status_level {
-        StatusLevel::Info => Color::Cyan,
-        StatusLevel::Success => Color::Green,
-        StatusLevel::Warning => Color::Yellow,
-        StatusLevel::Error => Color::Red,
+    let level_color = if use_color() {
+        match app.status_level {
+            StatusLevel::Info => Color::Cyan,
+            StatusLevel::Success => Color::Green,
+            StatusLevel::Warning => Color::Yellow,
+            StatusLevel::Error => Color::Red,
+        }
+    } else {
+        Color::Reset
     };
 
     let status_p = Paragraph::new(Line::from(vec![
-        Span::styled(" Status: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&app.status_message, Style::default().fg(level_color)),
+        Span::styled(" Status: ", fg(Color::DarkGray)),
+        Span::styled(sanitize_cell(&app.status_message), fg(level_color)),
     ]))
     .block(
         Block::default()
@@ -1637,6 +1681,100 @@ fn render_footer(frame: &mut Frame, app: &TuiApp, area: Rect) {
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
     frame.render_widget(hints, footer_layout[1]);
+}
+
+/// Minimum-size fallback: names the required and actual geometry plus the
+/// latest status, so a cramped terminal still explains itself.
+fn render_too_small(frame: &mut Frame, app: &TuiApp, area: Rect) {
+    let body = vec![
+        Line::from(Span::styled(
+            "Terminal too small",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            "CipherVault TUI needs at least {MIN_TERM_WIDTH}x{MIN_TERM_HEIGHT} cells; this terminal is {}x{}.",
+            area.width, area.height
+        )),
+        Line::from("Enlarge the window, or press [q] to quit."),
+        Line::from(format!("Status: {}", sanitize_cell(&app.status_message))),
+    ];
+    frame.render_widget(
+        Paragraph::new(body).alignment(Alignment::Center).block(
+            Block::default()
+                .title(" CipherVault ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Red)),
+        ),
+        area,
+    );
+}
+
+/// Confirmation for a staged destructive/expensive action (`[a]` anchor,
+/// `[x]` untrack). Single-shot: any resolve consumes the staged action,
+/// so a double-confirm cannot double-fire.
+fn render_confirm_modal(frame: &mut Frame, app: &TuiApp) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let Some(pending) = &app.confirm_action else {
+        return;
+    };
+    let (title, detail) = match pending {
+        ConfirmAction::Anchor => (
+            " Confirm L2 Anchor ",
+            vec![
+                Line::from("Submit the active head commitment to Arbitrum L2?"),
+                Line::from(Span::styled(
+                    "This uses the relayer / an on-chain transaction.",
+                    Style::default().fg(Color::Gray),
+                )),
+            ],
+        ),
+        ConfirmAction::Untrack { path } => (
+            " Confirm Untrack ",
+            vec![
+                Line::from(vec![
+                    Span::raw("Stop tracking "),
+                    Span::styled(
+                        sanitize_cell(path),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ?"),
+                ]),
+                Line::from(Span::styled(
+                    "Existing snapshots keep their chunks; future snapshots skip it.",
+                    Style::default().fg(Color::Gray),
+                )),
+            ],
+        ),
+    };
+
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(2), Constraint::Length(2)])
+        .margin(1)
+        .split(area);
+
+    frame.render_widget(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Yellow)),
+        area,
+    );
+    frame.render_widget(Paragraph::new(detail).wrap(Wrap { trim: true }), inner[0]);
+    frame.render_widget(
+        Paragraph::new("[y]/[Enter] Confirm    [n]/[Esc] Cancel")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Gray)),
+        inner[1],
+    );
 }
 
 fn render_track_modal(frame: &mut Frame, app: &TuiApp) {
@@ -1667,7 +1805,7 @@ fn render_track_modal(frame: &mut Frame, app: &TuiApp) {
     let input = Paragraph::new(Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Yellow)),
         Span::styled(
-            &app.track_input_buffer,
+            sanitize_cell(&app.track_input_buffer),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -1718,7 +1856,15 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("a          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Anchor active head commitment to Arbitrum L2"),
+            Span::raw("Stage L2 anchor confirmation (on-chain cost; [y] confirms)"),
+        ]),
+        Line::from(vec![
+            Span::styled("y / Enter  ", Style::default().fg(Color::Yellow)),
+            Span::raw("Confirm the staged anchor / untrack action"),
+        ]),
+        Line::from(vec![
+            Span::styled("n          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Cancel the staged action (Esc also cancels; never quits)"),
         ]),
         Line::from(vec![
             Span::styled("t          ", Style::default().fg(Color::Yellow)),
@@ -1762,19 +1908,19 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("x          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Untrack the selected file (snapshots keep chunks)"),
+            Span::raw("Stage untrack confirmation (snapshots keep chunks; [y] confirms)"),
         ]),
         Line::from(vec![
             Span::styled("?          ", Style::default().fg(Color::Yellow)),
             Span::raw("Toggle this help overlay"),
         ]),
         Line::from(vec![
-            Span::styled("q / Esc    ", Style::default().fg(Color::Red)),
-            Span::raw("Quit TUI and restore terminal cleanly"),
+            Span::styled("q          ", Style::default().fg(Color::Red)),
+            Span::raw("Quit TUI and restore terminal cleanly (Esc never quits)"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Network, token, and inspection work runs in the background; input never blocks on it.\nHosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nPress [Esc] or [?] to close this help overlay",
+            "Network, token, and inspection work runs in the background; input never blocks on it.\nHosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nTrack, push, and anchor run as background tasks; their results land on the status line.\nPress [Esc] or [?] to close this help overlay",
             Style::default().fg(Color::Gray),
         )),
     ];
@@ -1839,11 +1985,10 @@ fn render_snapshot_modal(frame: &mut Frame, app: &TuiApp) {
         Line::from(vec![
             Span::styled("Files:     ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format!(
-                    "{} sealed file{}",
-                    snapshot.files_count,
-                    if snapshot.files_count == 1 { "" } else { "s" }
-                ),
+                match snapshot.files_count {
+                    Some(c) => format!("{c} sealed file{}", if c == 1 { "" } else { "s" }),
+                    None => "sealed files (encrypted manifest)".to_string(),
+                },
                 Style::default().fg(Color::White),
             ),
         ]),
@@ -1901,21 +2046,19 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 /// Inner columns the labeled footer hints need; narrower footers fall back
 /// to keys-only hints so every action stays visible.
-const FOOTER_HINTS_FULL_WIDTH: usize = 91;
+const FOOTER_HINTS_FULL_WIDTH: usize = 115;
 
 fn footer_hint_spans(roomy: bool) -> Vec<Span<'static>> {
-    let key = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let quit = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let label = Style::default().fg(Color::Gray);
+    let key = fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let quit = fg(Color::Red).add_modifier(Modifier::BOLD);
+    let label = fg(Color::Gray);
     let mut spans = Vec::new();
+    // Bracketed keys stay readable without separators, so keys-only mode
+    // omits them: at 80 columns the footer pane fits all ten actions.
     let push = |spans: &mut Vec<Span<'static>>, keys: &str, text: &str, style: Style| {
         spans.push(Span::styled(keys.to_string(), style));
         if roomy {
             spans.push(Span::styled(format!(" {text}  "), label));
-        } else {
-            spans.push(Span::raw(" "));
         }
     };
     push(&mut spans, "[1-7/Tab]", "Tabs", key);
@@ -1924,6 +2067,8 @@ fn footer_hint_spans(roomy: bool) -> Vec<Span<'static>> {
     push(&mut spans, "[r]", "Refresh", key);
     push(&mut spans, "[t]", "Track", key);
     push(&mut spans, "[x]", "Untrk", key);
+    push(&mut spans, "[u]", "Update", key);
+    push(&mut spans, "[/]", "Find", key);
     push(&mut spans, "[?]", "Help", key);
     spans.push(Span::styled("[q]".to_string(), quit));
     if roomy {
@@ -1997,18 +2142,23 @@ fn tab_strip_spans(selected: usize, inner_width: usize) -> Vec<Span<'static>> {
         }
     }
 
-    let plain = Style::default().fg(Color::Gray);
-    let active = Style::default()
-        .fg(Color::Black)
-        .bg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let plain = fg(Color::Gray);
+    let active = if use_color() {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    };
+    let dim = fg(Color::DarkGray);
     let mut spans = vec![Span::raw(" ")];
     if start > 0 {
-        spans.push(Span::styled("◀ ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("◀ ", dim));
     }
     for (i, title) in titles.iter().enumerate().take(end).skip(start) {
         if i > start {
-            spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(SEP, dim));
         }
         spans.push(Span::styled(
             title.to_string(),
@@ -2016,7 +2166,7 @@ fn tab_strip_spans(selected: usize, inner_width: usize) -> Vec<Span<'static>> {
         ));
     }
     if end < titles.len() {
-        spans.push(Span::styled(" ▶", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(" ▶", dim));
     }
     spans
 }
@@ -2064,6 +2214,9 @@ fn hex_head(value: &str, n: usize) -> &str {
 }
 
 fn boundary_color(boundary: BoundaryKind) -> Color {
+    if !use_color() {
+        return Color::Reset;
+    }
     match boundary {
         BoundaryKind::MaskS => Color::Cyan,
         BoundaryKind::MaskL => Color::Blue,
@@ -2103,6 +2256,50 @@ fn os_keyring_label() -> &'static str {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         "the OS keyring"
+    }
+}
+
+/// Minimum terminal size: 3 header + 10 content + 3 footer rows, and enough
+/// columns for the tab strip plus the durability badge.
+const MIN_TERM_HEIGHT: u16 = 16;
+const MIN_TERM_WIDTH: u16 = 62;
+
+/// Strips terminal control sequences from untrusted strings (file paths,
+/// endpoints, feed text, status lines) before rendering. A malicious
+/// filename containing ESC/BEL/OSC bytes could otherwise spoof terminal
+/// output through `Span::raw`.
+pub fn sanitize_cell(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| *c == '\t' || !c.is_control())
+        .collect()
+}
+
+/// Honors `NO_COLOR` (https://no-color.org) and dumb terminals: semantic
+/// signals keep their text labels and fall back to uncolored styles.
+pub fn use_color() -> bool {
+    std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true)
+}
+
+/// Foreground style that degrades to unstyled text when color is disabled.
+fn fg(color: Color) -> Style {
+    if use_color() {
+        Style::default().fg(color)
+    } else {
+        Style::default()
+    }
+}
+
+/// Selection highlight. Without color, inverse video + bold keeps the
+/// selected row visible on monochrome terminals.
+fn selection_style() -> Style {
+    if use_color() {
+        Style::default()
+            .bg(Color::Rgb(30, 58, 138))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
     }
 }
 
@@ -2379,7 +2576,7 @@ mod tests {
         assert!(narrow.contains("[1-7/Tab]"), "tab hint cut off");
 
         let mut wide = TuiApp::new(std::time::Duration::from_secs(30));
-        let text = drawn_text(&mut wide, 200, 40);
+        let text = drawn_text(&mut wide, 240, 40);
         assert!(text.contains("Quit"), "full hints missing wide labels");
     }
 
@@ -2435,7 +2632,7 @@ mod tests {
             parent_id_hex: "Genesis".into(),
             message: "Epoch #1".into(),
             timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
-            files_count: 3,
+            files_count: Some(3),
             is_head: true,
         }];
         app.show_snapshot_modal = true;
@@ -2496,7 +2693,10 @@ mod tests {
             "PgUp/PgDn",
             "Home/End",
             "Enter",
-            "Untrack the selected file",
+            "untrack confirmation",
+            "Confirm the staged",
+            "Esc never quits",
+            "y / Enter",
         ] {
             assert!(text.contains(key), "missing help entry {key}");
         }
@@ -2511,10 +2711,70 @@ mod tests {
             parent_id_hex: "Genesis".into(),
             message: "Epoch #1".into(),
             timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
-            files_count: 1,
+            files_count: Some(1),
             is_head: true,
         }];
         let text = drawn_text(&mut app, 140, 44);
         assert!(text.contains("2026-09-28 12:00:00 UTC"));
+    }
+
+    #[test]
+    fn snapshot_modal_reports_unknown_file_count_honestly() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Snapshots);
+        app.snapshots = vec![SnapshotItem {
+            snapshot_id_hex: "e63584c0".into(),
+            parent_id_hex: "Genesis".into(),
+            message: "Epoch #1".into(),
+            timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
+            // Manifests are encrypted: the count is unknown, never today's
+            // tracked-file total.
+            files_count: None,
+            is_head: true,
+        }];
+        app.show_snapshot_modal = true;
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("encrypted manifest"));
+    }
+
+    #[test]
+    fn tiny_terminal_explains_minimum_size() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        let text = drawn_text(&mut app, 50, 10);
+        assert!(text.contains("Terminal too small"));
+        assert!(text.contains("62x16"));
+    }
+
+    #[test]
+    fn sanitize_cell_strips_terminal_escapes() {
+        assert_eq!(sanitize_cell("secrets.env"), "secrets.env");
+        assert_eq!(sanitize_cell("a\x1bb]0;pwned\x07c"), "ab]0;pwnedc");
+        assert_eq!(sanitize_cell("ok\tfine"), "ok\tfine");
+        assert_eq!(sanitize_cell("line\nbreak"), "linebreak");
+    }
+
+    #[test]
+    fn no_color_strips_semantic_styles() {
+        let prev_no_color = std::env::var_os("NO_COLOR");
+        let prev_term = std::env::var_os("TERM");
+        std::env::set_var("NO_COLOR", "1");
+        assert!(!use_color());
+        assert_eq!(
+            selection_style(),
+            Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        );
+        assert_eq!(boundary_color(BoundaryKind::MaskS), Color::Reset);
+        for span in footer_hint_spans(true) {
+            assert_eq!(span.style.fg, None);
+        }
+        match prev_no_color {
+            Some(v) => std::env::set_var("NO_COLOR", v),
+            None => std::env::remove_var("NO_COLOR"),
+        }
+        match prev_term {
+            Some(v) => std::env::set_var("TERM", v),
+            None => std::env::remove_var("TERM"),
+        }
+        assert!(use_color());
     }
 }

@@ -120,6 +120,10 @@ if (-not (Test-Path -Path $WinZipPath)) {
     $WinBinDir = Join-Path $WinPkgDir "bin"
     New-Item -ItemType Directory -Force -Path $WinBinDir | Out-Null
     Copy-Item -Path $LocalExe -Destination (Join-Path $WinBinDir "ciphervault.exe") -Force
+    $LocalCv = Join-Path $PSScriptRoot "..\dist\bin\cv.exe"
+    if (Test-Path -Path $LocalCv) {
+        Copy-Item -Path $LocalCv -Destination (Join-Path $WinBinDir "cv.exe") -Force
+    }
     Copy-Item -Path (Join-Path $PSScriptRoot "..\README.md") -Destination $WinPkgDir -Force
     Compress-Archive -Path "$WinPkgDir\*" -DestinationPath $WinZipPath -Force
     Remove-Item -Path $WinPkgDir -Recurse -Force

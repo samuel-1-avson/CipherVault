@@ -9,6 +9,7 @@ members = [
     "crates/recovery",
     "crates/redact",
     "crates/storage",
+    "crates/chain",
     "services/operator",
     "services/account",
     "services/maintenance",
@@ -17,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.28"
+version = "1.0.29"
 edition = "2021"
 rust-version = "1.89"
 authors = ["CipherVault Contributors"]
@@ -79,6 +80,7 @@ ciphervault-local-store = { path = "crates/local-store" }
 ciphervault-recovery = { path = "crates/recovery" }
 ciphervault-redact = { path = "crates/redact" }
 ciphervault-storage = { path = "crates/storage" }
+ciphervault-chain = { path = "crates/chain" }
 ciphervault-operator = { path = "services/operator" }
 ciphervault-maintenance = { path = "services/maintenance" }
 ciphervault-agent = { path = "apps/agent" }

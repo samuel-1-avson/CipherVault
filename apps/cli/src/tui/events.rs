@@ -1,6 +1,5 @@
 use super::app::{StatusLevel, TuiApp, TuiTab, TuiTable};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
 
 pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
     // If Help modal is open, Esc / ? / Enter closes it (other keys ignored).
@@ -19,6 +18,21 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
+    // Confirm modal owns its keys: [y]/[Enter] executes the staged action
+    // exactly once, [n]/[Esc] drops it. No other binding runs while staged.
+    if app.confirm_action.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                app.cancel_confirm();
+            }
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.confirm_pending();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // If Track modal is open, handle text input
     if app.show_track_modal {
         match key.code {
@@ -28,41 +42,13 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             }
             KeyCode::Enter => {
                 let path_str = app.track_input_buffer.trim().to_string();
-                if !path_str.is_empty() {
-                    let path = PathBuf::from(&path_str);
-                    if path.exists() {
-                        match crate::get_vault_store() {
-                            Ok(store) => match store.track_file(&path_str) {
-                                Ok(_) => {
-                                    app.set_status(
-                                        format!("✓ Tracked '{path_str}' into vault database"),
-                                        StatusLevel::Success,
-                                    );
-                                    app.refresh_local_state();
-                                }
-                                Err(e) => {
-                                    app.set_status(
-                                        format!("Error tracking file: {e}"),
-                                        StatusLevel::Error,
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                app.set_status(
-                                    format!("Failed to open vault store: {e}"),
-                                    StatusLevel::Error,
-                                );
-                            }
-                        }
-                    } else {
-                        app.set_status(
-                            format!("File not found: '{path_str}'"),
-                            StatusLevel::Warning,
-                        );
-                    }
-                }
                 app.show_track_modal = false;
                 app.track_input_buffer.clear();
+                // Store I/O runs in a background task; the status line and
+                // the file table update when it completes.
+                if !path_str.is_empty() {
+                    app.spawn_track(path_str);
+                }
             }
             KeyCode::Backspace => {
                 app.track_input_buffer.pop();
@@ -119,8 +105,9 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
 
     // Global Keybindings
     match key.code {
-        // Quit
-        KeyCode::Char('q') | KeyCode::Esc => {
+        // Quit. Bare Esc never quits: it only dismisses modals (handled
+        // above), so mashing Esc on a table cannot exit the TUI.
+        KeyCode::Char('q') => {
             app.should_quit = true;
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -262,16 +249,10 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
             app.track_input_buffer.clear();
         }
 
-        // Action: Untrack the selected file (Files tab only).
+        // Action: stage untrack confirmation (Files tab only; the modal
+        // executes on [y]/[Enter] so a stray [x] cannot drop tracking).
         KeyCode::Char('x') => {
-            if app.active_tab == TuiTab::Files {
-                app.untrack_selected_file();
-            } else {
-                app.set_status(
-                    "Switch to the Files tab to untrack a file.",
-                    StatusLevel::Info,
-                );
-            }
+            app.untrack_selected_file();
         }
 
         // Action: Push snapshot (background task; completion lands on the
@@ -281,8 +262,8 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         // Action: Check for updates
         KeyCode::Char('u') => app.spawn_update_check(true),
 
-        // Action: Anchor to Arbitrum L2 (background task).
-        KeyCode::Char('a') => app.spawn_anchor(),
+        // Action: stage anchor confirmation (Arbitrum L2 cost).
+        KeyCode::Char('a') => app.request_anchor_confirm(),
 
         _ => {}
     }

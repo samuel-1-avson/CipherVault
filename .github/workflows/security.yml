@@ -58,3 +58,24 @@ jobs:
           exit-code: "1"
           skip-files: secrets.env
           skip-dirs: .git,target,dist,.ciphervault,secrets,operator-data-1,operator-data-2,operator-data-3
+
+  automated-verification:
+    name: Automated Cryptographic & Security Verification Matrix
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run Automated Security & Invariants Suite
+        run: python scripts/audit/automated_verification.py --report report/CI_VERIFICATION_REPORT.md
+
+      - name: Verify Local Guardian Secret Leak Prevention
+        run: cargo run -p ciphervault-cli --bin ciphervault -- hook check --deep

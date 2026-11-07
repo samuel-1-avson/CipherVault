@@ -5,9 +5,13 @@
 
 pub mod db;
 pub mod engine;
+pub mod predictive_healer;
 pub mod scheduler;
 
 pub use db::{
     sqlite_busy_retries, AuditRecord, FleetSummary, MaintenanceDb, OperatorNodeRecord, TrackedVault,
 };
 pub use engine::{AuditReport, MaintenanceEngine, ObjectReplicaStatus, RepairResult};
+pub use predictive_healer::{
+    ChunkReplicaState, HealingAction, HealingUrgency, OperatorTelemetry, PredictiveSwarmHealer,
+};

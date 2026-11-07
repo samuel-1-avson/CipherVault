@@ -237,3 +237,140 @@ PROD_FEATURE=enabled
     // Cleanup isolated test directory
     let _ = fs::remove_dir_all(&test_dir);
 }
+
+#[test]
+fn test_agentic_ai_json_redaction_and_guardian_hook() {
+    let bin = get_ciphervault_bin();
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "ciphervault_ai_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+
+    // 1. Initialize vault
+    let init_res = Command::new(&bin)
+        .args(["init", "--operators", "http://127.0.0.1:8101"])
+        .current_dir(&test_dir)
+        .output()
+        .expect("failed to init vault");
+    assert!(init_res.status.success());
+
+    // 2. Track secret file
+    fs::write(
+        test_dir.join(".env"),
+        "API_SECRET=cvst1.ai_bridge_sensitive_key_abcdef123456\nPUBLIC_NAME=CipherVaultAgent\n",
+    )
+    .unwrap();
+
+    let track_res = Command::new(&bin)
+        .args(["track", ".env"])
+        .current_dir(&test_dir)
+        .output()
+        .expect("failed to track .env");
+    assert!(track_res.status.success());
+
+    let push_res = Command::new(&bin)
+        .args(["push", "-m", "ai test"])
+        .current_dir(&test_dir)
+        .output()
+        .expect("failed to push snapshot");
+    let push_stdout = String::from_utf8_lossy(&push_res.stdout);
+    assert!(
+        push_stdout.contains("Snapshot captured and encrypted locally!"),
+        "push failed: stdout={push_stdout}, stderr={}",
+        String::from_utf8_lossy(&push_res.stderr)
+    );
+
+    // Remove .env to enforce zero-disk exposure
+    fs::remove_file(test_dir.join(".env")).unwrap();
+
+    // 3. Test `ciphervault run --json` with redaction
+    #[cfg(target_os = "windows")]
+    let (shell_cmd, shell_arg) = ("cmd", "/c");
+    #[cfg(not(target_os = "windows"))]
+    let (shell_cmd, shell_arg) = ("sh", "-c");
+
+    #[cfg(target_os = "windows")]
+    let echo_cmd = "echo AgentName=%PUBLIC_NAME% api_key=%API_SECRET%";
+    #[cfg(not(target_os = "windows"))]
+    let echo_cmd = "echo AgentName=$PUBLIC_NAME api_key=$API_SECRET";
+
+    let run_res = Command::new(&bin)
+        .args(["run", "--json", "--", shell_cmd, shell_arg, echo_cmd])
+        .current_dir(&test_dir)
+        .output()
+        .expect("failed to execute ciphervault run --json");
+
+    assert!(run_res.status.success(), "run --json failed: {:?}", run_res);
+    let run_stdout = String::from_utf8_lossy(&run_res.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&run_stdout).unwrap_or_else(|e| {
+        panic!("Failed to parse run --json output as JSON: {e}\nOutput was:\n{run_stdout}")
+    });
+
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["exit_code"], 0);
+    assert!(parsed["secrets_injected_count"].as_u64().unwrap() >= 1);
+
+    let stdout_val = parsed["stdout"].as_str().unwrap();
+    assert!(
+        stdout_val.contains("AgentName=CipherVaultAgent"),
+        "Expected unmasked public name in output: {}",
+        stdout_val
+    );
+    // Crucial AI Safety assertion: Secret pattern MUST BE REDACTED in captured agent output!
+    assert!(
+        !stdout_val.contains("cvst1.ai_bridge_sensitive_key_abcdef123456"),
+        "Raw token leaked into agent JSON stdout! Output: {}",
+        stdout_val
+    );
+    assert!(
+        stdout_val.contains("[REDACTED]"),
+        "Expected [REDACTED] in stdout, got: {}",
+        stdout_val
+    );
+
+    // 4. Test Local Guardian Hook with sprawl check
+    fs::write(test_dir.join(".env.sprawl"), "SPRAWL_KEY=123456\n").unwrap();
+
+    let check_res = Command::new(&bin)
+        .args(["hook", "check", "--deep", "--json"])
+        .current_dir(&test_dir)
+        .output()
+        .expect("failed to run hook check");
+
+    let check_stdout = String::from_utf8_lossy(&check_res.stdout);
+    let hook_json: serde_json::Value = serde_json::from_str(&check_stdout)
+        .unwrap_or_else(|e| panic!("Failed to parse hook check JSON: {e}\nOutput: {check_stdout}"));
+
+    assert_eq!(hook_json["status"], "violations_found");
+    assert!(hook_json["violations_count"].as_u64().unwrap() >= 1);
+
+    // 5. Test auto-fix on hook check
+    let fix_res = Command::new(&bin)
+        .args(["hook", "check", "--deep", "--fix", "--json"])
+        .current_dir(&test_dir)
+        .output()
+        .expect("failed to run hook check --fix");
+
+    let fix_stdout = String::from_utf8_lossy(&fix_res.stdout);
+    let fix_json: serde_json::Value = serde_json::from_str(&fix_stdout)
+        .unwrap_or_else(|e| panic!("Failed to parse hook fix JSON: {e}\nOutput: {fix_stdout}"));
+
+    let fixed_list = fix_json["fixed_files"].as_array().unwrap();
+    assert!(
+        fixed_list
+            .iter()
+            .any(|v| v.as_str().unwrap().contains(".env.sprawl")),
+        "Expected .env.sprawl to be auto-fixed into .gitignore, got: {:?}",
+        fixed_list
+    );
+    assert!(test_dir.join(".gitignore").exists());
+    let gitignore_content = fs::read_to_string(test_dir.join(".gitignore")).unwrap();
+    assert!(gitignore_content.contains(".env.sprawl"));
+
+    let _ = fs::remove_dir_all(&test_dir);
+}

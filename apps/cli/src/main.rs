@@ -22,7 +22,8 @@ pub(crate) use diff::{cmd_diff, generate_diff_report};
 pub(crate) use util::*;
 
 /// Top-level help, grouped by role so developers and node runners
-/// each see their own path. Rendered from [`HELP_TEMPLATE`]; the
+/// each see their own path. Rendered via [`help_template_for`], which
+/// substitutes the invoked binary name into [`HELP_TEMPLATE`]; the
 /// `help_lists_every_subcommand` test fails if a subcommand or its
 /// description is missing here.
 const HELP_TEMPLATE: &str = "{about}
@@ -31,7 +32,9 @@ Usage: {usage}
 
 Two roles, one binary. Pick your path:
   Developers (day-to-day secrets): init, track, push, pull, run, ...
-  Node runners (contribute storage): `ciphervault node setup`
+  Node runners (contribute storage): `@@BIN@@ node setup`
+
+Short alias: `cv` and `ciphervault` are the same tool; help shows the name you invoked.
 
 Developer: vault & secrets:
   init                 Initialize a new CipherVault in the current directory
@@ -90,6 +93,43 @@ App:
 
 {options}
 ";
+
+/// Canonical binary name: stable across releases for scripts, docs, and installers.
+const CANONICAL_BIN_NAME: &str = "ciphervault";
+/// Short alias binary name, built as a second binary target from this same source.
+const ALIAS_BIN_NAME: &str = "cv";
+
+/// Display name for an argv[0] path: the alias when invoked as `cv` (any
+/// directory, any case, with or without `.exe`), else the canonical name.
+/// Unknown names (renamed copies, `cargo run` shims) fall back to canonical
+/// so help and completions never show a misleading path.
+pub(crate) fn bin_name_for_argv0(argv0: &std::ffi::OsStr) -> &'static str {
+    let stem = std::path::Path::new(argv0)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    if stem.eq_ignore_ascii_case(ALIAS_BIN_NAME) {
+        ALIAS_BIN_NAME
+    } else {
+        CANONICAL_BIN_NAME
+    }
+}
+
+/// Display name of this invocation, from the real argv[0].
+pub(crate) fn invoked_bin_name() -> &'static str {
+    std::env::args_os()
+        .next()
+        .map(|argv0| bin_name_for_argv0(&argv0))
+        .unwrap_or(CANONICAL_BIN_NAME)
+}
+
+/// Top-level help template with the binary name filled in. Clap's own
+/// `{bin}` tag follows the static command name rather than the runtime
+/// `bin_name`/`display_name`, so substitute a private placeholder first;
+/// clap still expands its remaining tags (`{about}`, `{usage}`, `{options}`).
+fn help_template_for(bin: &str) -> String {
+    HELP_TEMPLATE.replace("@@BIN@@", bin)
+}
 
 #[derive(Parser)]
 #[command(name = "ciphervault")]
@@ -469,6 +509,12 @@ enum Commands {
 
         #[arg(
             long,
+            help = "Emit machine-readable JSON output with automatically redacted secret values (for AI coding agents)"
+        )]
+        json: bool,
+
+        #[arg(
+            long,
             num_args = 1..,
             help = "Additional KEY=VALUE overrides to inject"
         )]
@@ -754,6 +800,9 @@ enum Commands {
     },
 
     /// Generate shell autocompletion script for your shell
+    #[command(
+        long_about = "Generate shell autocompletion script for the name you invoked (`cv` or `ciphervault`). Install the script for each name you type daily."
+    )]
     Completions {
         #[arg(
             value_enum,
@@ -1714,8 +1763,28 @@ enum HookSubcommand {
     /// Install Git pre-commit hook into .git/hooks/pre-commit
     Install,
 
-    /// Check for staged confidential files and unbacked modifications
-    Check,
+    /// Check for staged confidential files, secret sprawl, and unbacked modifications
+    Check {
+        #[arg(
+            short,
+            long,
+            help = "Deep scan: inspect staged content diffs for secrets and detect workspace secret sprawl"
+        )]
+        deep: bool,
+
+        #[arg(
+            short,
+            long,
+            help = "Automatically append discovered secret files to .gitignore"
+        )]
+        fix: bool,
+
+        #[arg(
+            long,
+            help = "Emit machine-readable JSON output for AI coding agents and CI scanners"
+        )]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1818,8 +1887,13 @@ fn run_on_roomy_thread() {
         .build()
         .expect("build async runtime")
         .block_on(async {
+            // bin_name drives Usage lines; display_name drives `{bin}` and
+            // `--version`. Both must follow the invoked name.
+            let bin = invoked_bin_name();
             let matches = match Cli::command()
-                .help_template(HELP_TEMPLATE)
+                .bin_name(bin)
+                .display_name(bin)
+                .help_template(help_template_for(bin))
                 .try_get_matches()
             {
                 Ok(matches) => matches,
@@ -1849,8 +1923,11 @@ async fn default_no_subcommand() -> Result<()> {
             .name("help".into())
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
+                let bin = invoked_bin_name();
                 Cli::command()
-                    .help_template(HELP_TEMPLATE)
+                    .bin_name(bin)
+                    .display_name(bin)
+                    .help_template(help_template_for(bin))
                     .print_help()
                     .expect("print help");
                 println!();
@@ -1863,394 +1940,9 @@ async fn default_no_subcommand() -> Result<()> {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let command = match cli.command {
-        Some(command) => command,
-        None => return default_no_subcommand().await,
-    };
-    match command {
-        Commands::Update { check, reinstall } => cmd_update(check, reinstall).await,
-        Commands::Release { sub } => match sub {
-            ReleaseSubcommand::Sign {
-                tag,
-                sums,
-                out,
-                key_file,
-            } => cmd_release_sign(tag, sums, out, key_file),
-            ReleaseSubcommand::Verify { tag, sums, sig } => cmd_release_verify(tag, sums, sig),
-        },
-        Commands::Auth { sub } => match sub {
-            AuthSubcommand::Init { name } => cmd_auth_init(name),
-            AuthSubcommand::Connect {
-                endpoint,
-                label,
-                vault_alias,
-            } => cmd_auth_connect(&endpoint, &label, &vault_alias).await,
-            AuthSubcommand::Login => cmd_auth_login(),
-            AuthSubcommand::Logout => cmd_auth_logout(),
-            AuthSubcommand::Status => cmd_auth_status(),
-        },
-        Commands::Device { sub } => match sub {
-            DeviceSubcommand::List => cmd_device_list(),
-            DeviceSubcommand::Revoke { device_id } => cmd_device_revoke(&device_id).await,
-        },
-        Commands::Vault { sub } => match sub {
-            VaultSubcommand::Link { alias } => cmd_vault_link(&alias),
-            VaultSubcommand::Unlink => cmd_vault_unlink(),
-        },
-        Commands::Repo { sub } => cmd_repo(sub).await,
-        Commands::Context { sub } => cmd_context(sub).await,
-        Commands::Project { sub } => cmd_project(sub).await,
-        Commands::Secret { sub } => cmd_secret(sub).await,
-        Commands::Migrate { sub } => cmd_migrate(sub).await,
-        Commands::Init {
-            force,
-            operators,
-            save_kit,
-            hardware_token,
-            import_gitignore,
-            reader,
-            pin,
-        } => {
-            cmd_init(
-                force,
-                operators,
-                save_kit,
-                hardware_token,
-                import_gitignore,
-                reader,
-                pin,
-            )
-            .await
-        }
-        Commands::Track {
-            paths,
-            from_gitignore,
-            no_gitignore,
-        } => cmd_track(paths, from_gitignore, no_gitignore),
-        Commands::Untrack { paths } => cmd_untrack(paths),
-        Commands::Status { json, overview } => cmd_status(json, overview),
-        Commands::Push {
-            message,
-            touch,
-            local,
-            anchor,
-            reader,
-            pin,
-            concurrency,
-            replicas,
-        } => {
-            cmd_push(
-                message,
-                touch,
-                local,
-                anchor,
-                reader,
-                pin,
-                concurrency,
-                replicas,
-            )
-            .await
-        }
-        Commands::History => cmd_history(),
-        Commands::Prune {
-            keep_last,
-            keep_days,
-            dry_run,
-        } => cmd_prune(keep_last, keep_days, dry_run),
-        Commands::Rekey { check, warn_days } => cmd_rekey(check, warn_days),
-        Commands::Restore {
-            snapshot,
-            to,
-            dry_run,
-            hardware_token,
-            reader,
-            pin,
-        } => cmd_restore(snapshot, to, hardware_token, reader, pin, dry_run),
-        Commands::Recover {
-            kit,
-            shares,
-            to,
-            require_approval,
-            approver_key,
-            force,
-        } => cmd_recover(kit, shares, to, require_approval, approver_key, force).await,
-        Commands::Recovery { sub } => match sub {
-            RecoverySubcommand::Export => cmd_recovery_export(),
-            RecoverySubcommand::Split {
-                threshold,
-                shares,
-                kit,
-                out_dir,
-            } => cmd_recovery_split(threshold, shares, kit, out_dir).await,
-            RecoverySubcommand::Test { kit, to } => cmd_recovery_test(kit, to).await,
-            RecoverySubcommand::KeyBackup {
-                kit,
-                share,
-                replicas,
-            } => cmd_recovery_key_backup(kit, share, replicas).await,
-            RecoverySubcommand::KeyRestore {
-                locator,
-                operator,
-                output,
-            } => cmd_recovery_key_restore(locator, operator, output).await,
-        },
-        Commands::Token { sub } => cmd_token(sub).await,
-        Commands::Anchor {
-            head,
-            rpc,
-            contract,
-            chain_id,
-            tx_hash,
-            raw_tx,
-            auto_relay,
-            relayer_url,
-            daemon,
-            interval,
-        } => {
-            if daemon {
-                println!(
-                    "{}",
-                    "=======================================================".cyan()
-                );
-                println!(
-                    "{}",
-                    "  CipherVault Arbitrum L2 Periodic Anchoring Daemon"
-                        .bold()
-                        .green()
-                );
-                println!("  Check Interval:  {}s", interval);
-                println!("  Target Chain:    Arbitrum (Auto-Relay: {})", auto_relay);
-                println!(
-                    "{}",
-                    "=======================================================".cyan()
-                );
-
-                // Run initial anchor check immediately
-                println!(
-                    "[{}] Executing initial Arbitrum anchor check...",
-                    chrono::Utc::now().to_rfc3339()
-                );
-                if let Err(e) = cmd_anchor(
-                    head.clone(),
-                    rpc.clone(),
-                    contract.clone(),
-                    chain_id,
-                    tx_hash.clone(),
-                    raw_tx.clone(),
-                    auto_relay,
-                    relayer_url.clone(),
-                )
-                .await
-                {
-                    eprintln!("Notice: Initial anchor check: {}", e);
-                }
-
-                loop {
-                    tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {
-                            println!("\nShutdown signal received. Exiting anchoring daemon gracefully.");
-                            break;
-                        }
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {
-                            println!(
-                                "[{}] Executing periodic Arbitrum anchor check...",
-                                chrono::Utc::now().to_rfc3339()
-                            );
-                            if let Err(e) = cmd_anchor(
-                                head.clone(),
-                                rpc.clone(),
-                                contract.clone(),
-                                chain_id,
-                                tx_hash.clone(),
-                                raw_tx.clone(),
-                                auto_relay,
-                                relayer_url.clone(),
-                            )
-                            .await
-                            {
-                                eprintln!("Notice: Periodic anchor check: {}", e);
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            } else {
-                cmd_anchor(
-                    head,
-                    rpc,
-                    contract,
-                    chain_id,
-                    tx_hash,
-                    raw_tx,
-                    auto_relay,
-                    relayer_url,
-                )
-                .await
-            }
-        }
-        Commands::VerifyAnchor { head, rpc } => cmd_verify_anchor(head, rpc).await,
-        Commands::PublishPublicFeed { output, network } => cmd_publish_public_feed(output, network),
-        Commands::Hook { sub } => match sub {
-            HookSubcommand::Install => cmd_hook_install(),
-            HookSubcommand::Check => cmd_hook_check(),
-        },
-        Commands::Audit {
-            operators,
-            export_inventory,
-            operator_pin,
-            recovery_drill,
-        } => cmd_audit(operators, export_inventory, operator_pin, recovery_drill).await,
-        Commands::Repair {
-            operators,
-            replicas,
-        } => cmd_repair(operators, replicas).await,
-        Commands::Ui {
-            host,
-            port,
-            no_browser,
-            local,
-            serve,
-            url,
-        } => cmd_ui(host, port, no_browser, local, serve, url).await,
-        Commands::Tui { poll_ms } => tui::run_tui(poll_ms).await,
-        Commands::Watch {
-            debounce,
-            sync,
-            dry_run,
-        } => cmd_watch(debounce, sync, dry_run).await,
-        Commands::Run {
-            snapshot,
-            env_file,
-            project,
-            env,
-            endpoint,
-            token,
-            legacy,
-            revision,
-            no_inherit,
-            dry_run,
-            quiet,
-            set,
-            command,
-        } => {
-            cmd_run(
-                snapshot, env_file, project, env, endpoint, token, legacy, revision, no_inherit,
-                dry_run, quiet, set, command,
-            )
-            .await
-        }
-        Commands::Diff {
-            snapshot_a,
-            snapshot_b,
-            file,
-            reveal,
-            json,
-        } => cmd_diff(snapshot_a, snapshot_b, file, reveal, json),
-        Commands::Pull { dry_run, force } => cmd_pull(dry_run, force).await,
-        Commands::Completions { shell } => {
-            cmd_completions(shell);
-            Ok(())
-        }
-        Commands::Peers { discover, mesh } => cmd_peers(discover, mesh).await,
-        Commands::Lease { sub } => match sub {
-            LeaseSubcommand::Create {
-                closure,
-                bytes,
-                term_days,
-                operator,
-            } => cmd_lease_create(closure, bytes, term_days, operator).await,
-            LeaseSubcommand::Renew {
-                lease_id,
-                days,
-                bytes,
-                operator,
-            } => cmd_lease_renew(lease_id, days, bytes, operator).await,
-            LeaseSubcommand::List { limit, operator } => cmd_lease_list(limit, operator).await,
-        },
-        Commands::Voucher { sub } => match sub {
-            VoucherSubcommand::Issue {
-                holder_pk,
-                quota,
-                ttl,
-                operator,
-            } => cmd_voucher_issue(holder_pk, quota, ttl, operator).await,
-        },
-        Commands::Invite { sub } => match sub {
-            InviteSubcommand::Pubkey { fleet_key_file } => cmd_invite_pubkey(fleet_key_file),
-            InviteSubcommand::Issue {
-                node_pk,
-                keys_file,
-                ttl,
-                fleet_key_file,
-                out,
-            } => cmd_invite_issue(node_pk, keys_file, ttl, fleet_key_file, out),
-            InviteSubcommand::Join { ticket, node, via } => {
-                cmd_invite_join(ticket, node, via).await
-            }
-            InviteSubcommand::Refresh { node, via } => cmd_invite_refresh(node, via).await,
-            InviteSubcommand::Request { node_pk, ttl, out } => {
-                cmd_invite_request(node_pk, ttl, out)
-            }
-            InviteSubcommand::Approve {
-                request,
-                fleet_key_file,
-                out,
-            } => cmd_invite_approve(request, fleet_key_file, out),
-            InviteSubcommand::Combine {
-                request,
-                approval,
-                out,
-            } => cmd_invite_combine(request, approval, out),
-            InviteSubcommand::Verify {
-                ticket,
-                fleet_keys,
-                quorum_k,
-            } => cmd_invite_verify(ticket, fleet_keys, quorum_k),
-        },
-        Commands::Node { sub } => match sub {
-            NodeSubcommand::Setup {
-                name,
-                data_dir,
-                port,
-                yes,
-                join_ticket,
-                no_start,
-                p2p,
-                p2p_bootstrap,
-                p2p_tcp_port,
-                p2p_quic_port,
-            } => {
-                cmd_node_setup(
-                    name,
-                    data_dir,
-                    port,
-                    yes,
-                    join_ticket,
-                    no_start,
-                    NodeP2pOptions {
-                        enabled: p2p,
-                        bootstrap: p2p_bootstrap,
-                        tcp_port: p2p_tcp_port,
-                        quic_port: p2p_quic_port,
-                    },
-                )
-                .await
-            }
-            NodeSubcommand::Start { data_dir } => cmd_node_start(data_dir).await,
-            NodeSubcommand::Status { data_dir } => cmd_node_status(data_dir).await,
-            NodeSubcommand::Stop { data_dir } => cmd_node_stop(data_dir).await,
-            NodeSubcommand::Backup { data_dir, to } => cmd_node_backup(data_dir, to),
-            NodeSubcommand::Standing { data_dir } => cmd_node_standing(data_dir).await,
-            NodeSubcommand::P2pInfo { data_dir } => cmd_node_p2p_info(data_dir).await,
-        },
-        Commands::Approve { sub } => match sub {
-            ApproveSubcommand::List => cmd_approve_list().await,
-            ApproveSubcommand::Sign { challenge_id, name } => {
-                cmd_approve_sign(challenge_id, name).await
-            }
-            ApproveSubcommand::Status { challenge_id } => cmd_approve_status(challenge_id).await,
-        },
-        Commands::Doctor { json } => cmd_doctor(json).await,
+    match cli.command {
+        None => default_no_subcommand().await,
+        Some(command) => commands::run_command(command).await,
     }
 }
 
@@ -2450,12 +2142,15 @@ fn cmd_completions(shell: clap_complete::Shell) {
     // clap_complete renders the whole command tree recursively; with 40+
     // subcommands the debug-build frames exceed the 8 MiB main-thread
     // stack (immediate stack overflow). Generate on a roomy thread.
+    // The script targets the invoked name, so `cv` and `ciphervault`
+    // each get completions that complete their own name.
+    let bin = invoked_bin_name();
     std::thread::Builder::new()
         .name("completions".into())
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
-            let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "ciphervault", &mut std::io::stdout());
+            let mut cmd = Cli::command().bin_name(bin).display_name(bin);
+            clap_complete::generate(shell, &mut cmd, bin, &mut std::io::stdout());
         })
         .expect("spawn completions thread")
         .join()
@@ -2799,7 +2494,7 @@ mod help_template_tests {
             .name("help-template-test".into())
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                let mut cmd = Cli::command().help_template(HELP_TEMPLATE);
+                let mut cmd = Cli::command().help_template(help_template_for("ciphervault"));
                 let mut buf = Vec::new();
                 cmd.write_long_help(&mut buf).expect("render help");
                 let subs: Vec<(String, Option<String>)> = cmd
@@ -2881,7 +2576,7 @@ mod help_template_tests {
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
                 let matches = Cli::command()
-                    .help_template(HELP_TEMPLATE)
+                    .help_template(help_template_for("ciphervault"))
                     .try_get_matches_from(["ciphervault", "tui"])
                     .expect("tui must parse via template path");
                 Cli::from_arg_matches(&matches).expect("tui must convert")
@@ -2890,5 +2585,88 @@ mod help_template_tests {
             .join()
             .expect("parse thread");
         assert!(matches!(via_template.command, Some(Commands::Tui { .. })));
+    }
+}
+
+#[cfg(test)]
+mod bin_name_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn argv0_detection_covers_alias_forms() {
+        for argv0 in [
+            "cv",
+            "cv.exe",
+            "CV.EXE",
+            "/usr/local/bin/cv",
+            "C:\\tools\\cv.exe",
+            "./target/debug/cv",
+        ] {
+            assert_eq!(
+                bin_name_for_argv0(OsStr::new(argv0)),
+                "cv",
+                "argv0 `{argv0}` must resolve to the alias"
+            );
+        }
+    }
+
+    #[test]
+    fn argv0_detection_falls_back_to_canonical() {
+        for argv0 in [
+            "ciphervault",
+            "ciphervault.exe",
+            "/usr/local/bin/ciphervault",
+            "cargo",
+            "ciphervault-old",
+            "",
+        ] {
+            assert_eq!(
+                bin_name_for_argv0(OsStr::new(argv0)),
+                "ciphervault",
+                "argv0 `{argv0}` must resolve to the canonical name"
+            );
+        }
+    }
+
+    #[test]
+    fn help_template_uses_invoked_bin_name() {
+        fn render(bin: &'static str) -> String {
+            // Same giant-tree stack hazard as the entry point: render help
+            // on a roomy thread.
+            std::thread::Builder::new()
+                .name("bin-name-help-test".into())
+                .stack_size(64 * 1024 * 1024)
+                .spawn(move || {
+                    let mut cmd = Cli::command()
+                        .bin_name(bin)
+                        .display_name(bin)
+                        .help_template(help_template_for(bin));
+                    let mut buf = Vec::new();
+                    cmd.write_long_help(&mut buf).expect("render help");
+                    String::from_utf8(buf).expect("help is utf-8")
+                })
+                .expect("spawn help thread")
+                .join()
+                .expect("help thread")
+        }
+        let short = render("cv");
+        assert!(
+            short.contains("`cv node setup`"),
+            "alias help must show the alias:\n{short}"
+        );
+        assert!(
+            !short.contains("`ciphervault node setup`"),
+            "alias help must not show the canonical example:\n{short}"
+        );
+        assert!(
+            short.contains("`cv` and `ciphervault` are the same tool"),
+            "alias help must mention both names:\n{short}"
+        );
+        let long = render("ciphervault");
+        assert!(
+            long.contains("`ciphervault node setup`"),
+            "canonical help must show the canonical name:\n{long}"
+        );
     }
 }

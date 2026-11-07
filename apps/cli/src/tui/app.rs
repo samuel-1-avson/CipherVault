@@ -89,7 +89,11 @@ pub struct SnapshotItem {
     pub parent_id_hex: String,
     pub message: String,
     pub timestamp_rfc3339: String,
-    pub files_count: usize,
+    /// Per-snapshot file count. Snapshot manifests are encrypted at rest,
+    /// so the TUI cannot count a historical snapshot's files without
+    /// decrypting its manifest. `None` renders as "unknown" instead of
+    /// misleadingly repeating today's tracked-file count.
+    pub files_count: Option<usize>,
     pub is_head: bool,
 }
 
@@ -267,6 +271,7 @@ pub enum TuiTaskOut {
     TokenProbed(TokenProbeOutcome),
     PushFinished(Result<String, String>),
     AnchorFinished(Result<String, String>),
+    TrackFinished(Result<String, String>),
     UpdateChecked(UpdateCheckOutcome),
     UpdateApplied {
         tag: String,
@@ -287,6 +292,18 @@ pub enum TuiTable {
     Chunks,
     Checkpoints,
     Operators,
+}
+
+/// Destructive or expensive action awaiting explicit confirmation. Single-key
+/// presses for `anchor` (Arbitrum L2 transaction) and `untrack` (stops
+/// future snapshots) stage a `ConfirmAction` instead of executing; the
+/// confirm modal resolves it with `[y]/[Enter]` or drops it with `[n]/[Esc]`.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    /// Anchor the active head commitment to Arbitrum L2 (on-chain cost).
+    Anchor,
+    /// Untrack a file: future snapshots skip it, existing snapshots keep it.
+    Untrack { path: String },
 }
 
 /// Cache key for the FastCDC inspector: same path, size, and mtime means the
@@ -414,6 +431,9 @@ pub struct TuiApp {
     pub object_probe_in_flight: bool,
     pub push_in_flight: bool,
     pub anchor_in_flight: bool,
+    /// Set while a track-file request runs off the event loop, so rapid
+    /// `[t]` submits never stack duplicate store writes.
+    pub track_in_flight: bool,
     pub update_in_flight: bool,
     pub inspect_in_flight: Option<usize>,
 
@@ -430,6 +450,10 @@ pub struct TuiApp {
     pub explorer_search_buffer: String,
     pub show_help: bool,
     pub show_snapshot_modal: bool,
+    /// Pending destructive/expensive action staged by `[a]`/`[x]`.
+    /// While `Some`, the confirm modal owns `[y]/[Enter]/[n]/[Esc]`
+    /// and no other action key executes.
+    pub confirm_action: Option<ConfirmAction>,
 
     // Background polling
     pub last_poll: Instant,
@@ -512,6 +536,7 @@ impl TuiApp {
             object_probe_in_flight: false,
             push_in_flight: false,
             anchor_in_flight: false,
+            track_in_flight: false,
             update_in_flight: false,
             inspect_in_flight: None,
 
@@ -526,6 +551,7 @@ impl TuiApp {
             explorer_search_buffer: String::new(),
             show_help: false,
             show_snapshot_modal: false,
+            confirm_action: None,
 
             last_poll: Instant::now() - poll_interval, // trigger immediate poll
             poll_interval,
@@ -580,9 +606,7 @@ impl TuiApp {
                 }
 
                 // Tracked files
-                let mut tracked_count = 0;
                 if let Ok(files) = store.list_tracked_files() {
-                    tracked_count = files.len();
                     self.tracked_files = files
                         .into_iter()
                         .map(|(p, file_id)| {
@@ -633,7 +657,9 @@ impl TuiApp {
                                     s.epoch, s.device_counter, s.encrypted_manifest_len
                                 ),
                                 timestamp_rfc3339: dt,
-                                files_count: tracked_count,
+                                // Encrypted manifest: per-snapshot file count is
+                                // unknown without decrypting (see SnapshotItem).
+                                files_count: None,
                                 is_head: is_h,
                             }
                         })
@@ -793,18 +819,68 @@ impl TuiApp {
         }
     }
 
-    /// Removes the selected file from vault tracking. Metadata-only SQLite
-    /// delete, cheap enough to run on the keypress; snapshots already taken
-    /// keep their chunks.
+    /// Stages removal of the selected file behind a confirmation modal.
+    /// A bare `[x]` press is too easy to hit while navigating; the modal
+    /// states that existing snapshots keep their chunks. Confirm with
+    /// `[y]/[Enter]`, cancel with `[n]/[Esc]`.
     pub fn untrack_selected_file(&mut self) {
+        self.request_untrack_confirm();
+    }
+
+    /// Stages an untrack confirmation for the current Files selection.
+    pub fn request_untrack_confirm(&mut self) {
         if self.tracked_files.is_empty() || self.file_table_index >= self.tracked_files.len() {
             self.set_status("No tracked file selected.", StatusLevel::Warning);
             return;
         }
+        if self.active_tab != TuiTab::Files {
+            self.set_status(
+                "Switch to the Files tab to untrack a file.",
+                StatusLevel::Info,
+            );
+            return;
+        }
         let path = self.tracked_files[self.file_table_index].path.clone();
+        self.confirm_action = Some(ConfirmAction::Untrack { path });
+    }
+
+    /// Stages an anchor confirmation. Anchoring submits an Arbitrum L2
+    /// commitment (relayer/on-chain cost), so it never fires on a bare key.
+    /// A repeated `[a]` while a confirm is pending just re-stages the same
+    /// single action; an in-flight anchor reports instead of stacking.
+    pub fn request_anchor_confirm(&mut self) {
+        if self.anchor_in_flight {
+            self.set_status("L2 anchor already running...", StatusLevel::Info);
+            return;
+        }
+        self.confirm_action = Some(ConfirmAction::Anchor);
+    }
+
+    /// Resolves the staged confirmation. Single-shot: the staged action is
+    /// always consumed, so a double-confirm cannot double-fire.
+    pub fn confirm_pending(&mut self) {
+        match self.confirm_action.take() {
+            Some(ConfirmAction::Anchor) => self.spawn_anchor(),
+            Some(ConfirmAction::Untrack { path }) => self.untrack_path(&path),
+            None => {}
+        }
+    }
+
+    /// Drops the staged confirmation without executing it.
+    pub fn cancel_confirm(&mut self) {
+        if self.confirm_action.is_some() {
+            self.confirm_action = None;
+            self.set_status("Cancelled.", StatusLevel::Info);
+        }
+    }
+
+    /// Removes one file from vault tracking. Metadata-only SQLite delete,
+    /// cheap enough to run on the confirm keypress; snapshots already taken
+    /// keep their chunks.
+    pub fn untrack_path(&mut self, path: &str) {
         match crate::get_vault_store().and_then(|store| {
             store
-                .untrack_file(&path)
+                .untrack_file(path)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))
         }) {
             Ok(true) => {
@@ -826,6 +902,42 @@ impl TuiApp {
                 StatusLevel::Error,
             ),
         }
+    }
+
+    /// Tracks a new file in a background task. Store writes can stall on a
+    /// busy SQLite handle and must never run on the input thread; the
+    /// outcome lands via `TuiTaskOut::TrackFinished` on the next tick.
+    pub fn spawn_track(&mut self, path_str: String) {
+        let path_str = path_str.trim().to_string();
+        if path_str.is_empty() {
+            return;
+        }
+        if self.track_in_flight {
+            self.set_status("Track already running...", StatusLevel::Info);
+            return;
+        }
+        if !have_runtime() {
+            return;
+        }
+        self.track_in_flight = true;
+        self.set_status(format!("Tracking '{path_str}'..."), StatusLevel::Info);
+        self.tasks.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                if !std::path::Path::new(&path_str).exists() {
+                    return Err(format!("File not found: '{path_str}'"));
+                }
+                match crate::get_vault_store() {
+                    Ok(store) => match store.track_file(&path_str) {
+                        Ok(_) => Ok(format!("✓ Tracked '{path_str}' into vault database")),
+                        Err(error) => Err(format!("Error tracking file: {error}")),
+                    },
+                    Err(error) => Err(format!("Failed to open vault store: {error}")),
+                }
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+            TuiTaskOut::TrackFinished(result)
+        });
     }
 
     /// Moves the selection one row down with wraparound, keeping the
@@ -1303,6 +1415,7 @@ impl TuiApp {
                     self.object_probe_in_flight = false;
                     self.push_in_flight = false;
                     self.anchor_in_flight = false;
+                    self.track_in_flight = false;
                     self.update_in_flight = false;
                     self.inspect_in_flight = None;
                     self.token_status.probing = false;
@@ -1451,6 +1564,25 @@ impl TuiApp {
                     }
                     Err(error) => {
                         self.set_status(format!("L2 anchor failed: {error}"), StatusLevel::Error)
+                    }
+                }
+            }
+            TuiTaskOut::TrackFinished(result) => {
+                self.track_in_flight = false;
+                match result {
+                    Ok(message) => {
+                        self.set_status(message, StatusLevel::Success);
+                        self.refresh_local_state();
+                    }
+                    Err(error) => {
+                        // A mistyped path is a warning, not an error: the
+                        // vault is untouched and the user can retry.
+                        let level = if error.starts_with("File not found") {
+                            StatusLevel::Warning
+                        } else {
+                            StatusLevel::Error
+                        };
+                        self.set_status(error, level);
                     }
                 }
             }
@@ -2622,7 +2754,7 @@ mod tests {
             parent_id_hex: "Genesis".into(),
             message: "Epoch #1".into(),
             timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
-            files_count: 1,
+            files_count: Some(1),
             is_head: true,
         }];
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
@@ -2652,5 +2784,36 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty());
         super::super::events::handle_key_event(&mut app, key).await;
         assert!(app.status_message.contains("No tracked file selected"));
+    }
+
+    #[tokio::test]
+    async fn anchor_confirm_requires_explicit_confirm_and_fires_once() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        let anchor = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty());
+        // First press stages the confirmation; nothing executes.
+        super::super::events::handle_key_event(&mut app, anchor).await;
+        assert!(matches!(app.confirm_action, Some(ConfirmAction::Anchor)));
+        assert!(!app.anchor_in_flight);
+        // A second press re-stages the same single action without executing.
+        super::super::events::handle_key_event(&mut app, anchor).await;
+        assert!(matches!(app.confirm_action, Some(ConfirmAction::Anchor)));
+        assert!(!app.anchor_in_flight);
+        // Confirming consumes the staged action single-shot and fires the
+        // anchor task exactly once (a tokio runtime exists in tests, so the
+        // spawn lands in flight; without one it would be a silent no-op).
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, enter).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.anchor_in_flight);
+        // With nothing staged, Enter is a no-op: still exactly one task.
+        super::super::events::handle_key_event(&mut app, enter).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.anchor_in_flight);
+        // Bare Esc on a table never quits the TUI.
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, esc).await;
+        assert!(!app.should_quit);
     }
 }

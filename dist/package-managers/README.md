@@ -17,7 +17,7 @@ scoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault
 scoop install ciphervault
 ```
 
-The manifest automatically places `ciphervault.exe`, `ciphervault-operator.exe`, `ciphervault-agent.exe`, and `ciphervault-maintenance.exe` in your Scoop shims directory.
+The manifest automatically places `ciphervault.exe`, `cv.exe`, `ciphervault-operator.exe`, `ciphervault-agent.exe`, and `ciphervault-maintenance.exe` in your Scoop shims directory.
 
 ---
 
@@ -71,13 +71,13 @@ curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dis
 
 ## 5. Roles: developer vs node runner
 
-Every package installs the full binary set (guided `ciphervault node
-setup` needs the CLI next to the operator daemon). Pick your path after
+Every package installs the full binary set (guided `cv node
+setup` needs the CLI next to the operator daemon). `cv` and `ciphervault` are the same tool; examples below show `cv`. Pick your path after
 installing:
 
-- **Developers** (day-to-day secrets): `ciphervault init`,
-  `ciphervault --help` (command groups), or bare `ciphervault` (guided TUI).
-- **Node runners** (contribute storage): `ciphervault node setup`.
+- **Developers** (day-to-day secrets): `cv init`,
+  `cv --help` (command groups), or bare `cv` (guided TUI).
+- **Node runners** (contribute storage): `cv node setup`.
 - Smaller footprint? The one-liners accept
   `CIPHERVAULT_ROLE=developer|node|full`, and each release ships
   `ciphervault-dev-*` and `ciphervault-node-*` bundles beside the full archive.

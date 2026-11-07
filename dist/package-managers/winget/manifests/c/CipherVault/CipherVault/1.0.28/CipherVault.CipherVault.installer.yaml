@@ -14,6 +14,8 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: ciphervault-v1.0.28-x86_64-pc-windows-msvc\bin\ciphervault.exe
         PortableCommandAlias: ciphervault
+      - RelativeFilePath: ciphervault-v1.0.28-x86_64-pc-windows-msvc\bin\cv.exe
+        PortableCommandAlias: cv
       - RelativeFilePath: ciphervault-v1.0.28-x86_64-pc-windows-msvc\bin\ciphervault-operator.exe
         PortableCommandAlias: ciphervault-operator
       - RelativeFilePath: ciphervault-v1.0.28-x86_64-pc-windows-msvc\bin\ciphervault-agent.exe
