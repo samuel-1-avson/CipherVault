@@ -117,7 +117,7 @@ asset_id() {
   printf '%s' "$RELEASE_JSON" | tr -d '\n' | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\)[^}]*"name":[[:space:]]*"'"$1"'"[^}]*}.*/\1/p'
 }
 PKG_ID="$(asset_id "$PKG_NAME")"
-[ -n "$PKG_ID" ] || { echo "Release $TAG has no $TARGET archive ($PKG_NAME)." >&2; exit 1; }
+[ -n "$PKG_ID" ] || { echo "Release $TAG has no $TARGET archive ($PKG_NAME); set CIPHERVAULT_VERSION=<tag> to install a specific release." >&2; exit 1; }
 SUMS_ID="$(asset_id "$SUMS_NAME")"
 [ -n "$SUMS_ID" ] || { echo "Release $TAG has no $SUMS_NAME." >&2; exit 1; }
 SIG_ID="$(asset_id "$SIG_NAME")"

@@ -1830,7 +1830,7 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault console (v1.0.28) — real CLI syntax, live where a browser can measure:',
+    'CipherVault console (v1.0.29) — real CLI syntax, live where a browser can measure:',
     '  Scoped secrets & enterprise management (NEW v1.0.28):',
     '    project <list|show|use> - List and inspect scoped secret projects',
     '    secret <get|set|rotate> - Granular per-secret CRUD with envelope encryption',
@@ -2242,11 +2242,11 @@ function closeReplDrawer() {
    10. Install Snippet Tabs & One-Click Copy
    ============================================================================== */
 const INSTALL_SNIPPETS = {
-  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.28)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.28)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
-  cargo: `# Build and install standalone CLI directly from Git source (v1.0.28)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.29)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.29)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  cargo: `# Build and install standalone CLI directly from Git source (v1.0.29)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
   brew: `# Install CipherVault on macOS or Linux via Homebrew (Release v1.0.28)\nbrew tap samuel-1-avson/ciphervault https://github.com/samuel-1-avson/CipherVault\nbrew install ciphervault`,
-  scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.28)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
+  scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.29)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
   docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.28)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
