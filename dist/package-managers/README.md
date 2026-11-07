@@ -48,10 +48,10 @@ Install via [Windows Package Manager (`winget`)](https://learn.microsoft.com/en-
 
 ```powershell
 # Local testing:
-winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.28/
+winget install --manifest dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.29/
 
 # Upstream publication:
-wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.28/
+wingetcreate submit dist/package-managers/winget/manifests/c/CipherVault/CipherVault/1.0.29/
 ```
 
 ---
@@ -93,7 +93,7 @@ The release workflow verifies the signed `SHA256SUMS.txt`, then updates the vers
 If that job ever fails, first authenticate the checksum file and signature using `dist/scripts/install.sh`, then run the manifest updater against the authenticated checksums:
 
 ```sh
-tag=v1.0.28
+tag=v1.0.29
 verify_dir="$(mktemp -d)"
 trap 'rm -rf "$verify_dir"' EXIT
 CIPHERVAULT_INSTALLER_VERIFY_ONLY=1 \
