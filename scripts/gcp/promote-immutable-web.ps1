@@ -37,15 +37,11 @@ param(
     [string]$VcsWebhookSecret = "ciphervault-vcs-webhook-key",
     [string]$HealthCheckIp = "",
 
-    [string]$FinalityConfirmations = "",
-
     [string]$OperatorRegions = "",
 
     [string]$CheckpointFeedPath = "",
 
     [string]$CheckpointPublisherKey = "",
-
-    [string]$ArbitrumRpcUrl = "",
     [string]$CosignCertificateIdentityRegex = "https://github.com/samuel-1-avson/CipherVault/.github/workflows/release.yml@refs/tags/.*",
     [string]$CosignRollbackCertificateIdentityRegex = "",
     [switch]$Apply
@@ -356,9 +352,6 @@ foreach ($path in @($compose, $caddy, $startup)) {
     }
 }
 
-if ($FinalityConfirmations.Trim() -ne "" -and $FinalityConfirmations.Trim() -notmatch '^[1-9][0-9]*$') {
-    throw "FinalityConfirmations must be a positive integer"
-}
 if ($OperatorRegions.Contains(',')) {
     throw "OperatorRegions must use spaces (not commas) between endpoints: commas corrupt the instance metadata join"
 }
@@ -376,9 +369,7 @@ if ($CheckpointFeedPath.Trim() -ne "") {
 if ($CheckpointPublisherKey.Trim() -ne "" -and $CheckpointPublisherKey.Trim() -notmatch '^(0x)?[0-9a-fA-F]{64}$') {
     throw "CheckpointPublisherKey must be 32 bytes of hex (0x prefix optional)"
 }
-if ($ArbitrumRpcUrl.Trim() -ne "" -and $ArbitrumRpcUrl.Trim() -notmatch '^https://') {
-    throw "ArbitrumRpcUrl must be an https URL"
-}
+
 
 $caddyImage = Get-StagedCaddyImage -ComposePath $compose
 
@@ -436,10 +427,9 @@ try {
         "project-id=$ProjectId"
     )
     if ($OperatorPins.Count -gt 0) { $metadata += "operator-pins=$($OperatorPins -join ';')" }
-    if ($FinalityConfirmations.Trim() -ne "") { $metadata += "finality-confirmations=$($FinalityConfirmations.Trim())" }
     if ($OperatorRegions.Trim() -ne "") { $metadata += "operator-regions=$($OperatorRegions.Trim())" }
     if ($CheckpointPublisherKey.Trim() -ne "") { $metadata += "checkpoint-publisher-key=$($CheckpointPublisherKey.Trim())" }
-    if ($ArbitrumRpcUrl.Trim() -ne "") { $metadata += "arbitrum-rpc-url=$($ArbitrumRpcUrl.Trim())" }
+
     $metadata = $metadata -join ','
 
     Write-Host "Switching the VM to the least-privilege runtime identity and cloud-platform scope..." -ForegroundColor Cyan

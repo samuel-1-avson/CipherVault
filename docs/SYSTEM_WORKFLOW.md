@@ -2,7 +2,8 @@
 
 **Version:** `v1.0.17`  
 **Classification:** Technical Architecture & Workflow Specification  
-**Status:** Hardened Production Ready  
+**Status:** Hardened Production Ready
+**Migration note (Phase 1, 2026-11-07):** Ethereum/Arbitrum settlement removed — CipherChain sovereign ledger only (`crates/chain`, chain-id 777777). The legacy EVM path is preserved in git tag `last-evm-anchor`. Workflow 3 below is superseded.  
 
 ---
 
@@ -15,7 +16,7 @@
 2. **Zero Plaintext Leakage to Operators**: Storage operators store opaque ciphertexts addressed by content digests (CIDs). Chunks, manifests, and head records are encrypted client-side using XChaCha20-Poly1305 with domain-separated derivation contexts.
 3. **RAM Zeroization & Zero-Disk Recovery Kit**: The master recovery secret $R$ is never persisted unencrypted to disk. During vault initialization, $R$ is printed exclusively to the terminal and immediately scrubbed from volatile memory using compiler-fence memory zeroization (`Zeroize` / `ZeroizeOnDrop`).
 4. **Autonomous Durability**: Replication requires proof-of-storage readback, while an autonomous maintenance fleet monitors replica durability and triggers self-repair across independent nodes.
-5. **Trustless L2 Settlement**: Vault head state commitments can be anchored on Arbitrum L2, providing immutable sequencing and tamper-evident audit trails.
+5. **Sovereign CipherChain Settlement**: Vault head state commitments are anchored to the native zero-gas Proof-of-Authority ledger, providing deterministic finality and tamper-evident audit trails.
 
 ### Developer Operating Model: CipherVault vs. Traditional SaaS (e.g., GitHub)
 
@@ -73,8 +74,8 @@ flowchart TB
         FLT["Maintenance Scheduler\n(SQLite WAL, no HTTP surface)"]
     end
 
-    subgraph Settlement ["Arbitrum L2 Rollup"]
-        ARB["CipherVaultRegistry.sol\nSequencer Anchoring"]
+    subgraph Settlement ["CipherChain Sovereign Ledger"]
+        ARB["CipherChain PoA Ledger\nQuorum Anchoring"]
     end
 
     FS --> CDC
@@ -83,7 +84,7 @@ flowchart TB
     KDF -.->|Touch Sign| HSM
     KDF ==>|Encrypted Chunks & PoS| Operators
     FLT -.->|Heartbeats & Self-Repair| Operators
-    Client -.->|Anchor Commitment| ARB
+    Client -.->|CommitmentTx| ARB
     DB <--> UI
 ```
 
@@ -100,7 +101,7 @@ flowchart TB
 | **Snapshot Engine** (`crates/snapshot`) | Pure-Rust FastCDC, Gear Hash | Content-defined chunking, deduplication detection, snapshot serialization (canonical CBOR), and atomic restore. | In-memory stream processing |
 | **Storage Operator** (`services/operator`) | Rust, Axum, file-backed disk store (no embedded DB; redb chosen per D6, migration pending) | Untrusted federated storage nodes holding encrypted chunks, serving PoS challenges, and storing recovery envelopes. | HTTP REST (`:8201-8203` in compose; binary default `:8101`) |
 | **Maintenance Daemon** (`services/maintenance`) | Rust, Reqwest, Rusqlite | Continuous heartbeat probing, replica quorum auditing, PoS integrity verification, and autonomous self-repair. Daemon process; exposes no HTTP surface. | — |
-| **Arbitrum Registry** (`contracts/CipherVaultRegistry.sol`) | Solidity (0.8.28), Foundry | On-chain registration of state commitments (`setCommitment`), salt binding, and sequencer receipt validation. | Arbitrum One / Sepolia L2 |
+| **CipherChain Ledger** (`crates/chain`) | Rust (Ed25519 PoA, Merkle) | Sovereign registration of salted state commitments, quorum signatures, and Merkle inclusion proofs. | CipherChain `ciphervault-sovereign-1` (777777) |
 
 ---
 
@@ -271,9 +272,14 @@ sequenceDiagram
 
 ---
 
-### Workflow 3: On-Chain Settlement on Arbitrum L2 (`ciphervault anchor`)
+### Workflow 3: Sovereign Settlement on CipherChain (`ciphervault anchor`)
 
-For tamper-evident sequencing and regulatory compliance, state commitments can be anchored on Arbitrum L2:
+> **Superseded (Phase 1, 2026-11-07):** Arbitrum L2 anchoring removed. The
+> sequence below is historical. Current flow: `anchor` → local `SovereignLedger`
+> (`propose` → quorum `2N/3+1` → `commit` → JSON block log) → `anchor verify-anchor`
+> light-client proof. Legacy EVM path in git tag `last-evm-anchor`.
+
+For tamper-evident sequencing, state commitments are anchored to CipherChain:
 
 ![Workflow 3: Arbitrum L2 Settlement](./diagrams/05_l2_settlement_flow.svg)
 
@@ -657,7 +663,7 @@ sequenceDiagram
 | **Workstation Theft / Disk Forensic Dump** | OS Keyring Encrypted Store | Local SQLite database keys are DPAPI-encrypted; master secret $R$ is zeroized from disk and RAM. |
 | **Storage Operator Compromise / Rogue Host** | AEAD Client-Side Encryption | Operators only store encrypted chunks ($CID = \text{BLAKE2b}(C)$); zero plaintext or file paths are ever sent. |
 | **Malicious Operator Record Injection** | Cryptographic Authorization Boundary | `POST /v1/recovery/:locator/records` verifies Ed25519 signatures against $R_{PK}$ or valid `DeviceCertificate`. |
-| **Man-in-the-Middle Checkpoint Spoofing** | Live Arbitrum L2 Settlement | Checkpoints include EIP-712 structured evidence and sequencer receipt verification against `CipherVaultRegistry.sol`. |
+| **Man-in-the-Middle Checkpoint Spoofing** | Sovereign CipherChain anchoring | Checkpoints carry salted commitments verified against quorum-signed block headers and Merkle inclusion proofs. |
 | **Single Operator Outage / Data Center Fire** | Multi-Operator Quorum & Maintenance | 3-node replication with autonomous fleet repair reconstitutes degraded chunks onto healthy operators. |
 | **Key Extraction via Debugger / Memory Dump** | `ZeroizeOnDrop` Hygiene | `RecoverySecret`, `VaultEpochKey`, and `FileVersionKey` wipe stack and heap buffers immediately upon falling out of scope. |
 | **Corrupted Download During Restore** | Atomic Staging Directory | Chunks are assembled in `.ciphervault_staging_*` and validated against declared SHA-256 digests before touching working directories. |
@@ -685,8 +691,8 @@ cargo test --test hardware_token --locked --offline
 # 3. Run End-to-End Multi-Operator Chaos & Disaster Drill
 powershell -ExecutionPolicy Bypass -File deploy/chaos_drill.ps1
 
-# 4. Verify Live Arbitrum Settlement Deployer
-node scripts/deploy-registry.cjs --network arbitrum_sepolia
+# 4. Verify sovereign CipherChain anchor round-trip
+ciphervault anchor && ciphervault verify-anchor
 
 # 5. Launch Hardened Production Ingress & Multi-Container Cluster
 docker compose -f deploy/docker-compose.prod.yml up -d
@@ -728,7 +734,7 @@ CipherVault/
 │   ├── crypto/                      # Cryptographic Primitives (ChaCha20, Argon2, Shamir, PIV)
 │   ├── format/                      # Canonical CBOR Wire Schemas (Genesis, Head, Snapshot)
 │   ├── snapshot/                    # FastCDC Dual-Mask Chunker, Dedup & Restore Engine
-│   ├── storage/                     # MultiOperatorPool, PoS Challenges, P2P Gossip, L2 Chain
+│   ├── storage/                     # MultiOperatorPool, PoS Challenges, P2P Gossip, Chain Client
 │   ├── recovery/                    # Zero-Disk Kit, M-of-N Guardians, Push Approvals
 │   └── local-store/                 # SQLite WAL with Windows DPAPI / Linux AEAD Keyring
 │
@@ -736,7 +742,7 @@ CipherVault/
 │   ├── operator/                    # Storage Node Daemon (ciphervault-operator, CAS store)
 │   └── maintenance/                 # Autonomous Durability & Self-Repair Daemon
 │
-├── contracts/                       # Arbitrum L2 Settlement Smart Contracts (Solidity)
+├── contracts/                       # REMOVED Phase 1 (legacy EVM; history in git tag last-evm-anchor)
 ├── deploy/                          # Production Infrastructure & GCP Automation
 │   ├── gcp/                         # GCP VPS Cloud-Init Startup & Caddy Ingress
 │   ├── docker/                      # Production Dockerfiles (Non-root UID 10001)

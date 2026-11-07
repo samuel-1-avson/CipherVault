@@ -1152,9 +1152,9 @@
                     <span class="node-stage-badge">[06] ANCHOR</span>
                     <span class="node-pulse-dot"></span>
                   </div>
-                  <div class="node-title">Arbitrum L2 Anchor</div>
-                  <div class="node-sub">CipherVaultRegistry.sol</div>
-                  <div class="node-tag badge-purple">Sequencer Confirmed</div>
+                  <div class="node-title">CipherChain Anchor</div>
+                  <div class="node-sub">PoA Ledger · Quorum 2N/3+1</div>
+                  <div class="node-tag badge-purple">Quorum Signed</div>
                   <div class="node-inspect-hint">Inspect [06] ↵</div>
                 </div>
 
@@ -1257,7 +1257,7 @@ if !no_gitignore {
                 <button class="stage-nav-pill" data-stage="3">[03] AEAD Encrypt</button>
                 <button class="stage-nav-pill" data-stage="4">[04] Quorum Mesh</button>
                 <button class="stage-nav-pill" data-stage="5">[05] PoS Proof</button>
-                <button class="stage-nav-pill" data-stage="6">[06] Arbitrum L2</button>
+                <button class="stage-nav-pill" data-stage="6">[06] CipherChain</button>
               </div>
 
             </div>
@@ -2080,7 +2080,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                   </tr>
                   <tr>
                     <td><strong>Audit Verification</strong></td>
-                    <td class="col-highlight text-mint">SHA-256 Chained Hash Ledger + L2 Anchor</td>
+                    <td class="col-highlight text-mint">SHA-256 Chained Hash Ledger + PoA Anchor</td>
                     <td class="text-danger">Centralized CloudTrail</td>
                     <td class="text-warning">Flat File Audit Log</td>
                     <td class="text-danger">SaaS Audit Export</td>
@@ -2561,8 +2561,8 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
 
             <div class="step-card">
               <div class="step-idx">STEP 04</div>
-              <div class="step-card-title">Anchor to Arbitrum L2</div>
-              <p class="step-card-desc">Publishes snapshot commitments to CipherVaultRegistry.sol for immutable timestamp verification.</p>
+              <div class="step-card-title">Anchor to CipherChain</div>
+              <p class="step-card-desc">Anchors snapshot commitments to the sovereign PoA ledger for immutable timestamp verification.</p>
               <div class="step-cmd">cv anchor &amp;&amp; cv verify-anchor</div>
             </div>
 

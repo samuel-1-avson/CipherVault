@@ -1,5 +1,7 @@
 # Mainnet Promotion Evidence (Blocker 5)
 
+> **SUPERSEDED (Phase 1, 2026-11-07):** Arbitrum promotion cancelled — Ethereum/Arbitrum anchoring removed in favor of the CipherChain sovereign ledger. Kept for historical context only. Legacy EVM path in git tag `last-evm-anchor`.
+
 **Status:** `BLOCKED — EXTERNAL DEPENDENCY` (entry gates red). No mainnet
 transaction has been sent; anchoring remains on Arbitrum Sepolia
 (chain 421614). This file records gate status and the preparation

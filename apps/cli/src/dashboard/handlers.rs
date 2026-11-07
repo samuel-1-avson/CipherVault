@@ -864,11 +864,11 @@ pub(crate) async fn api_create_snapshot_handler(
 }
 
 pub(crate) async fn api_create_anchor_handler() -> impl axum::response::IntoResponse {
-    match cmd_anchor(None, None, None, None, None, None, false, None).await {
+    match cmd_anchor(None).await {
         Ok(_) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,
-            "message": "Snapshot head commitment successfully prepared and recorded for Arbitrum One"
+            "message": "Snapshot head commitment successfully anchored to CipherChain (sovereign ledger)"
         })),
         Err(e) => axum::Json(serde_json::json!({
             "status": "error",
@@ -944,15 +944,9 @@ pub(crate) async fn api_relayer_checkpoints_handler() -> impl axum::response::In
         .map(|ev| {
             let tx_hex = format!("0x{}", hex::encode(&ev.tx_hash));
             let is_empty_tx = ev.tx_hash == [0u8; 32];
-            let arbiscan_url = if is_empty_tx {
-                String::new()
-            } else if ev.chain_id == 42161 {
-                format!("https://arbiscan.io/tx/{}", tx_hex)
-            } else if ev.chain_id == 421614 {
-                format!("https://sepolia.arbiscan.io/tx/{}", tx_hex)
-            } else {
-                String::new()
-            };
+            // Sovereign anchors carry the block hash in `tx_hash`; there is no
+            // EVM explorer. Keys are kept (empty) for dashboard compatibility.
+            let explorer_url = String::new();
 
             let status_str = if is_empty_tx { "not_submitted" } else { "submitted" };
             let verification_status = if is_empty_tx {
@@ -970,8 +964,8 @@ pub(crate) async fn api_relayer_checkpoints_handler() -> impl axum::response::In
                 "contract_address_hex": format!("0x{}", hex::encode(&ev.contract_address)),
                 "tx_hash": if is_empty_tx { "".to_string() } else { tx_hex.clone() },
                 "tx_hash_hex": tx_hex,
-                "explorer_url": arbiscan_url.clone(),
-                "arbiscan_url": arbiscan_url,
+                "explorer_url": explorer_url.clone(),
+                "arbiscan_url": explorer_url,
                 "reported_block_number": if ev.block_number > 0 { Some(ev.block_number) } else { None },
                 "timestamp_utc": ev.timestamp_utc,
                 "is_relayed": !is_empty_tx,
@@ -988,7 +982,7 @@ pub(crate) async fn api_relayer_checkpoints_handler() -> impl axum::response::In
         "relayer_status": {
             "operational": null,
             "status": "unverified",
-            "target_network": "Arbitrum checkpoint metadata",
+            "target_network": "CipherChain checkpoint metadata",
             "verification_status": "unavailable"
         },
         "checkpoints": json_anchors,
@@ -997,12 +991,12 @@ pub(crate) async fn api_relayer_checkpoints_handler() -> impl axum::response::In
 }
 
 pub(crate) async fn api_relayer_anchor_handler() -> impl axum::response::IntoResponse {
-    match cmd_anchor(None, None, None, None, None, None, true, None).await {
+    match cmd_anchor(None).await {
         Ok(_) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,
             "verification_status": "unverified",
-            "message": "Checkpoint processing completed. The dashboard has not independently verified a sequencer receipt."
+            "message": "Checkpoint anchored to the local CipherChain sovereign ledger."
         })),
         Err(e) => axum::Json(serde_json::json!({
             "status": "error",

@@ -207,11 +207,11 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
     );
 
     // =========================================================================
-    // 5. AUTOMATED L2 CHECKPOINT RELAYER (Arbitrum EIP-712 proof)
+    // 5. SOVEREIGN CIPHERCHAIN ANCHOR (zero-gas PoA ledger, Phase 1 migration)
     // =========================================================================
-    println!("\n>>> [STEP 5] Submitting on-chain checkpoint to automated L2 relayer...");
+    println!("\n>>> [STEP 5] Anchoring head commitment to CipherChain sovereign ledger...");
     let anchor_output = Command::new(&bin)
-        .args(["anchor", "--auto-relay", "--relayer-url", &url1])
+        .args(["anchor"])
         .current_dir(&client_laptop)
         .output()
         .unwrap();
@@ -219,7 +219,7 @@ async fn test_chaos_federation_and_guardian_disaster_drill() {
     let anchor_stdout = String::from_utf8_lossy(&anchor_output.stdout);
     let anchor_stderr = String::from_utf8_lossy(&anchor_output.stderr);
     assert!(
-        anchor_output.status.success() && anchor_stdout.contains("QueuedForRelay"),
+        anchor_output.status.success() && anchor_stdout.contains("Sovereign Block Endorsed"),
         "Anchor failed:\nSTDOUT:\n{}\nSTDERR:\n{}",
         anchor_stdout,
         anchor_stderr

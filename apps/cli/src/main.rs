@@ -63,8 +63,8 @@ Developer: vault & secrets:
 Developer: run & automate:
   run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
   watch                Watch tracked confidential files and automatically create snapshots on save
-  anchor               Anchor a snapshot head commitment to Arbitrum One
-  verify-anchor        Verify an Arbitrum on-chain commitment and finality stage
+  anchor               Anchor a snapshot head commitment to CipherChain (sovereign PoA ledger)
+  verify-anchor        Verify a CipherChain sovereign commitment and Merkle inclusion proof
   approve              Out-of-band cryptographic approval and multi-party authorization
   token                Manage physical hardware security tokens (YubiKey PIV / PC/SC)
 
@@ -552,7 +552,7 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// Anchor a snapshot head commitment to Arbitrum One
+    /// Anchor a snapshot head commitment to CipherChain (sovereign PoA ledger)
     Anchor {
         #[arg(
             long,
@@ -560,39 +560,9 @@ enum Commands {
         )]
         head: Option<String>,
 
-        #[arg(short, long, help = "Arbitrum RPC endpoint URL")]
-        rpc: Option<String>,
-
-        #[arg(short, long, help = "Contract address (hex, 20 bytes)")]
-        contract: Option<String>,
-
-        #[arg(long, help = "Chain ID (defaults to 42161)")]
-        chain_id: Option<u64>,
-
         #[arg(
             long,
-            help = "Confirmed on-chain transaction hash (hex, 32 bytes) if broadcast via external wallet/relayer"
-        )]
-        tx_hash: Option<String>,
-
-        #[arg(
-            long,
-            help = "Raw signed transaction hex to broadcast directly via JSON-RPC eth_sendRawTransaction"
-        )]
-        raw_tx: Option<String>,
-
-        #[arg(
-            long,
-            help = "Automatically submit and confirm commitment through background L2 relayer"
-        )]
-        auto_relay: bool,
-
-        #[arg(long, help = "URL of the automated L2 relayer service")]
-        relayer_url: Option<String>,
-
-        #[arg(
-            long,
-            help = "Run in continuous daemon mode, periodically settling state roots on Arbitrum"
+            help = "Run in continuous daemon mode, periodically anchoring to the sovereign ledger"
         )]
         daemon: bool,
 
@@ -604,16 +574,13 @@ enum Commands {
         interval: u64,
     },
 
-    /// Verify an Arbitrum on-chain commitment and finality stage
+    /// Verify a CipherChain sovereign commitment and Merkle inclusion proof
     VerifyAnchor {
         #[arg(
             long,
             help = "Snapshot head CID (hex) to verify (defaults to active head)"
         )]
         head: Option<String>,
-
-        #[arg(short, long, help = "Arbitrum RPC endpoint URL")]
-        rpc: Option<String>,
     },
 
     /// Out-of-band cryptographic approval and multi-party authorization
@@ -669,7 +636,7 @@ enum Commands {
 
         #[arg(
             long,
-            default_value = "Arbitrum One",
+            default_value = "CipherChain",
             help = "Human-readable network label included in each checkpoint"
         )]
         network: String,

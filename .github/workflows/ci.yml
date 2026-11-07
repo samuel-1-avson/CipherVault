@@ -112,22 +112,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --locked
 
-  contracts:
-    name: Foundry Solidity Test Suite
+  sovereign-chain:
+    name: CipherChain Sovereign Test Suite
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: nightly
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run Foundry Contract Tests
-        run: forge test -vvv
+      - name: Run Sovereign Chain Tests
+        run: cargo test -p ciphervault-chain -p ciphervault-storage -p ciphervault-operator --locked
 
   bench:
     name: Push Throughput Bench (ignored perf test)

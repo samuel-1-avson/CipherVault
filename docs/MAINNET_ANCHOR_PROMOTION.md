@@ -1,5 +1,7 @@
 # Mainnet Anchor Promotion Plan (Track 6)
 
+> **SUPERSEDED (Phase 1, 2026-11-07):** Arbitrum promotion cancelled — Ethereum/Arbitrum anchoring removed in favor of the CipherChain sovereign ledger. Kept for historical context only; do not execute. Legacy EVM path in git tag `last-evm-anchor`.
+
 Promoting checkpoint anchoring from Arbitrum Sepolia (chain 421614,
 current) to Arbitrum One (chain 42161). This is a plan, not an
 execution: deployment needs the payer-held key ceremony and the gates

@@ -10,10 +10,41 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         return;
     }
 
-    // Snapshot inspector is display-only: any dismiss key closes it.
+    // Snapshot inspector is display-only, except for its action shortcuts:
+    // [R] stages a restore confirmation, [F] diffs the selected snapshot.
     if app.show_snapshot_modal {
-        if let KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') = key.code {
-            app.show_snapshot_modal = false;
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                app.show_snapshot_modal = false;
+            }
+            KeyCode::Char('R') => {
+                app.show_snapshot_modal = false;
+                app.request_restore_confirm();
+            }
+            KeyCode::Char('F') => {
+                app.show_snapshot_modal = false;
+                app.spawn_diff_for_context();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Diff viewer: scroll the masked report, any dismiss key closes it.
+    // It sits below the confirm modal so a staged [y]/[Enter] still resolves
+    // even with a diff open underneath.
+    if app.show_diff_modal && app.confirm_action.is_none() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                app.show_diff_modal = false;
+            }
+            KeyCode::Down | KeyCode::Char('j') => app.select_next(TuiTable::DiffLines),
+            KeyCode::Up | KeyCode::Char('k') => app.select_prev(TuiTable::DiffLines),
+            KeyCode::PageDown => app.select_page(TuiTable::DiffLines, true),
+            KeyCode::PageUp => app.select_page(TuiTable::DiffLines, false),
+            KeyCode::Home => app.select_edge(TuiTable::DiffLines, true),
+            KeyCode::End => app.select_edge(TuiTable::DiffLines, false),
+            _ => {}
         }
         return;
     }
@@ -106,9 +137,10 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
     // Global Keybindings
     match key.code {
         // Quit. Bare Esc never quits: it only dismisses modals (handled
-        // above), so mashing Esc on a table cannot exit the TUI.
+        // above), so mashing Esc on a table cannot exit the TUI. While a
+        // mutating task runs, the first [q] arms a two-stroke guard.
         KeyCode::Char('q') => {
-            app.should_quit = true;
+            app.request_quit();
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
@@ -240,8 +272,10 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         // Account session actions. Hosted TOTP login remains a browser
         // ceremony; the TUI uses the local OS-protected account key so it can
         // never require users to paste vault secrets into the terminal.
+        // Sign-out is confirm-gated ([y]/[Enter] confirms) so a typo on the
+        // key next to push ([p]) cannot revoke the session mid-shift.
         KeyCode::Char('l') => app.login_local_account(),
-        KeyCode::Char('o') => app.logout_local_account(),
+        KeyCode::Char('o') => app.request_logout_confirm(),
 
         // Action: Track Modal
         KeyCode::Char('t') => {
@@ -258,6 +292,25 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         // Action: Push snapshot (background task; completion lands on the
         // status line without freezing input).
         KeyCode::Char('p') => app.spawn_push(),
+
+        // Action: stage restore confirmation (Snapshots tab or inspector;
+        // the modal executes on [y]/[Enter] because restore overwrites
+        // uncommitted working-tree changes).
+        KeyCode::Char('R') => {
+            app.request_restore_confirm();
+        }
+
+        // Action: masked diff (Snapshots tab: selected vs head, head vs
+        // working tree; Files tab: selected file, head vs working tree).
+        // Read-only, so no confirmation is staged.
+        KeyCode::Char('F') => app.spawn_diff_for_context(),
+
+        // Pull: [d] runs the read-only dry-run check (no confirm needed —
+        // it writes nothing); [D] stages the real pull behind the confirm
+        // modal (applies the remote snapshot with force=false, so dirty
+        // files abort instead of being overwritten).
+        KeyCode::Char('d') => app.spawn_pull(true),
+        KeyCode::Char('D') => app.request_pull_confirm(),
 
         // Action: Check for updates
         KeyCode::Char('u') => app.spawn_update_check(true),

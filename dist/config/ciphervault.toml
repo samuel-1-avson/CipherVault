@@ -14,10 +14,7 @@ endpoints = [
 ]
 
 [chain]
-# Arbitrum Checkpoint Anchoring Configuration
-network = "arbitrum-one"
-chain_id = 42161
-rpc_url = "https://arb1.arbitrum.io/rpc"
-# Deployed CipherVaultRegistry contract address (20-byte hex)
-registry_contract = "0x0000000000000000000000000000000000000000"
+# CipherChain Sovereign Ledger Configuration (zero-gas PoA, no EVM).
+network = "ciphervault-sovereign-1"
+chain_id = 777777
 timeout_seconds = 15

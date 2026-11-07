@@ -19,7 +19,7 @@
 - [ ] `cargo check --workspace`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
-- [ ] `forge test` (if contract changes were made)
+- [ ] `cargo test -p ciphervault-chain -p ciphervault-cli` (sovereign ledger tests)
 
 ## Contributor Checklist & Legal Certification (DCO)
 <!-- In accordance with CONTRIBUTING.md, all contributors must sign off on their commits. -->

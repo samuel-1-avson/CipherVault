@@ -1262,34 +1262,18 @@ pub fn compute_pos_proof(cid: &[u8; 32], nonce: &[u8; 32], data: &[u8]) -> [u8; 
   },
   6: {
     kicker: 'STAGE [06] DEEP-DIVE SPECIFICATION',
-    heading: 'Arbitrum L2 Checkpoint Anchor (Live: Sepolia Testnet)',
-    mechanics: 'Snapshot commitments (SHA-256 of salt || head_cid) are anchored to the immutable CipherVaultRegistry.sol smart contract. The live fleet checkpoints on Arbitrum Sepolia (chain 421614, registry 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5); the CLI defaults to Arbitrum One (42161) for mainnet, whose promotion is gated on the external security audit.',
-    security: 'Zero plaintext, zero filenames, and zero user keys are ever revealed on-chain. Permanent L2 immutable timestamp prevents history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify with ciphervault verify-anchor.',
-    statVal: 'Live on Sepolia',
-    statDesc: 'Registry 0xa26E…F63Db5 · chain 421614 · mainnet target: Arbitrum One',
-    code: `// contracts/CipherVaultRegistry.sol (live: Arbitrum Sepolia 421614)
-contract CipherVaultRegistry {
-    event CommitmentPublished(
-        bytes32 indexed commitment,
-        address indexed publisher,
-        uint256 blockNumber,
-        uint256 timestamp
-    );
-    mapping(bytes32 => uint256) public firstSeenBlock;
-
-    function publish(bytes32 commitment) external {
-        require(commitment != bytes32(0), "Invalid commitment: zero digest");
-        if (firstSeenBlock[commitment] == 0) {
-            firstSeenBlock[commitment] = block.number;
-            emit CommitmentPublished(
-                commitment,
-                msg.sender,
-                block.number,
-                block.timestamp
-            );
-        }
-    }
-}`
+    heading: 'CipherChain Sovereign Anchor (Zero-Gas PoA Ledger)',
+    mechanics: 'Snapshot commitments (SHA-256 of salt || head_cid) are anchored to the native CipherChain Proof-of-Authority ledger (chain-id 777777, ciphervault-sovereign-1). Operators endorse each block with Ed25519 quorum signatures (2N/3+1); inclusion is proven by Merkle audit paths against the block tx_root, verifiable offline in sub-milliseconds.',
+    security: 'Zero plaintext, zero filenames, and zero user keys are ever revealed on-chain. Quorum-signed blocks prevent history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify with ciphervault verify-anchor.',
+    statVal: 'Zero-gas PoA',
+    statDesc: 'Chain 777777 · quorum 2N/3+1 · Merkle proofs',
+    code: `// crates/chain — sovereign anchor (no EVM, no gas)
+commitment = SHA-256("CIPHERVAULT-ANCHOR-V1" || salt || head_cid)
+// CipherChain block: header { version, chain_id, height,
+//   prev_block_hash, state_root, tx_root, timestamp, proposer }
+// quorum = Ed25519 validator signatures (2N/3 + 1)
+// proof  = Merkle inclusion path -> header.tx_root
+// verify = ciphervault verify-anchor  // <1ms, offline-capable`
   }
 };
 

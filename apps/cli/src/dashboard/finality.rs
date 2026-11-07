@@ -3,7 +3,6 @@
 use anyhow::Result;
 use chrono::Utc;
 use rand::RngCore;
-use reqwest::Client as HttpClient;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -428,11 +427,10 @@ pub(crate) fn public_feed_url_allowed(value: &str) -> bool {
 /// Fetches a feed body with a bounded size. Content is still verified by
 /// `verify_public_checkpoint_feed` before use.
 async fn fetch_public_checkpoint_feed(url: &str) -> Result<String, String> {
-    let response = checkpoint_rpc_http_client()
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| "Configured public checkpoint feed URL could not be fetched".to_string())?;
+    let response =
+        reqwest::Client::new().get(url).send().await.map_err(|_| {
+            "Configured public checkpoint feed URL could not be fetched".to_string()
+        })?;
     if !response.status().is_success() {
         return Err("Configured public checkpoint feed URL returned an error status".to_string());
     }
@@ -478,146 +476,7 @@ pub(crate) async fn load_public_checkpoint_feed_async(
 }
 
 pub(crate) const CHECKPOINT_FINALITY_CACHE_TTL: Duration = Duration::from_secs(60);
-pub(crate) const DEFAULT_FINALITY_CONFIRMATIONS: u64 = 12;
 pub(crate) const DEFAULT_CHECKPOINT_CANARY_MAX_AGE_SECS: u64 = 24 * 60 * 60;
-
-pub(crate) static CHECKPOINT_RPC_HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
-
-/// Shared client for independent Arbitrum receipt queries. Receipt fetching is
-/// read-only evidence collection; RPC failures degrade to `unknown`, never errors.
-pub(crate) fn checkpoint_rpc_http_client() -> HttpClient {
-    CHECKPOINT_RPC_HTTP_CLIENT
-        .get_or_init(|| {
-            HttpClient::builder()
-                .timeout(Duration::from_secs(10))
-                .pool_idle_timeout(Duration::from_secs(120))
-                .pool_max_idle_per_host(4)
-                .build()
-                .unwrap_or_else(|_| HttpClient::new())
-        })
-        .clone()
-}
-
-/// Parses an Ethereum JSON-RPC quantity (`0x`-hex string or JSON number).
-pub(crate) fn parse_rpc_quantity(value: &serde_json::Value) -> Option<u64> {
-    match value {
-        serde_json::Value::String(text) => {
-            let digits = text.trim().trim_start_matches("0x");
-            if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-                return None;
-            }
-            u64::from_str_radix(digits, 16).ok()
-        }
-        serde_json::Value::Number(number) => number.as_u64(),
-        _ => None,
-    }
-}
-
-/// Outcome of one independent `eth_getTransactionReceipt` observation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReceiptFetch {
-    /// The transaction has no receipt yet (pending or unknown to the node).
-    Pending,
-    /// Receipt observed; `status_ok` mirrors receipt `status` (1 = success).
-    Observed { status_ok: bool, block_number: u64 },
-    /// RPC failed or returned an unparseable receipt; evidence unavailable.
-    Failed,
-}
-
-/// Classifies a JSON-RPC `result` for `eth_getTransactionReceipt`.
-pub(crate) fn classify_receipt_result(result: &serde_json::Value) -> ReceiptFetch {
-    if result.is_null() {
-        return ReceiptFetch::Pending;
-    }
-    let receipt = match result.as_object() {
-        Some(object) => object,
-        None => return ReceiptFetch::Failed,
-    };
-    let status = receipt.get("status").and_then(parse_rpc_quantity);
-    let block_number = receipt.get("blockNumber").and_then(parse_rpc_quantity);
-    match (status, block_number) {
-        (Some(status), Some(block_number)) => ReceiptFetch::Observed {
-            status_ok: status == 1,
-            block_number,
-        },
-        _ => ReceiptFetch::Failed,
-    }
-}
-
-/// Maps one receipt observation + chain tip to
-/// `(finality_status, receipt_block, confirmations)`.
-pub(crate) fn checkpoint_finality(
-    fetch: ReceiptFetch,
-    tip_block: Option<u64>,
-    required_confirmations: u64,
-) -> (&'static str, Option<u64>, Option<u64>) {
-    match fetch {
-        ReceiptFetch::Pending => ("pending", None, None),
-        ReceiptFetch::Failed => ("unknown", None, None),
-        ReceiptFetch::Observed {
-            status_ok: false,
-            block_number,
-        } => (
-            "failed",
-            Some(block_number),
-            tip_block.map(|tip| tip.saturating_sub(block_number)),
-        ),
-        ReceiptFetch::Observed {
-            status_ok: true,
-            block_number,
-        } => {
-            let confirmations = tip_block.map(|tip| tip.saturating_sub(block_number));
-            let deeply_confirmed =
-                confirmations.is_some_and(|count| count >= required_confirmations);
-            (
-                if deeply_confirmed {
-                    "deeply_confirmed"
-                } else {
-                    "confirmed"
-                },
-                Some(block_number),
-                confirmations,
-            )
-        }
-    }
-}
-
-/// Detects reorg suspects among previously deeply-confirmed receipts: a suspect
-/// is a feed checkpoint whose deeply-confirmed receipt is now missing or mined at a
-/// different block. `current` carries (tx hash, finality status, receipt block).
-/// Checkpoints that left the feed are ignored (feed edits are not reorgs), and
-/// a re-confirmed receipt clears even at a new block (the chain moved on).
-pub(crate) fn detect_reorg_suspects(
-    previously_deep: &[(String, u64)],
-    current: &[(String, String, Option<u64>)],
-) -> Vec<String> {
-    previously_deep
-        .iter()
-        .filter(|(tx, block)| {
-            let Some((_, status, observed)) =
-                current.iter().find(|(current_tx, _, _)| current_tx == tx)
-            else {
-                return false;
-            };
-            if status == "deeply_confirmed" {
-                return false;
-            }
-            match observed {
-                Some(observed_block) => observed_block != block,
-                None => true,
-            }
-        })
-        .map(|(tx, _)| tx.clone())
-        .collect()
-}
-
-pub(crate) fn finality_confirmations_required() -> u64 {
-    std::env::var("CIPHERVAULT_FINALITY_CONFIRMATIONS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|confirmations| *confirmations > 0)
-        .unwrap_or(DEFAULT_FINALITY_CONFIRMATIONS)
-}
 
 pub(crate) fn checkpoint_canary_max_age_secs() -> u64 {
     std::env::var("CIPHERVAULT_CHECKPOINT_CANARY_MAX_AGE_SECS")
@@ -648,61 +507,6 @@ pub(crate) fn newest_checkpoint_published_at(checkpoints: &[serde_json::Value]) 
         .max()
 }
 
-/// Normalizes a transaction hash for JSON-RPC `DATA` params. Nodes reject
-/// bare hex (`cannot unmarshal hex string without 0x prefix`), while older
-/// feed files predate the publisher's `0x` prefix — accept both, emit `0x`.
-pub(crate) fn normalize_rpc_tx_hash(hash: &str) -> String {
-    let trimmed = hash.trim();
-    if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
-        trimmed.to_string()
-    } else {
-        format!("0x{trimmed}")
-    }
-}
-
-pub(crate) async fn fetch_receipt_observation(
-    client: &HttpClient,
-    rpc_url: &str,
-    tx_hash_hex: String,
-) -> ReceiptFetch {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "eth_getTransactionReceipt",
-        "params": [normalize_rpc_tx_hash(&tx_hash_hex)],
-    });
-    let response = match client.post(rpc_url).json(&body).send().await {
-        Ok(response) => response,
-        Err(_) => return ReceiptFetch::Failed,
-    };
-    let payload: serde_json::Value = match response.json().await {
-        Ok(payload) => payload,
-        Err(_) => return ReceiptFetch::Failed,
-    };
-    if payload.get("error").is_some() {
-        return ReceiptFetch::Failed;
-    }
-    match payload.get("result") {
-        Some(result) => classify_receipt_result(result),
-        None => ReceiptFetch::Failed,
-    }
-}
-
-pub(crate) async fn fetch_chain_tip_block(client: &HttpClient, rpc_url: &str) -> Option<u64> {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "eth_blockNumber",
-        "params": [],
-    });
-    let response = client.post(rpc_url).json(&body).send().await.ok()?;
-    let payload: serde_json::Value = response.json().await.ok()?;
-    if payload.get("error").is_some() {
-        return None;
-    }
-    payload.get("result").and_then(parse_rpc_quantity)
-}
-
 pub(crate) static CHECKPOINT_FINALITY_CACHE: OnceLock<
     tokio::sync::Mutex<Option<FinalityCacheEntry>>,
 > = OnceLock::new();
@@ -711,139 +515,36 @@ pub(crate) static CHECKPOINT_FINALITY_CACHE: OnceLock<
 pub(crate) struct FinalityCacheEntry {
     cached_at: Instant,
     checkpoints: Vec<serde_json::Value>,
-    /// Previously deeply-confirmed receipts as (tx hash, block): reorg memory.
-    deeply_confirmed: Vec<(String, u64)>,
 }
 
-/// Loads the verified feed and, when `CIPHERVAULT_ARBITRUM_RPC_URL` is set,
-/// enriches transaction-bearing checkpoints with independent receipt finality.
-/// Results are cached briefly; without an RPC URL this is the plain feed.
+/// Loads the verified publisher-signed checkpoint feed, cached briefly.
+///
+/// EVM receipt enrichment was removed in Phase 1 of the sovereign-chain
+/// migration: this returns the feed as-is. Sovereign finality lives in the
+/// local CipherChain ledger (`anchor verify-anchor`), not in this feed.
 pub(crate) async fn load_public_feed_with_finality(
 ) -> Result<Option<Vec<serde_json::Value>>, String> {
     let checkpoints = match load_public_checkpoint_feed_async().await? {
         Some(checkpoints) => checkpoints,
         None => return Ok(None),
     };
-    let rpc_url = std::env::var("CIPHERVAULT_ARBITRUM_RPC_URL")
-        .ok()
-        .map(|url| url.trim().to_string())
-        .filter(|url| !url.is_empty());
-    let Some(rpc_url) = rpc_url else {
-        return Ok(Some(checkpoints));
-    };
 
     let cache = CHECKPOINT_FINALITY_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
-    let previous_deep = match cache.lock().await.clone() {
-        Some(entry) if entry.cached_at.elapsed() < CHECKPOINT_FINALITY_CACHE_TTL => {
-            return Ok(Some(entry.checkpoints));
-        }
-        Some(entry) => entry.deeply_confirmed,
-        None => Vec::new(),
-    };
-
-    let client = checkpoint_rpc_http_client();
-    let required = finality_confirmations_required();
-    let tip = fetch_chain_tip_block(&client, &rpc_url).await;
-    let tx_hashes: Vec<Option<String>> = checkpoints
-        .iter()
-        .map(|checkpoint| {
-            checkpoint
-                .get("tx_hash_hex")
-                .and_then(|hash| hash.as_str())
-                .filter(|hash| !hash.is_empty())
-                .map(str::to_string)
-        })
-        .collect();
-    let targets: Vec<(usize, String)> = tx_hashes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, hash)| hash.clone().map(|hash| (index, hash)))
-        .collect();
-    let mut enriched = checkpoints;
-    for chunk in targets.chunks(8) {
-        let fetches = chunk
-            .iter()
-            .map(|(_, hash)| fetch_receipt_observation(&client, &rpc_url, hash.clone()));
-        let observations = join_all(fetches).await;
-        for ((index, _), fetch) in chunk.iter().zip(observations) {
-            let (status, block, confirmations) = checkpoint_finality(fetch, tip, required);
-            let Some(record) = enriched.get_mut(*index) else {
-                continue;
-            };
-            let Some(object) = record.as_object_mut() else {
-                continue;
-            };
-            object.insert("finality_status".to_string(), serde_json::json!(status));
-            object.insert("receipt_block_number".to_string(), serde_json::json!(block));
-            object.insert(
-                "confirmations".to_string(),
-                serde_json::json!(confirmations),
-            );
-        }
-    }
-
-    let current: Vec<(String, String, Option<u64>)> = enriched
-        .iter()
-        .filter_map(|record| {
-            let tx = record
-                .get("tx_hash_hex")?
-                .as_str()
-                .filter(|hash| !hash.is_empty())?;
-            let status = record
-                .get("finality_status")
-                .and_then(|value| value.as_str())
-                .unwrap_or("unknown");
-            let block = record
-                .get("receipt_block_number")
-                .and_then(|value| value.as_u64());
-            Some((tx.to_string(), status.to_string(), block))
-        })
-        .collect();
-    let suspects = detect_reorg_suspects(&previous_deep, &current);
-    for record in enriched.iter_mut() {
-        let tx = record
-            .get("tx_hash_hex")
-            .and_then(|hash| hash.as_str())
-            .unwrap_or("");
-        if suspects.iter().any(|suspect| suspect == tx) {
-            if let Some(object) = record.as_object_mut() {
-                object.insert(
-                    "finality_status".to_string(),
-                    serde_json::json!("reorg_suspected"),
-                );
+    {
+        let cached = cache.lock().await.clone();
+        if let Some(entry) = cached {
+            if entry.cached_at.elapsed() < CHECKPOINT_FINALITY_CACHE_TTL {
+                return Ok(Some(entry.checkpoints));
             }
-        }
-    }
-    for tx in &suspects {
-        eprintln!(
-            "checkpoint reorg suspected: deeply-confirmed receipt for {tx} missing or re-mined"
-        );
-    }
-    let mut next_deep: Vec<(String, u64)> = Vec::new();
-    for (tx, status, block) in &current {
-        if status == "deeply_confirmed" {
-            if let Some(number) = block {
-                next_deep.push((tx.clone(), *number));
-            }
-        }
-    }
-    // Suspects stay in memory so the alarm persists until re-confirmed; feed
-    // removals drop out (feed edits are not reorgs).
-    for (tx, block) in &previous_deep {
-        if current.iter().any(|(current_tx, _, _)| current_tx == tx)
-            && !next_deep.iter().any(|(known, _)| known == tx)
-        {
-            next_deep.push((tx.clone(), *block));
         }
     }
 
     let entry = FinalityCacheEntry {
         cached_at: Instant::now(),
-        checkpoints: enriched.clone(),
-        deeply_confirmed: next_deep,
+        checkpoints: checkpoints.clone(),
     };
     *cache.lock().await = Some(entry);
-    Ok(Some(enriched))
+    Ok(Some(checkpoints))
 }
 
 pub(crate) async fn api_public_anchors_handler() -> axum::response::Response {
@@ -889,9 +590,6 @@ pub(crate) async fn api_public_relayer_checkpoints_handler() -> axum::response::
                     checkpoint.get("tx_hash_hex")?.as_str().map(str::to_string)
                 })
                 .collect();
-            let rpc_configured = std::env::var("CIPHERVAULT_ARBITRUM_RPC_URL")
-                .ok()
-                .is_some_and(|url| !url.trim().is_empty());
             axum::Json(serde_json::json!({
                 "status": "ok",
                 "access_mode": "public",
@@ -899,7 +597,7 @@ pub(crate) async fn api_public_relayer_checkpoints_handler() -> axum::response::
                     "public_read_only": true,
                     "target_network": network,
                     "verification_status": "publisher_signed",
-                    "finality_status": if rpc_configured { "independent_rpc" } else { "unverified" },
+                    "finality_status": "unverified",
                     "canary_status": canary,
                     "reorg_suspected": !reorg_suspect_tx_hashes.is_empty(),
                     "reorg_suspect_tx_hashes": reorg_suspect_tx_hashes,
@@ -908,7 +606,7 @@ pub(crate) async fn api_public_relayer_checkpoints_handler() -> axum::response::
                 },
                 "checkpoints": checkpoints,
                 "count": checkpoint_count,
-                "message": "Checkpoint records are signed by the configured publisher; per-checkpoint finality reflects independent RPC receipts when an Arbitrum RPC URL is configured.",
+                "message": "Checkpoint records are signed by the configured publisher; sovereign CipherChain finality is reported by the local ledger, not this feed.",
             }))
             .into_response()
         }
@@ -1055,69 +753,6 @@ mod tests {
         assert!(parse_explorer_cid("  ab12  ").is_none());
         assert!(parse_explorer_cid(&"ab".repeat(31)).is_none());
         assert!(parse_explorer_cid(&"zz".repeat(32)).is_none());
-    }
-
-    #[test]
-    fn rpc_tx_hash_normalizer_emits_0x_prefix() {
-        assert_eq!(
-            normalize_rpc_tx_hash(
-                "7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
-            ),
-            "0x7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
-        );
-        assert_eq!(
-            normalize_rpc_tx_hash(
-                "0x7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
-            ),
-            "0x7dc9c9852a75804a2216b31e085900a9fccf35de684a897c970e6e4b090f8e22"
-        );
-        assert_eq!(normalize_rpc_tx_hash("  0xabc123  "), "0xabc123");
-    }
-
-    #[test]
-    fn published_feed_prefixes_transaction_hashes_for_rpc() {
-        // Nodes reject bare-hex DATA params, so the publisher must emit
-        // 0x-prefixed hashes (the verifier already accepts both forms).
-        let now = Utc::now().timestamp().max(0) as u64;
-        let signing_key = ciphervault_crypto::generate_signing_key();
-        let evidence = ciphervault_format::CheckpointEvidence::new(
-            [0x11u8; 32],
-            [0x22u8; 32],
-            421614,
-            [0x33u8; 20],
-            [0x44u8; 32],
-            312825597,
-            now,
-        );
-        let feed = build_public_checkpoint_feed(
-            vec![evidence],
-            "Arbitrum Sepolia".to_string(),
-            &signing_key,
-            now,
-        )
-        .unwrap();
-        assert_eq!(feed.checkpoints.len(), 1);
-        assert_eq!(
-            feed.checkpoints[0].tx_hash_hex.as_deref().unwrap(),
-            format!("0x{}", "44".repeat(32))
-        );
-        let queued = ciphervault_format::CheckpointEvidence::new(
-            [0x11u8; 32],
-            [0x22u8; 32],
-            421614,
-            [0x33u8; 20],
-            [0u8; 32],
-            0,
-            now,
-        );
-        let feed = build_public_checkpoint_feed(
-            vec![queued],
-            "Arbitrum Sepolia".to_string(),
-            &signing_key,
-            now,
-        )
-        .unwrap();
-        assert!(feed.checkpoints[0].tx_hash_hex.is_none());
     }
 
     #[test]
@@ -1313,37 +948,6 @@ mod tests {
     }
 
     #[test]
-    fn reorg_alarm_fires_on_deeply_confirmed_receipt_regression() {
-        let previous = vec![("0xaaa".to_string(), 100u64), ("0xbbb".to_string(), 120u64)];
-        // Vanished receipt + re-mined receipt alarm; steady ones stay quiet.
-        let current = vec![
-            ("0xaaa".to_string(), "unknown".to_string(), None),
-            ("0xbbb".to_string(), "confirmed".to_string(), Some(125u64)),
-        ];
-        assert_eq!(
-            detect_reorg_suspects(&previous, &current),
-            vec!["0xaaa".to_string(), "0xbbb".to_string()]
-        );
-        // Still deeply confirmed, or confirmed at the same block: no alarm.
-        let current = vec![
-            (
-                "0xaaa".to_string(),
-                "deeply_confirmed".to_string(),
-                Some(100u64),
-            ),
-            ("0xbbb".to_string(), "confirmed".to_string(), Some(120u64)),
-        ];
-        assert!(detect_reorg_suspects(&previous, &current).is_empty());
-        // Re-confirmed at a new block clears; feed removals never alarm.
-        let current = vec![(
-            "0xaaa".to_string(),
-            "deeply_confirmed".to_string(),
-            Some(140u64),
-        )];
-        assert!(detect_reorg_suspects(&previous, &current).is_empty());
-    }
-
-    #[test]
     fn checkpoint_publisher_pinning_matches_exact_key_only() {
         let key = "ab".repeat(32);
         assert!(public_checkpoint_publisher_key_pinned(&key, None));
@@ -1361,62 +965,6 @@ mod tests {
             &key,
             Some(&"00".repeat(32))
         ));
-    }
-
-    #[test]
-    fn receipt_quantities_and_finality_classification() {
-        assert_eq!(parse_rpc_quantity(&serde_json::json!("0x10")), Some(16));
-        assert_eq!(parse_rpc_quantity(&serde_json::json!("0x0")), Some(0));
-        assert_eq!(parse_rpc_quantity(&serde_json::json!(7)), Some(7));
-        assert_eq!(parse_rpc_quantity(&serde_json::json!("zz")), None);
-        assert_eq!(parse_rpc_quantity(&serde_json::Value::Null), None);
-        assert_eq!(
-            classify_receipt_result(&serde_json::Value::Null),
-            ReceiptFetch::Pending
-        );
-        let observed = serde_json::json!({"status": "0x1", "blockNumber": "0x64"});
-        assert_eq!(
-            classify_receipt_result(&observed),
-            ReceiptFetch::Observed {
-                status_ok: true,
-                block_number: 100
-            }
-        );
-        let failed_tx = serde_json::json!({"status": "0x0", "blockNumber": "0x64"});
-        assert_eq!(
-            classify_receipt_result(&failed_tx),
-            ReceiptFetch::Observed {
-                status_ok: false,
-                block_number: 100
-            }
-        );
-        assert_eq!(
-            classify_receipt_result(&serde_json::json!({"blockNumber": "0x64"})),
-            ReceiptFetch::Failed
-        );
-        assert_eq!(
-            checkpoint_finality(ReceiptFetch::Pending, Some(200), 12).0,
-            "pending"
-        );
-        assert_eq!(
-            checkpoint_finality(ReceiptFetch::Failed, Some(200), 12).0,
-            "unknown"
-        );
-        let obs = ReceiptFetch::Observed {
-            status_ok: true,
-            block_number: 100,
-        };
-        assert_eq!(
-            checkpoint_finality(obs, Some(200), 12).0,
-            "deeply_confirmed"
-        );
-        assert_eq!(checkpoint_finality(obs, Some(105), 12).0, "confirmed");
-        assert_eq!(checkpoint_finality(obs, None, 12).0, "confirmed");
-        let reverted = ReceiptFetch::Observed {
-            status_ok: false,
-            block_number: 100,
-        };
-        assert_eq!(checkpoint_finality(reverted, Some(200), 12).0, "failed");
     }
 
     #[test]

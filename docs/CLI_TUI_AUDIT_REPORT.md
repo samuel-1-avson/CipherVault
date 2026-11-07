@@ -5,6 +5,24 @@
 **Method:** static read of all TUI sources (~6,000 lines), full `Commands` enum + `HELP_TEMPLATE` review, live `ciphervault --help` / `tui --help` runs, background-task and key-handling trace, `TestBackend` unit-test inventory. No screenshots — headless audit.
 **Verdict: B+ (8.1/10).** The CLI is excellent. The TUI is a well-engineered *monitor + 3-action console* (track / push / anchor), not a CLI replacement — its biggest gap is coverage parity, not craftsmanship.
 
+## Implementation status (2026-11-07)
+
+Items 1, 2, and the pull half of 4 are implemented and tested (`cargo test -p ciphervault-cli --bins`: 227/227 on both binaries, +5 new tests):
+
+- **Quit guard (rec. 1 / finding T2):** `[q]` quits immediately when idle; while push/pull/track/anchor/update runs, the first `[q]` arms a 5 s two-stroke guard and the second confirms. `Ctrl-C` stays unconditional. Read-only probes never arm the guard; the arm clears when mutations complete.
+- **Logout confirm (rec. 2 / finding T6):** `[o]` now stages a `ConfirmAction::Logout` (`[y]/[Enter]` confirms, `[n]/[Esc]` cancels) instead of revoking immediately; no session → info status, no modal.
+- **Pull action (rec. 4 / finding T1, partial):** `[d]` runs the read-only dry-run check (no confirm, writes nothing); `[D]` stages the real pull behind the confirm modal and applies with `force=false`, so dirty files abort with `pull --force` guidance. Runs as a background task with in-flight guard, status-line result, and local-state refresh on success. Footer (`[d/D]`), help modal, and confirm modal updated; 80-col footer kept exact-fit by moving `[u]` to roomy-only + single-space roomy separators.
+- Still open from this batch: `restore` and `diff` actions (next highest-leverage coverage adds).
+
+## Implementation status — restore + diff (2026-11-07)
+
+TUI coverage went from ~7 to ~9 of ~42 CLI ops (`cargo test -p ciphervault-cli --bins`: 233/233 on both binaries, +6 tests):
+
+- **Restore (`[R]`):** Snapshots tab or inside the snapshot inspector stages `ConfirmAction::Restore` (red OVERWRITTEN warning + "Push first to keep uncommitted work"); `[y]` runs `cmd_restore(id, to=None, dry_run=false)` via `spawn_blocking` in a background task, refreshes local state on success. In-flight restores report instead of stacking and arm the quit guard.
+- **Diff (`[F]`):** read-only, no confirm. Snapshots tab: selected snapshot vs head (head itself diffs against the working tree to surface uncommitted changes); Files tab: selected file, head vs working tree. `generate_diff_report(..., reveal=false)` runs off-loop; results open a scrollable masked diff modal (`↑↓/j/k`, PgUp/PgDn, Home/End) with `+`/`-`/`~` color coding (bold fallback under `NO_COLOR`), a 1500-line cap with overflow notice, and per-line terminal-escape sanitizing.
+- Discovery without footer cost: snapshot inspector footer line (`[R] restore · [F] diff vs head`), help modal `R / F` entry, confirm `y/Enter` line updated. Global footer untouched (still exact-fit at 80 cols).
+- Still open: track-input completion, yank-CID, snapshot-modal push-message line — the remaining quick wins.
+
 ---
 
 ## 1. Scores

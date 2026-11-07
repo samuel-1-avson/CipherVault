@@ -150,7 +150,7 @@ For the final changed commit, run and retain redacted summaries of:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-forge test
+cargo test -p ciphervault-chain -p ciphervault-cli --locked
 python -m unittest discover -s scripts/security -p test_review_pack.py
 ```
 

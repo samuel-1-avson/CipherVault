@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CipherVault Sovereign Chain Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #020617; min-height: 100vh; padding: 2rem; color: white; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #34d399; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container { background: rgba(15,23,42,0.5); border-radius: 1rem; border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15,23,42,0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; } .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; } .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; } .card-dot.orange { background: #fb923c; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row"><div class="pulse-dot"></div><h1>CipherVault Sovereign Chain Architecture</h1></div>
+      <p class="subtitle">CipherChain PoA ledger (chain-id 777777) · zero-gas · salted encrypted commitments · replaces Ethereum/Arbitrum</p>
+    </div>
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 830">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+          <marker id="arrow-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/></marker>
+          <marker id="arrow-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+        <!-- Sovereign boundary -->
+        <rect x="20" y="30" width="960" height="640" rx="12" fill="rgba(251,191,36,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="32" y="52" fill="#fbbf24" font-size="10" font-weight="600">SOVEREIGN DEPLOYMENT — no Ethereum · no Arbitrum · no gas · no RPC provider</text>
+
+        <!-- CLIENT row -->
+        <text x="50" y="85" fill="#22d3ee" font-size="10" font-weight="600">CLIENT WORKSTATION (trusted)</text>
+        <rect x="50" y="95" width="170" height="70" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+        <rect x="50" y="95" width="170" height="70" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="135" y="118" fill="white" font-size="11" font-weight="600" text-anchor="middle">CLI / TUI / Agent</text>
+        <text x="135" y="134" fill="#94a3b8" font-size="9" text-anchor="middle">apps/cli · agent</text>
+        <text x="135" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">init · push · anchor · recover</text>
+
+        <rect x="235" y="95" width="180" height="70" rx="6" fill="#0f172a" stroke="#fb7185" stroke-width="1.5"/>
+        <rect x="235" y="95" width="180" height="70" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="325" y="118" fill="white" font-size="11" font-weight="600" text-anchor="middle">Crypto Core</text>
+        <text x="325" y="134" fill="#94a3b8" font-size="9" text-anchor="middle">XChaCha20-Poly1305 · Ed25519</text>
+        <text x="325" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">Blake2b-KDF · Shamir · Zeroize</text>
+
+        <rect x="430" y="95" width="170" height="70" rx="6" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/>
+        <rect x="430" y="95" width="170" height="70" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="515" y="118" fill="white" font-size="11" font-weight="600" text-anchor="middle">Local Store</text>
+        <text x="515" y="134" fill="#94a3b8" font-size="9" text-anchor="middle">SQLite WAL + DPAPI</text>
+        <text x="515" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">vault.db · evidence · queue</text>
+
+        <rect x="615" y="95" width="170" height="70" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+        <rect x="615" y="95" width="170" height="70" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="700" y="118" fill="white" font-size="11" font-weight="600" text-anchor="middle">Light Client</text>
+        <text x="700" y="134" fill="#94a3b8" font-size="9" text-anchor="middle">offline verify</text>
+        <text x="700" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">pinned validator keys</text>
+
+        <line x1="220" y1="130" x2="233" y2="130" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="415" y1="130" x2="428" y2="130" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-rose)"/>
+        <text x="325" y="88" fill="#475569" font-size="7" text-anchor="middle">encrypt-then-store · salt never leaves device</text>
+
+        <!-- OPERATORS row -->
+        <text x="50" y="200" fill="#34d399" font-size="10" font-weight="600">OPERATOR FEDERATION (untrusted — opaque CIDs only)</text>
+        <rect x="50" y="210" width="150" height="70" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+        <rect x="50" y="210" width="150" height="70" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="125" y="233" fill="white" font-size="11" font-weight="600" text-anchor="middle">Operator 1</text>
+        <text x="125" y="249" fill="#94a3b8" font-size="9" text-anchor="middle">:8201 · blobs</text>
+        <text x="125" y="263" fill="#34d399" font-size="8" text-anchor="middle">★ validator (planned)</text>
+        <rect x="215" y="210" width="150" height="70" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+        <rect x="215" y="210" width="150" height="70" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="290" y="233" fill="white" font-size="11" font-weight="600" text-anchor="middle">Operator 2</text>
+        <text x="290" y="249" fill="#94a3b8" font-size="9" text-anchor="middle">:8202 · blobs</text>
+        <text x="290" y="263" fill="#34d399" font-size="8" text-anchor="middle">★ validator (planned)</text>
+        <rect x="380" y="210" width="150" height="70" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+        <rect x="380" y="210" width="150" height="70" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="455" y="233" fill="white" font-size="11" font-weight="600" text-anchor="middle">Operator 3</text>
+        <text x="455" y="249" fill="#94a3b8" font-size="9" text-anchor="middle">:8203 · blobs</text>
+        <text x="455" y="263" fill="#34d399" font-size="8" text-anchor="middle">★ validator (planned)</text>
+        <rect x="545" y="210" width="240" height="70" rx="6" fill="#0f172a" stroke="#fb923c" stroke-width="1.5"/>
+        <rect x="545" y="210" width="240" height="70" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="665" y="233" fill="white" font-size="11" font-weight="600" text-anchor="middle">libp2p Mesh Swarm</text>
+        <text x="665" y="249" fill="#94a3b8" font-size="9" text-anchor="middle">Kademlia · Gossipsub · Noise</text>
+        <text x="665" y="263" fill="#fb923c" font-size="8" text-anchor="middle">chain gossip: NOT WIRED (gap C2)</text>
+        <line x1="200" y1="245" x2="213" y2="245" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)"/>
+        <line x1="365" y1="245" x2="378" y2="245" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)"/>
+        <line x1="530" y1="245" x2="543" y2="245" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="325" y1="165" x2="325" y2="208" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)"/>
+        <text x="340" y="190" fill="#94a3b8" font-size="8">encrypted chunks + PoS</text>
+
+        <!-- CHAIN row -->
+        <text x="50" y="315" fill="#a78bfa" font-size="10" font-weight="600">CIPHERCHAIN PoA LEDGER (crates/chain · chain-id 777777 · PROTOCOL v1)</text>
+        <rect x="50" y="325" width="330" height="170" rx="8" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/>
+        <rect x="50" y="325" width="330" height="170" rx="8" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="215" y="348" fill="white" font-size="12" font-weight="600" text-anchor="middle">SovereignLedger</text>
+        <text x="215" y="366" fill="#94a3b8" font-size="8" text-anchor="middle">genesis → propose → quorum (2N/3+1) → commit</text>
+        <text x="215" y="382" fill="#94a3b8" font-size="8" text-anchor="middle">• CommitmentTx: vault_id · salt · head_cid</text>
+        <text x="215" y="396" fill="#94a3b8" font-size="8" text-anchor="middle">• commitment = SHA256(V1 || salt || head_cid)</text>
+        <text x="215" y="410" fill="#94a3b8" font-size="8" text-anchor="middle">• tx_root + cumulative state_root (Merkle)</text>
+        <text x="215" y="424" fill="#94a3b8" font-size="8" text-anchor="middle">• Ed25519 quorum · blocks/NNNN.json</text>
+        <text x="215" y="442" fill="#94a3b8" font-size="8" text-anchor="middle">• CommitmentRecord index + CID map</text>
+        <text x="215" y="460" fill="#fb7185" font-size="8" text-anchor="middle">⚠ fresh keys per anchor (gap C1) · no gossip (C2)</text>
+        <text x="215" y="478" fill="#fbbf24" font-size="8" text-anchor="middle">AnchorProofResponse { height · hash · tx_proof }</text>
+
+        <rect x="395" y="325" width="200" height="80" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+        <rect x="395" y="325" width="200" height="80" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="495" y="348" fill="white" font-size="11" font-weight="600" text-anchor="middle">Quorum Cert</text>
+        <text x="495" y="364" fill="#94a3b8" font-size="9" text-anchor="middle">N=3 → need 3 sigs</text>
+        <text x="495" y="378" fill="#94a3b8" font-size="8" text-anchor="middle">verify_strict · no dupes</text>
+        <rect x="395" y="415" width="200" height="80" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+        <rect x="395" y="415" width="200" height="80" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="495" y="438" fill="white" font-size="11" font-weight="600" text-anchor="middle">Merkle Proofs</text>
+        <text x="495" y="454" fill="#94a3b8" font-size="9" text-anchor="middle">RFC-6962 0x00/0x01</text>
+        <text x="495" y="468" fill="#94a3b8" font-size="8" text-anchor="middle">inclusion → tx_root</text>
+
+        <rect x="610" y="325" width="175" height="170" rx="8" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="618" y="339" fill="#fb7185" font-size="8">trust boundary: chain sees</text>
+        <rect x="620" y="345" width="155" height="60" rx="6" fill="#0f172a" stroke="#fb7185" stroke-width="1.5"/>
+        <rect x="620" y="345" width="155" height="60" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="697" y="366" fill="white" font-size="11" font-weight="600" text-anchor="middle">What is ON chain</text>
+        <text x="697" y="382" fill="#94a3b8" font-size="8" text-anchor="middle">32-byte commitments ONLY</text>
+        <text x="697" y="396" fill="#94a3b8" font-size="8" text-anchor="middle">zero plaintext · zero CIDs</text>
+        <rect x="620" y="415" width="155" height="60" rx="6" fill="#0f172a" stroke="#94a3b8" stroke-width="1.5"/>
+        <rect x="620" y="415" width="155" height="60" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="697" y="436" fill="white" font-size="11" font-weight="600" text-anchor="middle">What is OFF chain</text>
+        <text x="697" y="452" fill="#94a3b8" font-size="8" text-anchor="middle">encrypted chunks @ ops</text>
+        <text x="697" y="466" fill="#94a3b8" font-size="8" text-anchor="middle">opt. envelope ≤2 KiB (B)</text>
+
+        <line x1="380" y1="370" x2="393" y2="370" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="380" y1="455" x2="393" y2="455" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 697 495 L 697 540 Q 697 555 682 555 L 325 555 Q 310 555 310 540 L 310 497" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrow-rose)"/>
+        <text x="545" y="548" fill="#fb7185" font-size="8">proof → light-client verify (offline OK)</text>
+        <line x1="495" y1="165" x2="495" y2="323" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <text x="508" y="250" fill="#94a3b8" font-size="8">CommitmentTx (signed)</text>
+
+        <!-- LEGACY deprecated -->
+        <rect x="50" y="515" width="735" height="130" rx="8" fill="rgba(30,41,59,0.25)" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4"/>
+        <text x="62" y="537" fill="#64748b" font-size="10" font-weight="600">LEGACY — DEPRECATED · TO DELETE (Phase 1): Arbitrum / Ethereum anchor path</text>
+        <rect x="62" y="548" width="170" height="55" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+        <text x="147" y="568" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">ArbitrumAnchorClient</text>
+        <text x="147" y="584" fill="#64748b" font-size="8" text-anchor="middle">1,136 lines · chain.rs</text>
+        <rect x="244" y="548" width="170" height="55" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+        <text x="329" y="568" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">CipherVaultRegistry</text>
+        <text x="329" y="584" fill="#64748b" font-size="8" text-anchor="middle">publish(bytes32) · 43 lines</text>
+        <rect x="426" y="548" width="170" height="55" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+        <text x="511" y="568" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">foundry.toml</text>
+        <text x="511" y="584" fill="#64748b" font-size="8" text-anchor="middle">Sepolia + One · Arbiscan</text>
+        <text x="62" y="622" fill="#64748b" font-size="8">cut: contracts/ · foundry.toml · storage/src/chain.rs · anchor.rs explicit_arbitrum branch · dashboard finality stages · TUI widgets · stale docs</text>
+        <line x1="270" y1="165" x2="270" y2="200" stroke="#475569" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="282" y="188" fill="#475569" font-size="8">old: RPC/gas/wallet (removed)</text>
+
+        <!-- Legend -->
+        <text x="50" y="700" fill="white" font-size="10" font-weight="600">Legend</text>
+        <rect x="50" y="712" width="16" height="10" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1"/><text x="72" y="720" fill="#94a3b8" font-size="8">Client / light client</text>
+        <rect x="220" y="712" width="16" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1"/><text x="242" y="720" fill="#94a3b8" font-size="8">Operator / quorum</text>
+        <rect x="390" y="712" width="16" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1"/><text x="412" y="720" fill="#94a3b8" font-size="8">Ledger state</text>
+        <rect x="540" y="712" width="16" height="10" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1"/><text x="562" y="720" fill="#94a3b8" font-size="8">Encrypted / trust boundary</text>
+        <rect x="50" y="730" width="16" height="10" rx="2" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1"/><text x="72" y="738" fill="#94a3b8" font-size="8">P2P message bus (libp2p)</text>
+        <line x1="220" y1="735" x2="236" y2="735" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,3"/><text x="242" y="738" fill="#94a3b8" font-size="8">Verify / proof flow</text>
+        <rect x="390" y="730" width="16" height="10" rx="2" fill="transparent" stroke="#475569" stroke-width="1" stroke-dasharray="3,3"/><text x="412" y="738" fill="#94a3b8" font-size="8">Deprecated EVM path</text>
+        <text x="50" y="770" fill="#475569" font-size="8">anchor flow: snapshot → FastCDC → XChaCha20-Poly1305 → operators → CommitmentTx → propose → quorum 2N/3+1 → commit blocks/NNNN.json → AnchorProofResponse → light-client verify → recover</text>
+        <text x="50" y="786" fill="#475569" font-size="8">gaps flagged: C1 throwaway keys · C2 no block gossip · C3 nonce=wall-clock · H2 cleartext vault_id — see audit report §5</text>
+      </svg>
+    </div>
+    <div class="cards">
+      <div class="card"><div class="card-header"><div class="card-dot emerald"></div><h3>Sovereign ledger (keep + harden)</h3></div>
+        <ul><li>• PoA Ed25519 quorum 2N/3+1, chain-id 777777</li><li>• Salted commitments, dual Merkle roots</li><li>• JSON block log + full replay on open</li><li>• Offline light-client proofs — 5/5 tests green</li></ul></div>
+      <div class="card"><div class="card-header"><div class="card-dot rose"></div><h3>Critical gaps (fix first)</h3></div>
+        <ul><li>• C1: fresh single-validator keys per anchor</li><li>• C2: libp2p exists, chain gossip not wired</li><li>• C3: nonce = timestamp, no replay table</li><li>• H2: vault_id in cleartext on-chain</li></ul></div>
+      <div class="card"><div class="card-header"><div class="card-dot amber"></div><h3>Cut + next (awaiting review)</h3></div>
+        <ul><li>• Delete contracts/ + foundry + EVM branch</li><li>• Phase 2: persistent keys, gossip, nonces</li><li>• §7 decision: commitments-only vs envelopes</li><li>• Then: rotation, snapshots, batch anchor</li></ul></div>
+    </div>
+    <p class="footer">CipherVault v1.0.29 · report/CIPHERVAULT_SOVEREIGN_CHAIN_AUDIT_2026-11-07.md · 2026-11-07</p>
+  </div>
+</body>
+</html>

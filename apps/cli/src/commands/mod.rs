@@ -199,13 +199,6 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
         crate::Commands::Token { sub } => cmd_token(sub).await,
         crate::Commands::Anchor {
             head,
-            rpc,
-            contract,
-            chain_id,
-            tx_hash,
-            raw_tx,
-            auto_relay,
-            relayer_url,
             daemon,
             interval,
         } => {
@@ -216,12 +209,12 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 );
                 println!(
                     "{}",
-                    "  CipherVault Arbitrum L2 Periodic Anchoring Daemon"
+                    "  CipherChain Sovereign Periodic Anchoring Daemon"
                         .bold()
                         .green()
                 );
                 println!("  Check Interval:  {}s", interval);
-                println!("  Target Chain:    Arbitrum (Auto-Relay: {})", auto_relay);
+                println!("  Target Network:  CipherChain (sovereign PoA ledger)");
                 println!(
                     "{}",
                     "=======================================================".cyan()
@@ -229,21 +222,10 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
 
                 // Run initial anchor check immediately
                 println!(
-                    "[{}] Executing initial Arbitrum anchor check...",
+                    "[{}] Executing initial CipherChain anchor check...",
                     chrono::Utc::now().to_rfc3339()
                 );
-                if let Err(e) = cmd_anchor(
-                    head.clone(),
-                    rpc.clone(),
-                    contract.clone(),
-                    chain_id,
-                    tx_hash.clone(),
-                    raw_tx.clone(),
-                    auto_relay,
-                    relayer_url.clone(),
-                )
-                .await
-                {
+                if let Err(e) = cmd_anchor(head.clone()).await {
                     eprintln!("Notice: Initial anchor check: {}", e);
                 }
 
@@ -255,21 +237,10 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {
                             println!(
-                                "[{}] Executing periodic Arbitrum anchor check...",
+                                "[{}] Executing periodic CipherChain anchor check...",
                                 chrono::Utc::now().to_rfc3339()
                             );
-                            if let Err(e) = cmd_anchor(
-                                head.clone(),
-                                rpc.clone(),
-                                contract.clone(),
-                                chain_id,
-                                tx_hash.clone(),
-                                raw_tx.clone(),
-                                auto_relay,
-                                relayer_url.clone(),
-                            )
-                            .await
-                            {
+                            if let Err(e) = cmd_anchor(head.clone()).await {
                                 eprintln!("Notice: Periodic anchor check: {}", e);
                             }
                         }
@@ -277,20 +248,10 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 }
                 Ok(())
             } else {
-                cmd_anchor(
-                    head,
-                    rpc,
-                    contract,
-                    chain_id,
-                    tx_hash,
-                    raw_tx,
-                    auto_relay,
-                    relayer_url,
-                )
-                .await
+                cmd_anchor(head).await
             }
         }
-        crate::Commands::VerifyAnchor { head, rpc } => cmd_verify_anchor(head, rpc).await,
+        crate::Commands::VerifyAnchor { head } => cmd_verify_anchor(head).await,
         crate::Commands::PublishPublicFeed { output, network } => {
             crate::cmd_publish_public_feed(output, network)
         }

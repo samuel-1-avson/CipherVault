@@ -44,9 +44,6 @@ fn classify_route(path: &str) -> &'static str {
     if path.starts_with("/v1/challenges") || path.starts_with("/v1/sessions") {
         return "auth";
     }
-    if path.starts_with("/v1/relayer/") {
-        return "relayer";
-    }
     if path.starts_with("/v1/peers") {
         return "peers";
     }
@@ -310,14 +307,6 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route(
             "/v1/recovery/:locator/records",
             post(handlers::post_recovery_record).get(handlers::get_recovery_records),
-        )
-        .route(
-            "/v1/relayer/checkpoints",
-            post(handlers::post_relayer_checkpoint),
-        )
-        .route(
-            "/v1/relayer/checkpoints/:commitment",
-            get(handlers::get_relayer_checkpoint),
         )
         // Dynamic P2P Peer Gossip routes
         .route("/v1/peers/announce", post(handlers::post_peer_announce))

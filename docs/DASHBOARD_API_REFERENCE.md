@@ -111,18 +111,19 @@ Generated 2026-09-19 from the 1.0.7-beta.5 tree; when in doubt the code wins.
   operator_endpoints, message }`. No ceremony state is stored; recover via
   the CLI offline procedure.
 - `GET /api/relayer/checkpoints` → `{ status: "ok", relayer_status:
-  { operational: null, status: "unverified", target_network: "Arbitrum
+  { operational: null, status: "unverified", target_network: "CipherChain
   checkpoint metadata", verification_status: "unavailable" }, checkpoints:
   [{ commitment(_hex), salt_hex, head_record_cid_hex, chain_id,
-  contract_address_hex, tx_hash(_hex), explorer_url/arbiscan_url,
+  contract_address_hex, tx_hash(_hex), explorer_url (EVM links empty),
   reported_block_number, timestamp_utc, is_relayed, confirmed: false,
   inclusion_verified: false, verification_status:
   "not_submitted"|"receipt_unverified", status:
   "not_submitted"|"submitted" }], count }`. No store: `not_configured`
   shape with `checkpoints: []`.
-- `POST /api/relayer/anchor` → runs `cmd_anchor` with relay
+- `POST /api/relayer/anchor` → runs `cmd_anchor` (sovereign, no relay)
   (`{ status: "ok", success: true, verification_status: "unverified",
-  message }`, or 200 error shape). No sequencer receipt is verified.
+  message }`, or 200 error shape). No external receipt is verified; finality
+  is proven by the local CipherChain ledger (`verify-anchor`).
 - `GET /api/fleet` → maintenance inventory from `.ciphervault/fleet.db`
   (`{ status: "ok", success: true, summary, fleet_summary:
   { total_tracked_vaults, healthy_vaults, degraded_vaults,
@@ -211,14 +212,14 @@ routes pass through caller `Cookie`/`Authorization` headers, see below).
 - `GET /api/relayer/checkpoints` → `{ status: "ok", access_mode: "public",
   relayer_status: { public_read_only: true, target_network,
   verification_status: "publisher_signed"|"unavailable"|"invalid",
-  finality_status: "independent_rpc"|"unverified" (RPC configured via
-  `CIPHERVAULT_ARBITRUM_RPC_URL`), canary_status,
+  finality_status: "unverified" (sovereign finality lives in the local
+  CipherChain ledger, not this feed), canary_status,
   reorg_suspected, reorg_suspect_tx_hashes, canary_max_age_secs
   (default 86400, `CIPHERVAULT_CHECKPOINT_CANARY_MAX_AGE_SECS`),
   newest_checkpoint_at_utc }, checkpoints, count, message }`.
   Feed source: `CIPHERVAULT_PUBLIC_CHECKPOINT_FEED`; optional publisher pin
-  `CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY`; finality confirmations
-  default 12 (`CIPHERVAULT_FINALITY_CONFIRMATIONS`), 60 s cache.
+  `CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY`; sovereign finality is
+  reported by the local ledger. 60 s feed cache.
 - `GET /api/fleet` → `{ status: "ok", access_mode: "public",
   fleet_summary: { total_operators }, operator_nodes: [], vaults: [],
   audit_history: [], message }`. Fleet inventory stays private-only.
@@ -240,8 +241,8 @@ routes pass through caller `Cookie`/`Authorization` headers, see below).
   - `ciphervault_operator_reachable{operator_id, region, identity_status}`: 1 if reachable, 0 if unreachable.
   - `ciphervault_operator_latency_seconds{operator_id, region}`: observed round-trip latency in seconds.
   - `ciphervault_operator_probe_attempts{operator_id}`: retry count during reachability check.
-  - `ciphervault_checkpoints_total`, `ciphervault_anchor_block_height`: verified on-chain anchor head.
-  - `ciphervault_reorg_suspects_total`: counter of detected Arbitrum blockchain reorgs.
+  - `ciphervault_checkpoints_total`, `ciphervault_anchor_block_height`: sovereign anchor head.
+  - `ciphervault_reorg_suspects_total`: counter of suspected sovereign ledger forks (always 0; no EVM reorg feed).
   - `ciphervault_pos_probe_cache_entries`, `ciphervault_pos_probes_in_flight`: anti-amplification cache/semaphore metrics.
   - `ciphervault_rate_limit_tracked_clients`: active client windows in the in-app sliding rate limiter.
 

@@ -119,7 +119,7 @@
             <polyline points="2 17 12 22 22 17"></polyline>
             <polyline points="2 12 12 17 22 12"></polyline>
           </svg>
-          <span class="nav-title">Arbitrum Relayer</span>
+          <span class="nav-title">CipherChain Anchors</span>
         </button>
 
         <button class="tab-btn" id="tab-btn-fleet" data-private-surface data-target="tab-fleet" data-category="network" role="tab" aria-selected="false" aria-controls="tab-fleet" tabindex="-1">
@@ -303,7 +303,7 @@
           </div>
 
           <div class="topbar-actions-group">
-            <button class="btn-action secondary small btn-topbar-ghost" id="btn-trigger-anchor" data-private-action title="Anchor current head commitment to Arbitrum (Sepolia testnet)">
+            <button class="btn-action secondary small btn-topbar-ghost" id="btn-trigger-anchor" data-private-action title="Anchor current head commitment to CipherChain">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
                 <polyline points="2 17 12 22 22 17"></polyline>
@@ -466,10 +466,10 @@
           </div>
         </article>
 
-        <!-- Metric 3: Arbitrum L2 Checkpoint -->
+        <!-- Metric 3: CipherChain Anchor -->
         <article class="metric-card" id="card-metric-anchor">
           <div class="metric-header-row">
-            <div class="metric-label">Arbitrum Checkpoint</div>
+            <div class="metric-label">CipherChain Anchor</div>
             <span class="badge-status-subtle" id="badge-anchor-stage">No verified receipt</span>
           </div>
           <div class="metric-value" id="val-metric-anchor">
@@ -802,7 +802,7 @@
       </div>
     </section>
 
-    <!-- Tab 4: Arbitrum L2 Settlement & Commitment Registry -->
+    <!-- Tab 4: CipherChain Settlement & Anchor Proofs -->
     <section class="tab-content" id="tab-anchor" role="tabpanel" aria-labelledby="tab-btn-anchor" tabindex="0">
       <!-- Relayer Status Banner -->
       <div class="relayer-status-banner" id="relayer-status-banner">
@@ -824,7 +824,7 @@
             </svg>
             <span>Auto-Relay Latest Head</span>
           </button>
-          <button class="btn-action primary small" id="btn-anchor-from-tab" data-private-action title="Anchor current head commitment to Arbitrum">
+          <button class="btn-action primary small" id="btn-anchor-from-tab" data-private-action title="Anchor current head commitment to CipherChain">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
               <polyline points="2 17 12 22 22 17"></polyline>
@@ -907,8 +907,8 @@
       <!-- Relayed Checkpoints Ledger -->
       <div class="table-card cv-layout-a005516828">
         <div class="table-header-title">
-          <h3 class="cv-layout-7ad8adff00">Arbitrum Relayed Checkpoints Ledger</h3>
-          <p class="cv-layout-e7a4154928">Recorded checkpoint receipts. A transaction link is not proof of current inclusion or finality.</p>
+          <h3 class="cv-layout-7ad8adff00">CipherChain Anchored Checkpoints Ledger</h3>
+          <p class="cv-layout-e7a4154928">Recorded sovereign checkpoint proofs. Verified by the local CipherChain ledger.</p>
         </div>
         <table class="data-table cv-layout-63b04ba9d1" id="table-relayer-checkpoints">
           <thead>

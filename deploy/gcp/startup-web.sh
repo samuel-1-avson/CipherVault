@@ -172,10 +172,8 @@ readonly SCOPE_TOKEN_SECRET_NAME="$(metadata_value account-scope-token-secret ci
 readonly LOCAL_KEK_SECRET_NAME="$(metadata_value account-local-kek-secret ciphervault-account-local-kek)"
 readonly VCS_WEBHOOK_SECRET_NAME="$(metadata_value vcs-webhook-secret ciphervault-vcs-webhook-key)"
 readonly PROJECT_ID="$(metadata_value project-id)"
-readonly FINALITY_CONFIRMATIONS="$(metadata_value finality-confirmations)"
 readonly OPERATOR_REGIONS="$(metadata_value operator-regions)"
 readonly CHECKPOINT_PUBLISHER_KEY="$(metadata_value checkpoint-publisher-key)"
-readonly ARBITRUM_RPC_URL="$(metadata_value arbitrum-rpc-url)"
 
 require_digest_image CIPHERVAULT_DASHBOARD_IMAGE "$DASHBOARD_IMAGE"
 require_digest_image CIPHERVAULT_ACCOUNT_IMAGE "$ACCOUNT_IMAGE"
@@ -222,10 +220,8 @@ CIPHERVAULT_ACCOUNT_REQUIRE_TOTP_KEY=true
 CIPHERVAULT_ACCOUNT_SCOPE_TOKEN_KEY_FILE=$SCOPE_TOKEN_KEY_FILE
 CIPHERVAULT_ACCOUNT_LOCAL_KEK_FILE=$LOCAL_KEK_FILE
 CIPHERVAULT_VCS_WEBHOOK_KEY_FILE=$VCS_WEBHOOK_KEY_FILE
-CIPHERVAULT_FINALITY_CONFIRMATIONS=$FINALITY_CONFIRMATIONS
 CIPHERVAULT_OPERATOR_REGIONS=$OPERATOR_REGIONS
 CIPHERVAULT_PUBLIC_CHECKPOINT_PUBLISHER_KEY=$CHECKPOINT_PUBLISHER_KEY
-CIPHERVAULT_ARBITRUM_RPC_URL=$ARBITRUM_RPC_URL
 EOF
 # The feed path is set only when a feed file was staged: env-set-but-missing
 # would 503 the anchors endpoints instead of serving an empty feed. The path

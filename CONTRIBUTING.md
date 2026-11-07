@@ -64,7 +64,6 @@ Signed-off-by: Jane Contributor <jane.contributor@example.com>
 
 Ensure you have the following installed locally:
 * **Rust**: `1.80.0` or later (installed via [rustup](https://rustup.rs))
-* **Foundry**: (`forge`, `cast`) for smart contract testing (installed via [getfoundry.sh](https://getfoundry.sh))
 * **Git**: with a configured identity (`git config user.name` and `git config user.email`)
 * **Docker / Docker Compose**: for local multi-node operator cluster integration tests
 
@@ -129,10 +128,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-### 4. Smart Contract Tests (Foundry)
-If you modify contracts in [`contracts/`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/contracts/):
+### 4. Sovereign Ledger Tests
 ```bash
-forge test -vvv
+cargo test -p ciphervault-chain -p ciphervault-cli
 ```
 
 ### 5. SPDX Headers

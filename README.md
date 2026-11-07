@@ -166,12 +166,12 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 | **Snapshot Engine** | `crates/snapshot` | Rust (FastCDC, Gear Hash) | Versioned chunk encryption, reusable v2 objects, and journaled restore with rollback. |
 | **Local Store** | `crates/local-store` | Rust (Rusqlite WAL, DPAPI) | Local SQLite state, tracked file registry, snapshot DAG, and device keyrings. |
 | **Recovery Primitives** | `crates/recovery` | Rust (Shamir, CRC32) | Paper kit derivation, threshold guardian generation, and out-of-band challenge approval. |
-| **Storage Client** | `crates/storage` | Rust (Reqwest, Futures) | Concurrent multi-operator replication pool, PoS verification, and relayer clients. |
-| **Storage Operator** | `services/operator` | Rust (Axum, Tokio) | Zero-knowledge chunk store, PoS challenge responder, P2P peer gossip, and relayer proxy. |
+| **Storage Client** | `crates/storage` | Rust (Reqwest, Futures) | Concurrent multi-operator replication pool, PoS verification, and sovereign anchor clients. |
+| **Storage Operator** | `services/operator` | Rust (Axum, Tokio) | Zero-knowledge chunk store, PoS challenge responder, and P2P peer gossip. |
 | **Maintenance Fleet** | `services/maintenance` | Rust (Tokio, Rusqlite) | Periodic replication auditor, node latency monitor, and autonomous self-repair scheduler. |
 | **Account Service** | `services/account` | Rust (Axum, WebAuthn) | Optional self-hosted multi-device synchronization, passkey enrollment, and TOTP alternate login. |
 | **Sovereign Ledger** | `crates/chain` | Rust (Ed25519, Sha2) | Zero-gas Proof-of-Authority consensus ledger, Merkle state accumulator, and sub-millisecond light client verifier. |
-| **L2 Migration Bridge** | `contracts/` | Solidity 0.8.28 (Foundry) | Legacy EVM commitment bridge for historical Arbitrum verification. |
+| **EVM Legacy (removed)** | *deleted in Phase 1* | Sovereign migration | Contracts/Foundry deleted; historical anchors in git tag `last-evm-anchor`. |
 
 ---
 
@@ -220,9 +220,9 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 * **Automated `.gitignore` Sync**: Adding confidential files via `ciphervault track` automatically ensures they are excluded in `.gitignore`.
 * **Pre-Commit Enforcement**: Installable Git pre-commit hook blocks accidental staging or committing of confidential files.
 
-### ⛓️ Tamper-Evident L2 State Anchoring
-* **Sovereign CipherChain Anchoring**: Anchor cryptographic state commitments directly to CipherVault's native zero-gas Proof-of-Authority blockchain with Byzantine fault tolerant quorum signatures, Merkle audit proofs, and sub-millisecond local verification (with legacy Arbitrum verification preserved).
-* **Immutable Sequencer Receipts**: Persist on-chain transaction receipts locally to mathematically prove vault state integrity at any historical point in time.
+### ⛓️ Tamper-Evident Sovereign State Anchoring
+* **Sovereign CipherChain Anchoring**: Anchor cryptographic state commitments directly to CipherVault's native zero-gas Proof-of-Authority blockchain with Byzantine fault tolerant quorum signatures, Merkle audit proofs, and sub-millisecond local verification.
+* **Immutable Ledger Proofs**: Persist sovereign block inclusion proofs locally to mathematically prove vault state integrity at any historical point in time.
 
 ---
 
@@ -438,7 +438,7 @@ ciphervault tui
 * **`[4] Operators`**: Real-time roundtrip latency gauges, healthy/degraded replica states, and PoS status.
 * **`[5] FastCDC`**: Content-defined chunk distributions and deduplication efficiency graphs.
 * **`[6] Token`**: Hardware token reader presence, PIV slot status, and touch policies.
-* **Hotkeys**: Press `[p]` to commit and push a new snapshot; press `[a]` to anchor to L2; press `[q]` to quit.
+* **Hotkeys**: Press `[p]` to commit and push a new snapshot; press `[a]` to anchor to CipherChain; press `[q]` to quit.
 
 ---
 
@@ -576,7 +576,7 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive full-screen Terminal User Interface dashboard. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser] [--local]` | Launches embedded Web Dashboard and Visual Secrets Explorer. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
-| `ciphervault anchor` | `[--head <CID>] [--auto-relay] [--daemon]` | Computes a salted state commitment and anchors to CipherChain sovereign blockchain (or Arbitrum). |
+| `ciphervault anchor` | `[--head <CID>] [--daemon]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. |
 | `ciphervault verify-anchor` | `[--head <CID>]` | Verifies cryptographic state commitment, Merkle audit path, and operator quorum signatures locally in <1ms. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
 | `ciphervault audit` | `[-o/--operators <URL...>] [--recovery-drill] [--operator-pin <URL=64hex>]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
@@ -616,7 +616,7 @@ open http://localhost:8080
 
 | Service | Container Name | Port | Description |
 |---|---|---|---|
-| `operator-1` | `ciphervault-operator-1` | `8201` | Primary zero-knowledge storage node & L2 relayer endpoint |
+| `operator-1` | `ciphervault-operator-1` | `8201` | Primary zero-knowledge storage node |
 | `operator-2` | `ciphervault-operator-2` | `8202` | Secondary zero-knowledge storage operator |
 | `operator-3` | `ciphervault-operator-3` | `8203` | Tertiary zero-knowledge storage operator |
 | `maintenance` | `ciphervault-maintenance` | Internal | Periodic replication auditor & SQLite `fleet.db` self-repair daemon |
@@ -666,8 +666,8 @@ node apps/ui/audit.test.cjs
 # Real Chrome/Edge CSP regression (browser required; override CIPHERVAULT_TEST_BROWSER)
 node apps/ui/csp.browser.test.cjs
 
-# Solidity L2 registry test suite (Foundry)
-forge test
+# Sovereign CipherChain regression suite
+cargo test -p ciphervault-chain -p ciphervault-cli
 ```
 
 ---

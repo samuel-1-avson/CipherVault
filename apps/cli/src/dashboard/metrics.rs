@@ -146,7 +146,7 @@ pub(crate) async fn render_prometheus_metrics(limiter: Option<&RateLimiter>) -> 
     }
     buffer.push('\n');
 
-    // 3. Arbitrum L2 Anchors & Checkpoints
+    // 3. CipherChain Sovereign Anchors & Checkpoints
     let checkpoints = load_public_feed_with_finality()
         .await
         .ok()
@@ -155,7 +155,7 @@ pub(crate) async fn render_prometheus_metrics(limiter: Option<&RateLimiter>) -> 
     let checkpoints_count = checkpoints.len();
 
     buffer.push_str(
-        "# HELP ciphervault_checkpoints_total Total verified L2 checkpoints in published feed\n",
+        "# HELP ciphervault_checkpoints_total Total verified sovereign checkpoints in published feed\n",
     );
     buffer.push_str("# TYPE ciphervault_checkpoints_total gauge\n");
     buffer.push_str(&format!(
@@ -165,7 +165,7 @@ pub(crate) async fn render_prometheus_metrics(limiter: Option<&RateLimiter>) -> 
 
     if let Some(head) = checkpoints.first() {
         if let Some(block) = head.get("reported_block_number").and_then(|v| v.as_u64()) {
-            buffer.push_str("# HELP ciphervault_anchor_block_height Latest verified Arbitrum L2 anchor block height\n");
+            buffer.push_str("# HELP ciphervault_anchor_block_height Latest verified CipherChain sovereign anchor block height\n");
             buffer.push_str("# TYPE ciphervault_anchor_block_height gauge\n");
             buffer.push_str(&format!("ciphervault_anchor_block_height {}\n\n", block));
         }
@@ -177,7 +177,7 @@ pub(crate) async fn render_prometheus_metrics(limiter: Option<&RateLimiter>) -> 
         .count();
 
     buffer.push_str(
-        "# HELP ciphervault_reorg_suspects_total Total detected Arbitrum blockchain reorg events\n",
+        "# HELP ciphervault_reorg_suspects_total Total detected sovereign ledger fork events\n",
     );
     buffer.push_str("# TYPE ciphervault_reorg_suspects_total counter\n");
     buffer.push_str(&format!(

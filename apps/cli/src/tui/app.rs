@@ -4,6 +4,7 @@ use ciphervault_crypto::hsm::{
 };
 use ciphervault_local_store::AccountStore;
 use ciphervault_snapshot::fastcdc::{config_from_env, fastcdc_chunk, FastCdcConfig, GEAR_MATRIX};
+use crate::diff::{ChangeType, DiffReport};
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -272,6 +273,9 @@ pub enum TuiTaskOut {
     PushFinished(Result<String, String>),
     AnchorFinished(Result<String, String>),
     TrackFinished(Result<String, String>),
+    PullFinished(Result<String, String>),
+    RestoreFinished(Result<String, String>),
+    DiffFinished(Result<TuiDiffOutput, String>),
     UpdateChecked(UpdateCheckOutcome),
     UpdateApplied {
         tag: String,
@@ -292,18 +296,30 @@ pub enum TuiTable {
     Chunks,
     Checkpoints,
     Operators,
+    DiffLines,
 }
 
 /// Destructive or expensive action awaiting explicit confirmation. Single-key
-/// presses for `anchor` (Arbitrum L2 transaction) and `untrack` (stops
-/// future snapshots) stage a `ConfirmAction` instead of executing; the
-/// confirm modal resolves it with `[y]/[Enter]` or drops it with `[n]/[Esc]`.
+/// presses for `anchor` (Arbitrum L2 transaction), `untrack` (stops
+/// future snapshots), `pull` (rewrites working files), `restore` (rewrites
+/// working files), and `logout` (revokes the local session) stage a
+/// `ConfirmAction` instead of executing; the confirm modal resolves it with
+/// `[y]/[Enter]` or drops it with `[n]/[Esc]`.
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
     /// Anchor the active head commitment to Arbitrum L2 (on-chain cost).
     Anchor,
     /// Untrack a file: future snapshots skip it, existing snapshots keep it.
     Untrack { path: String },
+    /// Pull the latest operator snapshot into the working files.
+    /// Runs with `force=false`, so local modifications abort instead of
+    /// being overwritten (CLI `--force` remains the explicit override).
+    Pull,
+    /// Restore a snapshot's confidential files into the working directory.
+    /// Overwrites tracked files that differ, so it never fires on a bare key.
+    Restore { snapshot_id_hex: String },
+    /// Revoke the local account session.
+    Logout,
 }
 
 /// Cache key for the FastCDC inspector: same path, size, and mtime means the
@@ -353,6 +369,119 @@ pub struct ExplorerObjectResult {
     pub required: usize,
     pub satisfied: bool,
     pub replicas: Vec<ExplorerReplicaRow>,
+}
+
+/// One rendered diff line plus its severity for color mapping.
+#[derive(Debug, Clone)]
+pub struct TuiDiffLine {
+    pub text: String,
+    pub level: DiffLineLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineLevel {
+    Header,
+    FileHeader,
+    Added,
+    Removed,
+    Modified,
+    Summary,
+    Note,
+}
+
+/// Rendered diff output: title (`old → new`) plus scrollable lines.
+#[derive(Debug, Clone)]
+pub struct TuiDiffOutput {
+    pub title: String,
+    pub lines: Vec<TuiDiffLine>,
+}
+
+/// Upper bound for the diff modal: a pathological file could otherwise
+/// flood the scroll buffer. The excess is reported, never silently dropped.
+pub const MAX_DIFF_LINES: usize = 1500;
+
+/// Flattens a masked [`DiffReport`] into scrollable display lines. Values
+/// arrive already masked (`reveal=false`), so the TUI never handles raw
+/// secrets here; file paths are sanitized at render time (`ui.rs`).
+pub fn diff_display_lines(report: &DiffReport) -> Vec<TuiDiffLine> {
+    let mut lines = vec![TuiDiffLine {
+        text: format!("{} → {}", report.old_source, report.new_source),
+        level: DiffLineLevel::Header,
+    }];
+    if !report.has_changes() {
+        lines.push(TuiDiffLine {
+            text: "No changes detected. Files are identical.".into(),
+            level: DiffLineLevel::Note,
+        });
+        return lines;
+    }
+    for file in &report.files {
+        if file.added_count == 0 && file.removed_count == 0 && file.modified_count == 0 {
+            continue;
+        }
+        lines.push(TuiDiffLine {
+            text: format!(
+                "{} (+{} ~{} -{})",
+                file.file_path, file.added_count, file.modified_count, file.removed_count
+            ),
+            level: DiffLineLevel::FileHeader,
+        });
+        for entry in &file.entries {
+            let line = match &entry.change {
+                ChangeType::Added { value } => {
+                    let body = if file.is_dotenv {
+                        format!("{} = {}", entry.key, value)
+                    } else {
+                        value.clone()
+                    };
+                    Some((format!("+ {body}"), DiffLineLevel::Added))
+                }
+                ChangeType::Removed { value } => {
+                    let body = if file.is_dotenv {
+                        format!("{} = {}", entry.key, value)
+                    } else {
+                        value.clone()
+                    };
+                    Some((format!("- {body}"), DiffLineLevel::Removed))
+                }
+                ChangeType::Modified { old_value, new_value } => {
+                    let body = if file.is_dotenv {
+                        format!("{}: {} -> {}", entry.key, old_value, new_value)
+                    } else {
+                        format!("{} -> {}", old_value, new_value)
+                    };
+                    Some((format!("~ {body}"), DiffLineLevel::Modified))
+                }
+                ChangeType::Unchanged { .. } => None,
+            };
+            if let Some((text, level)) = line {
+                lines.push(TuiDiffLine { text, level });
+            }
+        }
+    }
+    lines.push(TuiDiffLine {
+        text: format!(
+            "Summary: {} addition(s), {} modification(s), {} removal(s)",
+            report.total_added, report.total_modified, report.total_removed
+        ),
+        level: DiffLineLevel::Summary,
+    });
+    lines.push(TuiDiffLine {
+        text: "Secret values are masked. Full values never leave the vault manifest.".into(),
+        level: DiffLineLevel::Note,
+    });
+    if lines.len() > MAX_DIFF_LINES {
+        let total = lines.len();
+        lines.truncate(MAX_DIFF_LINES);
+        lines.push(TuiDiffLine {
+            text: format!(
+                "… and {} more line(s). Diff a single file from the Files tab to narrow it.",
+                total - MAX_DIFF_LINES
+            ),
+            level: DiffLineLevel::Note,
+        });
+    }
+    lines
 }
 
 pub struct TuiApp {
@@ -461,6 +590,25 @@ pub struct TuiApp {
     /// Set by manual refresh ([r]): the next operator-poll completion reports
     /// its result on the status line instead of staying silent.
     pub refresh_echo: bool,
+    /// Set while a remote pull runs off the event loop, so rapid `[d]`/`[D]`
+    /// presses never stack duplicate pull work.
+    pub pull_in_flight: bool,
+    /// Set while a snapshot restore runs off the event loop (`cmd_restore`
+    /// is synchronous file I/O, so it must never run on the input thread).
+    pub restore_in_flight: bool,
+    /// Set while a diff computation runs off the event loop (manifest
+    /// decryption plus working-tree reads).
+    pub diff_in_flight: bool,
+    /// Scrollable masked diff viewer state.
+    pub show_diff_modal: bool,
+    pub diff_title: String,
+    pub diff_lines: Vec<TuiDiffLine>,
+    pub diff_scroll: usize,
+    pub diff_visible: usize,
+    /// First `[q]` while a mutation is in flight arms this instead of
+    /// quitting; a second `[q]` within the window confirms. Cleared when the
+    /// in-flight mutations complete (see `apply_task_out`).
+    pub quit_armed_at: Option<Instant>,
 }
 
 impl TuiApp {
@@ -556,6 +704,15 @@ impl TuiApp {
             last_poll: Instant::now() - poll_interval, // trigger immediate poll
             poll_interval,
             refresh_echo: false,
+            pull_in_flight: false,
+            restore_in_flight: false,
+            diff_in_flight: false,
+            show_diff_modal: false,
+            diff_title: "No diff computed yet.".into(),
+            diff_lines: Vec::new(),
+            diff_scroll: 0,
+            diff_visible: 10,
+            quit_armed_at: None,
         };
 
         app.refresh_local_state();
@@ -752,6 +909,7 @@ impl TuiApp {
             self.explorer_checkpoints.len(),
             self.explorer_checkpoint_visible,
         );
+        self.diff_scroll = self.diff_scroll.min(self.diff_max_scroll());
     }
 
     fn refresh_account_state(&mut self) {
@@ -862,8 +1020,224 @@ impl TuiApp {
         match self.confirm_action.take() {
             Some(ConfirmAction::Anchor) => self.spawn_anchor(),
             Some(ConfirmAction::Untrack { path }) => self.untrack_path(&path),
+            Some(ConfirmAction::Pull) => self.spawn_pull(false),
+            Some(ConfirmAction::Restore { snapshot_id_hex }) => {
+                self.spawn_restore(snapshot_id_hex)
+            }
+            Some(ConfirmAction::Logout) => self.logout_local_account(),
             None => {}
         }
+    }
+
+    /// True while any local-state-mutating background task runs. Read-only
+    /// probes (operator poll, token, explorer, object lookup, inspection,
+    /// diff) never block quitting; only mutations arm the quit guard.
+    pub fn any_mutation_in_flight(&self) -> bool {
+        self.push_in_flight
+            || self.anchor_in_flight
+            || self.track_in_flight
+            || self.pull_in_flight
+            || self.restore_in_flight
+            || self.update_in_progress
+    }
+
+    /// Quit request from `[q]`. Immediate when nothing mutating runs;
+    /// otherwise the first press arms a 5 s two-stroke guard so a stray `[q]`
+    /// cannot abandon a push/pull/track/anchor/update mid-flight.
+    /// `Ctrl-C` stays an unconditional quit (see `events.rs`).
+    pub fn request_quit(&mut self) {
+        if !self.any_mutation_in_flight() {
+            self.should_quit = true;
+            return;
+        }
+        const QUIT_WINDOW: Duration = Duration::from_secs(5);
+        match self.quit_armed_at {
+            Some(armed) if armed.elapsed() < QUIT_WINDOW => {
+                self.should_quit = true;
+            }
+            _ => {
+                self.quit_armed_at = Some(Instant::now());
+                self.set_status(
+                    "Background task running — press [q] again within 5 s to force quit.",
+                    StatusLevel::Warning,
+                );
+            }
+        }
+    }
+
+    /// Stages a sign-out confirmation. A bare `[o]` sits next to `[p]` push
+    /// on the keyboard; revoking the session behind `[y]/[Enter]` keeps a
+    /// typo from signing the operator out mid-shift.
+    pub fn request_logout_confirm(&mut self) {
+        if !self.account_authenticated {
+            self.set_status("No active local account session to sign out.", StatusLevel::Info);
+            return;
+        }
+        self.confirm_action = Some(ConfirmAction::Logout);
+    }
+
+    /// Stages a pull confirmation. The pull itself runs with `force=false`,
+    /// so dirty working files abort with guidance instead of being
+    /// overwritten; an in-flight pull reports instead of stacking.
+    pub fn request_pull_confirm(&mut self) {
+        if self.pull_in_flight {
+            self.set_status("Pull already running...", StatusLevel::Info);
+            return;
+        }
+        self.confirm_action = Some(ConfirmAction::Pull);
+    }
+
+    /// Stages a restore confirmation for the selected snapshot. Restoring
+    /// rewrites working files (unlike pull there is no dirty-file abort —
+    /// uncommitted changes are lost), so it never fires on a bare key.
+    pub fn request_restore_confirm(&mut self) {
+        if self.restore_in_flight {
+            self.set_status("Restore already running...", StatusLevel::Info);
+            return;
+        }
+        if self.snapshots.is_empty() || self.snapshot_table_index >= self.snapshots.len() {
+            self.set_status("No snapshots to restore.", StatusLevel::Warning);
+            return;
+        }
+        if self.active_tab != TuiTab::Snapshots
+            || self.snapshot_table_index >= self.snapshots.len()
+        {
+            self.set_status(
+                "Switch to the Snapshots tab to restore a snapshot.",
+                StatusLevel::Info,
+            );
+            return;
+        }
+        let snapshot_id_hex = self.snapshots[self.snapshot_table_index].snapshot_id_hex.clone();
+        self.confirm_action = Some(ConfirmAction::Restore { snapshot_id_hex });
+    }
+
+    /// Runs a snapshot restore in a background task. `cmd_restore` is
+    /// synchronous file I/O, so it runs on a blocking thread; the status
+    /// line and the file table update when it completes.
+    pub fn spawn_restore(&mut self, snapshot_id_hex: String) {
+        if self.restore_in_flight {
+            self.set_status("Restore already running...", StatusLevel::Info);
+            return;
+        }
+        if !have_runtime() {
+            return;
+        }
+        self.restore_in_flight = true;
+        let short = snapshot_id_hex.chars().take(12).collect::<String>();
+        self.set_status(
+            format!("Restoring snapshot {short}... into working directory..."),
+            StatusLevel::Info,
+        );
+        self.tasks.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                execute_quick_restore(snapshot_id_hex).map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+            TuiTaskOut::RestoreFinished(result)
+        });
+    }
+
+    /// Diffs the current context: on the Snapshots tab the selected snapshot
+    /// against the active head (head itself diffs against the working tree
+    /// to surface uncommitted changes); on the Files tab the selected file,
+    /// head against the working tree. Anywhere else it explains itself.
+    pub fn spawn_diff_for_context(&mut self) {
+        if self.diff_in_flight {
+            self.set_status("Diff already running...", StatusLevel::Info);
+            return;
+        }
+        let (a, b, filter, title) = match self.active_tab {
+            TuiTab::Snapshots => {
+                if self.snapshots.is_empty()
+                    || self.snapshot_table_index >= self.snapshots.len()
+                {
+                    self.set_status("No snapshots to diff.", StatusLevel::Warning);
+                    return;
+                }
+                let selected = &self.snapshots[self.snapshot_table_index];
+                if selected.is_head {
+                    (
+                        Some("head".to_string()),
+                        Some("working".to_string()),
+                        None,
+                        format!("head vs working tree"),
+                    )
+                } else {
+                    (
+                        Some(selected.snapshot_id_hex.clone()),
+                        Some("head".to_string()),
+                        None,
+                        format!(
+                            "snapshot {} vs head",
+                            selected.snapshot_id_hex.chars().take(12).collect::<String>()
+                        ),
+                    )
+                }
+            }
+            TuiTab::Files => {
+                if self.tracked_files.is_empty()
+                    || self.file_table_index >= self.tracked_files.len()
+                {
+                    self.set_status("No tracked file selected.", StatusLevel::Warning);
+                    return;
+                }
+                let path = self.tracked_files[self.file_table_index].path.clone();
+                (
+                    Some("head".to_string()),
+                    Some("working".to_string()),
+                    Some(path.clone()),
+                    format!("head vs working tree ({path})"),
+                )
+            }
+            _ => {
+                self.set_status(
+                    "Switch to the Snapshots or Files tab to diff.",
+                    StatusLevel::Info,
+                );
+                return;
+            }
+        };
+        self.spawn_diff(a, b, filter, title);
+    }
+
+    /// Computes a masked diff in a background task and opens the scrollable
+    /// diff modal when it lands. Values stay masked (`reveal=false`).
+    pub fn spawn_diff(
+        &mut self,
+        a: Option<String>,
+        b: Option<String>,
+        filter: Option<String>,
+        title: String,
+    ) {
+        if self.diff_in_flight {
+            self.set_status("Diff already running...", StatusLevel::Info);
+            return;
+        }
+        if !have_runtime() {
+            return;
+        }
+        self.diff_in_flight = true;
+        self.set_status(format!("Computing diff ({title})..."), StatusLevel::Info);
+        self.tasks.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::generate_diff_report(a, b, filter, false)
+            })
+            .await
+            .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())));
+            TuiTaskOut::DiffFinished(result.map(|report| TuiDiffOutput {
+                title,
+                lines: diff_display_lines(&report),
+            }).map_err(|e| e.to_string()))
+        });
+    }
+
+    /// Last visible first-line offset for the diff scroll window.
+    pub fn diff_max_scroll(&self) -> usize {
+        self.diff_lines
+            .len()
+            .saturating_sub(self.diff_visible.max(1))
     }
 
     /// Drops the staged confirmation without executing it.
@@ -1000,6 +1374,12 @@ impl TuiApp {
                 }
                 self.operator_table_index = (self.operator_table_index + 1) % self.operators.len();
             }
+            TuiTable::DiffLines => {
+                if self.diff_lines.is_empty() {
+                    return;
+                }
+                self.diff_scroll = (self.diff_scroll + 1).min(self.diff_max_scroll());
+            }
         }
     }
 
@@ -1082,6 +1462,9 @@ impl TuiApp {
                     self.operator_table_index - 1
                 };
             }
+            TuiTable::DiffLines => {
+                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+            }
         }
     }
 
@@ -1097,6 +1480,7 @@ impl TuiApp {
                 self.explorer_checkpoint_visible.max(1),
             ),
             TuiTable::Operators => (self.operators.len(), self.operators.len().max(1)),
+            TuiTable::DiffLines => (self.diff_lines.len(), self.diff_visible.max(1)),
         };
         if len == 0 {
             return;
@@ -1107,6 +1491,7 @@ impl TuiApp {
             TuiTable::Chunks => self.chunk_table_index,
             TuiTable::Checkpoints => self.explorer_checkpoint_index,
             TuiTable::Operators => self.operator_table_index,
+            TuiTable::DiffLines => self.diff_scroll,
         };
         let next = if forward {
             (current + step).min(len - 1)
@@ -1124,6 +1509,7 @@ impl TuiApp {
             TuiTable::Chunks => self.fastcdc_chunks.len(),
             TuiTable::Checkpoints => self.explorer_checkpoints.len(),
             TuiTable::Operators => self.operators.len(),
+            TuiTable::DiffLines => self.diff_lines.len(),
         };
         if len == 0 {
             return;
@@ -1172,6 +1558,9 @@ impl TuiApp {
             }
             TuiTable::Operators => {
                 self.operator_table_index = next;
+            }
+            TuiTable::DiffLines => {
+                self.diff_scroll = next.min(self.diff_max_scroll());
             }
         }
     }
@@ -1325,11 +1714,37 @@ impl TuiApp {
         }
         self.anchor_in_flight = true;
         self.set_status(
-            "Submitting state commitment to Arbitrum L2 relayer...",
+            "Anchoring head commitment to CipherChain sovereign ledger...",
             StatusLevel::Info,
         );
         self.tasks.spawn(async move {
             TuiTaskOut::AnchorFinished(execute_quick_anchor().await.map_err(|e| e.to_string()))
+        });
+    }
+
+    /// Runs a pull in a background task. `dry_run=true` is the read-only
+    /// operator check (`[d]`); `dry_run=false` applies the remote snapshot to
+    /// the working files with `force=false` (`[D]` behind the confirm modal),
+    /// so dirty files abort with CLI `--force` guidance instead of being lost.
+    pub fn spawn_pull(&mut self, dry_run: bool) {
+        if self.pull_in_flight {
+            self.set_status("Pull already running...", StatusLevel::Info);
+            return;
+        }
+        if !have_runtime() {
+            return;
+        }
+        self.pull_in_flight = true;
+        self.set_status(
+            if dry_run {
+                "Checking operators for snapshot updates (dry run)..."
+            } else {
+                "Pulling latest snapshot from operators..."
+            },
+            StatusLevel::Info,
+        );
+        self.tasks.spawn(async move {
+            TuiTaskOut::PullFinished(execute_quick_pull(dry_run).await.map_err(|e| e.to_string()))
         });
     }
 
@@ -1416,6 +1831,9 @@ impl TuiApp {
                     self.push_in_flight = false;
                     self.anchor_in_flight = false;
                     self.track_in_flight = false;
+                    self.pull_in_flight = false;
+                    self.restore_in_flight = false;
+                    self.diff_in_flight = false;
                     self.update_in_flight = false;
                     self.inspect_in_flight = None;
                     self.token_status.probing = false;
@@ -1546,6 +1964,7 @@ impl TuiApp {
             }
             TuiTaskOut::PushFinished(result) => {
                 self.push_in_flight = false;
+                self.quit_armed_at = None;
                 match result {
                     Ok(message) => {
                         self.set_status(message, StatusLevel::Success);
@@ -1557,6 +1976,7 @@ impl TuiApp {
             }
             TuiTaskOut::AnchorFinished(result) => {
                 self.anchor_in_flight = false;
+                self.quit_armed_at = None;
                 match result {
                     Ok(message) => {
                         self.set_status(message, StatusLevel::Success);
@@ -1569,6 +1989,7 @@ impl TuiApp {
             }
             TuiTaskOut::TrackFinished(result) => {
                 self.track_in_flight = false;
+                self.quit_armed_at = None;
                 match result {
                     Ok(message) => {
                         self.set_status(message, StatusLevel::Success);
@@ -1584,6 +2005,44 @@ impl TuiApp {
                         };
                         self.set_status(error, level);
                     }
+                }
+            }
+            TuiTaskOut::PullFinished(result) => {
+                self.pull_in_flight = false;
+                self.quit_armed_at = None;
+                match result {
+                    Ok(message) => {
+                        self.set_status(message, StatusLevel::Success);
+                        self.refresh_local_state();
+                    }
+                    Err(error) => self
+                        .set_status(format!("Pull failed: {error}"), StatusLevel::Error),
+                }
+            }
+            TuiTaskOut::RestoreFinished(result) => {
+                self.restore_in_flight = false;
+                self.quit_armed_at = None;
+                match result {
+                    Ok(message) => {
+                        self.set_status(message, StatusLevel::Success);
+                        self.refresh_local_state();
+                    }
+                    Err(error) => self
+                        .set_status(format!("Restore failed: {error}"), StatusLevel::Error),
+                }
+            }
+            TuiTaskOut::DiffFinished(result) => {
+                self.diff_in_flight = false;
+                match result {
+                    Ok(output) => {
+                        self.diff_title = output.title;
+                        self.diff_lines = output.lines;
+                        self.diff_scroll = 0;
+                        self.show_diff_modal = true;
+                        self.clamp_table_indices();
+                    }
+                    Err(error) => self
+                        .set_status(format!("Diff failed: {error}"), StatusLevel::Error),
                 }
             }
             TuiTaskOut::UpdateChecked(outcome) => {
@@ -1724,21 +2183,10 @@ pub(crate) async fn execute_quick_anchor() -> anyhow::Result<String> {
         }
     };
     let head_hex = hex::encode(&head_record.snapshot_id);
-    let relayer_url = crate::get_configured_operators().first().cloned();
 
-    match crate::cmd_anchor(
-        Some(head_hex),
-        None,
-        None,
-        None,
-        None,
-        None,
-        true,
-        relayer_url,
-    )
-    .await
+    match crate::cmd_anchor(Some(head_hex)).await
     {
-        Ok(_) => Ok("✓ Checkpoint registered with Arbitrum L2 relayer (QueuedForRelay).".into()),
+        Ok(_) => Ok("✓ Checkpoint anchored to CipherChain sovereign ledger.".into()),
         Err(e) => {
             // Alternate display renders the full anyhow chain (outer
             // context plus the relayer's status/body); plain `{e}` shows
@@ -1746,6 +2194,29 @@ pub(crate) async fn execute_quick_anchor() -> anyhow::Result<String> {
             anyhow::bail!("{e:#}");
         }
     }
+}
+
+/// Pulls the operator-cluster snapshot into the working files.
+/// `dry_run=true` only checks for remote updates and writes nothing;
+/// `dry_run=false` applies with `force=false`, so dirty working files abort
+/// with `pull --force` guidance instead of being overwritten.
+pub(crate) async fn execute_quick_pull(dry_run: bool) -> anyhow::Result<String> {
+    crate::cmd_pull(dry_run, false).await?;
+    if dry_run {
+        Ok("✓ Dry run: operators checked, working files untouched.".into())
+    } else {
+        Ok("✓ Working files synced to the latest operator snapshot.".into())
+    }
+}
+
+/// Restores one snapshot's confidential files into the working directory.
+/// Unlike pull there is no dirty-file abort: uncommitted working-tree
+/// changes are overwritten, which is why the TUI gates this behind a
+/// confirmation modal telling the user to push first.
+pub(crate) fn execute_quick_restore(snapshot_id_hex: String) -> anyhow::Result<String> {
+    crate::cmd_restore(Some(snapshot_id_hex.clone()), None, false, None, None, false)?;
+    let short: String = snapshot_id_hex.chars().take(12).collect();
+    Ok(format!("✓ Snapshot {short}... restored into working directory."))
 }
 
 fn explorer_json_str(value: &serde_json::Value, key: &str, fallback: &str) -> String {
@@ -2815,5 +3286,244 @@ mod tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
         super::super::events::handle_key_event(&mut app, esc).await;
         assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn quit_arms_two_stroke_guard_while_mutation_in_flight() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        // Idle TUI: [q] quits immediately (no behavior change).
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        assert!(!app.any_mutation_in_flight());
+        app.request_quit();
+        assert!(app.should_quit);
+
+        // Mutating TUI: first [q] arms the guard instead of quitting.
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.push_in_flight = true;
+        assert!(app.any_mutation_in_flight());
+        let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, q).await;
+        assert!(!app.should_quit);
+        assert!(app.quit_armed_at.is_some());
+        assert!(app.status_message.contains("press [q] again"));
+        // Second [q] inside the window confirms the quit.
+        super::super::events::handle_key_event(&mut app, q).await;
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_stays_immediate_during_read_only_probes() {
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.poll_in_flight = true;
+        app.token_in_flight = true;
+        app.object_probe_in_flight = true;
+        app.explorer_in_flight = true;
+        assert!(!app.any_mutation_in_flight());
+        app.request_quit();
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn logout_keybinding_stages_confirm_instead_of_signing_out() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.account_authenticated = true;
+        let o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, o).await;
+        assert!(matches!(app.confirm_action, Some(ConfirmAction::Logout)));
+        // Cancel drops the staged action without touching the session.
+        let n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, n).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.account_authenticated);
+        // No session: informs instead of staging a meaningless confirm.
+        app.account_authenticated = false;
+        super::super::events::handle_key_event(&mut app, o).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.status_message.contains("No active local account session"));
+    }
+
+    #[tokio::test]
+    async fn pull_keys_stage_confirm_without_stacking_or_quitting() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        // [d] on an idle pull spawns the dry-run task (a runtime exists in
+        // these tests) without staging any confirmation.
+        app.spawn_pull(true);
+        assert!(app.confirm_action.is_none());
+        assert!(app.pull_in_flight);
+        // [D] while a pull runs reports instead of stacking or staging.
+        let big_d = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, big_d).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.status_message.contains("Pull already running"));
+
+        // Fresh app: [D] stages the real pull behind the confirm modal,
+        // and [y] consumes it single-shot into exactly one task.
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        super::super::events::handle_key_event(&mut app, big_d).await;
+        assert!(matches!(app.confirm_action, Some(ConfirmAction::Pull)));
+        assert!(!app.pull_in_flight);
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, y).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.pull_in_flight);
+        // Pull counts as a mutation for the quit guard.
+        assert!(app.any_mutation_in_flight());
+    }
+
+    #[tokio::test]
+    async fn restore_key_stages_confirm_and_fires_once() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        // No snapshots: warns instead of staging.
+        app.switch_tab(TuiTab::Snapshots);
+        app.request_restore_confirm();
+        assert!(app.confirm_action.is_none());
+        assert!(app.status_message.contains("No snapshots to restore"));
+
+        // Global [R] stages the selected snapshot; [y] fires exactly once.
+        app.snapshots = vec![SnapshotItem {
+            snapshot_id_hex: "ab".repeat(32),
+            parent_id_hex: "Genesis".into(),
+            message: "Epoch #1".into(),
+            timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
+            files_count: None,
+            is_head: true,
+        }];
+        let r = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, r).await;
+        assert!(matches!(
+            app.confirm_action,
+            Some(ConfirmAction::Restore { .. })
+        ));
+        assert!(!app.restore_in_flight);
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, y).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.restore_in_flight);
+        // Restore counts as a mutation for the quit guard.
+        assert!(app.any_mutation_in_flight());
+
+        // In-flight restore reports instead of staging again.
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Snapshots);
+        app.snapshots = vec![SnapshotItem {
+            snapshot_id_hex: "cd".repeat(32),
+            parent_id_hex: "Genesis".into(),
+            message: "Epoch #2".into(),
+            timestamp_rfc3339: "2026-09-28 12:00:00 UTC".into(),
+            files_count: None,
+            is_head: true,
+        }];
+        app.restore_in_flight = true;
+        super::super::events::handle_key_event(&mut app, r).await;
+        assert!(app.confirm_action.is_none());
+        assert!(app.status_message.contains("Restore already running"));
+    }
+
+    #[tokio::test]
+    async fn diff_context_routes_by_tab_and_warns_when_empty() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        // No snapshots on the Snapshots tab: warns, stages nothing.
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Snapshots);
+        let f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::empty());
+        super::super::events::handle_key_event(&mut app, f).await;
+        assert!(app.status_message.contains("No snapshots to diff"));
+        assert!(!app.diff_in_flight);
+        assert!(!app.show_diff_modal);
+
+        // Overview tab: redirects to the diff-capable tabs.
+        app.switch_tab(TuiTab::Overview);
+        super::super::events::handle_key_event(&mut app, f).await;
+        assert!(app.status_message.contains("Switch to the Snapshots or Files tab"));
+
+        // In-flight diff reports instead of stacking.
+        app.diff_in_flight = true;
+        app.switch_tab(TuiTab::Snapshots);
+        super::super::events::handle_key_event(&mut app, f).await;
+        assert!(app.status_message.contains("Diff already running"));
+    }
+
+    #[test]
+    fn diff_display_lines_renders_masked_changes() {
+        use crate::diff::{FileDiffReport, SecretDiffEntry};
+
+        let mut report = DiffReport::new("snapshot:abcd1234".into(), "head:efgh5678".into());
+        report.add_file_report(FileDiffReport {
+            file_path: ".env".into(),
+            is_dotenv: true,
+            entries: vec![
+                SecretDiffEntry {
+                    key: "ADDED".into(),
+                    change: ChangeType::Added {
+                        value: "tok***999".into(),
+                    },
+                },
+                SecretDiffEntry {
+                    key: "GONE".into(),
+                    change: ChangeType::Removed { value: "***".into() },
+                },
+                SecretDiffEntry {
+                    key: "CHANGED".into(),
+                    change: ChangeType::Modified {
+                        old_value: "aa***11".into(),
+                        new_value: "bb***22".into(),
+                    },
+                },
+                SecretDiffEntry {
+                    key: "SAME".into(),
+                    change: ChangeType::Unchanged { value: "x".into() },
+                },
+            ],
+            added_count: 1,
+            removed_count: 1,
+            modified_count: 1,
+        });
+        let lines = diff_display_lines(&report);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts[0].contains("snapshot:abcd1234 → head:efgh5678"));
+        assert!(texts.contains(&".env (+1 ~1 -1)"));
+        assert!(texts.contains(&"+ ADDED = tok***999"));
+        assert!(texts.contains(&"- GONE = ***"));
+        assert!(texts.contains(&"~ CHANGED: aa***11 -> bb***22"));
+        assert!(!texts.iter().any(|t| t.contains("SAME")));
+        assert!(texts.iter().any(|t| t.contains("Summary:")));
+        assert!(texts.iter().any(|t| t.contains("masked")));
+    }
+
+    #[test]
+    fn diff_display_lines_reports_no_changes_and_truncates() {
+        let empty = DiffReport::new("head:abcd1234".into(), "working tree".into());
+        let lines = diff_display_lines(&empty);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].text.contains("No changes detected"));
+
+        let mut big = DiffReport::new("a".into(), "b".into());
+        big.add_file_report(crate::diff::FileDiffReport {
+            file_path: "big.bin".into(),
+            is_dotenv: false,
+            entries: (0..2000)
+                .map(|i| crate::diff::SecretDiffEntry {
+                    key: format!("line-{i}"),
+                    change: ChangeType::Added {
+                        value: format!("value-{i}"),
+                    },
+                })
+                .collect(),
+            added_count: 2000,
+            removed_count: 0,
+            modified_count: 0,
+        });
+        let lines = diff_display_lines(&big);
+        assert_eq!(lines.len(), MAX_DIFF_LINES + 1);
+        assert!(lines[MAX_DIFF_LINES].text.contains("more line(s)"));
+        assert!(lines[MAX_DIFF_LINES].text.contains("Files tab"));
     }
 }

@@ -4,6 +4,7 @@
 **Classification:** System Architecture Specification & Engineering Roadmap  
 **Target Version:** v2.0.0 (Progressive Non-Breaking Upgrade from v1.0.6)  
 **Status:** Under Review / Open for Technical Questioning
+> **Migration note (Phase 1, 2026-11-07):** Ethereum/Arbitrum settlement removed project-wide — CipherChain sovereign ledger only. Sections below referencing `CipherVaultRegistry.sol`, Arbitrum One, L2 leases/staking, and `contracts/` describe a superseded direction and will be revised in a follow-up. Historical EVM path preserved in git tag `last-evm-anchor`.
 **Implementation note (2026-09-19):** verified community join landed as a
 pre-Phase-1 incremental milestone (fleet-signed invite tickets + probation +
 graduation, ADR-008; `ciphervault invite` CLI, `/v1/peers/join*` routes).

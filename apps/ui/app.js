@@ -2329,6 +2329,7 @@ function checkpointExplorerUrl(record, transactionHash) {
 
 function chainLabel(chainId) {
   const numericChainId = Number(chainId);
+  if (numericChainId === 777777) return 'CipherChain (Chain ID 777777)';
   if (numericChainId === 42161) return 'Arbitrum One (Chain ID 42161)';
   if (numericChainId === 421614) return 'Arbitrum Sepolia (Chain ID 421614)';
   return Number.isFinite(numericChainId) && numericChainId > 0
@@ -2949,10 +2950,10 @@ function renderExplorerOverview() {
         </article>
         <article class="operator-card">
           <div class="op-header"><div class="op-title-wrap">
-            <span class="op-id">Arbitrum Checkpoints</span>
+            <span class="op-id">CipherChain Anchors</span>
             <span class="badge-online">${(state.anchors || []).length} registered</span>
           </div></div>
-          <div class="op-meta-row"><span class="op-meta-label">Target Chain</span><span class="op-meta-val">Arbitrum Sepolia / One</span></div>
+          <div class="op-meta-row"><span class="op-meta-label">Target Ledger</span><span class="op-meta-val">CipherChain (777777)</span></div>
           <div class="op-meta-row"><span class="op-meta-label">Head Status</span><span class="op-meta-val">SHA-256 Commit Ready</span></div>
         </article>`;
       return;
@@ -3044,11 +3045,11 @@ function renderExplorerAnchors() {
   if (anchors.length === 0) {
     strip.innerHTML = `
       <div class="empty-state-card cv-layout-7e5edeaf6f">
-        <div class="cv-layout-73c6c98026">No Arbitrum Checkpoints Committed Yet</div>
+        <div class="cv-layout-73c6c98026">No CipherChain Anchors Committed Yet</div>
         <p class="cv-layout-4226eb98e1">
-          Cryptographic commitments are anchored to Arbitrum L2 rollups. Anchor your active vault head commitment to generate verifiable on-chain receipts.
+          Cryptographic commitments are anchored to the CipherChain sovereign ledger. Anchor your active vault head commitment to generate verifiable Merkle inclusion proofs.
         </p>
-        <span class="canary-badge cv-layout-52213fc812">Sepolia L2 Ready</span>
+        <span class="canary-badge cv-layout-52213fc812">CipherChain Ready</span>
       </div>`;
     return;
   }
@@ -3168,10 +3169,10 @@ const TAB_METADATA = {
     desc: 'Threshold Shamir Secret Sharing recovery sheets with locator addresses and offline CRC32 validation.',
   },
   'tab-anchor': {
-    title: 'Arbitrum L2 Relayer & Checkpoints',
+    title: 'CipherChain Anchors & Checkpoints',
     category: 'Network & Cluster',
-    badge: 'L2 Rollup',
-    desc: 'State anchoring to Arbitrum L2 rollup with cryptographic commitments and canary reorg monitoring.',
+    badge: 'PoA Ledger',
+    desc: 'State anchoring to the CipherChain sovereign ledger with cryptographic commitments and Merkle inclusion proofs.',
   },
   'tab-fleet': {
     title: 'Maintenance Fleet Telemetry',
@@ -3603,7 +3604,7 @@ function initQuickActions() {
 
   // Anchor Head Button
   const triggerAnchor = async () => {
-    showToast("Submitting Arbitrum checkpoint commitment...");
+    showToast("Anchoring head commitment to CipherChain...");
     try {
       const res = await workspaceFetch('/api/anchors', { method: 'POST' });
       const result = await res.json();
@@ -5571,7 +5572,7 @@ function buildPaletteItems(query) {
     { title: 'Go to Secret Diff Viewer', category: 'Navigation', action: () => switchTab('tab-diff') },
     { title: 'Go to Tracked Secrets', category: 'Navigation', action: () => switchTab('tab-files') },
     { title: 'Go to Threshold Guardians', category: 'Navigation', action: () => switchTab('tab-guardians') },
-    { title: 'Go to Arbitrum Relayer', category: 'Navigation', action: () => switchTab('tab-anchor') },
+    { title: 'Go to CipherChain Anchors', category: 'Navigation', action: () => switchTab('tab-anchor') },
     { title: 'Go to Maintenance Fleet', category: 'Navigation', action: () => switchTab('tab-fleet') },
     { title: 'Go to Recovery Readiness', category: 'Navigation', action: () => switchTab('tab-recovery') },
     { title: 'Go to FastCDC Inspector', category: 'Navigation', action: () => switchTab('tab-fastcdc') },
@@ -5591,7 +5592,7 @@ function buildPaletteItems(query) {
       const btn = document.getElementById('btn-trigger-audit');
       if (btn) btn.click();
     }},
-    { title: 'Anchor Current Head to Arbitrum', category: 'Actions', action: () => {
+    { title: 'Anchor Current Head to CipherChain', category: 'Actions', action: () => {
       const btn = document.getElementById('btn-trigger-anchor');
       if (btn) btn.click();
     }},

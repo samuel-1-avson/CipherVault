@@ -1,4 +1,4 @@
-use super::app::{BoundaryKind, ConfirmAction, StatusLevel, TuiApp, TuiTab};
+use super::app::{BoundaryKind, ConfirmAction, DiffLineLevel, StatusLevel, TuiApp, TuiTab};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -55,6 +55,8 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
         render_help_modal(frame);
     } else if app.show_snapshot_modal {
         render_snapshot_modal(frame, app);
+    } else if app.show_diff_modal {
+        render_diff_modal(frame, app);
     }
 }
 
@@ -331,8 +333,8 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::raw("Dual-mask Gear rolling hash slices files; unchanged chunks are skipped using 461-byte PoS challenges."),
         ]),
         Line::from(vec![
-            Span::styled("• Arbitrum L2 Settlement: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("Head commitments can be anchored on-chain with sequencer receipt verification against CipherVaultRegistry."),
+            Span::styled("• CipherChain Settlement: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("Head commitments are anchored to the sovereign PoA ledger with quorum signatures and Merkle proofs."),
         ]),
     ];
 
@@ -1713,8 +1715,8 @@ fn render_too_small(frame: &mut Frame, app: &TuiApp, area: Rect) {
 }
 
 /// Confirmation for a staged destructive/expensive action (`[a]` anchor,
-/// `[x]` untrack). Single-shot: any resolve consumes the staged action,
-/// so a double-confirm cannot double-fire.
+/// `[x]` untrack, `[D]` pull, `[o]` sign-out). Single-shot: any resolve
+/// consumes the staged action, so a double-confirm cannot double-fire.
 fn render_confirm_modal(frame: &mut Frame, app: &TuiApp) {
     let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
@@ -1724,11 +1726,31 @@ fn render_confirm_modal(frame: &mut Frame, app: &TuiApp) {
     };
     let (title, detail) = match pending {
         ConfirmAction::Anchor => (
-            " Confirm L2 Anchor ",
+            " Confirm CipherChain Anchor ",
             vec![
-                Line::from("Submit the active head commitment to Arbitrum L2?"),
+                Line::from("Anchor the active head commitment to CipherChain?"),
                 Line::from(Span::styled(
-                    "This uses the relayer / an on-chain transaction.",
+                    "Zero-gas sovereign ledger; quorum-signed and Merkle-proven.",
+                    Style::default().fg(Color::Gray),
+                )),
+            ],
+        ),
+        ConfirmAction::Pull => (
+            " Confirm Pull ",
+            vec![
+                Line::from("Download the latest operator snapshot into working files?"),
+                Line::from(Span::styled(
+                    "Tracked files are updated to match; local modifications abort the pull (use CLI `pull --force` to override).",
+                    Style::default().fg(Color::Gray),
+                )),
+            ],
+        ),
+        ConfirmAction::Logout => (
+            " Confirm Sign-Out ",
+            vec![
+                Line::from("Revoke the local account session on this device?"),
+                Line::from(Span::styled(
+                    "Vault data stays intact; sign back in with [l].",
                     Style::default().fg(Color::Gray),
                 )),
             ],
@@ -1748,6 +1770,29 @@ fn render_confirm_modal(frame: &mut Frame, app: &TuiApp) {
                 ]),
                 Line::from(Span::styled(
                     "Existing snapshots keep their chunks; future snapshots skip it.",
+                    Style::default().fg(Color::Gray),
+                )),
+            ],
+        ),
+        ConfirmAction::Restore { snapshot_id_hex } => (
+            " Confirm Restore ",
+            vec![
+                Line::from(vec![
+                    Span::raw("Restore snapshot "),
+                    Span::styled(
+                        hex_head(snapshot_id_hex, 12).to_string(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" into the working directory?"),
+                ]),
+                Line::from(Span::styled(
+                    "Tracked files that differ will be OVERWRITTEN.",
+                    Style::default().fg(Color::Red),
+                )),
+                Line::from(Span::styled(
+                    "Push first to keep uncommitted work.",
                     Style::default().fg(Color::Gray),
                 )),
             ],
@@ -1855,12 +1900,16 @@ fn render_help_modal(frame: &mut Frame) {
             Span::raw("Push new encrypted snapshot across storage operators"),
         ]),
         Line::from(vec![
+            Span::styled("d / D      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Pull dry-run check (safe) / stage real pull ([y] confirms, aborts on dirty files)"),
+        ]),
+        Line::from(vec![
             Span::styled("a          ", Style::default().fg(Color::Yellow)),
             Span::raw("Stage L2 anchor confirmation (on-chain cost; [y] confirms)"),
         ]),
         Line::from(vec![
             Span::styled("y / Enter  ", Style::default().fg(Color::Yellow)),
-            Span::raw("Confirm the staged anchor / untrack action"),
+            Span::raw("Confirm the staged anchor / untrack / pull / restore / sign-out action"),
         ]),
         Line::from(vec![
             Span::styled("n          ", Style::default().fg(Color::Yellow)),
@@ -1888,7 +1937,7 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("o          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Sign out of the local account session"),
+            Span::raw("Stage sign-out confirmation (revokes local session; [y] confirms)"),
         ]),
         Line::from(vec![
             Span::styled("Up / Down  ", Style::default().fg(Color::Yellow)),
@@ -1907,6 +1956,10 @@ fn render_help_modal(frame: &mut Frame) {
             Span::raw("Inspect snapshot · Files tab jumps to its chunks"),
         ]),
         Line::from(vec![
+            Span::styled("R / F        ", Style::default().fg(Color::Yellow)),
+            Span::raw("Restore selected snapshot ([y] confirms; overwrites) / masked diff (vs head; head vs working tree)"),
+        ]),
+        Line::from(vec![
             Span::styled("x          ", Style::default().fg(Color::Yellow)),
             Span::raw("Stage untrack confirmation (snapshots keep chunks; [y] confirms)"),
         ]),
@@ -1916,11 +1969,11 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("q          ", Style::default().fg(Color::Red)),
-            Span::raw("Quit TUI and restore terminal cleanly (Esc never quits)"),
+            Span::raw("Quit TUI and restore terminal cleanly (guarded while push/pull/restore/track/anchor/update runs; Esc never quits)"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Network, token, and inspection work runs in the background; input never blocks on it.\nHosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nTrack, push, and anchor run as background tasks; their results land on the status line.\nPress [Esc] or [?] to close this help overlay",
+            "Network, token, and inspection work runs in the background; input never blocks on it.\nHosted authenticator sign-in is available in the web dashboard; it does not unlock vault keys in the TUI.\nTrack, push, pull, restore, and diff run as background tasks; diff values stay masked and their results land on the status line.\nPress [Esc] or [?] to close this help overlay",
             Style::default().fg(Color::Gray),
         )),
     ];
@@ -2009,7 +2062,7 @@ fn render_snapshot_modal(frame: &mut Frame, app: &TuiApp) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Press [Esc] or [Enter] to close",
+            "Press [R] restore (confirm) · [F] diff vs head · [Esc]/[Enter] close",
             Style::default().fg(Color::DarkGray),
         )),
     ];
@@ -2022,6 +2075,71 @@ fn render_snapshot_modal(frame: &mut Frame, app: &TuiApp) {
             .border_style(Style::default().fg(Color::Cyan)),
     );
     frame.render_widget(modal, area);
+}
+
+/// Scrollable masked diff viewer. Lines arrive pre-flattened from
+/// `diff_display_lines` (values already masked); paths and values are
+/// sanitized again here so control bytes can never spoof the terminal.
+fn render_diff_modal(frame: &mut Frame, app: &mut TuiApp) {
+    let area = centered_rect(84, 82, frame.area());
+    frame.render_widget(Clear, area);
+
+    app.diff_visible = table_page_height(area);
+    let (start, end) = window_range(app.diff_scroll, app.diff_lines.len(), app.diff_visible);
+
+    let rows: Vec<Line> = app
+        .diff_lines
+        .iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(|line| {
+            Line::from(vec![Span::styled(
+                sanitize_cell(&line.text),
+                diff_line_style(line.level),
+            )])
+        })
+        .collect();
+
+    let title = format!(
+        " Diff: {} (masked){} ",
+        sanitize_cell(&app.diff_title),
+        window_label(start, end, app.diff_lines.len())
+    );
+    let modal = Paragraph::new(rows).block(
+        Block::default()
+            .title(title)
+            .title_bottom("[↑↓/j/k] Scroll · [PgUp/PgDn] Page · [Home/End] Jump · [Esc] Close")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(modal, area);
+}
+
+fn diff_line_style(level: DiffLineLevel) -> Style {
+    if !use_color() {
+        return match level {
+            DiffLineLevel::Header | DiffLineLevel::FileHeader | DiffLineLevel::Summary => {
+                Style::default().add_modifier(Modifier::BOLD)
+            }
+            _ => Style::default(),
+        };
+    }
+    match level {
+        DiffLineLevel::Header => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+        DiffLineLevel::FileHeader => Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+        DiffLineLevel::Added => Style::default().fg(Color::Green),
+        DiffLineLevel::Removed => Style::default().fg(Color::Red),
+        DiffLineLevel::Modified => Style::default().fg(Color::Yellow),
+        DiffLineLevel::Summary => Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+        DiffLineLevel::Note => Style::default().fg(Color::DarkGray),
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -2054,20 +2172,29 @@ fn footer_hint_spans(roomy: bool) -> Vec<Span<'static>> {
     let label = fg(Color::Gray);
     let mut spans = Vec::new();
     // Bracketed keys stay readable without separators, so keys-only mode
-    // omits them: at 80 columns the footer pane fits all ten actions.
+    // omits them: at 80 columns the footer pane fits all eleven actions.
+    // Roomy labels use single-space separators so all eleven hints fit a
+    // 118-cell inner pane (half of a 240-column terminal).
     let push = |spans: &mut Vec<Span<'static>>, keys: &str, text: &str, style: Style| {
         spans.push(Span::styled(keys.to_string(), style));
         if roomy {
-            spans.push(Span::styled(format!(" {text}  "), label));
+            spans.push(Span::styled(format!(" {text} "), label));
         }
     };
     push(&mut spans, "[1-7/Tab]", "Tabs", key);
     push(&mut spans, "[p]", "Push", key);
+    push(&mut spans, "[d/D]", "Pull", key);
     push(&mut spans, "[a]", "Anchor", key);
     push(&mut spans, "[r]", "Refresh", key);
     push(&mut spans, "[t]", "Track", key);
     push(&mut spans, "[x]", "Untrk", key);
-    push(&mut spans, "[u]", "Update", key);
+    // The 80-column footer has exactly 38 inner cells: with the [d/D] pull
+    // hint added, the update hint only fits the roomy layout. Narrow
+    // terminals still get pending updates via the boot auto-check, and [?]
+    // documents [u].
+    if roomy {
+        push(&mut spans, "[u]", "Update", key);
+    }
     push(&mut spans, "[/]", "Find", key);
     push(&mut spans, "[?]", "Help", key);
     spans.push(Span::styled("[q]".to_string(), quit));
@@ -2574,10 +2701,76 @@ mod tests {
         let narrow = drawn_text(&mut app, 80, 24);
         assert!(narrow.contains("[q]"), "quit hint cut off");
         assert!(narrow.contains("[1-7/Tab]"), "tab hint cut off");
+        assert!(narrow.contains("[d/D]"), "pull hint cut off");
 
         let mut wide = TuiApp::new(std::time::Duration::from_secs(30));
         let text = drawn_text(&mut wide, 240, 40);
         assert!(text.contains("Quit"), "full hints missing wide labels");
+        assert!(text.contains("Pull"), "wide hints missing pull label");
+    }
+
+    #[test]
+    fn confirm_modal_names_pull_and_sign_out() {
+        use super::super::app::ConfirmAction;
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.confirm_action = Some(ConfirmAction::Pull);
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("Confirm Pull"));
+        assert!(text.contains("working files"));
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.confirm_action = Some(ConfirmAction::Logout);
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("Confirm Sign-Out"));
+        assert!(text.contains("sign back in"));
+    }
+
+    #[test]
+    fn confirm_modal_warns_restore_overwrites() {
+        use super::super::app::ConfirmAction;
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.confirm_action = Some(ConfirmAction::Restore {
+            snapshot_id_hex: "ab".repeat(32),
+        });
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("Confirm Restore"));
+        assert!(text.contains("OVERWRITTEN"));
+        assert!(text.contains("Push first"));
+    }
+
+    #[test]
+    fn diff_modal_renders_masked_lines_with_window_label() {
+        use super::super::app::{DiffLineLevel, TuiDiffLine};
+
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.show_diff_modal = true;
+        app.diff_title = "snapshot:abcd1234 vs head".into();
+        app.diff_lines = vec![
+            TuiDiffLine {
+                text: "snapshot:abcd1234 → head".into(),
+                level: DiffLineLevel::Header,
+            },
+            TuiDiffLine {
+                text: ".env (+1 ~0 -0)".into(),
+                level: DiffLineLevel::FileHeader,
+            },
+            TuiDiffLine {
+                text: "+ ADDED = tok***999".into(),
+                level: DiffLineLevel::Added,
+            },
+            TuiDiffLine {
+                text: "Secret values are masked.".into(),
+                level: DiffLineLevel::Note,
+            },
+        ];
+        let text = drawn_text(&mut app, 140, 44);
+        assert!(text.contains("snapshot:abcd1234 vs head"));
+        assert!(text.contains("(masked)"));
+        assert!(text.contains("+ ADDED = tok***999"));
+        assert!(text.contains("Secret values are masked"));
+        assert!(text.contains("Scroll"));
     }
 
     #[test]

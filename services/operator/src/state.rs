@@ -40,7 +40,6 @@ pub struct RecoveryPage {
     /// Byte offset of the next complete frame, scoped to this append-only locator.
     pub next_cursor: Option<u64>,
 }
-pub const MAX_RELAYED_CHECKPOINTS: usize = 5_000;
 pub const MAX_ACTIVE_PEERS: usize = 128;
 /// Peer announces older than this are rejected at registration (replay
 /// bound). Matches the routing-table prune window so accepted ⟺ retained.
@@ -400,8 +399,6 @@ pub struct OperatorState {
     session_bindings: Mutex<HashMap<String, AccountDeviceBinding>>,
     // Explicitly enrolled device identities, persisted across restarts.
     pub enrolled_identities: Mutex<Vec<EnrolledIdentity>>,
-    // Relayed L2 checkpoints: commitment_hex -> RelayerReceipt
-    pub relayed_checkpoints: Mutex<HashMap<String, ciphervault_storage::RelayerReceipt>>,
     // Active P2P peers: operator_id -> PeerDescriptor
     pub peer_routing_table: Mutex<HashMap<String, ciphervault_storage::PeerDescriptor>>,
     // Fleet membership standing: operator_id -> PeerMembership. Missing
@@ -491,7 +488,6 @@ impl OperatorState {
             session_vaults: Mutex::new(HashMap::new()),
             session_bindings: Mutex::new(HashMap::new()),
             enrolled_identities: Mutex::new(Vec::new()),
-            relayed_checkpoints: Mutex::new(HashMap::new()),
             peer_routing_table: Mutex::new(HashMap::new()),
             peer_membership: Mutex::new(HashMap::new()),
             spent_invites: Mutex::new(HashMap::new()),
@@ -506,7 +502,6 @@ impl OperatorState {
         state.load_enrolled_identities();
         state.load_sessions();
         state.load_challenges();
-        state.load_relayed_checkpoints();
         state.load_peer_routing_table();
         state.load_peer_membership();
         state.load_spent_invites();
@@ -849,50 +844,6 @@ impl OperatorState {
                 },
             );
         }
-    }
-
-    fn relayed_checkpoint_store_path(&self) -> PathBuf {
-        self.data_dir.join("relayed-checkpoints.json")
-    }
-
-    fn load_relayed_checkpoints(&self) {
-        let Ok(bytes) = fs::read(self.relayed_checkpoint_store_path()) else {
-            return;
-        };
-        let Ok(records) =
-            serde_json::from_slice::<HashMap<String, ciphervault_storage::RelayerReceipt>>(&bytes)
-        else {
-            return;
-        };
-        let mut stored = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
-        for (commitment, receipt) in records {
-            let tx_hash = receipt.tx_hash_hex.trim_start_matches("0x");
-            if commitment.len() == 64
-                && hex::decode(&commitment).is_ok()
-                && receipt.commitment_hex == commitment
-                && (tx_hash.is_empty() || (tx_hash.len() == 64 && hex::decode(tx_hash).is_ok()))
-                && matches!(
-                    receipt.status.as_str(),
-                    "QueuedForRelay"
-                        | "SequencerConfirmed"
-                        // Legacy aliases: pre-relabel stage names retained so
-                        // old persisted receipts still load. Nothing writes
-                        // these anymore (renamed to L2Confirmed/DeeplyConfirmed).
-                        | "ParentDataFinalized"
-                        | "AssertionSettled"
-                )
-            {
-                stored.insert(commitment, receipt);
-            }
-        }
-    }
-
-    fn persist_relayed_checkpoints(
-        &self,
-        records: &HashMap<String, ciphervault_storage::RelayerReceipt>,
-    ) -> Result<(), String> {
-        let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
-        self.persist_atomic(&self.relayed_checkpoint_store_path(), &encoded)
     }
 
     fn peer_store_path(&self) -> PathBuf {
@@ -2507,122 +2458,6 @@ impl OperatorState {
         })
     }
 
-    /// Submits and registers an L2 commitment checkpoint through the relayer.
-    pub fn relay_checkpoint(
-        &self,
-        evidence: &ciphervault_format::CheckpointEvidence,
-    ) -> Result<ciphervault_storage::RelayerReceipt, String> {
-        if !evidence.verify_commitment() {
-            return Err(
-                "Invalid commitment preimage math: salt and head do not match commitment".into(),
-            );
-        }
-
-        let commitment_hex = hex::encode(&evidence.commitment);
-        let mut lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
-        if let Some(existing) = lock.get(&commitment_hex) {
-            return Ok(existing.clone());
-        }
-        if lock.len() >= MAX_RELAYED_CHECKPOINTS {
-            return Err("Relayer checkpoint capacity reached".into());
-        }
-
-        // Client-supplied transaction hashes and block numbers are hints only.
-        // Keep every new checkpoint pending until a trusted RPC verifier has
-        // independently checked the receipt and registry inclusion.
-        let receipt = ciphervault_storage::RelayerReceipt {
-            commitment_hex: commitment_hex.clone(),
-            tx_hash_hex: String::new(),
-            block_number: 0,
-            status: "QueuedForRelay".to_string(),
-            timestamp: Utc::now().timestamp() as u64,
-        };
-
-        lock.insert(commitment_hex.clone(), receipt.clone());
-        let snapshot = lock.clone();
-        if let Err(error) = self.persist_relayed_checkpoints(&snapshot) {
-            lock.remove(&commitment_hex);
-            return Err(format!("Unable to persist relayed checkpoint: {error}"));
-        }
-        Ok(receipt)
-    }
-
-    /// Marks a queued checkpoint as confirmed only after an independent RPC
-    /// verifier has validated its receipt and registry inclusion. This method
-    /// intentionally accepts the verifier's report separately so callers
-    /// cannot promote a client-supplied block/transaction pair by themselves.
-    pub fn confirm_relayed_checkpoint(
-        &self,
-        evidence: &ciphervault_format::CheckpointEvidence,
-        report: &ciphervault_storage::AnchorVerificationReport,
-    ) -> Result<ciphervault_storage::RelayerReceipt, String> {
-        if !report.preimage_valid || !report.on_chain_confirmed || !report.receipt_verified {
-            return Err("Checkpoint has no independently verified on-chain receipt".into());
-        }
-        if report.commitment_hex != hex::encode(&evidence.commitment)
-            || report.receipt_block_number.is_none()
-            || evidence.tx_hash.len() != 32
-            || evidence.tx_hash.iter().all(|byte| *byte == 0)
-        {
-            return Err("Independent checkpoint receipt does not match evidence".into());
-        }
-        let commitment_hex = hex::encode(&evidence.commitment);
-        let tx_hash_hex = hex::encode(&evidence.tx_hash);
-        let block_number = report
-            .receipt_block_number
-            .ok_or_else(|| "Verified checkpoint receipt has no block number".to_string())?;
-        let mut lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
-        let existing = lock
-            .get_mut(&commitment_hex)
-            .ok_or_else(|| "Checkpoint is not queued for relay".to_string())?;
-        let previous = existing.clone();
-        existing.tx_hash_hex = tx_hash_hex;
-        existing.block_number = block_number;
-        existing.status = "SequencerConfirmed".to_string();
-        let updated = existing.clone();
-        let snapshot = lock.clone();
-        if let Err(error) = self.persist_relayed_checkpoints(&snapshot) {
-            lock.insert(commitment_hex, previous);
-            return Err(format!("Unable to persist relayed checkpoint: {error}"));
-        }
-        Ok(updated)
-    }
-
-    /// Updates the on-chain settlement status of a relayed checkpoint once mined.
-    pub fn update_relayed_checkpoint(
-        &self,
-        commitment_hex: &str,
-        tx_hash_hex: &str,
-        block_number: u64,
-        status: &str,
-    ) -> Option<ciphervault_storage::RelayerReceipt> {
-        let mut lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
-        if let Some(existing) = lock.get_mut(commitment_hex) {
-            let previous = existing.clone();
-            existing.tx_hash_hex = tx_hash_hex.to_string();
-            existing.block_number = block_number;
-            existing.status = status.to_string();
-            let updated = existing.clone();
-            let snapshot = lock.clone();
-            if self.persist_relayed_checkpoints(&snapshot).is_err() {
-                lock.insert(commitment_hex.to_string(), previous);
-                return None;
-            }
-            Some(updated)
-        } else {
-            None
-        }
-    }
-
-    /// Queries an existing relayed L2 checkpoint receipt by its commitment hex.
-    pub fn get_relayed_checkpoint(
-        &self,
-        commitment_hex: &str,
-    ) -> Option<ciphervault_storage::RelayerReceipt> {
-        let lock = lock_or_recover(&self.relayed_checkpoints, "relayed_checkpoints");
-        lock.get(commitment_hex).cloned()
-    }
-
     /// Validates a peer descriptor's self-signature, freshness window, and
     /// endpoint shape. Shared by control-plane announces, verified ticket
     /// joins, and refreshes; trust (allowlist vs invite vs known key) is
@@ -3589,85 +3424,6 @@ mod tests {
         assert_eq!(stored.len(), 3);
 
         drop(state);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn test_operator_l2_relayer_checkpoint() {
-        let root = std::env::temp_dir().join(format!("cv-relayer-{}", rand::random::<u128>()));
-        let key = ciphervault_crypto::generate_signing_key();
-        let state = legacy_state("test-relayer".into(), root.clone(), key);
-
-        let salt = [0x11u8; 32];
-        let head_cid = [0x22u8; 32];
-        let contract = [0x33u8; 20];
-        let tx_dummy = [0u8; 32];
-
-        // Valid evidence
-        let evidence = ciphervault_format::CheckpointEvidence::new(
-            salt, head_cid, 42161, contract, tx_dummy, 12345, 1700000000,
-        );
-        let receipt = state.relay_checkpoint(&evidence).unwrap();
-        assert_eq!(receipt.commitment_hex, hex::encode(&evidence.commitment));
-        assert_eq!(receipt.status, "QueuedForRelay");
-        assert_eq!(receipt.block_number, 0);
-
-        // Client-supplied on-chain fields must never promote a new checkpoint
-        // before an independent RPC verifier has checked them.
-        let claimed = ciphervault_format::CheckpointEvidence::new(
-            [0x12u8; 32],
-            [0x23u8; 32],
-            42161,
-            contract,
-            [0x44u8; 32],
-            12345,
-            1700000000,
-        );
-        let queued_claim = state.relay_checkpoint(&claimed).unwrap();
-        assert_eq!(queued_claim.status, "QueuedForRelay");
-        assert!(queued_claim.tx_hash_hex.is_empty());
-        assert_eq!(queued_claim.block_number, 0);
-
-        // Confirm mined status update
-        let updated = state
-            .update_relayed_checkpoint(
-                &receipt.commitment_hex,
-                "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                12345,
-                "SequencerConfirmed",
-            )
-            .unwrap();
-        assert_eq!(updated.status, "SequencerConfirmed");
-        assert_eq!(updated.block_number, 12345);
-
-        // Idempotent query
-        let queried = state
-            .get_relayed_checkpoint(&receipt.commitment_hex)
-            .unwrap();
-        assert_eq!(queried.tx_hash_hex, updated.tx_hash_hex);
-        assert_eq!(queried.status, "SequencerConfirmed");
-
-        // The relay receipt survives an operator restart so clients can
-        // continue polling settlement progress after a process crash.
-        drop(state);
-        let restarted = legacy_state(
-            "test-relayer".into(),
-            root.clone(),
-            ciphervault_crypto::generate_signing_key(),
-        );
-        let restored = restarted
-            .get_relayed_checkpoint(&receipt.commitment_hex)
-            .unwrap();
-        assert_eq!(restored.status, "SequencerConfirmed");
-        assert_eq!(restored.block_number, 12345);
-        assert_eq!(restored.tx_hash_hex, updated.tx_hash_hex);
-
-        // Rejects tampered commitment math
-        let mut tampered = evidence.clone();
-        tampered.salt[0] ^= 0xFF;
-        assert!(restarted.relay_checkpoint(&tampered).is_err());
-
-        drop(restarted);
         fs::remove_dir_all(root).unwrap();
     }
 

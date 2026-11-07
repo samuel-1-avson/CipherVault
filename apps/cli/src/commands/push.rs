@@ -299,9 +299,9 @@ pub(crate) async fn cmd_push(
     if anchor {
         println!(
             "{}",
-            "Triggering automated post-push Arbitrum L2 anchoring...".cyan()
+            "Triggering automated post-push CipherChain anchoring...".cyan()
         );
-        if let Err(e) = cmd_anchor(None, None, None, None, None, None, true, None).await {
+        if let Err(e) = cmd_anchor(None).await {
             eprintln!("{}: {}", "Notice: Post-push anchoring failed".yellow(), e);
         }
     }

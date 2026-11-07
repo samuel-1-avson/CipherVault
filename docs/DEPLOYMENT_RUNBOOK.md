@@ -309,14 +309,14 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
    (64-hex of the publisher verifying key). A feed signed by any other key is rejected.
 4. Confirm `/api/anchors` returns records with `verification_status: publisher_signed`.
 
-### Independent finality (optional but recommended)
-- Set `CIPHERVAULT_ARBITRUM_RPC_URL` to a trusted Arbitrum RPC endpoint. The dashboard then
-  queries `eth_getTransactionReceipt` per checkpoint transaction plus `eth_blockNumber`,
-  and reports `finality_status`: `deeply_confirmed` (>= `CIPHERVAULT_FINALITY_CONFIRMATIONS`,
-  default 12), `confirmed`, `pending`, `failed` (reverted receipt), or `unknown` (RPC error).
-  `deeply_confirmed` counts L2 confirmations only — L1 settlement is NOT verified.
-- Receipts are fetched in bounded batches and cached for 60 s; without an RPC URL the feed
-  keeps the legacy `unverified` finality and nothing else changes.
+### Independent finality (removed in Phase 1)
+
+The Arbitrum receipt-enrichment path (`CIPHERVAULT_ARBITRUM_RPC_URL`,
+`CIPHERVAULT_FINALITY_CONFIRMATIONS`, `finality_status: deeply_confirmed`,
+reorg memory) no longer exists. Sovereign finality is proven by the local
+CipherChain ledger: `ciphervault verify-anchor` checks the salted commitment
+against quorum-signed block headers with a Merkle inclusion proof. No RPC,
+no confirmations, no reorg watch.
 
 ### Canary alarm
 - `relayer_status.canary_status` is `ok`, `stale`, or `missing`, computed from the newest
@@ -325,14 +325,13 @@ The maintenance daemon (`ciphervault-maintenance`) continuously:
   alarm: the anchor daemon, publisher worker, or feed mount is broken.
 - Tune the max age to roughly 3x the anchor daemon interval (default daemon: 3600 s).
 
-### Reorg alarm
-- The dashboard remembers deeply-confirmed receipts across refreshes. A checkpoint whose
-  deeply-confirmed receipt vanishes or re-mines at another block flips to
-  `finality_status: reorg_suspected`, the feed reports `reorg_suspected: true`
-  with the suspect tx hashes, and the dashboard host logs a stderr alarm line.
-- The alarm is sticky until the receipt re-finalizes; checkpoints removed from
-  the publisher feed never alarm. Treat a live alarm as a paging event: verify
-  the RPC endpoint first (a wedged node mimics a reorg), then the chain.
+### Reorg alarm (removed in Phase 1)
+
+The receipt reorg alarm (sticky `reorg_suspected`, suspect tx hashes, stderr
+alarm line) watched Arbitrum receipts and no longer exists. The sovereign
+ledger is append-only with quorum-signed headers; suspected fork events, if
+any, surface via `ciphervault_checkpoints_total`-adjacent sovereign metrics
+(see the dashboard API reference).
 
 ## 10. Secret Cutover, Rotation & Signed Promotion (R3/R4)
 
@@ -360,13 +359,12 @@ live `vault.cipherv.online` cutover. Perform in order; stop on the first red che
 4. Promote: `scripts/gcp/promote-immutable-web.ps1 -DashboardImage ... -AccountImage ...
    -RollbackDashboardImage ... -RollbackAccountImage ... -OperatorEndpoints ...
    -RuntimeServiceAccount ... -ExpectedBuildVersion <cli-crate-version> -Apply`
-   Optional env plumbing: `-FinalityConfirmations <n>` (default 12),
-   `-OperatorRegions '<region=ep ...;region=ep ...>'` (spaces, never
-   commas, between endpoints). Unset values keep dashboard defaults.
+   Optional env plumbing: `-OperatorRegions '<region=ep ...;region=ep ...>'`
+   (spaces, never commas, between endpoints). Unset values keep dashboard defaults.
    Checkpoint feed: `-CheckpointFeedPath <local-json>` stages the file
    to `/opt/ciphervault-ui/release/feed.json` (last-good backup kept),
-   `-CheckpointPublisherKey <hex>` pins the publisher,
-   `-ArbitrumRpcUrl <https>` enables receipt enrichment. Refresh cadence:
+   `-CheckpointPublisherKey <hex>` pins the publisher.
+   Refresh cadence:
    feeds older than 7 days 503 the anchors endpoints — re-run
    `publish-public-feed` and scp the JSON to the release path (no
    restart needed; the dashboard re-reads within 60 s).
@@ -736,32 +734,40 @@ Live registry (Arbitrum Sepolia, chain 421614):
 `0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5` (Sourcify-verified).
 Public RPC: `https://sepolia-rollup.arbitrum.io/rpc`.
 
-### Anchor ceremony
+### Anchor ceremony (sovereign CipherChain)
+
+> **Superseded (Phase 1, 2026-11-07):** the Arbitrum ceremony below is historical. Current ceremony is fully local:
 
 ```sh
-# 1. Prepare the commitment (dry-run, no broadcast):
-ciphervault anchor -r https://sepolia-rollup.arbitrum.io/rpc \
-  -c 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 --chain-id 421614
-# Prints the cast send line with the exact publish(bytes32) calldata.
+# Anchor the active head to the sovereign ledger (zero-gas, self-custodial):
+ciphervault anchor
+# Verify the Merkle inclusion proof with the light client (<1ms, offline-capable):
+ciphervault verify-anchor
+```
 
-# 2. Broadcast with the funded payer key (key holder only):
-cast send 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 "publish(bytes32)" \
-  0x<commitment> --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
-  --private-key $PRIVATE_KEY
+# 3. Re-verify on demand (idempotent, offline-capable):
+ciphervault verify-anchor [--head <CID>]
+```
 
-# 3. Record the receipt (same -r/-c/--chain-id flags required):
+> Historical note: steps referencing `-r/-c/--chain-id/--tx-hash`, `cast send`, receipts, and L1/L2 block numbers below describe the removed Arbitrum ceremony. Preserved for context; do not run.
+
+```sh
+# HISTORICAL (Arbitrum, removed Phase 1) — do not run:
 ciphervault anchor -r https://sepolia-rollup.arbitrum.io/rpc \
   -c 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 --chain-id 421614 \
   --tx-hash 0x<tx-hash>
 
-# 4. Verify inclusion and finality stage:
+# HISTORICAL verify (removed Phase 1) — do not run:
 ciphervault verify-anchor -r https://sepolia-rollup.arbitrum.io/rpc
 ```
 
-Omitting the flags on step 3 checks mainnet defaults and reports
-"receipt is null" — always repeat `-r/-c/--chain-id` with `--tx-hash`.
+> Historical note: omitting flags once checked mainnet defaults and reported "receipt is null". No longer applicable — the sovereign ceremony has no flags beyond `--head`.
 
-### Verification semantics (read before debugging)
+### Verification semantics (read before debugging) — HISTORICAL (Arbitrum, removed Phase 1)
+
+Sovereign semantics: `ciphervault verify-anchor` checks the salted commitment against quorum-signed `SovereignBlock` headers in the local ledger and verifies a Merkle inclusion proof — no RPC, no confirmations, no L1/L2 distinction.
+
+Legacy Arbitrum semantics (historical, do not run):
 
 On Arbitrum, receipts and `eth_blockNumber` are L2-domain, but
 `block.number` inside the registry is L1-derived. The verifier therefore
@@ -772,14 +778,9 @@ live proof: L1 11770313 vs L2 312389514 for tx
 then L2Confirmed at 64+ L2 confirmations, then
 DeeplyConfirmed at 50400+. Neither stage verifies L1 settlement.
 
-### Registry redeploy (new chain or contract)
+### Registry redeploy (removed in Phase 1)
 
-1. Fund a fresh deployer, `forge script script/DeployRegistry.s.sol`
-   with `--broadcast`, verify on Sourcify.
-2. Rewire fleet env (`CIPHERVAULT_ARBITRUM_RPC_URL`,
-   `ARBITRUM_CONTRACT_ADDRESS`) and dashboard collectors, promote,
-   confirm each node reports the new chain id.
-3. Run one anchor ceremony end-to-end before announcing.
+The EVM registry no longer exists. There is nothing to redeploy: validator membership changes are handled via the sovereign validator set (see Phase 2 plan in the chain audit report).
 
 ## 20. Scoped Secrets Operations (SLOs, Backup, Scale-Out)
 
