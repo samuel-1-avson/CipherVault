@@ -184,6 +184,7 @@ fn dummy_header(proposer: &[u8; 32]) -> BlockHeader {
         tx_root: [0u8; 32],
         timestamp_ms: 2_000,
         proposer: *proposer,
+        next_validators: None,
         signatures: Vec::new(),
     }
 }
@@ -382,7 +383,7 @@ async fn chain_backfill_brings_lagging_node_to_tip() {
         for n in 1..=2u64 {
             let tx = client_tx(&client, n as u8, n as u8, n);
             let mut block = ledger
-                .propose_block(&validators[0], vec![tx], 1_000 + n * 1_000)
+                .propose_block(&validators[0], vec![tx], 1_000 + n * 1_000, None)
                 .unwrap();
             for signer in [&validators[1], &validators[2]] {
                 block

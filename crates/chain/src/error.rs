@@ -67,6 +67,9 @@ pub enum ChainError {
         last: u64,
     },
 
+    #[error("Invalid validator rotation: {0}")]
+    InvalidRotation(String),
+
     #[error("IO error: {0}")]
     Io(String),
 

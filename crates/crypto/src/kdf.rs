@@ -8,6 +8,7 @@ pub const CTX_RECOVERY_LOCATOR: &[u8; 8] = b"CV_RLOCA";
 pub const CTX_MANIFEST_KEY: &[u8; 8] = b"CV_MANIF";
 pub const CTX_FILE_KEY: &[u8; 8] = b"CV_FVERS";
 pub const CTX_CHUNK_NONCE: &[u8; 8] = b"CV_CNONC";
+pub const CTX_ANCHOR_SALT: &[u8; 8] = b"CV_ANCHR";
 
 /// Domain-separated subkey derivation with a libsodium-`crypto_kdf`-shaped API
 /// `(master_key, subkey_id, ctx)` — but a custom Blake2b-512 construction
@@ -50,6 +51,28 @@ pub fn derive_file_version_key(
     let mut subkey = [0u8; 32];
     subkey.copy_from_slice(&result[0..32]);
     Ok(subkey)
+}
+
+/// Derives the deterministic per-snapshot anchor salt bound to the vault
+/// epoch key and snapshot record CID. The salt is recoverable by the vault
+/// owner (who holds the epoch key via replicated recovery records) without
+/// any new network calls, and opaque to everyone else — so the on-chain
+/// salted commitment stays verifiable after local state loss. Deterministic
+/// by construction: concurrent push retries converge on the same salt.
+pub fn derive_anchor_salt(
+    epoch_key: &[u8; 32],
+    head_cid: &[u8; 32],
+) -> Result<[u8; 32], CryptoError> {
+    let mut hasher = Blake2b512::new();
+    hasher.update(b"CipherVault-KDF-v1");
+    hasher.update(CTX_ANCHOR_SALT);
+    hasher.update(epoch_key);
+    hasher.update(head_cid);
+
+    let result = hasher.finalize();
+    let mut salt = [0u8; 32];
+    salt.copy_from_slice(&result[0..32]);
+    Ok(salt)
 }
 
 /// Derives a deterministic 24-byte XChaCha20 nonce for a chunk bound to file key, chunk index, and chunk digest.
@@ -107,5 +130,24 @@ mod tests {
         // Different context yields different output
         let sub4 = derive_subkey(&master, 1, CTX_RECOVERY_ENCRYPT).unwrap();
         assert_ne!(sub1, sub4);
+    }
+
+    #[test]
+    fn test_anchor_salt_determinism_and_binding() {
+        let epoch_key = [0x11u8; 32];
+        let head_a = [0xAAu8; 32];
+        let head_b = [0xBBu8; 32];
+
+        // Deterministic: same inputs always converge (push retries agree).
+        let s1 = derive_anchor_salt(&epoch_key, &head_a).unwrap();
+        let s2 = derive_anchor_salt(&epoch_key, &head_a).unwrap();
+        assert_eq!(s1, s2);
+
+        // Bound to both inputs: different head or epoch key diverges.
+        assert_ne!(s1, derive_anchor_salt(&epoch_key, &head_b).unwrap());
+        assert_ne!(s1, derive_anchor_salt(&[0x22u8; 32], &head_a).unwrap());
+
+        // Domain-separated from the other KDF outputs on the same master.
+        assert_ne!(s1, derive_subkey(&epoch_key, 1, CTX_MANIFEST_KEY).unwrap());
     }
 }

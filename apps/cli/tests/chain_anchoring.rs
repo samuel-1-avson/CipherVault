@@ -101,7 +101,7 @@ fn test_sovereign_ledger_anchor_proof_and_light_verify() {
     client.sign_tx(&mut tx, SOVEREIGN_CHAIN_ID_STR);
 
     let mut block = ledger
-        .propose_block(&signers[0], vec![tx], 1_700_000_005_000)
+        .propose_block(&signers[0], vec![tx], 1_700_000_005_000, None)
         .expect("propose");
     block
         .header

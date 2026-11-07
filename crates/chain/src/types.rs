@@ -6,7 +6,7 @@ use crate::error::ChainError;
 use crate::merkle::{hash_leaf, InclusionProof};
 
 /// Protocol version of the CipherChain ledger.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Canonical Sovereign Chain numeric identifier.
 pub const SOVEREIGN_CHAIN_ID_NUM: u64 = 777777;
@@ -95,6 +95,13 @@ pub struct BlockHeader {
     pub tx_root: [u8; 32],
     pub timestamp_ms: u64,
     pub proposer: [u8; 32],
+    /// Validator-set rotation taking effect for the NEXT height (version 3+).
+    /// `None` = no change. The rotation is quorum-certified by the CURRENT
+    /// set's endorsements on this block, so replaying nodes converge on the
+    /// same active set with no out-of-band coordination. `#[serde(default)]`
+    /// keeps pre-rotation block files loading as `None`.
+    #[serde(default)]
+    pub next_validators: Option<Vec<[u8; 32]>>,
     pub signatures: Vec<BlockSignature>,
 }
 
@@ -164,14 +171,35 @@ impl BlockHeader {
     }
 
     /// Payload validators actually sign and verifiers actually check:
-    /// version 2+ uses [`Self::vote_bytes`], version 1 uses
-    /// [`Self::signing_bytes`].
+    /// version 3+ uses [`Self::vote_bytes_v3`], version 2 uses
+    /// [`Self::vote_bytes`], version 1 uses [`Self::signing_bytes`].
     pub fn signing_payload(&self) -> Vec<u8> {
-        if self.version >= 2 {
+        if self.version >= 3 {
+            self.vote_bytes_v3()
+        } else if self.version >= 2 {
             self.vote_bytes()
         } else {
             self.signing_bytes()
         }
+    }
+
+    /// Version-3 signing payload: [`Self::vote_bytes`] plus the rotation
+    /// certificate (`0x00` = no rotation, else `0x01`, count, keys). Only
+    /// v3 blocks hash this layout; older blocks keep verifying under
+    /// their own rules.
+    pub fn vote_bytes_v3(&self) -> Vec<u8> {
+        let mut buf = self.vote_bytes();
+        match &self.next_validators {
+            None => buf.push(0x00),
+            Some(keys) => {
+                buf.push(0x01);
+                buf.extend_from_slice(&(keys.len() as u32).to_le_bytes());
+                for key in keys {
+                    buf.extend_from_slice(key);
+                }
+            }
+        }
+        buf
     }
 }
 

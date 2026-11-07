@@ -8,6 +8,7 @@ pub(crate) mod context;
 pub(crate) mod dpop;
 pub(crate) mod feed;
 pub(crate) mod fleet_cli;
+pub(crate) mod genesis;
 pub(crate) mod hook;
 pub(crate) mod init;
 pub(crate) mod inspect;
@@ -63,9 +64,9 @@ pub(crate) use update::*;
 /// and are imported below.
 pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> {
     use crate::{
-        ApproveSubcommand, AuthSubcommand, DeviceSubcommand, HookSubcommand, InviteSubcommand,
-        LeaseSubcommand, NodeSubcommand, RecoverySubcommand, ReleaseSubcommand, VaultSubcommand,
-        VoucherSubcommand,
+        ApproveSubcommand, AuthSubcommand, DeviceSubcommand, GenesisSubcommand, HookSubcommand,
+        InviteSubcommand, LeaseSubcommand, NodeSubcommand, RecoverySubcommand, ReleaseSubcommand,
+        VaultSubcommand, VoucherSubcommand,
     };
     use colored::Colorize;
 
@@ -201,6 +202,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             head,
             daemon,
             interval,
+            rotate_to,
         } => {
             if daemon {
                 println!(
@@ -225,7 +227,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                     "[{}] Executing initial CipherChain anchor check...",
                     chrono::Utc::now().to_rfc3339()
                 );
-                if let Err(e) = cmd_anchor(head.clone()).await {
+                if let Err(e) = cmd_anchor(head.clone(), rotate_to.clone()).await {
                     eprintln!("Notice: Initial anchor check: {}", e);
                 }
 
@@ -240,7 +242,9 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                                 "[{}] Executing periodic CipherChain anchor check...",
                                 chrono::Utc::now().to_rfc3339()
                             );
-                            if let Err(e) = cmd_anchor(head.clone()).await {
+                            // Rotation is one-shot (initial check only): every
+                            // later tick anchors without a rotation payload.
+                            if let Err(e) = cmd_anchor(head.clone(), None).await {
                                 eprintln!("Notice: Periodic anchor check: {}", e);
                             }
                         }
@@ -248,10 +252,24 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 }
                 Ok(())
             } else {
-                cmd_anchor(head).await
+                cmd_anchor(head, rotate_to).await
             }
         }
         crate::Commands::VerifyAnchor { head } => cmd_verify_anchor(head).await,
+        crate::Commands::Genesis { sub } => match sub {
+            GenesisSubcommand::Propose {
+                validators,
+                timestamp,
+                chain_id,
+                out,
+            } => genesis::cmd_genesis_propose(&validators, timestamp, &chain_id, &out),
+            GenesisSubcommand::Sign { proposal, out } => genesis::cmd_genesis_sign(&proposal, &out),
+            GenesisSubcommand::Assemble {
+                proposal,
+                signatures,
+                chain_dir,
+            } => genesis::cmd_genesis_assemble(&proposal, &signatures, &chain_dir),
+        },
         crate::Commands::PublishPublicFeed { output, network } => {
             crate::cmd_publish_public_feed(output, network)
         }

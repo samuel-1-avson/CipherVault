@@ -335,6 +335,10 @@ struct ChainBackfillFetch {
     next_height: u64,
     target: u64,
     collected: Vec<ciphervault_chain::CipherChainBlock>,
+    /// Genesis set served with the height-0 chunk (`None` from legacy
+    /// peers: falls back to the hub's current set, which verifies block 0
+    /// only when no rotation ever happened).
+    genesis: Option<Vec<[u8; 32]>>,
 }
 
 /// Mutable event-loop state, bundled so the swarm event handler stays under
@@ -985,6 +989,7 @@ fn start_chain_backfill(
             next_height: 0,
             target,
             collected: Vec::new(),
+            genesis: None,
         },
     );
 }
@@ -1005,6 +1010,7 @@ fn handle_chain_backfill_response(
     let OperatorRpcResponse::ChainBlocks {
         blocks,
         earliest_height,
+        genesis_validators,
     } = response
     else {
         return;
@@ -1012,6 +1018,11 @@ fn handle_chain_backfill_response(
     if *earliest_height > 0 || blocks.is_empty() {
         // Serving peer lacks genesis-anchored history; wait for a full peer.
         return;
+    }
+    // The height-0 chunk carries the set that certified block 0; later
+    // chunks repeat it, so first-seen wins.
+    if fetch.genesis.is_none() {
+        fetch.genesis = genesis_validators.clone();
     }
     let contiguous = blocks
         .first()
@@ -1023,7 +1034,18 @@ fn handle_chain_backfill_response(
     fetch.next_height += blocks.len() as u64;
     fetch.collected.extend(blocks.iter().cloned());
     if fetch.next_height > fetch.target {
-        let _ = state.chain_backfill(fetch.collected);
+        // A malformed genesis set fails closed here (dropped fetch, retry
+        // on the next trigger); `None` falls back to the hub's current set
+        // inside `chain_backfill`, which verifies block 0 and fails closed
+        // when a rotation actually happened.
+        let genesis = match fetch.genesis {
+            Some(keys) => match ciphervault_chain::ValidatorSet::new(keys) {
+                Ok(set) => Some(set),
+                Err(_) => return,
+            },
+            None => None,
+        };
+        let _ = state.chain_backfill(fetch.collected, genesis);
         return;
     }
     let request = OperatorRpcRequest {

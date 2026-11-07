@@ -588,7 +588,13 @@ impl OperatorState {
                 if dir.join("tip.json").exists() {
                     hub.mark_syncing();
                 }
+                // Trust the chain over the file: replay derives in-band
+                // rotations, so admission must follow the derived set. The
+                // file remains the seed for fresh chains and the human's
+                // declared intent.
+                slot.validators = Some(hub.ledger().validator_set().clone());
                 slot.hub = Some(hub);
+                return;
             }
         }
         slot.validators = Some(validators);
@@ -632,17 +638,35 @@ impl OperatorState {
             }
         }
         let hub = slot.hub.as_mut().expect("hub present");
-        hub.ingest_msg(sender, &msg)
+        let outcome = hub.ingest_msg(sender, &msg);
+        // Rotations commit through the hub: admission follows the chain,
+        // not the operator's (possibly stale) configured file.
+        if matches!(
+            outcome,
+            ciphervault_chain::sync::IngestOutcome::Committed { .. }
+        ) {
+            slot.validators = Some(hub.ledger().validator_set().clone());
+        }
+        outcome
     }
 
     /// Rebuilds the hub replica from backfilled blocks (marks complete).
+    /// `genesis` must be the set that certified block 0 (served alongside
+    /// the blocks); `None` (legacy peers) falls back to the hub's current
+    /// set, which verifies block 0 only when no rotation ever happened.
     pub fn chain_backfill(
         &self,
         blocks: Vec<ciphervault_chain::CipherChainBlock>,
+        genesis: Option<ciphervault_chain::ValidatorSet>,
     ) -> Result<(), String> {
         let mut slot = lock_or_recover(&self.chain_sync, "chain_sync");
         let hub = slot.hub.as_mut().ok_or("no chain hub".to_string())?;
-        hub.backfill(blocks).map_err(|e| e.to_string())
+        let genesis_set = genesis.unwrap_or_else(|| hub.ledger().validator_set().clone());
+        hub.backfill(blocks, genesis_set)
+            .map_err(|e| e.to_string())?;
+        // Replay may have applied rotations: admission follows the chain.
+        slot.validators = Some(hub.ledger().validator_set().clone());
+        Ok(())
     }
 
     /// Hub replica height, if a hub exists (adopted or full).
@@ -673,16 +697,23 @@ impl OperatorState {
     }
 
     /// Serves a chain catch-up window from the hub replica. Returns the
-    /// blocks plus the earliest locally held height (tip snapshot when
-    /// unbackfilled, genesis otherwise).
+    /// blocks, the earliest locally held height (tip snapshot when
+    /// unbackfilled, genesis otherwise), and the genesis validator set that
+    /// certified block 0 (disk record when present, else the hub's current
+    /// set — which authenticates block 0 exactly when no rotation ever
+    /// happened, since verification itself fails closed otherwise).
     pub fn chain_block_range(
         &self,
         from_height: u64,
         limit: u64,
-    ) -> (Vec<ciphervault_chain::CipherChainBlock>, u64) {
+    ) -> (
+        Vec<ciphervault_chain::CipherChainBlock>,
+        u64,
+        Option<Vec<[u8; 32]>>,
+    ) {
         let slot = lock_or_recover(&self.chain_sync, "chain_sync");
         let Some(hub) = slot.hub.as_ref() else {
-            return (Vec::new(), 0);
+            return (Vec::new(), 0, None);
         };
         let limit = (limit.min(256)) as usize;
         let mut blocks = Vec::new();
@@ -696,7 +727,27 @@ impl OperatorState {
                 None => break,
             }
         }
-        (blocks, hub.ledger().earliest_height())
+        let genesis = self
+            .chain_genesis_validators()
+            .map(|set| set.validators().to_vec());
+        (blocks, hub.ledger().earliest_height(), genesis)
+    }
+
+    /// The validator set that certified block 0: the on-disk genesis record
+    /// when present, else the hub's current set (correct exactly when no
+    /// rotation ever happened; otherwise backfill verification fails
+    /// closed on block 0 and the peer must upgrade).
+    pub fn chain_genesis_validators(&self) -> Option<ciphervault_chain::ValidatorSet> {
+        let dir = self.data_dir.join("chain");
+        match ciphervault_chain::SovereignLedger::read_genesis_validators(&dir) {
+            Ok(Some(set)) => Some(set),
+            _ => {
+                let slot = lock_or_recover(&self.chain_sync, "chain_sync");
+                slot.hub
+                    .as_ref()
+                    .map(|hub| hub.ledger().validator_set().clone())
+            }
+        }
     }
 
     fn identity_store_path(&self) -> PathBuf {

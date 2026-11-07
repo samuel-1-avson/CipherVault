@@ -197,6 +197,13 @@ impl VoteCollector {
         self.votes.get(&(height, *hash))
     }
 
+    /// Replaces the validator set votes are checked against. The hub calls
+    /// this after every ledger mutation so post-rotation votes verify
+    /// against the active set, not the set that was current at construction.
+    pub fn set_validator_set(&mut self, validator_set: ValidatorSet) {
+        self.validator_set = validator_set;
+    }
+
     /// Conflicting-vote evidence observed so far.
     pub fn equivocations(&self) -> &[Equivocation] {
         &self.equivocations
@@ -327,20 +334,22 @@ impl ChainSyncHub {
     }
 
     /// Rebuilds genesis-anchored history (backfill) and marks the replica
-    /// complete. Prunes proposals at or below the new tip.
-    pub fn backfill(&mut self, blocks: Vec<CipherChainBlock>) -> Result<(), ChainError> {
+    /// complete. Prunes proposals at or below the new tip. `genesis_set`
+    /// must be the set that certified block 0 (fetched alongside the
+    /// blocks): block 0 verifies against it, and in-band rotations derive
+    /// every later set during replay.
+    pub fn backfill(
+        &mut self,
+        blocks: Vec<CipherChainBlock>,
+        genesis_set: ValidatorSet,
+    ) -> Result<(), ChainError> {
         let chain_id = self.ledger.chain_id().to_string();
-        let validator_set = self.ledger.validator_set().clone();
         let storage = self.ledger.storage_path();
-        let ledger = SovereignLedger::rebuild_from_blocks(
-            &chain_id,
-            validator_set.clone(),
-            blocks,
-            storage,
-        )?;
+        let ledger = SovereignLedger::rebuild_from_blocks(&chain_id, genesis_set, blocks, storage)?;
         let tip = ledger.height();
+        let active = ledger.validator_set().clone();
         self.ledger = ledger;
-        self.collector = VoteCollector::new(validator_set);
+        self.collector = VoteCollector::new(active);
         self.proposals.retain(|(height, _), _| *height > tip);
         self.complete = true;
         Ok(())
@@ -525,6 +534,10 @@ impl ChainSyncHub {
         block.header.signatures.sort_by_key(|sig| sig.validator);
         match self.ledger.commit_block(block) {
             Ok(()) => {
+                // Rotation may have changed the active set: re-sync the
+                // collector so later votes verify against current members.
+                let set = self.ledger.validator_set().clone();
+                self.collector.set_validator_set(set);
                 let committed = self.ledger.latest_block().header.block_hash();
                 self.collector.mark_certified(height, proposal_hash);
                 self.proposals.remove(&key);
@@ -572,6 +585,8 @@ impl ChainSyncHub {
         }
         match self.ledger.commit_block(block) {
             Ok(()) => {
+                let set = self.ledger.validator_set().clone();
+                self.collector.set_validator_set(set);
                 self.collector.mark_certified(height, hash);
                 self.proposals.remove(&(height, hash));
                 IngestOutcome::Committed {
@@ -675,7 +690,12 @@ mod tests {
 
         let proposal_block = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
         let proposal_hash = proposal_block.header.block_hash();
         let votes: Vec<Vec<u8>> = signers
@@ -740,9 +760,14 @@ mod tests {
         // [2000, 4000, 9000] → upper median 4000, not the suggestion.
         let proposal_block = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 1)], 9_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                9_000,
+                None,
+            )
             .unwrap();
-        assert_eq!(proposal_block.header.version, 2);
+        assert_eq!(proposal_block.header.version, 3);
         let proposal_raw = raw(&ChainSyncEnvelope::seal(
             &signers[0],
             ChainSyncMsg::Proposal(ProposalMsg {
@@ -792,7 +817,12 @@ mod tests {
         // assembly must NOT substitute the median.
         let mut proposal_block = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xcc, 0xdd, 1)], 9_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xcc, 0xdd, 1)],
+                9_000,
+                None,
+            )
             .unwrap();
         proposal_block.header.version = 1;
         proposal_block.header.signatures = vec![signers[0].sign_header(&proposal_block.header)];
@@ -847,13 +877,196 @@ mod tests {
         assert_eq!(crate::vote_observed_ms(2_000, 1_000), 2_000);
     }
 
+    #[test]
+    fn test_rotation_applies_on_commit_and_rekeys_voting() {
+        let (signers_a, _set_a, mut hubs) = setup(3);
+        let signers_b: Vec<ConsensusSigner> = (0..3).map(|_| ConsensusSigner::generate()).collect();
+        let keys_b: Vec<[u8; 32]> = signers_b.iter().map(|s| s.public_key()).collect();
+        let client = ConsensusSigner::generate();
+
+        // Block 1 rotates A -> B, certified by an A quorum.
+        let rotation_block = hubs[0]
+            .ledger()
+            .propose_block(
+                &signers_a[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                Some(keys_b.clone()),
+            )
+            .unwrap();
+        assert_eq!(rotation_block.header.version, 3);
+        let proposal_hash = rotation_block.header.block_hash();
+        let proposal_raw = raw(&ChainSyncEnvelope::seal(
+            &signers_a[0],
+            ChainSyncMsg::Proposal(ProposalMsg {
+                block: rotation_block.clone(),
+            }),
+        ));
+        let votes: Vec<Vec<u8>> = signers_a
+            .iter()
+            .map(|s| raw(&vote_for(s, &rotation_block.header)))
+            .collect();
+
+        for hub in hubs.iter_mut() {
+            assert!(matches!(
+                hub.ingest(&proposal_raw),
+                IngestOutcome::ProposalAccepted { .. }
+            ));
+            for vote in &votes {
+                let _ = hub.ingest(vote);
+            }
+            assert_eq!(hub.ledger().height(), 1);
+            assert_eq!(hub.ledger().validator_set().validators(), keys_b);
+            // The vote record for the decided proposal is pruned on commit.
+            assert_eq!(
+                hub.collector()
+                    .votes_for(1, &proposal_hash)
+                    .map(|m| m.len()),
+                None
+            );
+        }
+
+        // Height 2 proposes and commits under the new set B.
+        let block2 = hubs[0]
+            .ledger()
+            .propose_block(
+                &signers_b[0],
+                vec![client_tx(&client, 0xcc, 0xdd, 2)],
+                3_000,
+                None,
+            )
+            .unwrap();
+        let proposal2_raw = raw(&ChainSyncEnvelope::seal(
+            &signers_b[0],
+            ChainSyncMsg::Proposal(ProposalMsg {
+                block: block2.clone(),
+            }),
+        ));
+        let votes2: Vec<Vec<u8>> = signers_b
+            .iter()
+            .map(|s| raw(&vote_for(s, &block2.header)))
+            .collect();
+        for hub in hubs.iter_mut() {
+            assert!(matches!(
+                hub.ingest(&proposal2_raw),
+                IngestOutcome::ProposalAccepted { .. }
+            ));
+        }
+        let mut committed = 0;
+        for hub in hubs.iter_mut() {
+            for vote in &votes2 {
+                if matches!(hub.ingest(vote), IngestOutcome::Committed { .. }) {
+                    committed += 1;
+                }
+            }
+        }
+        assert_eq!(committed, 3);
+        for hub in hubs.iter() {
+            assert_eq!(hub.ledger().height(), 2);
+            assert_eq!(hub.ledger().validator_set().validators(), keys_b);
+        }
+
+        // An old-set vote for a post-rotation height is rejected: A is no
+        // longer a member of the active set.
+        let stale = raw(&vote_for(&signers_a[1], &block2.header));
+        assert!(matches!(hubs[0].ingest(&stale), IngestOutcome::Rejected(_)));
+    }
+
+    #[test]
+    fn test_rotation_rejects_malformed_payloads() {
+        let (signers, _set, mut hubs) = setup(3);
+        let client = ConsensusSigner::generate();
+
+        // Empty rotation set.
+        let err = hubs[0]
+            .ledger()
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                Some(Vec::new()),
+            )
+            .unwrap_err();
+        assert!(matches!(err, ChainError::InvalidRotation(_)));
+
+        // Rotation smuggled into a pre-v3 header.
+        let mut legacy = hubs[0]
+            .ledger()
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
+            .unwrap();
+        legacy.header.version = 2;
+        legacy.header.next_validators = Some(vec![signers[0].public_key()]);
+        legacy.header.signatures = vec![signers[0].sign_header(&legacy.header)];
+        let err = hubs[0].ledger().check_block(&legacy).unwrap_err();
+        assert!(matches!(err, ChainError::InvalidRotation(_)));
+    }
+
+    #[test]
+    fn test_reopen_lands_on_rotated_set() {
+        let (signers_a, set_a, _) = setup(3);
+        let signers_b: Vec<ConsensusSigner> = (0..3).map(|_| ConsensusSigner::generate()).collect();
+        let keys_b: Vec<[u8; 32]> = signers_b.iter().map(|s| s.public_key()).collect();
+        let set_b = ValidatorSet::new(keys_b.clone()).unwrap();
+        let client = ConsensusSigner::generate();
+        let dir = support_dir("rotation-reopen");
+
+        // Persist genesis + a rotation block directly on the ledger.
+        {
+            let refs: Vec<&ConsensusSigner> = signers_a.iter().collect();
+            let mut ledger = SovereignLedger::create_genesis(
+                CHAIN_ID,
+                set_a.clone(),
+                &refs,
+                1_000,
+                Some(dir.clone()),
+            )
+            .unwrap();
+            let tx = client_tx(&client, 0xaa, 0xbb, 1);
+            let mut block = ledger
+                .propose_block(&signers_a[0], vec![tx], 2_000, Some(keys_b.clone()))
+                .unwrap();
+            for signer in [&signers_a[1], &signers_a[2]] {
+                block
+                    .header
+                    .signatures
+                    .push(signer.sign_header(&block.header));
+            }
+            ledger.commit_block(block).unwrap();
+            assert_eq!(ledger.validator_set().validators(), keys_b);
+            assert!(dir.join("genesis_validators.json").exists());
+        }
+
+        // Reopen with the NEW set (operator's updated file): genesis verifies
+        // against the on-disk record, replay derives the rotation.
+        let reopened = SovereignLedger::open(CHAIN_ID, set_b, &dir).unwrap();
+        assert_eq!(reopened.height(), 1);
+        assert_eq!(reopened.validator_set().validators(), keys_b);
+
+        // Reopen with the OLD set also works: the genesis record (not the
+        // passed set) anchors block 0, and replay derives forward.
+        let reopened_old = SovereignLedger::open(CHAIN_ID, set_a, &dir).unwrap();
+        assert_eq!(reopened_old.height(), 1);
+        assert_eq!(reopened_old.validator_set().validators(), keys_b);
+    }
+
+    #[test]
     fn test_vote_before_proposal_still_commits() {
         let (signers, _set, mut hubs) = setup(3);
         let client = ConsensusSigner::generate();
 
         let proposal_block = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
         let votes: Vec<Vec<u8>> = signers
             .iter()
@@ -889,11 +1102,21 @@ mod tests {
 
         let block_x = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
         let block_y = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xcc, 0xdd, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xcc, 0xdd, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
         let header_x = block_x.header.clone();
         let header_y = block_y.header.clone();
@@ -940,7 +1163,12 @@ mod tests {
         // Hub 0 commits block 1 through a full proposal + vote round.
         let proposal_block = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
         let votes: Vec<Vec<u8>> = signers
             .iter()
@@ -976,7 +1204,12 @@ mod tests {
         // A rival fully-signed block at the same height is a fork, not history.
         let mut fork = hubs[2]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xcc, 0xdd, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xcc, 0xdd, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
         for signer in [&signers[1], &signers[2]] {
             fork.header
@@ -1007,7 +1240,12 @@ mod tests {
 
         let bad_block = hubs[0]
             .ledger()
-            .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 1)], 2_000)
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
             .unwrap();
 
         // Non-member envelopes are rejected before any state changes.
@@ -1064,7 +1302,7 @@ mod tests {
         for n in 1..=blocks {
             let tx = client_tx(&client, n as u8, n as u8, n);
             let mut block = ledger
-                .propose_block(&signers[0], vec![tx], 1_000 + n * 1_000)
+                .propose_block(&signers[0], vec![tx], 1_000 + n * 1_000, None)
                 .unwrap();
             for signer in [&signers[1], &signers[2]] {
                 block
@@ -1094,7 +1332,7 @@ mod tests {
         let new_tx = client_tx(&client, 0xaa, 0xbb, 4);
         let new_proposal = hub
             .ledger()
-            .propose_block(&signers[0], vec![new_tx], 5_000)
+            .propose_block(&signers[0], vec![new_tx], 5_000, None)
             .unwrap();
         let header4 = new_proposal.header.clone();
         let new_raw = raw(&ChainSyncEnvelope::seal(
@@ -1114,7 +1352,7 @@ mod tests {
         let history: Vec<CipherChainBlock> = (0..=3)
             .map(|h| full.block_at_height(h).unwrap().clone())
             .collect();
-        hub.backfill(history).unwrap();
+        hub.backfill(history, set.clone()).unwrap();
         assert!(hub.is_complete());
 
         // ...and the same round now commits.
@@ -1123,7 +1361,12 @@ mod tests {
             ChainSyncMsg::Proposal(ProposalMsg {
                 block: hub
                     .ledger()
-                    .propose_block(&signers[0], vec![client_tx(&client, 0xaa, 0xbb, 4)], 5_000)
+                    .propose_block(
+                        &signers[0],
+                        vec![client_tx(&client, 0xaa, 0xbb, 4)],
+                        5_000,
+                        None,
+                    )
                     .unwrap(),
             }),
         ));
@@ -1163,14 +1406,14 @@ mod tests {
         let mut hub =
             ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), full.latest_block().clone(), None)
                 .unwrap();
-        assert!(hub.backfill(gappy).is_err());
+        assert!(hub.backfill(gappy, set.clone()).is_err());
         assert!(!hub.is_complete());
 
         // Wrong chain in history.
         let mut wrong = full.block_at_height(0).unwrap().clone();
         wrong.header.chain_id = "other-chain".to_string();
         let history = vec![wrong];
-        assert!(hub.backfill(history).is_err());
+        assert!(hub.backfill(history, set.clone()).is_err());
     }
 
     #[test]
@@ -1191,7 +1434,7 @@ mod tests {
             for n in 1..=2u64 {
                 let tx = client_tx(&client, n as u8, n as u8, n);
                 let mut block = ledger
-                    .propose_block(&signers[0], vec![tx], 1_000 + n * 1_000)
+                    .propose_block(&signers[0], vec![tx], 1_000 + n * 1_000, None)
                     .unwrap();
                 for signer in [&signers[1], &signers[2]] {
                     block

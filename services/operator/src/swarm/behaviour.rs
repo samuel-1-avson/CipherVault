@@ -190,6 +190,11 @@ pub enum OperatorRpcResponse {
         blocks: Vec<CipherChainBlock>,
         /// Lowest height the server holds (tip snapshot when unbackfilled).
         earliest_height: u64,
+        /// Validator set that certified block 0 (`None` from legacy peers
+        /// that predate rotation support). The backfilling node verifies
+        /// block 0 against it and derives every later set by replaying
+        /// in-band rotations.
+        genesis_validators: Option<Vec<[u8; 32]>>,
     },
     Err {
         status: u16,

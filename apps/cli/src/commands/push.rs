@@ -301,7 +301,7 @@ pub(crate) async fn cmd_push(
             "{}",
             "Triggering automated post-push CipherChain anchoring...".cyan()
         );
-        if let Err(e) = cmd_anchor(None).await {
+        if let Err(e) = cmd_anchor(None, None).await {
             eprintln!("{}: {}", "Notice: Post-push anchoring failed".yellow(), e);
         }
     }

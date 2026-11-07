@@ -18,7 +18,7 @@ pub mod types;
 
 pub use consensus::{ConsensusSigner, ValidatorSet};
 pub use error::ChainError;
-pub use ledger::{CommitmentRecord, SovereignLedger};
+pub use ledger::{CommitmentRecord, SovereignLedger, GENESIS_VALIDATORS_FILE};
 pub use light_client::{SovereignLightClient, SovereignVerificationResult};
 pub use merkle::{hash_leaf, hash_nodes, InclusionProof, MerkleTree, EMPTY_TREE_ROOT};
 pub use sync::{

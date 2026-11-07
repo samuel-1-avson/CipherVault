@@ -1057,6 +1057,21 @@ impl LocalVaultStore {
         }
     }
 
+    /// Derives the deterministic anchor salt for a snapshot head from its
+    /// epoch key. The salt is recoverable by the vault owner (epoch keys
+    /// replicate inside sealed recovery records) without any new network
+    /// calls, so on-chain commitments stay verifiable after local state
+    /// loss. Fails when the snapshot or its epoch key is unknown locally —
+    /// callers fall back to a one-time local salt for such legacy heads.
+    pub fn derive_head_anchor_salt(
+        &self,
+        head_cid: &[u8; 32],
+    ) -> Result<[u8; 32], LocalStoreError> {
+        let (record, _) = self.get_snapshot(head_cid)?;
+        let epoch_key = self.get_epoch_key(record.epoch)?;
+        Ok(epoch_key.derive_anchor_salt(head_cid)?)
+    }
+
     /// Retrieves all snapshots in chronological order (canonical deduplicated by CID).
     pub fn list_snapshots(&self) -> Result<Vec<SnapshotRecord>, LocalStoreError> {
         let mut stmt = self
@@ -2117,6 +2132,63 @@ mod tests {
         let renewed = listed.iter().find(|r| r.lease_id == "lease-1").unwrap();
         assert_eq!(renewed.expires_at_utc, 5000);
         assert_eq!(renewed.term_days, 180);
+    }
+
+    #[test]
+    fn test_derive_head_anchor_salt_roundtrip() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let r = RecoverySecret::generate();
+        let r_sk = r.derive_recovery_signing_key().unwrap();
+        let (_, r_enc_pk) = r.derive_recovery_encryption_keys().unwrap();
+
+        let vault_id = [0xAAu8; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: r_sk.verifying_key().as_bytes().to_vec(),
+            recovery_encryption_pk: r_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0u8; 32],
+            created_at_utc: 1000,
+            creation_nonce: vec![0u8; 32],
+            signature: Vec::new(),
+        };
+        genesis.sign(&r_sk).unwrap();
+
+        let dev_sk = generate_signing_key();
+        let dev_id = [0xBBu8; 32];
+        let epoch_key = VaultEpochKey::generate();
+        let locator = r.derive_recovery_locator().unwrap();
+        store
+            .init_vault(&vault_id, &genesis, &dev_sk, &dev_id, &epoch_key, &locator)
+            .unwrap();
+
+        let record = SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            snapshot_id: vec![0x77u8; 32],
+            parent_snapshot_ids: Vec::new(),
+            device_id: dev_id.to_vec(),
+            device_counter: 1,
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![0x22u8; 32],
+            encrypted_manifest_len: 100,
+            advisory_timestamp_utc: 1000,
+            signature: Vec::new(),
+        };
+        store
+            .save_snapshot(&record, b"encrypted_manifest_data", &[])
+            .unwrap();
+        let head_cid = record.compute_record_cid().unwrap();
+
+        // Derived salt matches an independent KDF computation: the owner
+        // can re-derive it from replicated recovery records.
+        let salt = store.derive_head_anchor_salt(&head_cid).unwrap();
+        assert_eq!(salt, epoch_key.derive_anchor_salt(&head_cid).unwrap());
+        // Deterministic across calls; unknown heads stay an error (the
+        // anchor falls back to a one-time local salt there).
+        assert_eq!(salt, store.derive_head_anchor_salt(&head_cid).unwrap());
+        assert!(store.derive_head_anchor_salt(&[0x99u8; 32]).is_err());
     }
 
     #[test]

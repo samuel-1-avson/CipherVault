@@ -42,7 +42,9 @@ fn sealed_tip(signers: &[ConsensusSigner], set: &ValidatorSet) -> ChainSyncEnvel
         SovereignLedger::create_genesis(SOVEREIGN_CHAIN_ID_STR, set.clone(), &refs, 2_000, None)
             .unwrap();
     let tx = client_tx(&client, 1, 1, 1, SOVEREIGN_CHAIN_ID_STR);
-    let mut block = ledger.propose_block(&signers[0], vec![tx], 3_000).unwrap();
+    let mut block = ledger
+        .propose_block(&signers[0], vec![tx], 3_000, None)
+        .unwrap();
     for signer in &signers[1..] {
         block
             .header
@@ -112,7 +114,9 @@ async fn publish_rejects_tampered_and_foreign_envelopes() {
             .unwrap();
     let client = ConsensusSigner::generate();
     let tx = client_tx(&client, 7, 7, 1, "foreign-chain-9");
-    let mut block = foreign.propose_block(&signers[0], vec![tx], 3_000).unwrap();
+    let mut block = foreign
+        .propose_block(&signers[0], vec![tx], 3_000, None)
+        .unwrap();
     for signer in &signers[1..] {
         block
             .header

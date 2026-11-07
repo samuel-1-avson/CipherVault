@@ -76,6 +76,7 @@ Fleet administration:
   invite               Fleet-signed join invites for new operator nodes
   voucher              Issue write vouchers (operator-local administration, service token)
   publish-public-feed  Publish a signed public checkpoint feed from local vault evidence
+  genesis              Multi-party genesis ceremony for the sovereign CipherChain
 
 Account & devices:
   auth                 Manage the optional CipherVault control-plane account on this device
@@ -568,6 +569,12 @@ enum Commands {
 
         #[arg(
             long,
+            help = "Propose a validator-set rotation on this block: comma-separated hex pubkeys taking effect next height (quorum-certified by the current set)"
+        )]
+        rotate_to: Option<String>,
+
+        #[arg(
+            long,
             default_value = "3600",
             help = "Interval in seconds between periodic anchor checks in daemon mode (default: 3600)"
         )]
@@ -581,6 +588,12 @@ enum Commands {
             help = "Snapshot head CID (hex) to verify (defaults to active head)"
         )]
         head: Option<String>,
+    },
+
+    /// Multi-party genesis ceremony for the sovereign CipherChain
+    Genesis {
+        #[command(subcommand)]
+        sub: GenesisSubcommand,
     },
 
     /// Out-of-band cryptographic approval and multi-party authorization
@@ -1442,6 +1455,54 @@ enum ApproveSubcommand {
     Status {
         #[arg(help = "The 32-character hex ID of the challenge")]
         challenge_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GenesisSubcommand {
+    /// Build the deterministic unsigned genesis proposal (share out-of-band)
+    Propose {
+        #[arg(help = "Comma-separated hex validator pubkeys (sorted automatically)")]
+        validators: String,
+        #[arg(
+            long,
+            help = "Genesis timestamp in millis since epoch (explicit so all parties agree)"
+        )]
+        timestamp: u64,
+        #[arg(
+            long,
+            default_value = "ciphervault-sovereign-1",
+            help = "Sovereign chain ID"
+        )]
+        chain_id: String,
+        #[arg(
+            long,
+            default_value = "genesis_proposal.json",
+            help = "Output proposal file"
+        )]
+        out: String,
+    },
+
+    /// Sign the proposal with this member's device key
+    Sign {
+        #[arg(help = "Proposal file from genesis propose")]
+        proposal: String,
+        #[arg(
+            long,
+            default_value = "genesis_signature.json",
+            help = "Output signature file"
+        )]
+        out: String,
+    },
+
+    /// Combine quorum signatures into a chain dir (founder)
+    Assemble {
+        #[arg(help = "Proposal file from genesis propose")]
+        proposal: String,
+        #[arg(help = "Signature files from members (quorum required)")]
+        signatures: Vec<String>,
+        #[arg(long, help = "Empty chain dir to write blocks + genesis record into")]
+        chain_dir: String,
     },
 }
 

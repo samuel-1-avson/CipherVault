@@ -81,6 +81,12 @@ impl VaultEpochKey {
         derive_subkey(&self.0, epoch, CTX_MANIFEST_KEY)
     }
 
+    /// Derives the deterministic per-snapshot anchor salt for a snapshot
+    /// record CID under this epoch key. See [`crate::kdf::derive_anchor_salt`].
+    pub fn derive_anchor_salt(&self, head_cid: &[u8; 32]) -> Result<[u8; 32], CryptoError> {
+        crate::kdf::derive_anchor_salt(&self.0, head_cid)
+    }
+
     /// Derives the deterministic file-version encryption key for this epoch and plaintext SHA-256.
     pub fn derive_file_version_key(
         &self,

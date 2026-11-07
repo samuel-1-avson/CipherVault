@@ -78,6 +78,7 @@ fn test_sovereign_blockchain_full_lifecycle() {
             &operator_1,
             vec![tx1.clone(), tx2.clone()],
             1_700_000_005_000,
+            None,
         )
         .expect("Block proposal succeeds");
 
@@ -191,7 +192,9 @@ fn test_byzantine_fault_tolerance_rejection() {
     client.sign_tx(&mut tx, chain_id);
 
     // Block proposed with only 2 signatures (less than required 3 for 3-node BFT)
-    let mut block = ledger.propose_block(&op1, vec![tx.clone()], 2_000).unwrap();
+    let mut block = ledger
+        .propose_block(&op1, vec![tx.clone()], 2_000, None)
+        .unwrap();
     block.header.signatures.push(op2.sign_header(&block.header));
     assert_eq!(block.header.signatures.len(), 2);
 
@@ -278,24 +281,28 @@ fn test_nonce_replay_protection() {
 
     // First transaction with nonce 5 commits fine.
     let tx1 = signed_tx(&client, chain_id, 0xaa, 0xbb, 5, 1_100);
-    let block1 = ledger.propose_block(&op, vec![tx1], 2_000).unwrap();
+    let block1 = ledger.propose_block(&op, vec![tx1], 2_000, None).unwrap();
     ledger.commit_block(block1).unwrap();
     assert_eq!(ledger.last_nonce(&client.public_key()), 5);
     assert_eq!(ledger.next_nonce(&client.public_key()), 6);
 
     // Exact replay is rejected.
     let replay = signed_tx(&client, chain_id, 0xaa, 0xbb, 5, 1_200);
-    let err = ledger.propose_block(&op, vec![replay], 2_100).unwrap_err();
+    let err = ledger
+        .propose_block(&op, vec![replay], 2_100, None)
+        .unwrap_err();
     assert!(format!("{err}").contains("Stale"));
 
     // Lower nonce is rejected too.
     let lower = signed_tx(&client, chain_id, 0xcc, 0xdd, 3, 1_300);
-    let err_lower = ledger.propose_block(&op, vec![lower], 2_200).unwrap_err();
+    let err_lower = ledger
+        .propose_block(&op, vec![lower], 2_200, None)
+        .unwrap_err();
     assert!(format!("{err_lower}").contains("Stale"));
 
     // Higher nonce commits and advances the table.
     let tx2 = signed_tx(&client, chain_id, 0xee, 0xff, 6, 1_400);
-    let block2 = ledger.propose_block(&op, vec![tx2], 3_000).unwrap();
+    let block2 = ledger.propose_block(&op, vec![tx2], 3_000, None).unwrap();
     ledger.commit_block(block2).unwrap();
     assert_eq!(ledger.height(), 2);
     assert_eq!(ledger.last_nonce(&client.public_key()), 6);
@@ -318,7 +325,7 @@ fn test_nonce_table_survives_reopen() {
     let client = ConsensusSigner::generate();
 
     let tx = signed_tx(&client, chain_id, 0x11, 0x22, 5, 1_100);
-    let block = ledger.propose_block(&op, vec![tx], 2_000).unwrap();
+    let block = ledger.propose_block(&op, vec![tx], 2_000, None).unwrap();
     ledger.commit_block(block).unwrap();
     drop(ledger);
 

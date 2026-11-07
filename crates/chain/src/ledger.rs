@@ -11,6 +11,12 @@ use crate::types::{
     AnchorProofResponse, BlockHeader, CipherChainBlock, CommitmentTx, PROTOCOL_VERSION,
 };
 
+/// File (under the chain dir) recording the validator set that certified
+/// genesis. Replay derives every later set from in-band rotations, so this
+/// one file lets `open` and backfill verify block 0 even after rotations.
+/// Human-managed `validators.json` (operator config) is separate.
+pub const GENESIS_VALIDATORS_FILE: &str = "genesis_validators.json";
+
 /// Stored index record for an anchored vault commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitmentRecord {
@@ -63,6 +69,7 @@ impl SovereignLedger {
             tx_root: EMPTY_TREE_ROOT,
             timestamp_ms,
             proposer,
+            next_validators: None,
             signatures: Vec::new(),
         };
 
@@ -73,6 +80,41 @@ impl SovereignLedger {
             }
         }
 
+        Self::finalize_genesis(chain_id, validator_set, header, storage_path)
+    }
+
+    /// Assembles a ceremony genesis from an unsigned proposal header plus
+    /// collected member signatures (file-based multi-party ceremony: members
+    /// exchange the deterministic proposal, sign out-of-band, and the
+    /// founder combines). The header must be height 0 with no transactions;
+    /// quorum is enforced by signature verification. Persists like
+    /// [`Self::create_genesis`] when `storage_path` is set.
+    pub fn assemble_genesis(
+        chain_id: &str,
+        validator_set: ValidatorSet,
+        mut header: BlockHeader,
+        signatures: Vec<crate::types::BlockSignature>,
+        storage_path: Option<PathBuf>,
+    ) -> Result<Self, ChainError> {
+        if header.height != 0 {
+            return Err(ChainError::InvalidGenesis(format!(
+                "ceremony genesis must be height 0, got {}",
+                header.height
+            )));
+        }
+        header.signatures = signatures;
+        Self::finalize_genesis(chain_id, validator_set, header, storage_path)
+    }
+
+    /// Shared genesis tail: sorts endorsements canonically, enforces quorum,
+    /// and builds the height-0 ledger (persisting when backed).
+    fn finalize_genesis(
+        chain_id: &str,
+        validator_set: ValidatorSet,
+        mut header: BlockHeader,
+        storage_path: Option<PathBuf>,
+    ) -> Result<Self, ChainError> {
+        header.signatures.sort_by_key(|sig| sig.validator);
         validator_set.verify_header_signatures(&header)?;
 
         let genesis_block = CipherChainBlock {
@@ -94,6 +136,9 @@ impl SovereignLedger {
 
         if let Some(ref path) = ledger.storage_path {
             ledger.persist_block(&genesis_block, path)?;
+            // Written after persist_block so the chain dir exists; the set
+            // is identical to the constructor argument (no rotation at 0).
+            Self::write_genesis_validators(path, ledger.validator_set())?;
         }
 
         Ok(ledger)
@@ -135,14 +180,21 @@ impl SovereignLedger {
         let first_block: CipherChainBlock = serde_json::from_str(&first_json)
             .map_err(|e| ChainError::Serialization(e.to_string()))?;
 
+        // The genesis set is the replay trust anchor: the on-disk record
+        // when present, else the caller-supplied set (pre-rotation chain
+        // dirs written before the genesis record existed).
+        let genesis_set = match Self::read_genesis_validators(dir)? {
+            Some(set) => set,
+            None => validator_set.clone(),
+        };
         // Tip-snapshot replicas (adopted certified tips, not yet backfilled)
         // resume from tip.json instead of requiring height 0 on disk.
         let (mut ledger, skip_through) = if first_block.header.height == 0 {
-            validator_set.verify_header_signatures(&first_block.header)?;
+            genesis_set.verify_header_signatures(&first_block.header)?;
             (
                 Self {
                     chain_id: chain_id.to_string(),
-                    validator_set: validator_set.clone(),
+                    validator_set: genesis_set.clone(),
                     blocks: vec![first_block],
                     cumulative_commitments: Vec::new(),
                     commitments_index: HashMap::new(),
@@ -315,6 +367,7 @@ impl SovereignLedger {
             for block in &persisted {
                 ledger.persist_block(block, path)?;
             }
+            Self::write_genesis_validators(path, &validator_set)?;
         }
         Ok(ledger)
     }
@@ -371,17 +424,31 @@ impl SovereignLedger {
     }
 
     /// Proposes a new block packaging pending transactions.
+    ///
+    /// `next_validators` carries an optional validator-set rotation that
+    /// takes effect for the NEXT height when this block commits. The
+    /// rotation is quorum-certified by the current set's endorsements, so
+    /// `Some` must be a well-formed set (non-empty, deduplicated) or
+    /// `check_block` rejects the proposal.
     pub fn propose_block(
         &self,
         proposer: &ConsensusSigner,
         txs: Vec<CommitmentTx>,
         timestamp_ms: u64,
+        next_validators: Option<Vec<[u8; 32]>>,
     ) -> Result<CipherChainBlock, ChainError> {
         let proposer_pubkey = proposer.public_key();
         if !self.validator_set.contains(&proposer_pubkey) {
             return Err(ChainError::UnauthorizedValidator(hex::encode(
                 proposer_pubkey,
             )));
+        }
+
+        // Fail fast on malformed rotations (commit-time check_block
+        // re-validates for gossip paths that bypass propose).
+        if let Some(ref keys) = next_validators {
+            ValidatorSet::new(keys.clone())
+                .map_err(|e| ChainError::InvalidRotation(e.to_string()))?;
         }
 
         let latest = self.latest_block();
@@ -420,6 +487,7 @@ impl SovereignLedger {
             tx_root,
             timestamp_ms,
             proposer: proposer_pubkey,
+            next_validators,
             signatures: Vec::new(),
         };
 
@@ -501,6 +569,20 @@ impl SovereignLedger {
             });
         }
 
+        // 6. Validate a rotation payload structurally (quorum authorization
+        // comes from the endorsements, verified at commit time). Rotation
+        // requires a well-formed set; version 1/2 blocks never carry one.
+        if let Some(keys) = &block.header.next_validators {
+            if block.header.version < 3 {
+                return Err(ChainError::InvalidRotation(format!(
+                    "rotation payload in version {} block (requires v3+)",
+                    block.header.version
+                )));
+            }
+            ValidatorSet::new(keys.clone())
+                .map_err(|e| ChainError::InvalidRotation(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -547,7 +629,17 @@ impl SovereignLedger {
 
         self.cumulative_commitments = prospective_commitments.clone();
         self.state_merkle_tree = MerkleTree::new(prospective_commitments);
+        let rotation = block.header.next_validators.clone();
         self.blocks.push(block);
+
+        // 9. Apply a committed rotation: the active set for the NEXT height
+        // is the quorum-certified new set. The payload was structurally
+        // validated by check_block; rotation to the identical set is a
+        // harmless no-op.
+        if let Some(keys) = rotation {
+            self.validator_set =
+                ValidatorSet::new(keys).map_err(|e| ChainError::InvalidRotation(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -561,6 +653,46 @@ impl SovereignLedger {
             .map_err(|e| ChainError::Serialization(e.to_string()))?;
         fs::write(file_path, serialized).map_err(|e| ChainError::Io(e.to_string()))?;
         Ok(())
+    }
+
+    /// Persists the genesis validator set beside the blocks (same hex-array
+    /// JSON shape as operator `validators.json`).
+    fn write_genesis_validators(dir: &Path, set: &ValidatorSet) -> Result<(), ChainError> {
+        let raw: Vec<String> = set.validators().iter().map(hex::encode).collect();
+        let json = serde_json::to_string_pretty(&raw)
+            .map_err(|e| ChainError::Serialization(e.to_string()))?;
+        fs::write(dir.join(GENESIS_VALIDATORS_FILE), json)
+            .map_err(|e| ChainError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Loads the genesis validator record. `Ok(None)` when the chain dir
+    /// predates rotation support (callers fall back to their configured set,
+    /// which equals the genesis set on never-rotated chains).
+    pub fn read_genesis_validators(dir: &Path) -> Result<Option<ValidatorSet>, ChainError> {
+        let path = dir.join(GENESIS_VALIDATORS_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(&path).map_err(|e| ChainError::Io(e.to_string()))?;
+        let raw: Vec<String> =
+            serde_json::from_str(&json).map_err(|e| ChainError::Serialization(e.to_string()))?;
+        let mut keys = Vec::with_capacity(raw.len());
+        for (i, h) in raw.iter().enumerate() {
+            let bytes = hex::decode(h.trim().trim_start_matches("0x"))
+                .map_err(|e| ChainError::Serialization(format!("genesis set entry {i}: {e}")))?;
+            if bytes.len() != 32 {
+                return Err(ChainError::Serialization(format!(
+                    "genesis set entry {i} must be 32 bytes"
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            keys.push(arr);
+        }
+        ValidatorSet::new(keys)
+            .map(Some)
+            .map_err(|e| ChainError::InvalidRotation(e.to_string()))
     }
 
     /// Queries cryptographic inclusion proof for an anchored commitment.

@@ -368,6 +368,48 @@ median/skew/clamp helpers) — 18/18 chain green; `swarm_chain` (4/4),
 (3/3) green; workspace check clean; fmt clean; clippy clean except the
 pre-existing `tui/app.rs` warning (untouched, user's in-flight work);
 full operator suite green (all binaries, 0 failures).
+**Encrypted-blob salt custody (uncommitted).** The commitments-only gap
+is closed at the salt: anchor salts are now derived from the snapshot's
+epoch key (`Blake2b CipherVault-KDF-v1 | CV_ANCHR | epoch_key |
+head_cid`), so the owner re-derives them from replicated recovery
+records after local state loss — no new network calls, deterministic
+across push retries, opaque to everyone else. Legacy heads (unknown
+snapshot, pre-existing evidence) keep their old salts with a warning.
+`LocalVaultStore::derive_head_anchor_salt` + `VaultEpochKey::
+derive_anchor_salt` + `kdf::derive_anchor_salt`.
+
+**Verified:** new KDF test (determinism, head/epoch binding, domain
+separation) and db round-trip test (derived == independent KDF,
+unknown head errors); crypto 39, local-store 30, CLI anchor/anchoring
+suites green; workspace check/fmt clean; clippy clean except the
+pre-existing `tui/app.rs` warning (yours, untouched). One real catch
+fixed along the way: a closure capturing `&store` made `cmd_anchor`'s
+future `!Send` (store is `RefCell`-backed) and broke the dashboard
+handlers — replaced with a free function.
+
+**Rotation + ceremony (uncommitted).** Validator sets rotate in-band:
+`header.next_validators` (v3, `#[serde(default)]` so old blocks load as
+`None`) is quorum-certified by the current set and takes effect for the
+next height on commit; replay derives every later set from a
+`genesis_validators.json` trust anchor (legacy dirs fall back to the
+configured set). `SovereignLedger::open/rebuild` verify block 0 against
+the genesis record; hubs re-key their vote collectors on every commit;
+operators sync admission to the chain (file is seed/intent, chain is
+truth); catch-up serves the genesis set with height-0 chunks and the
+backfiller verifies block 0 against it (linkage to the trusted adopted
+tip authenticates the rest). Light clients advance explicitly via
+`advance_to_rotation`. CLI: `anchor --rotate-to` (one-shot, daemon ticks
+stay rotation-free) + `genesis propose/sign/assemble` file ceremony with
+deterministic sorted sets; failed quorum fails closed.
+
+**Verified:** 3 rotation tests (re-keyed voting round, malformed
+payloads, reopen lands on rotated set under old or new seed), light
+client advance test, ceremony propose-determinism + assemble quorum
+round-trip (2-of-3 fails, 3-of-3 persists and reopens); chain 23/23,
+CLI bin 231/231, anchoring suites green; workspace check/fmt clean;
+clippy clean except the pre-existing `tui/app.rs` warning (yours, plus
+one required line: the `cmd_anchor` signature change); full operator
+suite green (all binaries, 0 failures).
 
 ---
 

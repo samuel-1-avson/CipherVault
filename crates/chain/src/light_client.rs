@@ -48,6 +48,44 @@ impl SovereignLightClient {
         }
     }
 
+    /// Advances trust across a rotation block: verifies the header carries a
+    /// well-formed rotation and swaps the trusted set to the new members.
+    /// Callers feed rotation headers in height order; proofs for later
+    /// heights then verify against the rotated set. Rotation headers
+    /// themselves verify under the pre-rotation set (call `verify_anchor`
+    /// first when the proof needs checking, then advance).
+    pub fn advance_to_rotation(
+        &mut self,
+        header: &crate::types::BlockHeader,
+    ) -> Result<(), ChainError> {
+        let Some(keys) = &header.next_validators else {
+            return Err(ChainError::InvalidRotation(
+                "header carries no rotation".to_string(),
+            ));
+        };
+        if header.version < 3 {
+            return Err(ChainError::InvalidRotation(format!(
+                "rotation in version {} header (requires v3+)",
+                header.version
+            )));
+        }
+        if keys.is_empty() {
+            return Err(ChainError::InvalidRotation(
+                "rotation to an empty set".to_string(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for key in keys {
+            if !seen.insert(key) {
+                return Err(ChainError::InvalidRotation(
+                    "rotation set contains duplicates".to_string(),
+                ));
+            }
+        }
+        self.trusted_validators = keys.iter().copied().collect();
+        Ok(())
+    }
+
     /// Verifies that an anchor proof cryptographically proves the commitment's inclusion in CipherChain.
     pub fn verify_anchor(
         &self,
@@ -152,5 +190,45 @@ impl SovereignLightClient {
                 proof.height, valid_signatures, required_quorum
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::BlockHeader;
+
+    fn header_with_rotation(version: u16, rotation: Option<Vec<[u8; 32]>>) -> BlockHeader {
+        BlockHeader {
+            version,
+            chain_id: "test-chain".to_string(),
+            height: 1,
+            prev_block_hash: [0u8; 32],
+            state_root: [0u8; 32],
+            tx_root: [0u8; 32],
+            timestamp_ms: 2_000,
+            proposer: [0x01; 32],
+            next_validators: rotation,
+            signatures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_advance_to_rotation_rekeys_trust() {
+        let mut client = SovereignLightClient::new("test-chain", vec![[0x01; 32]]);
+        assert_eq!(client.quorum_threshold(), 1);
+
+        // No rotation payload: rejected.
+        let plain = header_with_rotation(3, None);
+        assert!(client.advance_to_rotation(&plain).is_err());
+
+        // Rotation in a pre-v3 header: rejected even if well-formed.
+        let legacy = header_with_rotation(2, Some(vec![[0x02; 32]]));
+        assert!(client.advance_to_rotation(&legacy).is_err());
+
+        // Well-formed v3 rotation advances trust.
+        let rotated = header_with_rotation(3, Some(vec![[0x02; 32], [0x03; 32]]));
+        client.advance_to_rotation(&rotated).unwrap();
+        assert_eq!(client.quorum_threshold(), 2);
     }
 }

@@ -10,7 +10,10 @@ use rand::RngCore;
 
 use crate::util::get_vault_store;
 
-pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
+pub(crate) async fn cmd_anchor(
+    head_hex_opt: Option<String>,
+    rotate_to: Option<String>,
+) -> Result<()> {
     let store = get_vault_store()?;
     let active_head = match head_hex_opt {
         Some(h) => {
@@ -49,6 +52,10 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
     );
     println!("  Head Record CID:   {}", hex::encode(active_head).yellow());
 
+    // Anchor salts are derived from the snapshot's epoch key, so the vault
+    // owner can re-derive them from replicated recovery records after local
+    // state loss. A one-time random salt is a legacy fallback for heads
+    // whose snapshot is unknown locally, and stays local-only.
     let (salt, commitment) = if let Ok(Some(existing)) = store.get_checkpoint_evidence(&active_head)
     {
         let mut s = [0u8; 32];
@@ -59,14 +66,12 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
             println!("  Reusing Pending Commitment: {}", hex::encode(c).green());
             (s, c)
         } else {
-            let mut s = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut s);
+            let s = fresh_anchor_salt(&store, &active_head);
             let c = ciphervault_format::CheckpointEvidence::compute_commitment(&s, &active_head);
             (s, c)
         }
     } else {
-        let mut s = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut s);
+        let s = fresh_anchor_salt(&store, &active_head);
         let c = ciphervault_format::CheckpointEvidence::compute_commitment(&s, &active_head);
         (s, c)
     };
@@ -93,6 +98,20 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
 
     let mut ledger = open_or_fresh_genesis(&chain_dir, &validator_set, &device_signer)?;
 
+    // Optional validator-set rotation: the new set takes effect for the
+    // NEXT height once this block commits with current-set quorum.
+    let rotation: Option<Vec<[u8; 32]>> = match rotate_to {
+        Some(raw) => {
+            let keys = super::genesis::parse_pubkey_list(&raw)?;
+            println!(
+                "  Rotation:          activating {} member(s) next height",
+                keys.len()
+            );
+            Some(keys)
+        }
+        None => None,
+    };
+
     let now_ms = Utc::now().timestamp_millis() as u64;
     let mut tx = ciphervault_chain::CommitmentTx {
         vault_id,
@@ -107,8 +126,12 @@ pub(crate) async fn cmd_anchor(head_hex_opt: Option<String>) -> Result<()> {
     device_signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
     println!("  Tx Nonce:          {}", tx.nonce);
 
-    let proposed_block =
-        ledger.propose_block(&device_signer, vec![tx], now_ms.saturating_add(10))?;
+    let proposed_block = ledger.propose_block(
+        &device_signer,
+        vec![tx],
+        now_ms.saturating_add(10),
+        rotation,
+    )?;
     ledger.commit_block(proposed_block.clone())?;
 
     let block_hash = proposed_block.header.block_hash();
@@ -368,7 +391,7 @@ pub(crate) async fn cmd_verify_anchor(head_hex_opt: Option<String>) -> Result<()
 
 /// Loads the persistent device consensus key and the explicit validator set.
 /// Shared by anchor and verify so both operate on the same fleet identity.
-fn load_device_and_validators() -> Result<(
+pub(crate) fn load_device_and_validators() -> Result<(
     std::path::PathBuf,
     ciphervault_chain::ConsensusSigner,
     ciphervault_chain::ValidatorSet,
@@ -453,6 +476,29 @@ fn open_or_fresh_genesis(
         Some(chain_dir.to_path_buf()),
     )
     .map_err(Into::into)
+}
+
+/// Derives the recoverable anchor salt for a head from its epoch key,
+/// falling back to a one-time random (local-only) salt when the snapshot
+/// is unknown locally. Free function (not a closure) so `cmd_anchor`'s
+/// future stays `Send`: no borrow of the `RefCell`-backed store is held
+/// across an await.
+fn fresh_anchor_salt(
+    store: &ciphervault_local_store::LocalVaultStore,
+    head: &[u8; 32],
+) -> [u8; 32] {
+    match store.derive_head_anchor_salt(head) {
+        Ok(salt) => salt,
+        Err(e) => {
+            eprintln!(
+                "{}: cannot derive recoverable salt ({e}); using one-time local salt",
+                "warning".yellow()
+            );
+            let mut s = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut s);
+            s
+        }
+    }
 }
 
 /// Key-identity failures (as opposed to corruption) marking a pre-Phase-2

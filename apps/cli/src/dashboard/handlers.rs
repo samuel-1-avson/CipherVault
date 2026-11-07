@@ -864,7 +864,7 @@ pub(crate) async fn api_create_snapshot_handler(
 }
 
 pub(crate) async fn api_create_anchor_handler() -> impl axum::response::IntoResponse {
-    match cmd_anchor(None).await {
+    match cmd_anchor(None, None).await {
         Ok(_) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,
@@ -991,7 +991,7 @@ pub(crate) async fn api_relayer_checkpoints_handler() -> impl axum::response::In
 }
 
 pub(crate) async fn api_relayer_anchor_handler() -> impl axum::response::IntoResponse {
-    match cmd_anchor(None).await {
+    match cmd_anchor(None, None).await {
         Ok(_) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,

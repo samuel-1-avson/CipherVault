@@ -70,7 +70,7 @@ async fn test_sovereign_chain_end_to_end_anchoring_and_light_verification() {
 
     // 4. Operator 1 proposes Block #1 packaging the commitment
     let mut proposed = ledger
-        .propose_block(&op1, vec![tx.clone()], 1_700_000_005_000)
+        .propose_block(&op1, vec![tx.clone()], 1_700_000_005_000, None)
         .expect("Propose block succeeds");
 
     // Collect quorum signatures from Operators 2 and 3
