@@ -446,3 +446,11 @@ gap/wrong-chain backfill rejection; tip snapshot resume + rebuild persist) —
 adopts a gossiped tip, fetches history over RPC, completes, snapshot
 cleared) — 4/4 swarm_chain green, twice in a row; operator check/clippy/fmt
 clean; full operator suite running.
+
+---
+
+## Improvement-plan milestone — first full-workspace green run
+
+`cargo test --workspace --locked`: 89 suites, 0 failed, 0 non-ok
+(Phase 0.2 of the improvement plan). Dead `05_l2_settlement_flow.svg`
+removed; `docs/README.md` index updated.

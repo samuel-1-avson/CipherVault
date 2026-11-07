@@ -154,7 +154,7 @@ Interactive, publication-grade vector graphics illustrating key system workflows
 * [**`02_key_hierarchy.svg`**](./diagrams/02_key_hierarchy.svg) — Cryptographic key derivation hierarchy branching from Master Recovery Secret $R$.
 * [**`03_vault_init_flow.svg`**](./diagrams/03_vault_init_flow.svg) — Vault initialization sequence, paper recovery kit emission, and RAM zeroization.
 * [**`04_push_dedup_flow.svg`**](./diagrams/04_push_dedup_flow.svg) — FastCDC dual-mask chunking, client-side encryption, and Proof-of-Storage quorum replication.
-* [**`05_l2_settlement_flow.svg`**](./diagrams/05_l2_settlement_flow.svg) — Salted EIP-712 state commitment and Arbitrum L2 relayer receipt anchoring.
+* *05_* settlement flow diagram — removed Phase 1 with the EVM path; the sovereign flow is Workflow 3 in SYSTEM_WORKFLOW.md (propose → quorum → commit → publish → verify).*
 * [**`06_maintenance_self_repair.svg`**](./diagrams/06_maintenance_self_repair.svg) — Autonomous fleet probing, degraded replica detection, and self-repair pipeline.
 * [**`07_disaster_recovery_flow.svg`**](./diagrams/07_disaster_recovery_flow.svg) — Clean replacement machine reconstruction from Paper Recovery Kit or $M$-of-$N$ Shamir Guardian Shares.
 
