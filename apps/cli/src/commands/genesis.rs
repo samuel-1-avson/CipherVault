@@ -309,4 +309,63 @@ mod tests {
         assert!(chain_dir.join("genesis_validators.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `genesis sign` uses the member's persistent device key and refuses
+    /// proposals the local key is not a member of.
+    #[tokio::test]
+    async fn test_sign_uses_device_key_and_enforces_membership() {
+        use crate::util::{VaultContext, REQUEST_VAULT_CONTEXT};
+
+        let ws = std::env::temp_dir().join(format!(
+            "cv-genesis-sign-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let vault_dir = ws.join(".ciphervault");
+        std::fs::create_dir_all(&vault_dir).unwrap();
+        let db_path = vault_dir.join("vault.db");
+        std::fs::write(&db_path, []).unwrap();
+        let ctx = VaultContext::from_db_path(&db_path).unwrap();
+
+        REQUEST_VAULT_CONTEXT
+            .scope(ctx, async {
+                // Device key is created on first load; include it in the set.
+                let (_, device_signer, _) =
+                    crate::commands::anchor::load_device_and_validators().unwrap();
+                let member = hex::encode(device_signer.public_key());
+                let outsider = hex::encode([0xabu8; 32]);
+
+                let proposal = ws.join("proposal.json");
+                cmd_genesis_propose(&member, 1_000, "test-chain", &proposal.to_string_lossy())
+                    .unwrap();
+                let sig_path = ws.join("sig.json");
+                cmd_genesis_sign(&proposal.to_string_lossy(), &sig_path.to_string_lossy()).unwrap();
+                let sig: ciphervault_chain::BlockSignature =
+                    serde_json::from_str(&std::fs::read_to_string(&sig_path).unwrap()).unwrap();
+                assert_eq!(sig.validator, device_signer.public_key());
+                // The signature verifies against the proposal header.
+                let file: GenesisProposalFile =
+                    serde_json::from_str(&std::fs::read_to_string(&proposal).unwrap()).unwrap();
+                let mut signed = file.header.clone();
+                signed.signatures.push(sig.clone());
+                ciphervault_chain::ValidatorSet::new(vec![device_signer.public_key()])
+                    .unwrap()
+                    .verify_header_signatures(&signed)
+                    .unwrap();
+
+                // A proposal without the local key is refused.
+                let foreign = ws.join("foreign.json");
+                cmd_genesis_propose(&outsider, 1_000, "test-chain", &foreign.to_string_lossy())
+                    .unwrap();
+                assert!(cmd_genesis_sign(
+                    &foreign.to_string_lossy(),
+                    &ws.join("foreign_sig.json").to_string_lossy(),
+                )
+                .is_err());
+            })
+            .await;
+        let _ = std::fs::remove_dir_all(&ws);
+    }
 }

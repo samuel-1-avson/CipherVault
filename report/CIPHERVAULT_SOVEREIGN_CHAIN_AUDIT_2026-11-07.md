@@ -405,8 +405,10 @@ deterministic sorted sets; failed quorum fails closed.
 **Verified:** 3 rotation tests (re-keyed voting round, malformed
 payloads, reopen lands on rotated set under old or new seed), light
 client advance test, ceremony propose-determinism + assemble quorum
-round-trip (2-of-3 fails, 3-of-3 persists and reopens); chain 23/23,
-CLI bin 231/231, anchoring suites green; workspace check/fmt clean;
+round-trip (2-of-3 fails, 3-of-3 persists and reopens), sign test
+(device-key signature verifies, foreign proposals refused); chain
+23/23, CLI bin 232/232, anchoring suites green; workspace check/fmt
+clean;
 clippy clean except the pre-existing `tui/app.rs` warning (yours, plus
 one required line: the `cmd_anchor` signature change); full operator
 suite green (all binaries, 0 failures).
