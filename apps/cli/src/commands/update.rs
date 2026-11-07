@@ -238,10 +238,20 @@ fn tar_listing_is_confined(listing: &str) -> bool {
 /// only after every supported updater carries the successor. Trust model:
 /// `docs/UPDATER_SIGNATURE_VERIFICATION.md`. The private seeds live in CI
 /// secrets / offline ceremony media and never in the repo.
-const RELEASE_SIGNING_KEYS: &[(&str, &str)] = &[(
-    "b625994c0c3f53a6",
-    "b625994c0c3f53a6c40b0eadebe7ba1f5199e9f829a4bf20e064ae7aaab22c1e",
-)];
+/// Rotation 2026-11-07: the original seed's offline copy was lost while CI
+/// was unreachable, so v1.0.29+ is signed by the successor. The predecessor
+/// pin stays so old releases keep verifying; updaters older than this
+/// release reject new-key signatures and must fresh-install once.
+const RELEASE_SIGNING_KEYS: &[(&str, &str)] = &[
+    (
+        "b625994c0c3f53a6",
+        "b625994c0c3f53a6c40b0eadebe7ba1f5199e9f829a4bf20e064ae7aaab22c1e",
+    ),
+    (
+        "c34d6bb1a158184d",
+        "c34d6bb1a158184d086033373be599f6867eff3815d32189715056e3ef82ea60",
+    ),
+];
 
 /// Detached-signature asset published next to every release archive set.
 const RELEASE_SIG_ASSET: &str = "SHA256SUMS.txt.sig";

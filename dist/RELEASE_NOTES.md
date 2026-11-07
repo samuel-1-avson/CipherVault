@@ -27,6 +27,11 @@ deeper pre-commit leak checks, and chunk protocol v2 capture defaults.
 
 ## Upgrade notes
 
+- Signing-key rotation: the original release seed's offline copy was lost
+  while CI was unreachable, so this release is signed by successor key id
+  `c34d6bb1a158184d`. Installs at 1.0.28 or older reject the new signature
+  and cannot self-update to this release: rerun the installer once instead
+  (it pins both keys). Fresh installs work normally.
 - Installs from before the alias shipped only have `ciphervault`.
   Update, then rerun the installer once to pick up `cv`.
 - v2 chunks require upgraded readers: upgrade every reader node

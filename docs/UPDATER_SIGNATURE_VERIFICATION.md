@@ -142,6 +142,20 @@ the fill job's branch push (repo setting still blocks Actions-created
 PRs — either enable "Allow GitHub Actions to create and approve pull
 requests" in repo settings, or keep opening the fill PR manually).
 
+## Rotation record (2026-11-07, v1.0.29)
+
+The original seed (`b625994c0c3f53a6`) became unusable: its offline copy
+was lost and CI (the only other holder) was unreachable behind a billing
+lock, so no transition release could be signed by the predecessor. The
+successor (`c34d6bb1a158184d`, generated offline via OS CSPRNG) was
+pinned alongside the predecessor in `update.rs` and both bootstrap
+installers; v1.0.29 is the first release signed by the successor. Old
+releases keep verifying under the retained predecessor pin. Updaters
+older than v1.0.29 fail closed on the new signature (`untrusted release
+signing key`) and must fresh-install once. Follow-up when CI is reachable:
+replace the `CIPHERVAULT_RELEASE_SIGNING_KEY` secret with the successor
+seed so automated releases can sign again.
+
 ## Files
 
 - `apps/cli/src/commands/update.rs` — trust roots, verification, updater hook, tests

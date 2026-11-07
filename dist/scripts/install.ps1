@@ -1,6 +1,6 @@
 # CipherVault - verified Windows installer/updater
 # Usage: irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.28 (pin, skips the
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.29 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=D:\tools\cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
 # node = CLI+operator+maintenance for guided `cv node setup`),
@@ -35,6 +35,7 @@ function Assert-CipherVaultReleaseSignature {
     # Independently pinned trust root; keep aligned with commands/update.rs.
     $publicKey = switch -CaseSensitive ($keyId) {
         'b625994c0c3f53a6' { 'b625994c0c3f53a6c40b0eadebe7ba1f5199e9f829a4bf20e064ae7aaab22c1e' }
+        'c34d6bb1a158184d' { 'c34d6bb1a158184d086033373be599f6867eff3815d32189715056e3ef82ea60' }
         default { throw "Untrusted release signing key." }
     }
     $sumsBytes = [System.IO.File]::ReadAllBytes($SumsPath)
