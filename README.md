@@ -576,8 +576,9 @@ ciphervault approve sign <CHALLENGE_ID>
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive full-screen Terminal User Interface dashboard. |
 | `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser] [--local]` | Launches embedded Web Dashboard and Visual Secrets Explorer. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
-| `ciphervault anchor` | `[--head <CID>] [--daemon]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. |
+| `ciphervault anchor` | `[--head <CID>] [--daemon] [--rotate-to <KEYS>]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. `--rotate-to` (comma-separated member pubkeys) proposes a validator-set rotation taking effect next height. |
 | `ciphervault verify-anchor` | `[--head <CID>]` | Verifies cryptographic state commitment, Merkle audit path, and operator quorum signatures locally in <1ms. |
+| `ciphervault genesis` | `propose\|sign\|assemble` | Multi-party genesis ceremony: deterministic unsigned proposal, per-member device-key signatures, founder combines quorum into a chain dir. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
 | `ciphervault audit` | `[-o/--operators <URL...>] [--recovery-drill] [--operator-pin <URL=64hex>]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
 | `ciphervault repair` | `[-o/--operators <URL...>] [--replicas <N>]` | Detects degraded replicas and self-heals by streaming missing chunks from surviving operators. |

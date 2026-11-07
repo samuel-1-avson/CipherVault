@@ -342,6 +342,13 @@ We execute the transition across **5 controlled phases**. Each phase ends with a
 ---
 
 ### 🔹 Phase 3 — Smart Contract Expansion & Merkle Batching
+
+> **Superseded (Phase 1+):** the EVM direction below is not pursued —
+> contracts deleted, no L2 anchoring. The sovereign equivalents already
+> exist: validator-set rotation is in-band (`header.next_validators`,
+> quorum-certified, replay-derived), and checkpoint evidence is verified
+> by the `SovereignLightClient` with Merkle inclusion proofs. Retained
+> for history.
 * **Goal**: Provide trustless operator discovery and cost-effective on-chain anchoring on Arbitrum One.
 * **Tasks**:
   1. Update `contracts/CipherVaultRegistry.sol`:

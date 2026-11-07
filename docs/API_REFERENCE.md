@@ -143,8 +143,24 @@ Generated 2026-09-19 from the 1.0.7-beta.6 tree; when in doubt the code wins.
 
 ### Relayer
 
-- `POST /v1/relayer/checkpoints`, `GET /v1/relayer/checkpoints/:commitment`.
-  L2 anchor receipts.
+Removed in Phase 1 (no code remains): the EVM relay path
+(`POST /v1/relayer/checkpoints`, receipt polling) is gone. Sovereign
+publication is `POST /v1/chain/publish` below; finality is proven by the
+local CipherChain ledger (`verify-anchor`).
+
+### Chain sync (public — envelopes self-authenticate)
+
+- `POST /v1/chain/publish` with a JSON `ChainSyncEnvelope`
+  (fleet-member seal + device-key endorsement). No service token: gossip
+  and HTTP enforce the same admission rule (member + valid seal +
+  sovereign chain id). Feeds the operator's hub replica and relays to
+  chain gossip when the swarm is up. Always 200 on acceptance:
+  `{ status: "accepted", outcome: "committed" | "proposal_accepted" |
+  "vote_collected" | "need_catchup" | "duplicate" | "stale" |
+  "fork_rejected" | "equivocation_detected", detail: {...},
+  gossip_published: bool }`. Admission failures are 400, consensus
+  rejections 422.
+- Catch-up reads are P2P-only (`GetChainBlocks` below), not HTTP.
 
 ## P2P RPC (`/ciphervault/operator/1.0.0`, CBOR)
 
@@ -162,6 +178,7 @@ identical to HTTP by construction. Responses mirror HTTP including
 | CommitLease / RenewLease | lease routes |
 | AppendRecovery / GetRecovery | recovery routes |
 | AnnouncePeer / GetPeers / GetPendingApprovals | peer + approval routes |
+| GetChainBlocks (P2P-only) | none — chain catch-up, 256-block windows + genesis set |
 | RepairPush (P2P-only) | none — mesh repair, operator-signed, budget-paced |
 
 `RepairPush` is NOT session-authed: the receiver checks known-sender +

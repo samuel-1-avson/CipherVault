@@ -274,17 +274,8 @@ sequenceDiagram
 
 ### Workflow 3: Sovereign Settlement on CipherChain (`ciphervault anchor`)
 
-> **Superseded (Phase 1, 2026-11-07):** Arbitrum L2 anchoring removed. The
-> sequence below is historical. Current flow: `anchor` → local `SovereignLedger`
-> (`propose` → quorum `2N/3+1` → `commit` → JSON block log) → `anchor verify-anchor`
-> light-client proof. Legacy EVM path in git tag `last-evm-anchor`.
-
-For tamper-evident sequencing, state commitments are anchored to CipherChain:
-
-![Workflow 3: Arbitrum L2 Settlement](./diagrams/05_l2_settlement_flow.svg)
-
-<details>
-<summary><b>View Mermaid Source Code</b></summary>
+For tamper-evident sequencing, state commitments anchor to the local
+CipherChain PoA ledger — no external chain, no gas, no relayer.
 
 ```mermaid
 sequenceDiagram
@@ -292,36 +283,40 @@ sequenceDiagram
     actor Dev as Administrator
     participant CLI as CLI Anchoring Engine
     participant Store as Local Vault Store
-    participant Relayer as Automated L2 Relayer / RPC
-    participant Seq as Arbitrum L2 Sequencer
-    participant SC as CipherVaultRegistry.sol
+    participant Ledger as SovereignLedger (chain/blocks/*.json)
+    participant Fleet as Operator Fleet (gossip + HTTP)
 
-    Dev->>CLI: ciphervault anchor --auto-relay
-    CLI->>Store: Read active snapshot Head CID & Vault ID
-    CLI->>CLI: Compute Commitment = BLAKE2b(VaultID || HeadCID || Salt)
-    CLI->>CLI: Construct EIP-712 Checkpoint Evidence Payload
-    
-    CLI->>Relayer: POST /v1/relayer/checkpoint (Evidence)
-    Relayer->>Relayer: Validate evidence signature against DeviceCertificate
-    Relayer-->>CLI: HTTP 202 Accepted ("QueuedForRelay", block_number = 0)
-    
-    Relayer->>Seq: eth_sendRawTransaction(setCommitment(vaultId, commitment, salt))
-    Seq->>SC: Execute state update on Arbitrum L2
-    SC-->>Seq: StateCommitmentAnchored Event emitted
-    
-    loop Sequencer Receipt Polling
-        CLI->>Relayer: GET /v1/relayer/checkpoint/:commitment/status
-        alt Transaction Mined by Sequencer
-            Relayer-->>CLI: "SequencerConfirmed", Block #308,231,027, TxHash: 0x...
-        else Transaction Still in Sequencer Mempool
-            Relayer-->>CLI: "QueuedForRelay"
-        end
-    end
-    
-    CLI->>Store: Record verified on-chain block receipt & explorer URL
-    CLI-->>Dev: ✓ Checkpoint SequencerConfirmed on Arbitrum L2
+    Dev->>CLI: ciphervault anchor [--rotate-to K1,K2,...]
+    CLI->>Store: Read active snapshot Head CID
+    CLI->>CLI: Salt = KDF(epoch_key, Head CID) — re-derivable from replicated recovery records
+    CLI->>CLI: Commitment = SHA-256("CIPHERVAULT-ANCHOR-V1" || salt || head_cid)
+    CLI->>Ledger: propose(block, tx, suggested time, rotation?) — proposer endorses
+    CLI->>Ledger: commit (solo: median of one; fleet: quorum 2N/3+1 endorsements)
+    CLI->>Fleet: POST /v1/chain/publish (sealed proposal, best-effort, explicit operators only)
+    Fleet->>Fleet: admit → hub ingest → vote → commit → relay; laggards backfill 0..tip + genesis set
+    CLI->>Store: Record checkpoint evidence (salt, commitment, height, hash)
+    CLI-->>Dev: ✓ Block #H committed (median validator-voted time, deterministic finality)
+    Dev->>CLI: ciphervault verify-anchor [--head CID]
+    CLI->>CLI: Recompute commitment, verify Merkle path + quorum sigs (<1ms, offline-capable)
 ```
-</details>
+
+**Validator-voted time (protocol v2+).** Endorsements sign everything
+except `timestamp_ms`; each vote carries the voter's `observed_ms`, and
+the committed timestamp is the quorum median (robust to f < quorum/3
+liars). Voters endorse only within 60 s proposal skew and clamp
+observations past the parent.
+
+**Rotation (protocol v3+).** A block may carry `next_validators`,
+quorum-certified by the current set, taking effect next height.
+Replay derives every set from a `genesis_validators.json` trust anchor;
+operators follow chain truth for admission; light clients advance via
+`advance_to_rotation`.
+
+**Genesis ceremony.** `genesis propose` (deterministic unsigned header
+for the agreed set + timestamp) → members `genesis sign` with device
+keys → founder `genesis assemble` combines quorum signatures into a
+chain dir. Everyone compares the genesis hash out-of-band; late joiners
+adopt the gossiped tip and backfill.
 
 ---
 

@@ -3,6 +3,14 @@
 > **Architectural Specification & Security Isolation Model**  
 > *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
+> **Migration note (sovereign chain):** settlement is the CipherChain
+> sovereign PoA ledger (chain `ciphervault-sovereign-1`, id 777777) —
+> not Arbitrum. Tier-5 blocks and the settlement table row below that
+> still name `CipherVaultRegistry.sol` / Arbitrum One describe a
+> superseded direction (EVM path preserved in git tag
+> `last-evm-anchor`); read "immutable public ledger" as the local
+> quorum-signed chain log.
+
 ## 🗺️ Architectural Blueprint & Trust Boundary Map
 
 [![CipherVault Architectural Blueprint & Trust Boundaries](diagrams/09_architectural_blueprint.svg)](diagrams/09_architectural_blueprint.svg)
@@ -198,7 +206,7 @@ CipherVault is engineered around mathematical isolation: no single compromised c
 | **Identity Control Plane** | [`services/account`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/services/account) (`:8300`) | Account IDs (`cvacct_...`), Public Keys, WebAuthn Passkeys, RBAC Roles | **No Secret Access.** Holds identities, device links, and quorum gates, but has **0% access** to vault encryption keys or file plaintexts. |
 | **Data Storage Plane** | [`services/operator`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/services/operator) (`:8201-8203`), P2P Swarm | Opaque encrypted ciphertext chunks indexed by SHA-256 Content IDs (CIDs) | **No User Accounts.** Operators know nothing about usernames, passwords, or folder trees. They only store anonymous ciphertext blobs. |
 | **Maintenance & Fleet** | [`services/maintenance`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/services/maintenance) daemon | Heartbeat logs, latency telemetry, Proof-of-Storage challenge receipts | Audits replica availability without ever downloading or decrypting full files. |
-| **Settlement Layer** | Arbitrum One L2 (`Chain ID: 42161`), [`contracts/`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/contracts) | Salted EIP-712 checkpoint hashes | Mathematically anchors snapshot head state on an immutable public ledger. |
+| **Settlement Layer** | CipherChain sovereign PoA ledger (`ciphervault-sovereign-1`, id 777777), local JSON block log | Salted SHA-256 commitments + quorum-signed headers with Merkle inclusion proofs | Self-custodial finality: zero-gas, no external chain. (Historical: Arbitrum One L2 / `contracts/` — removed Phase 1.) |
 | **Offline Recovery** | Paper Kit / Shamir Guardians | $M$-of-$N$ $\text{GF}(2^8)$ Polynomial Shares | **Air-gapped.** Restores machines cleanly even if all cloud accounts, services, and local disks are completely destroyed. |
 
 ---

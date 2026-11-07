@@ -723,14 +723,21 @@ curl -H "X-CipherVault-Service-Token: $TOKEN" https://op1.cipherv.online/v1/peer
 # `ciphervault_swarm_peer_quorum_joins_total` on /metrics
 ```
 
-## 19. Arbitrum Anchor Operations (Sepolia)
+## 19. Arbitrum Anchor Operations (removed Phase 1 — historical record)
 
-Anchoring publishes a salted snapshot-head commitment to the
-`CipherVaultRegistry` contract (`publish(bytes32)`). Broadcasts are
-manual and payer-held: the CLI prepares the calldata, a human sends it
-with `cast` (never paste a private key into chat or a ticket).
+> **Superseded:** Ethereum/Arbitrum anchoring was removed project-wide in
+> Phase 1 (contracts deleted, preserved in git tag `last-evm-anchor`).
+> The registry address, chain id, and `cast` ceremony below are history
+> for auditors, not runbooks. Current anchoring is fully local:
+> `ciphervault anchor` → CipherChain `SovereignLedger`
+> (`propose` → quorum `2N/3+1` → `commit` → JSON block log) →
+> `ciphervault verify-anchor` light-client proof. No RPC, no payer, no
+> confirmations.
 
-Live registry (Arbitrum Sepolia, chain 421614):
+Historical artifact (do not run): the CLI once prepared calldata for the
+`CipherVaultRegistry` contract (`publish(bytes32)`), broadcast manually
+with payer-held keys via `cast`. Live registry at removal (Arbitrum
+Sepolia, chain 421614):
 `0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5` (Sourcify-verified).
 Public RPC: `https://sepolia-rollup.arbitrum.io/rpc`.
 
