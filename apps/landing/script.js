@@ -1831,6 +1831,7 @@ function initLiveTelemetryStream() {
 const REPL_RESPONSES = {
   help: [
     'CipherVault console (v1.0.29) — real CLI syntax, live where a browser can measure:',
+    '  Short alias: cv and ciphervault are the same tool — examples below use cv.',
     '  Scoped secrets & enterprise management (NEW v1.0.28):',
     '    project <list|show|use> - List and inspect scoped secret projects',
     '    secret <get|set|rotate> - Granular per-secret CRUD with envelope encryption',
@@ -1861,62 +1862,62 @@ const REPL_RESPONSES = {
   ],
   secret: [
     'Discrete scoped-secret lifecycle with envelope encryption (v1.0.28):',
-    '  ciphervault secret set <NAME> [--value <VAL>] [--env <ENV>] [--project <PROJ>]',
-    '  ciphervault secret get <NAME> [--meta] [--env <ENV>] [--project <PROJ>]',
-    '  ciphervault secret list [--tag <TAG>] [--status active] [--env <ENV>]',
-    '  ciphervault secret find <QUERY> (metadata-only substring search)',
-    '  ciphervault secret rotate <NAME> [--value <NEW_VAL>] [--reason <AUDIT_REASON>]',
-    '  ciphervault secret delete <NAME> [--reason <AUDIT_REASON>] (soft-delete + crypto-shred)',
+    '  cv secret set <NAME> [--value <VAL>] [--env <ENV>] [--project <PROJ>]',
+    '  cv secret get <NAME> [--meta] [--env <ENV>] [--project <PROJ>]',
+    '  cv secret list [--tag <TAG>] [--status active] [--env <ENV>]',
+    '  cv secret find <QUERY> (metadata-only substring search)',
+    '  cv secret rotate <NAME> [--value <NEW_VAL>] [--reason <AUDIT_REASON>]',
+    '  cv secret delete <NAME> [--reason <AUDIT_REASON>] (soft-delete + crypto-shred)',
     '  What it really does: Generates a per-version 256-bit DEK under XChaCha20-Poly1305,',
     '  binds Authenticated Additional Data (AAD) to (tenant||project||env||secret||version),',
     '  wraps DEK with project KEK, and appends a tamper-evident entry to audit_chain.'
   ],
   project: [
     'Scoped project boundary management (v1.0.28):',
-    '  ciphervault project list [--endpoint <URL>] [--token <TOKEN>]',
-    '  ciphervault project show <PROJECT_SLUG>',
-    '  ciphervault project use <PROJECT_SLUG>',
+    '  cv project list [--endpoint <URL>] [--token <TOKEN>]',
+    '  cv project show <PROJECT_SLUG>',
+    '  cv project use <PROJECT_SLUG>',
     '  What it really does: Projects define the primary security and administrative boundary.',
     '  Secrets belong to projects; environments (dev/staging/prod) and repository bindings',
     '  are scoped strictly within their parent project to prevent cross-project disclosure.'
   ],
   scope: [
     'Cryptographic scope tokens and DPoP authorization (v1.0.28):',
-    '  ciphervault scope token [--env <ENV>] [--project <PROJ>] [--ttl <SECONDS>]',
+    '  cv scope token [--env <ENV>] [--project <PROJ>] [--ttl <SECONDS>]',
     '  What it really does: Issues a signed HMAC scope token (cvst1...) with embedded',
     '  claims (tenant, project, environment, allowed repos). Client HTTP calls attach',
     '  asymmetric DPoP-Lite proofs so stolen tokens cannot be replayed from other hosts.'
   ],
   migrate: [
     'Zero-downtime, idempotent 7-stage migration ledger (v1.0.28):',
-    '  ciphervault migrate plan [--vault <DIR>] [--project <PROJ>] [--default-env <ENV>]',
-    '  ciphervault migrate apply --migration-id <ID> [--project <PROJ>]',
-    '  ciphervault migrate verify --migration-id <ID> [--project <PROJ>]',
-    '  ciphervault migrate resolve --migration-id <ID> --entry <ENTRY_ID>',
+    '  cv migrate plan [--vault <DIR>] [--project <PROJ>] [--default-env <ENV>]',
+    '  cv migrate apply --migration-id <ID> [--project <PROJ>]',
+    '  cv migrate verify --migration-id <ID> [--project <PROJ>]',
+    '  cv migrate resolve --migration-id <ID> --entry <ENTRY_ID>',
     '  What it really does: Safely parses legacy monolithic .env files and vault snapshots,',
     '  extracts discrete key-value pairs, assigns scope AAD, readback-verifies every applied',
     '  credential before atomic pointer cutover, and crypto-shreds legacy plaintext.'
   ],
   repo: [
     'Immutable VCS repository bindings (v1.0.28):',
-    '  ciphervault repo bind --project <PROJ> --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID> --name <ORG/REPO> --url <URL>',
-    '  ciphervault repo list [--project <PROJ>]',
+    '  cv repo bind --project <PROJ> --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID> --name <ORG/REPO> --url <URL>',
+    '  cv repo list [--project <PROJ>]',
     '  What it really does: Binds projects to Git repositories by immutable numeric provider ID',
     '  rather than volatile repository names. Survives renames, transfers, and monorepos',
     '  without invalidating scoped secret bindings, verified by signed HMAC-SHA256 webhooks.'
   ],
   context: [
     'Local developer workspace context pinning (v1.0.28):',
-    '  ciphervault context show',
-    '  ciphervault context set --project <PROJ> --env <ENV>',
-    '  ciphervault context clear',
+    '  cv context show',
+    '  cv context set --project <PROJ> --env <ENV>',
+    '  cv context clear',
     '  What it really does: Stores local client UX defaults (.ciphervault/context.json)',
     '  so routine CLI commands automatically target the active project and environment.',
     '  All server requests still enforce server-side RBAC/ABAC token verification.'
   ],
   init: [
     'Runs on your machine — this console cannot initialize a vault for you.',
-    '  ciphervault init [--save-kit <PATH>]',
+    '  cv init [--save-kit <PATH>]',
     '  What it really does: generates the 256-bit master secret R, seals vault',
     '  keys with the OS keyring (DPAPI / Keychain / Secret Service, Argon2id-',
     '  wrapped fallback off-Windows), prints the paper kit to stdout ONLY, then',
@@ -1924,14 +1925,14 @@ const REPL_RESPONSES = {
   ],
   track: [
     'Runs on your machine against your vault.',
-    '  ciphervault track .env config/credentials.json [--from-gitignore] [--no-gitignore]',
+    '  cv track .env config/credentials.json [--from-gitignore] [--no-gitignore]',
     '  What it really does: registers each path in the SQLite WAL ledger and',
     '  appends it to .gitignore (unless --no-gitignore) so Git can never stage it.',
     '  Content digests bind later, at `push` snapshot time.'
   ],
   push: [
     'Runs on your machine against your vault + operators.',
-    '  ciphervault push -m "message" [--touch] [--local] [--anchor] [--concurrency N]',
+    '  cv push -m "message" [--touch] [--local] [--anchor] [--concurrency N]',
     '  Automated sync backstops: Linux systemd (ciphervault-push.timer) or Windows Task Scheduler',
     '  (register-push-task.ps1) run background push cycles; `watch` replicates file deltas continuously.',
     '  What it really does: FastCDC-chunks tracked files (4/16/64 KiB), encrypts each chunk with',
@@ -1939,21 +1940,21 @@ const REPL_RESPONSES = {
   ],
   pull: [
     'Runs on your machine against your vault + operators.',
-    '  ciphervault pull [--dry-run] [--force]',
+    '  cv pull [--dry-run] [--force]',
     '  What it really does: fetches the active head snapshot, verifies every',
     '  chunk by SHA-256 CID, decrypts, and restores working files. --dry-run',
     '  checks for remote updates without touching local files.'
   ],
   diff: [
     'Runs on your machine against your vault.',
-    '  ciphervault diff',
+    '  cv diff',
     '  What it really does: compares working-tree secrets against the active',
     '  snapshot head and reports added / modified / removed files with a FastCDC',
     '  delta estimate for the next push. Values stay masked by default.'
   ],
   anchor: [
     'Runs on your machine against your vault + an Arbitrum RPC endpoint.',
-    '  ciphervault anchor [--head <CID>] [--rpc <URL>] [--contract <0x..>] [--chain-id <N>]',
+    '  cv anchor [--head <CID>] [--rpc <URL>] [--contract <0x..>] [--chain-id <N>]',
     '                   [--tx-hash <0x..> | --raw-tx <hex> | --auto-relay] [--daemon]',
     '  Live network today: Arbitrum Sepolia testnet (chain 421614), registry',
     '  0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5. The CLI defaults to Arbitrum',
@@ -1962,7 +1963,7 @@ const REPL_RESPONSES = {
   ],
   verify_anchor: [
     'Runs on your machine against an Arbitrum RPC endpoint.',
-    '  ciphervault verify-anchor [--head <CID>] [--rpc <URL>]',
+    '  cv verify-anchor [--head <CID>] [--rpc <URL>]',
     '  What it really does: reads the registry firstSeenBlock for your salted',
     '  commitment and checks an independent RPC receipt for inclusion + finality.',
     '  Live registry: 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 on chain 421614',
@@ -1979,7 +1980,7 @@ const REPL_RESPONSES = {
   ],
   run: [
     'Runs on your machine inside your vault directory.',
-    '  ciphervault run -- <command> [args...]',
+    '  cv run -- <command> [args...]',
     '  What it really does: decrypts tracked secrets into volatile process RAM,',
     '  spawns the child with them as environment, and zeroizes buffers on exit.',
     '  Zero plaintext is written to disk; nothing here is executed by the browser.'
@@ -2002,9 +2003,9 @@ const REPL_RESPONSES = {
   ],
   recover: [
     'Runs on a clean machine with your offline kit (Recover-then-Rebuild):',
-    '  ciphervault recover --kit <KIT.txt> --to <DIR>     (paper kit path)',
-    '  ciphervault recover --shares g1.txt g2.txt --to <DIR>  (2-of-3 guardian path)',
-    '  ciphervault recovery key-restore --locator <HEX>   (passphrase-wrapped CVKB1 path)',
+    '  cv recover --kit <KIT.txt> --to <DIR>     (paper kit path)',
+    '  cv recover --shares g1.txt g2.txt --to <DIR>  (2-of-3 guardian path)',
+    '  cv recovery key-restore --locator <HEX>   (passphrase-wrapped CVKB1 path)',
     '  1. Validates the kit CRC32, rebuilds vault.db at the epoch (init_vault_at_epoch)',
     '  2. Mints a recovery-signed device certificate at authority generation',
     '  3. Pulls the active head snapshot and decrypts files without manual config',
@@ -2012,9 +2013,9 @@ const REPL_RESPONSES = {
   ],
   recovery: [
     'Sovereign clean-machine recovery & passphrase key backup (v1.0.28):',
-    '  ciphervault recovery key-backup --kit <KIT.txt> [--replicas N]',
-    '  ciphervault recovery key-restore --locator <HEX_SHA256> [--output <PATH>]',
-    '  ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>',
+    '  cv recovery key-backup --kit <KIT.txt> [--replicas N]',
+    '  cv recovery key-restore --locator <HEX_SHA256> [--output <PATH>]',
+    '  cv recovery test --kit <KIT.txt> --to <TEST_DIR>',
     '  What it really does: Derives 256-bit encryption key with Argon2id (64 MiB RAM, 3 passes, 4 lanes),',
     '  wraps root credentials in an authenticated XChaCha20-Poly1305 envelope (CVKB1 format),',
     '  stores the immutable ciphertext content-addressed by sha256(envelope) on operator nodes.',

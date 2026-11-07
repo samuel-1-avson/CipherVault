@@ -1597,12 +1597,12 @@ if !no_gitignore {
 
           </div>
 
-          <!-- 7-Stage Idempotent Migration Ledger (ciphervault migrate) -->
+          <!-- 7-Stage Idempotent Migration Ledger (cv migrate) -->
           <div class="tui-box migration-ledger-box">
             <div class="tui-box-title">
               <div class="box-title-left">
                 <span class="box-title-main">ZERO-DOWNTIME 7-STAGE MIGRATION LEDGER</span>
-                <span class="box-title-badge">ciphervault migrate plan | apply | verify</span>
+                <span class="box-title-badge">cv migrate plan | apply | verify</span>
               </div>
               <span class="title-meta text-cyan">RESUMABLE &amp; SAFE</span>
             </div>
@@ -1620,7 +1620,7 @@ if !no_gitignore {
                 </div>
                 <div class="m-step-title">Classify &amp; Diff</div>
                 <p class="m-step-desc">Parses legacy dotenv files into discrete keys; computes SHA-256 pre-migration digests.</p>
-                <code class="m-step-cmd">ciphervault migrate plan</code>
+                <code class="m-step-cmd">cv migrate plan</code>
               </div>
 
               <div class="migration-card">
@@ -1640,7 +1640,7 @@ if !no_gitignore {
                 </div>
                 <div class="m-step-title">Apply &amp; Wrap</div>
                 <p class="m-step-desc">Generates per-version DEKs under XChaCha20-Poly1305 with scope-bound AAD and project KEK wrap.</p>
-                <code class="m-step-cmd">ciphervault migrate apply</code>
+                <code class="m-step-cmd">cv migrate apply</code>
               </div>
 
               <div class="migration-card">
@@ -1650,7 +1650,7 @@ if !no_gitignore {
                 </div>
                 <div class="m-step-title">Integrity Verify</div>
                 <p class="m-step-desc">Reads back ciphertext over loopback TLS, decrypts in memory, and asserts bit-identical match.</p>
-                <code class="m-step-cmd">ciphervault migrate verify</code>
+                <code class="m-step-cmd">cv migrate verify</code>
               </div>
 
               <div class="migration-card">
@@ -1660,7 +1660,7 @@ if !no_gitignore {
                 </div>
                 <div class="m-step-title">Dual-Admin Signoff</div>
                 <p class="m-step-desc">Production migrations require second-approver cryptographic signature before pointer promotion.</p>
-                <code class="m-step-cmd">ciphervault approve --sign</code>
+                <code class="m-step-cmd">cv approve --sign</code>
               </div>
 
               <div class="migration-card">
@@ -1700,10 +1700,10 @@ if !no_gitignore {
               </p>
               <div class="vcs-code-wrap">
                 <pre class="tui-code-block"><code># Bind GitHub repo with signed HMAC-SHA256 webhooks
-ciphervault repo bind --project checkout-api --provider github --repo-id 84920194 --name apex/checkout --url https://github.com/apex/checkout
+cv repo bind --project checkout-api --provider github --repo-id 84920194 --name apex/checkout --url https://github.com/apex/checkout
 
 # Confine secret to specific repository binding or service
-ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code></pre>
+cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code></pre>
               </div>
             </div>
 
@@ -1715,27 +1715,27 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
               </div>
               <div class="cli-cheatsheet-grid">
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-cyan">ciphervault secret set &lt;NAME&gt;</span>
+                  <span class="cmd-label text-cyan">cv secret set &lt;NAME&gt;</span>
                   <span class="cmd-desc">Create/update secret with envelope AAD</span>
                 </div>
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-mint">ciphervault secret get &lt;NAME&gt;</span>
+                  <span class="cmd-label text-mint">cv secret get &lt;NAME&gt;</span>
                   <span class="cmd-desc">Bare value retrieval for piping</span>
                 </div>
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-gold">ciphervault secret rotate &lt;NAME&gt;</span>
+                  <span class="cmd-label text-gold">cv secret rotate &lt;NAME&gt;</span>
                   <span class="cmd-desc">Rotate to new version (dual-admin in prod)</span>
                 </div>
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-purple">ciphervault run --env prod -- &lt;cmd&gt;</span>
+                  <span class="cmd-label text-purple">cv run --env prod -- &lt;cmd&gt;</span>
                   <span class="cmd-desc">Fail-closed zero-disk RAM injection</span>
                 </div>
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-mint">ciphervault audit --recovery-drill</span>
+                  <span class="cmd-label text-mint">cv audit --recovery-drill</span>
                   <span class="cmd-desc">Verify head rebuild in zeroizing memory</span>
                 </div>
                 <div class="cli-cmd-cell">
-                  <span class="cmd-label text-cyan">ciphervault recovery key-backup</span>
+                  <span class="cmd-label text-cyan">cv recovery key-backup</span>
                   <span class="cmd-desc">Seal root keys into Argon2id CVKB1 envelope</span>
                 </div>
               </div>
@@ -2202,7 +2202,7 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                   <button class="tui-btn-action" id="btn-toggle-paper-key">[REVEAL KEY]</button>
                   <button class="tui-btn-action secondary" id="btn-copy-paper-cmd" title="Copy CLI recovery command">[COPY CLI RESTORE CMD]</button>
                 </div>
-                <div class="voucher-copy-toast" id="voucher-copy-toast">✓ COPIED: ciphervault recovery test --kit &lt;PATH&gt; --to &lt;TEST_DIR&gt;</div>
+                <div class="voucher-copy-toast" id="voucher-copy-toast">✓ COPIED: cv recovery test --kit &lt;PATH&gt; --to &lt;TEST_DIR&gt;</div>
 
                 <!-- Step Checklist -->
                 <div class="voucher-steps-list">
@@ -2399,7 +2399,7 @@ ciphervault secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env producti
                   </div>
                   <div class="restore-cmd-code-line">
                     <span class="tui-prompt">$</span>
-                    <code class="cmd-text" id="cvkb-restore-cmd">ciphervault recovery key-restore --locator … --output recovery-kit.txt</code>
+                    <code class="cmd-text" id="cvkb-restore-cmd">cv recovery key-restore --locator … --output recovery-kit.txt</code>
                   </div>
                 </div>
                 <div class="cvkb-copy-toast" id="cvkb-copy-toast">✓ RESTORE COMMAND COPIED TO CLIPBOARD</div>
@@ -2542,45 +2542,49 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               <div class="step-idx">STEP 01</div>
               <div class="step-card-title">Initialize Vault</div>
               <p class="step-card-desc">Generates master secret <span class="text-gold">R</span>, binds OS hardware keyring, and prints emergency paper kit.</p>
-              <div class="step-cmd">ciphervault init</div>
+              <div class="step-cmd">cv init</div>
             </div>
 
             <div class="step-card">
               <div class="step-idx">STEP 02</div>
               <div class="step-card-title">Track Secrets</div>
               <p class="step-card-desc">Enroll confidential files without changing your Git working tree or commit index.</p>
-              <div class="step-cmd">ciphervault track .env config/jwt.key</div>
+              <div class="step-cmd">cv track .env config/jwt.key</div>
             </div>
 
             <div class="step-card">
               <div class="step-idx">STEP 03</div>
               <div class="step-card-title">Push &amp; Replicate</div>
               <p class="step-card-desc">FastCDC slices changes into encrypted chunks and replicates them across storage operators.</p>
-              <div class="step-cmd">ciphervault push -m "Initial secrets snapshot"</div>
+              <div class="step-cmd">cv push -m "Initial secrets snapshot"</div>
             </div>
 
             <div class="step-card">
               <div class="step-idx">STEP 04</div>
               <div class="step-card-title">Anchor to Arbitrum L2</div>
               <p class="step-card-desc">Publishes snapshot commitments to CipherVaultRegistry.sol for immutable timestamp verification.</p>
-              <div class="step-cmd">ciphervault anchor &amp;&amp; ciphervault verify-anchor</div>
+              <div class="step-cmd">cv anchor &amp;&amp; cv verify-anchor</div>
             </div>
 
             <div class="step-card">
               <div class="step-idx">STEP 05</div>
               <div class="step-card-title">Zero-Disk Run</div>
               <p class="step-card-desc">Injects decrypted secrets directly into process RAM without writing to SSD storage.</p>
-              <div class="step-cmd">ciphervault run -- npm start</div>
+              <div class="step-cmd">cv run -- npm start</div>
             </div>
 
             <div class="step-card">
               <div class="step-idx">STEP 06</div>
               <div class="step-card-title">Seal Key Backup &amp; Verify</div>
               <p class="step-card-desc">Back up root keys into an Argon2id CVKB1 envelope and monitor continuous replication health.</p>
-              <div class="step-cmd">ciphervault recovery key-backup &amp;&amp; ciphervault status</div>
+              <div class="step-cmd">cv recovery key-backup &amp;&amp; cv status</div>
             </div>
 
           </div>
+
+          <p class="download-deck-desc">
+            Short on typing: <code>cv</code> and <code>ciphervault</code> are the same tool — every command on this page works with either name.
+          </p>
 
           <!-- Run a Storage Operator Node Callout -->
           <div class="tui-box operator-node-box">
@@ -2589,7 +2593,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               Run an independent zero-knowledge storage operator node for your team with K-of-N multi-sig admission:
             </p>
             <div class="node-cmd-wrap">
-              <code>ciphervault node setup --port 8201 --data-dir /var/lib/ciphervault &amp;&amp; ciphervault invite join ticket.json --node https://&lt;node-url&gt;</code>
+              <code>cv node setup --port 8201 --data-dir /var/lib/ciphervault &amp;&amp; cv invite join ticket.json --node https://&lt;node-url&gt;</code>
             </div>
           </div>
 
@@ -2638,6 +2642,13 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
                 <div class="faq-question">Do I have to remember to run "push" manually every time?</div>
                 <div class="faq-answer">
                   <strong>No.</strong> CipherVault includes automated scheduled push timers (<code>ciphervault-push.timer</code> on Linux systemd or <code>register-push-task.ps1</code> on Windows Task Scheduler) plus <code>ciphervault watch</code> for continuous, automatic zero-lag secret replication.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Is there a shorter command than "ciphervault"?</div>
+                <div class="faq-answer">
+                  <strong>Yes — just type <code>cv</code>.</strong> Every install ships both names for the same tool, so <code>cv init</code>, <code>cv push</code>, and <code>cv --help</code> all work everywhere <code>ciphervault</code> does.
                 </div>
               </div>
 
