@@ -91,7 +91,7 @@ pub fn select_head(
         .iter()
         .map(|(_, cert)| cert.authority_generation)
         .max()
-        .unwrap();
+        .expect("heads non-empty: ensured above");
     let candidates: Vec<_> = heads
         .into_iter()
         .filter(|(_, cert)| cert.authority_generation == generation)

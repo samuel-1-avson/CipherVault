@@ -241,7 +241,9 @@ pub(crate) async fn post_materialize(
                 Json(serde_json::json!({"revision": revision, "values": values})).into_response();
             response.headers_mut().insert(
                 axum::http::header::CACHE_CONTROL,
-                "no-store".parse().unwrap(),
+                "no-store"
+                    .parse()
+                    .expect("static Cache-Control header value"),
             );
             response
         }

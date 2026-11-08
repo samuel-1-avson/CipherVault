@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CipherVault System Architecture + Workflow</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'JetBrains Mono',monospace;background:#020617;min-height:100vh;padding:2rem;color:#fff}
+.container{max-width:1200px;margin:0 auto}
+.header{margin-bottom:1.5rem}
+.header-row{display:flex;align-items:center;gap:1rem;margin-bottom:.5rem}
+.pulse-dot{width:12px;height:12px;background:#22d3ee;border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+h1{font-size:1.5rem;font-weight:700;letter-spacing:-.025em}
+.subtitle{color:#94a3b8;font-size:.85rem;margin-left:1.75rem}
+.subtitle b{color:#e2e8f0}
+.diagram-container{background:rgba(15,23,42,.5);border-radius:1rem;border:1px solid #1e293b;padding:1.5rem;overflow-x:auto;margin-bottom:1.5rem}
+.diagram-container h2{font-size:.9rem;font-weight:600;margin-bottom:.25rem}
+.diagram-container p.desc{color:#94a3b8;font-size:.75rem;margin-bottom:1rem}
+svg{width:100%;min-width:920px;display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:1rem}
+.card{background:rgba(15,23,42,.5);border-radius:.75rem;border:1px solid #1e293b;padding:1.25rem}
+.card-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem}
+.card-dot{width:8px;height:8px;border-radius:50%}
+.card-dot.cyan{background:#22d3ee}.card-dot.emerald{background:#34d399}.card-dot.violet{background:#a78bfa}.card-dot.amber{background:#fbbf24}.card-dot.rose{background:#fb7185}
+.card h3{font-size:.85rem;font-weight:600}
+.card ul{list-style:none;color:#94a3b8;font-size:.73rem;line-height:1.55}
+.card li{margin-bottom:.375rem}
+.card li b{color:#e2e8f0;font-weight:600}
+.footer{text-align:center;margin-top:1.5rem;color:#475569;font-size:.72rem}
+.flow-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.6rem;margin-top:1rem}
+.step{background:rgba(15,23,42,.7);border:1px solid #1e293b;border-radius:.6rem;padding:.7rem .8rem}
+.step .n{font-size:.65rem;color:#22d3ee;font-weight:700}
+.step .t{font-size:.72rem;font-weight:600;margin:.15rem 0}
+.step .d{font-size:.66rem;color:#94a3b8;line-height:1.5}
+.step .d code{color:#e2e8f0;font-size:.64rem}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<div class="header-row"><div class="pulse-dot"></div><h1>CipherVault Architecture + System Workflow</h1></div>
+<p class="subtitle"><b>v1.0.29</b> • sovereign client-encrypted backup • Chunk protocol v2 • CipherChain PoA (chain-id 777777) • XChaCha20-Poly1305 • FastCDC 4/16/64 KiB</p>
+</div>
+
+<!-- ============ DIAGRAM 1: ARCHITECTURE ============ -->
+<div class="diagram-container">
+<h2>01 — System Architecture &amp; Trust Boundaries</h2>
+<p class="desc">Plaintext never leaves the workstation. Operators hold opaque ciphertext addressed by content digests (CIDs). Settlement is the sovereign CipherChain ledger — no EVM, no gas.</p>
+<svg viewBox="0 0 1000 660">
+<defs>
+<marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+<marker id="ah-c" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22d3ee"/></marker>
+<marker id="ah-e" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#34d399"/></marker>
+<marker id="ah-v" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a78bfa"/></marker>
+<marker id="ah-a" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#fbbf24"/></marker>
+<marker id="ah-r" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#fb7185"/></marker>
+<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+</defs>
+<rect width="100%" height="100%" fill="url(#grid)"/>
+
+<!-- boundaries -->
+<rect x="16" y="36" width="310" height="520" rx="12" fill="rgba(34,211,238,0.05)" stroke="#22d3ee" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="28" y="54" fill="#22d3ee" font-size="10" font-weight="600">CLIENT — workstation / CI runner (trusted)</text>
+<rect x="346" y="36" width="638" height="300" rx="12" fill="rgba(251,191,36,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="358" y="54" fill="#fbbf24" font-size="10" font-weight="600">UNTRUSTED — operator federation (ciphertext only)</text>
+<rect x="346" y="356" width="310" height="200" rx="12" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="358" y="374" fill="#34d399" font-size="10" font-weight="600">DURABILITY ENGINE</text>
+<rect x="674" y="356" width="310" height="200" rx="12" fill="transparent" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="686" y="374" fill="#a78bfa" font-size="10" font-weight="600">SETTLEMENT — CipherChain PoA</text>
+
+<!-- arrows (behind boxes) -->
+<line x1="171" y1="252" x2="171" y2="286" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah-c)"/>
+<line x1="171" y1="356" x2="171" y2="390" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah-c)"/>
+<line x1="171" y1="460" x2="171" y2="496" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah-c)"/>
+<line x1="326" y1="200" x2="420" y2="200" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-e)"/>
+<text x="373" y="193" fill="#94a3b8" font-size="8" text-anchor="middle">chunks+PoS</text>
+<line x1="560" y1="200" x2="560" y2="130" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ah-a)"/>
+<line x1="640" y1="130" x2="640" y2="200" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ah-a)"/>
+<line x1="720" y1="200" x2="720" y2="130" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ah-a)"/>
+<path d="M 326 440 L 344 440" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah-e)"/>
+<text x="285" y="433" fill="#94a3b8" font-size="8">heartbeat/repair</text>
+<path d="M 560 356 L 560 336 L 300 336 L 300 300" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#ah-r)"/>
+<text x="420" y="330" fill="#fb7185" font-size="8">CommitmentTx (anchor)</text>
+<path d="M 840 496 L 840 300 L 700 300 L 700 262" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#ah-v)"/>
+<text x="848" y="400" fill="#a78bfa" font-size="8">verify / proofs</text>
+
+<!-- client components -->
+<rect x="36" y="64" width="270" height="56" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+<rect x="36" y="64" width="270" height="56" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="171" y="86" fill="white" font-size="11" font-weight="600" text-anchor="middle">CLI / TUI / Agent / Dashboard</text>
+<text x="171" y="103" fill="#94a3b8" font-size="9" text-anchor="middle">apps/cli • ratatui • :8080 • watch</text>
+<rect x="36" y="130" width="270" height="56" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+<rect x="36" y="130" width="270" height="56" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="171" y="152" fill="white" font-size="11" font-weight="600" text-anchor="middle">Tracked secrets (.env, keys)</text>
+<text x="171" y="169" fill="#94a3b8" font-size="9" text-anchor="middle">FastCDC 4 / 16 / 64 KiB + PoS dedup</text>
+<rect x="36" y="196" width="270" height="56" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+<rect x="36" y="196" width="270" height="56" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="171" y="218" fill="white" font-size="11" font-weight="600" text-anchor="middle">Crypto core</text>
+<text x="171" y="235" fill="#94a3b8" font-size="9" text-anchor="middle">XChaCha20-Poly1305 • Blake2b KDF</text>
+<rect x="36" y="262" width="270" height="94" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+<rect x="36" y="262" width="270" height="94" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="171" y="284" fill="white" font-size="11" font-weight="600" text-anchor="middle">Key hierarchy (from R)</text>
+<text x="171" y="301" fill="#94a3b8" font-size="8" text-anchor="middle">Ed25519 sign • X25519 envelope</text>
+<text x="171" y="315" fill="#94a3b8" font-size="8" text-anchor="middle">EpochKey → FileVersionKey → nonce</text>
+<text x="171" y="329" fill="#94a3b8" font-size="8" text-anchor="middle">Shamir GF(2⁸) • Zeroize in RAM</text>
+<text x="171" y="347" fill="#34d399" font-size="7" text-anchor="middle">R printed once, never stored</text>
+<rect x="36" y="366" width="270" height="56" rx="6" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/>
+<rect x="36" y="366" width="270" height="56" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="171" y="388" fill="white" font-size="11" font-weight="600" text-anchor="middle">Local store vault.db</text>
+<text x="171" y="405" fill="#94a3b8" font-size="9" text-anchor="middle">SQLite WAL • DPAPI / keyring</text>
+<rect x="36" y="432" width="270" height="56" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+<rect x="36" y="432" width="270" height="56" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="171" y="454" fill="white" font-size="11" font-weight="600" text-anchor="middle">ciphervault run</text>
+<text x="171" y="471" fill="#94a3b8" font-size="9" text-anchor="middle">zero-disk env injection</text>
+<rect x="36" y="498" width="270" height="44" rx="6" fill="#0f172a" stroke="#fb7185" stroke-width="1.5"/>
+<rect x="36" y="498" width="270" height="44" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="171" y="516" fill="white" font-size="10" font-weight="600" text-anchor="middle">YubiKey PIV 9C / 9D</text>
+<text x="171" y="531" fill="#94a3b8" font-size="8" text-anchor="middle">touch-sign • APDU driver</text>
+
+<!-- operators -->
+<rect x="366" y="64" width="180" height="56" rx="6" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+<rect x="366" y="64" width="180" height="56" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="456" y="86" fill="white" font-size="11" font-weight="600" text-anchor="middle">Operator 1 :8201</text>
+<text x="456" y="103" fill="#94a3b8" font-size="9" text-anchor="middle">Axum REST • disk store</text>
+<rect x="566" y="64" width="180" height="56" rx="6" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+<rect x="566" y="64" width="180" height="56" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="656" y="86" fill="white" font-size="11" font-weight="600" text-anchor="middle">Operator 2 :8202</text>
+<text x="656" y="103" fill="#94a3b8" font-size="9" text-anchor="middle">objects • recovery • PoS</text>
+<rect x="766" y="64" width="180" height="56" rx="6" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+<rect x="766" y="64" width="180" height="56" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="856" y="86" fill="white" font-size="11" font-weight="600" text-anchor="middle">Operator 3 :8203</text>
+<text x="856" y="103" fill="#94a3b8" font-size="9" text-anchor="middle">quorum replication</text>
+<rect x="366" y="130" width="580" height="60" rx="6" fill="#0f172a" stroke="#fb923c" stroke-width="1.5"/>
+<rect x="366" y="130" width="580" height="60" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+<text x="656" y="152" fill="white" font-size="11" font-weight="600" text-anchor="middle">P2P mesh swarm (libp2p)</text>
+<text x="656" y="169" fill="#94a3b8" font-size="9" text-anchor="middle">Kademlia DHT • Gossipsub • Noise/Yamux • DCUtR • QUIC+TCP</text>
+<rect x="366" y="200" width="580" height="116" rx="6" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+<rect x="366" y="200" width="580" height="116" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="656" y="222" fill="white" font-size="11" font-weight="600" text-anchor="middle">What operators see (and never see)</text>
+<text x="656" y="242" fill="#94a3b8" font-size="8" text-anchor="middle">SEE: CIDs (SHA-256) • ciphertext bytes • sizes/counts • head headers</text>
+<text x="656" y="256" fill="#94a3b8" font-size="8" text-anchor="middle">NEVER: filenames • file contents • epoch keys • master secret R</text>
+<text x="656" y="274" fill="#94a3b8" font-size="8" text-anchor="middle">PUT /v1/objects/:cid • GET /v1/recovery/:locator • PoS challenge (461 B)</text>
+<text x="656" y="292" fill="#fbbf24" font-size="7" text-anchor="middle">node count ≠ independent failure domains — verify deployment</text>
+
+<!-- maintenance -->
+<rect x="366" y="384" width="270" height="96" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+<rect x="366" y="384" width="270" height="96" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="501" y="406" fill="white" font-size="11" font-weight="600" text-anchor="middle">ciphervault-maintenance</text>
+<text x="501" y="423" fill="#94a3b8" font-size="8" text-anchor="middle">heartbeat : /v1/info every 15 s</text>
+<text x="501" y="437" fill="#94a3b8" font-size="8" text-anchor="middle">PoS audit matrix • self-repair</text>
+<text x="501" y="451" fill="#94a3b8" font-size="8" text-anchor="middle">fleet.db • SSE telemetry • no HTTP</text>
+<text x="501" y="469" fill="#34d399" font-size="7" text-anchor="middle">restores 3/3 durability autonomously</text>
+
+<!-- chain -->
+<rect x="694" y="384" width="270" height="96" rx="6" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/>
+<rect x="694" y="384" width="270" height="96" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="829" y="406" fill="white" font-size="11" font-weight="600" text-anchor="middle">CipherChain ledger</text>
+<text x="829" y="423" fill="#94a3b8" font-size="8" text-anchor="middle">Ed25519 PoA • Merkle accumulator</text>
+<text x="829" y="437" fill="#94a3b8" font-size="8" text-anchor="middle">commit = SHA-256(ctx‖salt‖head)</text>
+<text x="829" y="451" fill="#94a3b8" font-size="8" text-anchor="middle">quorum 2N/3+1 • median time</text>
+<text x="829" y="469" fill="#a78bfa" font-size="7" text-anchor="middle">genesis ceremony • rotation v3+</text>
+
+<!-- recovery strip -->
+<rect x="16" y="572" width="968" height="56" rx="8" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+<text x="28" y="586" fill="#fb7185" font-size="8">RECOVERY PLANE — clean-machine, zero cached credentials</text>
+<text x="28" y="606" fill="white" font-size="10" font-weight="600">Method A: paper kit (R) → locator L → envelope → epoch key → chunks → atomic restoreㅤ•ㅤMethod B: M-of-N Shamir shares → Lagrange over GF(2⁸) → R (CRC32-checked)</text>
+<text x="28" y="620" fill="#94a3b8" font-size="8">Staging dir .ciphervault_staging_* • SHA-256 manifest verify • all-or-nothing move • RAM zeroized after</text>
+
+<!-- legend -->
+<text x="16" y="648" fill="white" font-size="10" font-weight="600">Legend</text>
+<rect x="80" y="640" width="16" height="10" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee"/><text x="100" y="648" fill="#94a3b8" font-size="8">Client</text>
+<rect x="150" y="640" width="16" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399"/><text x="170" y="648" fill="#94a3b8" font-size="8">Crypto/durability</text>
+<rect x="268" y="640" width="16" height="10" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24"/><text x="288" y="648" fill="#94a3b8" font-size="8">Untrusted operator</text>
+<rect x="408" y="640" width="16" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa"/><text x="428" y="648" fill="#94a3b8" font-size="8">Store/ledger</text>
+<rect x="510" y="640" width="16" height="10" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185"/><text x="530" y="648" fill="#94a3b8" font-size="8">Hardware/recovery</text>
+<line x1="650" y1="645" x2="666" y2="645" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="3,3"/><text x="670" y="648" fill="#94a3b8" font-size="8">Anchor/auth flow</text>
+</svg>
+</div>
+
+<!-- ============ DIAGRAM 2: WORKFLOW ============ -->
+<div class="diagram-container">
+<h2>02 — End-to-End System Workflow (7 stages)</h2>
+<p class="desc">Happy path from vault bootstrap to disaster recovery. Every stage is a real CLI command; operators never see plaintext at any step.</p>
+<svg viewBox="0 0 1000 250">
+<defs>
+<marker id="bh" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+<pattern id="grid2" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+</defs>
+<rect width="100%" height="100%" fill="url(#grid2)"/>
+<!-- lane -->
+<rect x="8" y="20" width="984" height="210" rx="12" fill="transparent" stroke="#1e293b" stroke-width="1"/>
+<!-- 7 stage boxes + arrows -->
+<g font-size="10">
+<rect x="20" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#fb7185" stroke-width="1.5"/><rect x="20" y="60" width="122" height="110" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="81" y="82" fill="#fb7185" font-size="9" font-weight="700" text-anchor="middle">1 • INIT</text><text x="81" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">ciphervault</text><text x="81" y="113" fill="white" font-size="9" font-weight="600" text-anchor="middle">init</text><text x="81" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">R → kit printed</text><text x="81" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">keys → DPAPI</text><text x="81" y="158" fill="#fb7185" font-size="7" text-anchor="middle">zeroize R</text>
+<rect x="154" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/><rect x="154" y="60" width="122" height="110" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="215" y="82" fill="#22d3ee" font-size="9" font-weight="700" text-anchor="middle">2 • TRACK</text><text x="215" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">track + diff</text><text x="215" y="117" fill="#94a3b8" font-size="7" text-anchor="middle">.gitignore guard</text><text x="215" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">masked diff</text><text x="215" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">(anti-shoulder)</text><text x="215" y="158" fill="#22d3ee" font-size="7" text-anchor="middle">watch --sync opt</text>
+<rect x="288" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/><rect x="288" y="60" width="122" height="110" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="349" y="82" fill="#34d399" font-size="9" font-weight="700" text-anchor="middle">3 • PUSH</text><text x="349" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">FastCDC+push</text><text x="349" y="117" fill="#94a3b8" font-size="7" text-anchor="middle">dedup via PoS</text><text x="349" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">XChaCha20 seal</text><text x="349" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">touch-sign 9C</text><text x="349" y="158" fill="#34d399" font-size="7" text-anchor="middle">quorum 3/3</text>
+<rect x="422" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#a78bfa" stroke-width="1.5"/><rect x="422" y="60" width="122" height="110" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="483" y="82" fill="#a78bfa" font-size="9" font-weight="700" text-anchor="middle">4 • ANCHOR</text><text x="483" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">anchor</text><text x="483" y="117" fill="#94a3b8" font-size="7" text-anchor="middle">salt=KDF(head)</text><text x="483" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">PoA commit</text><text x="483" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">median time</text><text x="483" y="158" fill="#a78bfa" font-size="7" text-anchor="middle">verify-anchor</text>
+<rect x="556" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/><rect x="556" y="60" width="122" height="110" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+<text x="617" y="82" fill="#34d399" font-size="9" font-weight="700" text-anchor="middle">5 • HEAL</text><text x="617" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">maintenance</text><text x="617" y="117" fill="#94a3b8" font-size="7" text-anchor="middle">15 s heartbeat</text><text x="617" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">PoS audit</text><text x="617" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">self-repair</text><text x="617" y="158" fill="#34d399" font-size="7" text-anchor="middle">SSE telemetry</text>
+<rect x="690" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/><rect x="690" y="60" width="122" height="110" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="751" y="82" fill="#22d3ee" font-size="9" font-weight="700" text-anchor="middle">6 • USE</text><text x="751" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">run / pull</text><text x="751" y="117" fill="#94a3b8" font-size="7" text-anchor="middle">RAM-only env</text><text x="751" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">pull = sync B</text><text x="751" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">CI zero-disk</text><text x="751" y="158" fill="#22d3ee" font-size="7" text-anchor="middle">npm/docker child</text>
+<rect x="824" y="60" width="122" height="110" rx="6" fill="#0f172a" stroke="#fb7185" stroke-width="1.5"/><rect x="824" y="60" width="122" height="110" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+<text x="885" y="82" fill="#fb7185" font-size="9" font-weight="700" text-anchor="middle">7 • RECOVER</text><text x="885" y="100" fill="white" font-size="9" font-weight="600" text-anchor="middle">recover</text><text x="885" y="117" fill="#94a3b8" font-size="7" text-anchor="middle">kit / M-of-N</text><text x="885" y="130" fill="#94a3b8" font-size="7" text-anchor="middle">staging+verify</text><text x="885" y="142" fill="#94a3b8" font-size="7" text-anchor="middle">atomic move</text><text x="885" y="158" fill="#fb7185" font-size="7" text-anchor="middle">bit-for-bit ✓</text>
+</g>
+<g stroke="#64748b" stroke-width="1.5">
+<line x1="142" y1="115" x2="152" y2="115" marker-end="url(#bh)"/>
+<line x1="276" y1="115" x2="286" y2="115" marker-end="url(#bh)"/>
+<line x1="410" y1="115" x2="420" y2="115" marker-end="url(#bh)"/>
+<line x1="544" y1="115" x2="554" y2="115" marker-end="url(#bh)"/>
+<line x1="678" y1="115" x2="688" y2="115" marker-end="url(#bh)"/>
+<line x1="812" y1="115" x2="822" y2="115" marker-end="url(#bh)"/>
+</g>
+<text x="500" y="40" fill="#94a3b8" font-size="9" text-anchor="middle">plaintext boundary: everything left of the operator API is encrypted on the client — stages 1–7 below move only ciphertext + CIDs over the wire</text>
+<text x="500" y="200" fill="#94a3b8" font-size="8" text-anchor="middle">dirty-check: pull aborts on uncommitted local edits unless --force • push signs SnapshotRecord (device key or YubiKey touch) • anchor is offline-verifiable (Merkle path + quorum sigs &lt;1 ms)</text>
+<text x="500" y="216" fill="#64748b" font-size="8" text-anchor="middle">watch mode collapses to stage 3 automatically: kernel event → 2 s debounce → coherent read → FastCDC → encrypt → replicate</text>
+</svg>
+<div class="flow-steps">
+<div class="step"><div class="n">STAGE 1 — INIT</div><div class="t">Bootstrap trust</div><div class="d"><code>init</code> → R(32 B) → kit print → DPAPI persist → <code>track</code> discovered .env</div></div>
+<div class="step"><div class="n">STAGE 2 — TRACK</div><div class="t">Version secrets</div><div class="d"><code>diff</code> masked by default; <code>--reveal</code> only for explicit audit</div></div>
+<div class="step"><div class="n">STAGE 3 — PUSH</div><div class="t">Encrypt + replicate</div><div class="d">chunk → FVK/nonce → seal → PoS-or-PUT → SnapshotRecord → quorum</div></div>
+<div class="step"><div class="n">STAGE 4 — ANCHOR</div><div class="t">Settle state</div><div class="d"><code>anchor</code> → salt+commit → PoA propose/commit → gossip publish</div></div>
+<div class="step"><div class="n">STAGE 5 — HEAL</div><div class="t">Stay durable</div><div class="d">daemon probes, audits closure, re-replicates to heal 3/3</div></div>
+<div class="step"><div class="n">STAGE 6 — USE</div><div class="t">Consume safely</div><div class="d"><code>run -- cmd</code> injects env in RAM; <code>pull</code> syncs second machine</div></div>
+<div class="step"><div class="n">STAGE 7 — RECOVER</div><div class="t">Survive loss</div><div class="d">kit/shares → L → envelope → head → chunks → atomic bit-for-bit restore</div></div>
+</div>
+</div>
+
+<div class="cards">
+<div class="card"><div class="card-header"><div class="card-dot rose"></div><h3>Trust boundaries</h3></div>
+<ul><li>• <b>Trusted:</b> workstation RAM, OS keyring (DPAPI), YubiKey PIV</li><li>• <b>Untrusted:</b> operators see CIDs + ciphertext only</li><li>• <b>Public:</b> vault/epoch headers, sizes, access patterns</li><li>• <b>Rule:</b> node count ≠ failure domains — verify ops</li></ul></div>
+<div class="card"><div class="card-header"><div class="card-dot emerald"></div><h3>Crypto &amp; data plane</h3></div>
+<ul><li>• <b>Seal:</b> XChaCha20-Poly1305, AAD = CID</li><li>• <b>Keys:</b> Blake2b-KDF tree from R; deterministic FVK/nonce</li><li>• <b>Chunks:</b> v2 FastCDC dedup; v1 whole-file compat</li><li>• <b>Sign:</b> Ed25519 device cert / Slot 9C touch</li></ul></div>
+<div class="card"><div class="card-header"><div class="card-dot violet"></div><h3>Operations &amp; recovery</h3></div>
+<ul><li>• <b>API:</b> Axum :8201–8203, P2P Kademlia/Gossipsub</li><li>• <b>Health:</b> 15 s heartbeats, PoS audits, self-repair</li><li>• <b>Ledger:</b> CipherChain PoA, 2N/3+1, median time</li><li>• <b>DR:</b> paper kit or Shamir M-of-N, atomic restore</li></ul></div>
+</div>
+<p class="footer">CipherVault v1.0.29 • sources: README architecture, docs/SYSTEM_WORKFLOW.md, Cargo workspace (crates/*, services/*, apps/*) • operators :8201–8203 (compose) / :8101 (binary default)</p>
+</div>
+</body>
+</html>

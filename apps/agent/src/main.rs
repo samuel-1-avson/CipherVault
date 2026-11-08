@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
     let root_dir = cli
         .dir
         .or(config_dir)
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+        .unwrap_or_else(|| std::env::current_dir().expect("agent working dir must exist"));
     let debounce_secs = if cli.debounce_secs != 5 {
         cli.debounce_secs
     } else {

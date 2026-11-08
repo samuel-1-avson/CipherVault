@@ -412,7 +412,7 @@
                         <span class="scenario-name">30-Second Restore</span>
                       </div>
                       <div class="scenario-text">
-                        Run <code class="tui-code">ciphervault pull</code> to reconstruct all project secrets in 30 seconds on any clean machine.
+                        Run <code class="tui-code">cv pull</code> to reconstruct all project secrets in 30 seconds on any clean machine.
                       </div>
                     </div>
                     <div class="scenario-footer">
@@ -834,7 +834,7 @@
                     </div>
                     <div class="flashcard-title">In-Memory Execution</div>
                     <p class="flashcard-body">
-                      <code class="tui-code">ciphervault run -- npm start</code> decrypts secrets strictly in volatile process memory with automatic Zeroize scrubbers.
+                      <code class="tui-code">cv run -- npm start</code> decrypts secrets strictly in volatile process memory with automatic Zeroize scrubbers.
                     </p>
                   </div>
                   <div class="flashcard-footer">
@@ -1218,7 +1218,7 @@
                   <div class="insp-section insp-mechanics-box">
                     <div class="insp-label text-cyan">CRYPTOGRAPHIC & ARCHITECTURAL MECHANICS:</div>
                     <p class="insp-body" id="insp-mechanics">
-                      CipherVault tracks secret files out-of-band from Git. During enrollment via <code class="tui-code">ciphervault track .env</code>, the path is registered in the local SQLite WAL ledger and appended to <code class="tui-code">.gitignore</code> (skip with <code class="tui-code">--no-gitignore</code>). Content digests bind at snapshot time, not at enrollment.
+                      CipherVault tracks secret files out-of-band from Git. During enrollment via <code class="tui-code">cv track .env</code>, the path is registered in the local SQLite WAL ledger and appended to <code class="tui-code">.gitignore</code> (skip with <code class="tui-code">--no-gitignore</code>). Content digests bind at snapshot time, not at enrollment.
                     </p>
                   </div>
                   <div class="insp-section insp-security-box">
@@ -1318,7 +1318,7 @@ if !no_gitignore {
         </section>
 
         <!-- ====================================================================
-             PANE 4: SCOPED SECRETS & MULTI-ENVIRONMENT GOVERNANCE (v1.0.28)
+             PANE 4: SCOPED SECRETS & MULTI-ENVIRONMENT GOVERNANCE (v1.0.29)
              ==================================================================== -->
         <section class="tui-pane" id="pane-scoped" role="tabpanel" hidden>
           
@@ -1711,7 +1711,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
             <div class="tui-box scoped-cli-cheatsheet">
               <div class="tui-box-title">
                 <span>SCOPED SECRETS &amp; SESSION CLI REFERENCE</span>
-                <span class="badge-gold">v1.0.28 NATIVE</span>
+                <span class="badge-gold">v1.0.29 NATIVE</span>
               </div>
               <div class="cli-cheatsheet-grid">
                 <div class="cli-cmd-cell">
@@ -2163,7 +2163,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
               </div>
               <div class="tui-box-title">METHOD A: EMERGENCY PAPER RECOVERY KIT</div>
               <p class="recovery-desc">
-                During <code class="tui-code">ciphervault init</code>, a 256-bit Master Secret <span class="text-gold">R</span> with CRC32 checksum is printed exclusively to your terminal. 
+                During <code class="tui-code">cv init</code>, a 256-bit Master Secret <span class="text-gold">R</span> with CRC32 checksum is printed exclusively to your terminal. 
                 It is never written to disk, and volatile RAM is purged immediately with <code class="tui-code">ZeroizeOnDrop</code> compiler fences.
               </p>
               
@@ -2430,7 +2430,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
               <span class="badge-gold">AUTO-RESUME</span>
             </div>
             <p class="pillar-desc recovery-rebuild-desc">
-              Disaster recovery does not merely dump loose files on disk. On a completely wiped machine, <code class="tui-code">ciphervault recover</code> resolves the immutable genesis locator, automatically initializes a new SQLite <code class="tui-code">vault.db</code> store at the recovered epoch (<code class="tui-code">init_vault_at_epoch</code>), mints a fresh recovery-signed device identity, and pulls all snapshot chunks. The clean device is instantly primed for immediate <code class="tui-code">push</code>, <code class="tui-code">diff</code>, and <code class="tui-code">pull</code> commands without manual re-configuration.
+              Disaster recovery does not merely dump loose files on disk. On a completely wiped machine, <code class="tui-code">cv recover</code> resolves the immutable genesis locator, automatically initializes a new SQLite <code class="tui-code">vault.db</code> store at the recovered epoch (<code class="tui-code">init_vault_at_epoch</code>), mints a fresh recovery-signed device identity, and pulls all snapshot chunks. The clean device is instantly primed for immediate <code class="tui-code">push</code>, <code class="tui-code">diff</code>, and <code class="tui-code">pull</code> commands without manual re-configuration.
             </p>
           </div>
 
@@ -2487,20 +2487,60 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           <div class="tui-box direct-downloads-box">
             <div class="tui-box-title">
               <span>DIRECT PRE-COMPILED BINARY RELEASES [v1.0.29]</span>
-              <span class="title-meta text-mint">✓ SHA-256 SIGNED &amp; VERIFIED</span>
+              <span class="title-meta text-mint">✓ SHA-256 &amp; ED25519 SIGNED</span>
             </div>
             <p class="download-deck-desc">
-              Prefer standalone executables without running package scripts? Download official standalone archives directly from the release feed:
+              Prefer standalone executables or role-specific bundles without running package scripts? Download official signed archives and executables directly from the release feed:
             </p>
             <div class="binary-downloads-grid">
               <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.29/ciphervault-v1.0.29-x86_64-pc-windows-msvc.zip" class="bin-download-card" download>
                 <div class="bin-card-top">
-                  <span class="bin-os-badge os-win">WINDOWS</span>
-                  <span class="bin-arch">x86_64</span>
+                  <span class="bin-os-badge os-win">WINDOWS FULL</span>
+                  <span class="bin-arch">x86_64 • v1.0.29</span>
+                </div>
+                <div class="bin-card-name">cv.exe + ciphervault.exe</div>
+                <div class="bin-card-meta">Full Suite: CLI, Agent, Operator &amp; Maintenance • 31.0 MB</div>
+                <div class="bin-download-action">[ ↓ Download Full .zip ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.29/cv.exe" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS CLI</span>
+                  <span class="bin-arch">x86_64 • v1.0.29</span>
+                </div>
+                <div class="bin-card-name">cv.exe</div>
+                <div class="bin-card-meta">Standalone Short-Alias CLI Binary • MSVC Native • 21.3 MB</div>
+                <div class="bin-download-action">[ ↓ Download cv.exe ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.29/ciphervault.exe" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS CLI</span>
+                  <span class="bin-arch">x86_64 • v1.0.29</span>
                 </div>
                 <div class="bin-card-name">ciphervault.exe</div>
-                <div class="bin-card-meta">MSVC Native • Portable Zip Archive</div>
-                <div class="bin-download-action">[ ↓ Download .zip ]</div>
+                <div class="bin-card-meta">Standalone Canonical CLI Binary • MSVC Native • 21.3 MB</div>
+                <div class="bin-download-action">[ ↓ Download ciphervault.exe ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.29/ciphervault-dev-v1.0.29-x86_64-pc-windows-msvc.zip" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS DEV</span>
+                  <span class="bin-arch">x86_64 • v1.0.29</span>
+                </div>
+                <div class="bin-card-name">ciphervault-dev.zip</div>
+                <div class="bin-card-meta">Developer Bundle: cv.exe, ciphervault.exe &amp; Agent • 20.0 MB</div>
+                <div class="bin-download-action">[ ↓ Download Dev .zip ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.29/ciphervault-node-v1.0.29-x86_64-pc-windows-msvc.zip" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS NODE</span>
+                  <span class="bin-arch">x86_64 • v1.0.29</span>
+                </div>
+                <div class="bin-card-name">ciphervault-node.zip</div>
+                <div class="bin-card-meta">Node Runner: CLI, Storage Operator &amp; Maintenance • 27.0 MB</div>
+                <div class="bin-download-action">[ ↓ Download Node .zip ]</div>
               </a>
 
               <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.28/ciphervault-v1.0.28-x86_64-unknown-linux-gnu.tar.gz" class="bin-download-card" download>
@@ -2526,10 +2566,10 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               <a href="https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.29" target="_blank" rel="noopener noreferrer" class="bin-download-card all-assets">
                 <div class="bin-card-top">
                   <span class="bin-os-badge os-all">ALL ARTIFACTS</span>
-                  <span class="bin-arch">7 Assets</span>
+                  <span class="bin-arch">7 Assets • Signed</span>
                 </div>
                 <div class="bin-card-name">GitHub Release v1.0.29</div>
-                <div class="bin-card-meta">SHA256SUMS, Signed Windows Bundles</div>
+                <div class="bin-card-meta">SHA256SUMS.txt, .sig &amp; Signed Release Bundles</div>
                 <div class="bin-download-action">[ View All Assets ↗ ]</div>
               </a>
             </div>
@@ -2634,14 +2674,14 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               <div class="plain-faq-card">
                 <div class="faq-question">What happens if my laptop is stolen or wiped? Can I recover without paper?</div>
                 <div class="faq-answer">
-                  <strong>Yes.</strong> In addition to offline paper kits and Shamir guardian shares, CipherVault v1.0.28 supports passphrase-wrapped vault-key backups (<code>CVKB1</code>). Your keys are sealed client-side with Argon2id and stored content-addressed on operator nodes. Recover on any wiped laptop with <code>ciphervault recovery key-restore --locator &lt;HEX&gt;</code> and your memorable passphrase.
+                  <strong>Yes.</strong> In addition to offline paper kits and Shamir guardian shares, CipherVault v1.0.29 supports passphrase-wrapped vault-key backups (<code>CVKB1</code>). Your keys are sealed client-side with Argon2id and stored content-addressed on operator nodes. Recover on any wiped laptop with <code>cv recovery key-restore --locator &lt;HEX&gt;</code> and your memorable passphrase.
                 </div>
               </div>
 
               <div class="plain-faq-card">
                 <div class="faq-question">Do I have to remember to run "push" manually every time?</div>
                 <div class="faq-answer">
-                  <strong>No.</strong> CipherVault includes automated scheduled push timers (<code>ciphervault-push.timer</code> on Linux systemd or <code>register-push-task.ps1</code> on Windows Task Scheduler) plus <code>ciphervault watch</code> for continuous, automatic zero-lag secret replication.
+                  <strong>No.</strong> CipherVault includes automated scheduled push timers (<code>ciphervault-push.timer</code> on Linux systemd or <code>register-push-task.ps1</code> on Windows Task Scheduler) plus <code>cv watch</code> for continuous, automatic zero-lag secret replication.
                 </div>
               </div>
 
@@ -2713,6 +2753,8 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
           <button class="cmd-pill" data-cmd="push">push</button>
           <button class="cmd-pill" data-cmd="anchor">anchor</button>
           <button class="cmd-pill" data-cmd="verify-anchor">verify-anchor</button>
+          <button class="cmd-pill" data-cmd="genesis">genesis</button>
+          <button class="cmd-pill" data-cmd="update">update</button>
           <button class="cmd-pill" data-cmd="invite">invite</button>
           <button class="cmd-pill" data-cmd="status">status</button>
           <button class="cmd-pill" data-cmd="run">run -- npm start</button>
@@ -2725,8 +2767,8 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
 
       <div class="repl-drawer-container" id="repl-drawer-container">
         <div class="repl-command-row">
-          <span class="repl-prompt-symbol">ciphervault &gt;</span>
-          <input type="text" class="repl-input" id="repl-input" placeholder="Type a command (or click quick pills above): 'help', 'init', 'bench'..." spellcheck="false" autocomplete="off">
+          <span class="repl-prompt-symbol">cv &gt;</span>
+          <input type="text" class="repl-input" id="repl-input" placeholder="Type a command (or click quick pills above): 'help', 'init', 'anchor', 'update'..." spellcheck="false" autocomplete="off">
           <button class="repl-btn-exec" id="btn-repl-exec">[EXECUTE ↵]</button>
         </div>
 

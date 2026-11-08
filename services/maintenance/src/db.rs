@@ -228,15 +228,19 @@ impl MaintenanceDb {
     ) -> Result<()> {
         inventory.validate()?;
         let locator = hex::encode(inventory.set.locator);
-        let exists: bool = self.conn.lock().unwrap().query_row(
-            "SELECT EXISTS(SELECT 1 FROM tracked_vaults WHERE locator_hex=?1)",
-            params![locator],
-            |row| row.get(0),
-        )?;
+        let exists: bool = self
+            .conn
+            .lock()
+            .expect("maintenance db mutex poisoned")
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tracked_vaults WHERE locator_hex=?1)",
+                params![locator],
+                |row| row.get(0),
+            )?;
         if !exists {
             self.register_vault(&locator, None)?;
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("maintenance db mutex poisoned");
         conn.execute("INSERT INTO maintenance_inventory (locator_hex, inventory_json) VALUES (?1, ?2) ON CONFLICT(locator_hex) DO UPDATE SET inventory_json=excluded.inventory_json",
             params![locator, serde_json::to_string(inventory)?])?;
         conn.execute(
@@ -253,7 +257,7 @@ impl MaintenanceDb {
         let json: Option<String> = self
             .conn
             .lock()
-            .unwrap()
+            .expect("maintenance db mutex poisoned")
             .query_row(
                 "SELECT inventory_json FROM maintenance_inventory WHERE locator_hex=?1",
                 params![locator],
@@ -268,7 +272,7 @@ impl MaintenanceDb {
         let due: Option<u64> = self
             .conn
             .lock()
-            .unwrap()
+            .expect("maintenance db mutex poisoned")
             .query_row(
                 "SELECT next_attempt_utc FROM maintenance_jobs WHERE locator_hex=?1",
                 params![locator],
@@ -284,7 +288,7 @@ impl MaintenanceDb {
         interval_secs: u64,
         error: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("maintenance db mutex poisoned");
         let previous: Option<u32> = conn
             .query_row(
                 "SELECT attempts FROM maintenance_jobs WHERE locator_hex=?1",
@@ -313,10 +317,13 @@ impl MaintenanceDb {
 
     pub fn record_unverified(&self, locator: &str, details: &str) -> Result<()> {
         self.record_audit(locator, false, 0, 0, details)?;
-        self.conn.lock().unwrap().execute(
-            "UPDATE tracked_vaults SET last_status='Unverified' WHERE locator_hex=?1",
-            params![locator],
-        )?;
+        self.conn
+            .lock()
+            .expect("maintenance db mutex poisoned")
+            .execute(
+                "UPDATE tracked_vaults SET last_status='Unverified' WHERE locator_hex=?1",
+                params![locator],
+            )?;
         Ok(())
     }
 
@@ -329,7 +336,7 @@ impl MaintenanceDb {
         let lbl = label.unwrap_or("Production Vault");
         let now = Utc::now().timestamp() as u64;
 
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         lock.execute(
             r#"
             INSERT INTO tracked_vaults (locator_hex, label, registered_at_utc, last_status, replica_count)
@@ -343,7 +350,7 @@ impl MaintenanceDb {
     }
 
     pub fn list_vaults(&self) -> Result<Vec<TrackedVault>> {
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         let mut stmt = lock.prepare(
             "SELECT locator_hex, label, registered_at_utc, last_audit_at_utc, last_status, replica_count FROM tracked_vaults ORDER BY registered_at_utc ASC",
         )?;
@@ -378,7 +385,7 @@ impl MaintenanceDb {
         let now = Utc::now().timestamp() as u64;
         let status_str = if healthy { "Healthy" } else { "Degraded" };
 
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         lock.execute(
             r#"
             INSERT INTO audit_history (locator_hex, timestamp_utc, healthy, total_objects, degraded_objects, details_json)
@@ -410,7 +417,7 @@ impl MaintenanceDb {
     ) -> Result<()> {
         let clean_locator = locator_hex.trim().trim_start_matches("0x").to_lowercase();
         let now = Utc::now().timestamp() as u64;
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         lock.execute(
             r#"
             INSERT INTO repair_history (locator_hex, timestamp_utc, objects_repaired, objects_failed, lag_secs)
@@ -434,7 +441,7 @@ impl MaintenanceDb {
         is_healthy: bool,
     ) -> Result<()> {
         let now = Utc::now().timestamp() as u64;
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         lock.execute(
             r#"
             INSERT INTO operator_nodes (endpoint, last_seen_utc, latency_ms, is_healthy)
@@ -451,7 +458,7 @@ impl MaintenanceDb {
     }
 
     pub fn get_fleet_summary(&self) -> Result<FleetSummary> {
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
 
         let total_tracked: i64 =
             lock.query_row("SELECT COUNT(*) FROM tracked_vaults", [], |r| r.get(0))?;
@@ -508,7 +515,7 @@ impl MaintenanceDb {
     }
 
     pub fn list_operator_nodes(&self) -> Result<Vec<OperatorNodeRecord>> {
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         let mut stmt = lock.prepare(
             "SELECT endpoint, last_seen_utc, latency_ms, is_healthy FROM operator_nodes ORDER BY endpoint ASC",
         )?;
@@ -530,7 +537,7 @@ impl MaintenanceDb {
     }
 
     pub fn get_recent_audits(&self, limit: usize) -> Result<Vec<AuditRecord>> {
-        let lock = self.conn.lock().unwrap();
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         let mut stmt = lock.prepare(
             "SELECT id, locator_hex, timestamp_utc, healthy, total_objects, degraded_objects, details_json FROM audit_history ORDER BY timestamp_utc DESC LIMIT ?1",
         )?;

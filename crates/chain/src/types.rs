@@ -139,7 +139,7 @@ impl BlockHeader {
         let mut hasher = Sha256::new();
         hasher.update(&signing);
         if self.version >= 2 {
-            hasher.update(&self.timestamp_ms.to_le_bytes());
+            hasher.update(self.timestamp_ms.to_le_bytes());
         }
         hasher.update((self.signatures.len() as u32).to_le_bytes());
         for sig in &self.signatures {

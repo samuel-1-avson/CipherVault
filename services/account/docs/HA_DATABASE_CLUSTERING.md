@@ -113,3 +113,39 @@ In clustered read-replica configurations:
 1. **Write Consensus:** Every audit insertion must acquire an `IMMEDIATE` transaction on the cluster write leader.
 2. **Replication Guard:** Read replicas maintain an in-memory high-water mark of the latest replicated `audit_event_id`.
 3. **Linearizability Verification:** If a client requests audit verification immediately following a write, the API gateway verifies that `replica.last_tx_id >= client.tx_id`; otherwise, the query is forwarded to the leader.
+
+---
+
+## 5. Decision record (2026-11-07): single-writer SQLite stays, LiteFS is the scale path
+
+**Decision:** the account service keeps exactly one writer (embedded SQLite +
+WAL, `AccountState`). LiteFS is the approved scale-out: it preserves the
+single-writer invariant, so the audit-chain linearizability rule in §4 holds
+unchanged (every `prev_hash` links on the leader; replicas never take writes —
+`HaDatabaseStore::execute_write` fails closed with `NotLeader`, and a LiteFS
+node that forgot its role defaults to read-only via `CIPHERVAULT_DB_LEADER`).
+PostgreSQL stays rejected until a sequencer design lands: multi-writer PG
+breaks the hash-chain append invariant and needs an advisory lock or a single
+sequencer, which is a new distributed component, not a migration.
+
+**Measured evidence (this repo, debug build, 8 workers):**
+- Write gate `scoped_write_gate` (new, `#[ignore]` soak lane): 64 secret
+  creates, 281 writes/s, p50 24 ms / p99 78 ms, 0 failures,
+  0 SQLite busy retries. Budget: p99 ≤ 250 ms.
+- Read gate `scoped_load_gate`: 0 failures, 0 busy retries under paced load.
+- Both gates assert `sqlite_busy_retries() == 0`: contention surfaces as
+  global-mutex wait (logged past 10 ms for canary visibility), never as
+  `SQLITE_BUSY`. If either gate ever reports busy retries, the single-writer
+  assumption is violated — treat as P0, not a tuning knob.
+
+**Deployment knobs** (`HaDatabaseStore::open_selected`, unit-tested):
+- `CIPHERVAULT_DB_TOPOLOGY=sqlite` (default) — standalone, always leader.
+- `CIPHERVAULT_DB_TOPOLOGY=litefs` + `CIPHERVAULT_DB_LEADER=1|true|yes|on` —
+  LiteFS node; unset/anything else forces read-only replica behavior.
+- `CIPHERVAULT_DB_TOPOLOGY=postgres` — hard `Config` error naming this doc.
+  Unknown values are rejected the same way.
+
+**Benchmarks not yet run (require fleet hardware):** LiteFS primary + 2
+replicas and PG + PgBouncer under `tests/capacity_harness.cjs` (240 requests,
+concurrency 1/8/32/64, p99 2 s). The decision above holds for current scale;
+re-open it with measured fleet numbers, not before.

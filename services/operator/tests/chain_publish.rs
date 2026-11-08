@@ -2,8 +2,8 @@
 // replica with the same admission rule as gossip, then relays to the swarm.
 use axum::{extract::State, Json};
 use ciphervault_chain::{
-    ChainSyncEnvelope, ChainSyncMsg, CommitmentTx, ConsensusSigner, ProposalMsg, SovereignLedger,
-    ValidatorSet, SOVEREIGN_CHAIN_ID_STR,
+    ChainSyncEnvelope, ChainSyncMsg, CommitmentTx, ConsensusSigner, SovereignLedger, ValidatorSet,
+    SOVEREIGN_CHAIN_ID_STR,
 };
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_operator::handlers::post_chain_publish;
@@ -109,7 +109,7 @@ async fn publish_rejects_tampered_and_foreign_envelopes() {
 
     // Foreign chain id (same fleet keys, different chain): 400.
     let refs: Vec<&ConsensusSigner> = signers.iter().collect();
-    let mut foreign =
+    let foreign =
         SovereignLedger::create_genesis("foreign-chain-9", set.clone(), &refs, 2_000, None)
             .unwrap();
     let client = ConsensusSigner::generate();

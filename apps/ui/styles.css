@@ -6926,3 +6926,135 @@ select.form-input option,
 .cv-background-chain { background: var(--chain); }
 .cv-color-bone { color: var(--bone); }
 .cv-background-bone { background: var(--bone); }
+
+/* --- CLI & Binary Downloads Modal (v1.0.29) --- */
+.cli-downloads-modal-card {
+  max-width: 780px;
+  width: 94vw;
+}
+.cli-modal-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cli-install-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.cli-install-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.cli-install-os {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--fog);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cli-downloads-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.cli-download-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--edge);
+  border: 1px solid var(--line);
+  background: var(--bg0);
+  color: var(--bone);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.cli-download-card:hover {
+  border-color: var(--signal);
+  background: var(--bg2);
+}
+.cli-dl-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.cli-dl-badge {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: var(--edge);
+  background: var(--signal-faint);
+  color: var(--signal);
+  border: 1px solid var(--signal-dim);
+}
+.cli-dl-meta {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--ash);
+}
+.cli-dl-name {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--bone);
+}
+.cli-dl-desc {
+  font-size: 0.75rem;
+  color: var(--fog);
+  line-height: 1.4;
+}
+.cli-dl-action {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--signal);
+  margin-top: 4px;
+}
+.cli-cmd-ref-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.cli-cmd-ref-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--edge);
+  border: 1px solid var(--line);
+  background: var(--bg0);
+}
+.cli-cmd-ref-item code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--signal);
+}
+.cli-cmd-ref-item span {
+  font-size: 0.72rem;
+  color: var(--fog);
+}
+.recovery-binary-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.btn-inline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--signal);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

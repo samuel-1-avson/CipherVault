@@ -1196,7 +1196,7 @@ const PIPELINE_STAGES = {
   1: {
     kicker: 'STAGE [01] DEEP-DIVE SPECIFICATION',
     heading: 'Developer Working Tree Secret Enrollment',
-    mechanics: 'CipherVault tracks confidential files out-of-band from Git. During enrollment via `ciphervault track .env`, the path is registered in the local SQLite WAL ledger (`track_file`), and the path is appended to `.gitignore` (skip with `--no-gitignore`) so `git add .` can never stage it. Content digests bind at snapshot time, not at enrollment.',
+    mechanics: 'CipherVault tracks confidential files out-of-band from Git. During enrollment via `cv track .env`, the path is registered in the local SQLite WAL ledger (`track_file`), and the path is appended to `.gitignore` (skip with `--no-gitignore`) so `git add .` can never stage it. Content digests bind at snapshot time, not at enrollment.',
     security: 'Guarantees zero accidental staging into Git commits. Host OS keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R, with Argon2id-wrapped machine-entropy fallback off-Windows.',
     statVal: 'Out-of-band',
     statDesc: 'SQLite WAL ledger + `.gitignore` guard (skip with `--no-gitignore`)',
@@ -1264,7 +1264,7 @@ pub fn compute_pos_proof(cid: &[u8; 32], nonce: &[u8; 32], data: &[u8]) -> [u8; 
     kicker: 'STAGE [06] DEEP-DIVE SPECIFICATION',
     heading: 'CipherChain Sovereign Anchor (Zero-Gas PoA Ledger)',
     mechanics: 'Snapshot commitments (SHA-256 of salt || head_cid) are anchored to the native CipherChain Proof-of-Authority ledger (chain-id 777777, ciphervault-sovereign-1). Operators endorse each block with Ed25519 quorum signatures (2N/3+1); inclusion is proven by Merkle audit paths against the block tx_root, verifiable offline in sub-milliseconds.',
-    security: 'Zero plaintext, zero filenames, and zero user keys are ever revealed on-chain. Quorum-signed blocks prevent history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify with ciphervault verify-anchor.',
+    security: 'Zero plaintext, zero filenames, and zero user keys are ever revealed on-chain. Quorum-signed blocks prevent history rewriting, operator rollback attacks, or retroactive tampering. Any developer can verify with cv verify-anchor.',
     statVal: 'Zero-gas PoA',
     statDesc: 'Chain 777777 · quorum 2N/3+1 · Merkle proofs',
     code: `// crates/chain — sovereign anchor (no EVM, no gas)
@@ -1273,7 +1273,7 @@ commitment = SHA-256("CIPHERVAULT-ANCHOR-V1" || salt || head_cid)
 //   prev_block_hash, state_root, tx_root, timestamp, proposer }
 // quorum = Ed25519 validator signatures (2N/3 + 1)
 // proof  = Merkle inclusion path -> header.tx_root
-// verify = ciphervault verify-anchor  // <1ms, offline-capable`
+// verify = cv verify-anchor  // <1ms, offline-capable`
   }
 };
 
@@ -1628,7 +1628,7 @@ function initPaperKit() {
   if (btnCopy) {
     let toastTimer = null;
     btnCopy.addEventListener('click', () => {
-      const cmd = 'ciphervault recovery test --kit <PATH> --to <TEST_DIR>';
+      const cmd = 'cv recovery test --kit <PATH> --to <TEST_DIR>';
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(cmd).catch(() => {});
       }
@@ -1672,7 +1672,7 @@ function initPassphraseKeyBackup() {
       locatorPreview.textContent = `sha256:${locatorHex}`;
     }
     if (restoreCmd) {
-      restoreCmd.textContent = `ciphervault recovery key-restore --locator ${locatorHex} --output recovery-kit.txt`;
+      restoreCmd.textContent = `cv recovery key-restore --locator ${locatorHex} --output recovery-kit.txt`;
     }
   };
 
@@ -1816,23 +1816,25 @@ const REPL_RESPONSES = {
   help: [
     'CipherVault console (v1.0.29) — real CLI syntax, live where a browser can measure:',
     '  Short alias: cv and ciphervault are the same tool — examples below use cv.',
-    '  Scoped secrets & enterprise management (NEW v1.0.28):',
+    '  Scoped secrets & enterprise management (v1.0.29):',
     '    project <list|show|use> - List and inspect scoped secret projects',
     '    secret <get|set|rotate> - Granular per-secret CRUD with envelope encryption',
     '    migrate <plan|apply...> - 7-stage zero-downtime migration from raw vaults',
-    '    repo <link|list>     - Bind VCS repositories to project by immutable ID',
+    '    repo <bind|list>     - Bind VCS repositories to project by immutable ID',
     '    scope <token|create> - Manage cryptographic scope tokens with DPoP binding',
     '    context <show|set>   - Inspect and switch active project/environment context',
     '    mfa <setup|verify>   - Enforced MFA & fresh TOTP session binding',
     '    recovery <key-backup|key-restore> - Passphrase-wrapped vault-key envelope (CVKB1)',
-    '  Local vault commands (run in your terminal; this console shows usage):',
+    '  Local vault & sovereign chain commands (run in your terminal):',
     '    init                 - Initialize local vault & print emergency paper kit',
     '    track <paths...>     - Enroll confidential files into the SQLite WAL ledger',
     '    push [-m msg]        - FastCDC chunk, AEAD encrypt, replicate across quorum',
     '    pull [--dry-run]     - Pull and decrypt the latest snapshot from operators',
     '    diff                 - Compare working secrets against the active snapshot head',
-    '    anchor [--head CID]  - Anchor a salted snapshot commitment to Arbitrum L2',
-    '    verify-anchor        - Verify an on-chain L2 commitment & first-seen block',
+    '    anchor [--head CID]  - Anchor a salted snapshot commitment to CipherChain PoA',
+    '    verify-anchor        - Verify CipherChain quorum signatures & Merkle proof',
+    '    genesis              - Generate deterministic CipherChain genesis.json',
+    '    update [--check]     - Self-update CLI binary with Ed25519 signature verification',
     '    invite <request|approve|combine|verify|join|pubkey> - K-of-N admission (ADR-011)',
     '    recover --kit/--shares --to <DIR> - Clean-machine rebuild (init_vault_at_epoch)',
     '    run -- <cmd...>      - Decrypt secrets into volatile RAM and spawn process',
@@ -1845,7 +1847,7 @@ const REPL_RESPONSES = {
     '    clear                - Clear terminal log drawer'
   ],
   secret: [
-    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.28):',
+    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.29):',
     '  cv secret set <NAME> [--value <VAL>] [--env <ENV>] [--project <PROJ>]',
     '  cv secret get <NAME> [--meta] [--env <ENV>] [--project <PROJ>]',
     '  cv secret list [--tag <TAG>] [--status active] [--env <ENV>]',
@@ -1857,7 +1859,7 @@ const REPL_RESPONSES = {
     '  wraps DEK with project KEK, and appends a tamper-evident entry to audit_chain.'
   ],
   project: [
-    'Scoped project boundary management (v1.0.28):',
+    'Scoped project boundary management (v1.0.29):',
     '  cv project list [--endpoint <URL>] [--token <TOKEN>]',
     '  cv project show <PROJECT_SLUG>',
     '  cv project use <PROJECT_SLUG>',
@@ -1866,14 +1868,14 @@ const REPL_RESPONSES = {
     '  are scoped strictly within their parent project to prevent cross-project disclosure.'
   ],
   scope: [
-    'Cryptographic scope tokens and DPoP authorization (v1.0.28):',
+    'Cryptographic scope tokens and DPoP authorization (v1.0.29):',
     '  cv scope token [--env <ENV>] [--project <PROJ>] [--ttl <SECONDS>]',
     '  What it really does: Issues a signed HMAC scope token (cvst1...) with embedded',
     '  claims (tenant, project, environment, allowed repos). Client HTTP calls attach',
     '  asymmetric DPoP-Lite proofs so stolen tokens cannot be replayed from other hosts.'
   ],
   migrate: [
-    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.28):',
+    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.29):',
     '  cv migrate plan [--vault <DIR>] [--project <PROJ>] [--default-env <ENV>]',
     '  cv migrate apply --migration-id <ID> [--project <PROJ>]',
     '  cv migrate verify --migration-id <ID> [--project <PROJ>]',
@@ -1883,7 +1885,7 @@ const REPL_RESPONSES = {
     '  credential before atomic pointer cutover, and crypto-shreds legacy plaintext.'
   ],
   repo: [
-    'Immutable VCS repository bindings (v1.0.28):',
+    'Immutable VCS repository bindings (v1.0.29):',
     '  cv repo bind --project <PROJ> --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID> --name <ORG/REPO> --url <URL>',
     '  cv repo list [--project <PROJ>]',
     '  What it really does: Binds projects to Git repositories by immutable numeric provider ID',
@@ -1891,7 +1893,7 @@ const REPL_RESPONSES = {
     '  without invalidating scoped secret bindings, verified by signed HMAC-SHA256 webhooks.'
   ],
   context: [
-    'Local developer workspace context pinning (v1.0.28):',
+    'Local developer workspace context pinning (v1.0.29):',
     '  cv context show',
     '  cv context set --project <PROJ> --env <ENV>',
     '  cv context clear',
@@ -1937,30 +1939,48 @@ const REPL_RESPONSES = {
     '  delta estimate for the next push. Values stay masked by default.'
   ],
   anchor: [
-    'Runs on your machine against your vault + an Arbitrum RPC endpoint.',
-    '  cv anchor [--head <CID>] [--rpc <URL>] [--contract <0x..>] [--chain-id <N>]',
-    '                   [--tx-hash <0x..> | --raw-tx <hex> | --auto-relay] [--daemon]',
-    '  Live network today: Arbitrum Sepolia testnet (chain 421614), registry',
-    '  0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5. The CLI defaults to Arbitrum',
-    '  One (42161); mainnet promotion is gated on the external security audit.',
-    '  Verify any real anchor with: ciphervault verify-anchor [--head <CID>] [--rpc <URL>]'
+    'Runs on your machine against your vault + the CipherChain PoA quorum (v1.0.29):',
+    '  cv anchor [--head <CID>] [--rotate-to <PUBKEYS>] [--daemon] [--interval <SECS>]',
+    '  What it really does: computes SHA-256("CIPHERVAULT-ANCHOR-V1" || salt || head_cid)',
+    '  and submits the salted commitment to the native CipherChain Proof-of-Authority ledger',
+    '  (chain-id 777777, ciphervault-sovereign-1) with Ed25519 validator quorum (2N/3 + 1).',
+    '  Verify any real anchor with: cv verify-anchor [--head <CID>]'
   ],
   verify_anchor: [
-    'Runs on your machine against an Arbitrum RPC endpoint.',
-    '  cv verify-anchor [--head <CID>] [--rpc <URL>]',
-    '  What it really does: reads the registry firstSeenBlock for your salted',
-    '  commitment and checks an independent RPC receipt for inclusion + finality.',
-    '  Live registry: 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 on chain 421614',
-    '  (see it on sepolia.arbiscan.io — this console shows no fabricated receipts).'
+    'Runs on your machine against the CipherChain PoA ledger (v1.0.29):',
+    '  cv verify-anchor [--head <CID>]',
+    '  What it really does: fetches the sovereign CipherChain receipt and verifies',
+    '  the Merkle inclusion proof against header.tx_root plus Ed25519 validator',
+    '  quorum signatures (2N/3 + 1) on chain 777777 (ciphervault-sovereign-1).'
+  ],
+  genesis: [
+    'Generate deterministic CipherChain genesis configuration (v1.0.29):',
+    '  cv genesis --validators <PUBKEY1,PUBKEY2,...> [--chain-id ciphervault-sovereign-1] [--output genesis.json]',
+    '  What it really does: builds the canonical Block 0 genesis specification with',
+    '  validator Ed25519 public keys and initial state root for sovereign PoA operators.'
+  ],
+  update: [
+    'Self-update the CipherVault CLI & companion binaries (v1.0.29):',
+    '  cv update [--version <TAG>] [--role <full|dev|node>] [--check]',
+    '  What it really does: queries the latest GitHub release, downloads SHA256SUMS.txt',
+    '  and SHA256SUMS.txt.sig, verifies the Ed25519 release signature (key c34d6bb1a158184d)',
+    '  and SHA-256 archive digest before replacing cv and ciphervault atomically.'
+  ],
+  release: [
+    'Release engineering & cryptographic signing commands (v1.0.29):',
+    '  cv release keygen --out <KEY_PATH>',
+    '  cv release sign --key <KEY_PATH> --file SHA256SUMS.txt',
+    '  cv release verify --file SHA256SUMS.txt --sig SHA256SUMS.txt.sig',
+    '  What it really does: signs and verifies official release checksum manifests using Ed25519.'
   ],
   invite: [
     'Runs fully offline (ADR-011 K-of-N quorum ceremony):',
-    '  Step 1: ciphervault invite request <64-hex-node-pk> [--ttl S] [--out req.json]',
-    '  Step 2: ciphervault invite approve --request req.json --fleet-key-file k.seed [--out a.json]',
-    '  Step 3: ciphervault invite combine --request req.json --approval a1.json [--approval a2.json] [--out ticket.json]',
-    '  Step 4: ciphervault invite verify ticket.json --fleet-keys <k1,k2,...> [--quorum-k K]',
-    '  Step 5: ciphervault invite join ticket.json --node <own-endpoint>  (probation, then liveness)',
-    '  Single-key fleets: `invite pubkey --fleet-key-file k.seed` prints the fleet key.'
+    '  Step 1: cv invite request <64-hex-node-pk> [--ttl S] [--out req.json]',
+    '  Step 2: cv invite approve --request req.json --fleet-key-file k.seed [--out a.json]',
+    '  Step 3: cv invite combine --request req.json --approval a1.json [--approval a2.json] [--out ticket.json]',
+    '  Step 4: cv invite verify ticket.json --fleet-keys <k1,k2,...> [--quorum-k K]',
+    '  Step 5: cv invite join ticket.json --node <own-endpoint>  (probation, then liveness)',
+    '  Single-key fleets: `cv invite pubkey --fleet-key-file k.seed` prints the fleet key.'
   ],
   run: [
     'Runs on your machine inside your vault directory.',
@@ -1983,7 +2003,7 @@ const REPL_RESPONSES = {
     '  CipherVault vs Cloud Secrets : Zero-knowledge client encryption vs Custodial KMS',
     '  CipherVault vs HashiCorp     : 96.15% FastCDC deduplication vs Full-blob storage',
     '  CipherVault vs 1Password     : Zero-disk RAM execution vs Plaintext local .env',
-    '  CipherVault vs SOPS          : Quorum replication & L2 anchor vs Git commit hash only'
+    '  CipherVault vs SOPS          : Quorum replication & CipherChain PoA vs Git commit hash only'
   ],
   recover: [
     'Runs on a clean machine with your offline kit (Recover-then-Rebuild):',
@@ -1993,10 +2013,10 @@ const REPL_RESPONSES = {
     '  1. Validates the kit CRC32, rebuilds vault.db at the epoch (init_vault_at_epoch)',
     '  2. Mints a recovery-signed device certificate at authority generation',
     '  3. Pulls the active head snapshot and decrypts files without manual config',
-    '  Drill it first: ciphervault recovery test --kit <KIT.txt> --to <TEST_DIR>'
+    '  Drill it first: cv recovery test --kit <KIT.txt> --to <TEST_DIR>'
   ],
   recovery: [
-    'Sovereign clean-machine recovery & passphrase key backup (v1.0.28):',
+    'Sovereign clean-machine recovery & passphrase key backup (v1.0.29):',
     '  cv recovery key-backup --kit <KIT.txt> [--replicas N]',
     '  cv recovery key-restore --locator <HEX_SHA256> [--output <PATH>]',
     '  cv recovery test --kit <KIT.txt> --to <TEST_DIR>',
@@ -2006,11 +2026,11 @@ const REPL_RESPONSES = {
     '  Zero server unwrap oracle — restore on any clean machine with only your memorable passphrase.'
   ],
   mfa: [
-    'Enforced Multi-Factor Authentication & Session Binding (v1.0.28):',
+    'Enforced Multi-Factor Authentication & Session Binding (v1.0.29):',
     '  Managed account-side: enroll a device/passkey plus a TOTP authenticator,',
     '  then approve scoped sessions with a fresh TOTP step-up (strict attempt limits).',
     '  What it really does: Enforces RFC 6238 TOTP step-up authentication after passkey sign-in.',
-    '  Drills stay honest: verify clean-machine rebuilds with ciphervault audit --recovery-drill.',
+    '  Drills stay honest: verify clean-machine rebuilds with cv audit --recovery-drill.',
     '  Binds dynamic session scope tokens (cvst1...) with tamper-evident audit chain logging',
     '  and single-use emergency recovery codes. No CLI flags — enforced by the account service.'
   ],
@@ -2045,8 +2065,8 @@ async function cvReplLiveProbe(verbose) {
   }
   lines.push(`Fleet reachability from your network: ${answered}/4 endpoints answered.`);
   if (verbose) {
-    lines.push('Settlement      : Arbitrum Sepolia testnet, chain 421614 (mainnet target: Arbitrum One)');
-    lines.push('Registry        : 0xa26E70293eb0007c8059FAe9c03649Cf24F63Db5 (CipherVaultRegistry.sol)');
+    lines.push('Settlement      : CipherChain Sovereign PoA Ledger (chain 777777, ciphervault-sovereign-1)');
+    lines.push('Consensus       : Ed25519 Validator Quorum (2N/3 + 1) + Merkle Inclusion Proofs');
   }
   lines.push('Note: browsers observe reachability + latency only; versions and ready-state live in the explorer.');
   return lines;
@@ -2101,6 +2121,8 @@ function initInteractiveRepl() {
     let clean = raw.toLowerCase().trim();
     if (clean.startsWith('ciphervault ')) {
       clean = clean.substring('ciphervault '.length).trim();
+    } else if (clean.startsWith('cv ')) {
+      clean = clean.substring('cv '.length).trim();
     }
     const lower = clean.split(' ')[0].replace(/-/g, '_');
 
@@ -2160,6 +2182,9 @@ function initInteractiveRepl() {
       else if (lower.startsWith('mfa') || lower.startsWith('totp')) responseLines = REPL_RESPONSES['mfa'];
       else if (lower.startsWith('anch')) responseLines = REPL_RESPONSES['anchor'];
       else if (lower.startsWith('ver')) responseLines = REPL_RESPONSES['verify_anchor'];
+      else if (lower.startsWith('gen')) responseLines = REPL_RESPONSES['genesis'];
+      else if (lower.startsWith('upd')) responseLines = REPL_RESPONSES['update'];
+      else if (lower.startsWith('rel')) responseLines = REPL_RESPONSES['release'];
       else if (lower.startsWith('inv')) responseLines = REPL_RESPONSES['invite'];
       else if (lower.startsWith('tui')) responseLines = REPL_RESPONSES['help'];
       else if (lower.startsWith('push')) responseLines = REPL_RESPONSES['push'];
@@ -2232,7 +2257,7 @@ const INSTALL_SNIPPETS = {
   cargo: `# Build and install standalone CLI directly from Git source (v1.0.29)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
   brew: `# Install CipherVault on macOS or Linux via Homebrew (Release v1.0.28)\nbrew tap samuel-1-avson/ciphervault https://github.com/samuel-1-avson/CipherVault\nbrew install ciphervault`,
   scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.29)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
-  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.28)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
+  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.29)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
 function initInstallSnippets() {

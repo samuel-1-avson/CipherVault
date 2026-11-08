@@ -36,6 +36,25 @@ jobs:
           fi
           cargo audit --deny unsound --deny unmaintained --ignore RUSTSEC-2024-0436
 
+  supply-chain-licenses:
+    name: License, ban and advisory audit (cargo-deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+
+      - name: Check licenses, bans and sources (offline-capable)
+        run: cargo deny check licenses bans sources
+
+      - name: Check advisories
+        run: cargo deny check advisories
+
   repository-scan:
     name: Repository vulnerability and secret scan
     runs-on: ubuntu-24.04
@@ -79,3 +98,18 @@ jobs:
 
       - name: Verify Local Guardian Secret Leak Prevention
         run: cargo run -p ciphervault-cli --bin ciphervault -- hook check --deep
+
+  prod-hygiene:
+    name: Production panic-hygiene gate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Refuse production .unwrap()
+        run: python scripts/security/check_no_prod_unwrap.py

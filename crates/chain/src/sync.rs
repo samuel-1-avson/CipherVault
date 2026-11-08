@@ -164,10 +164,13 @@ pub enum VoteOutcome {
 /// Quorum vote accumulator keyed by (height, proposal hash). Each voter
 /// contributes its endorsement plus its observed timestamp; the median of
 /// the observed samples becomes the committed time for version-2 blocks.
+type VoteKey = (u64, [u8; 32]);
+type VoterSamples = HashMap<[u8; 32], (BlockSignature, u64)>;
+
 #[derive(Debug)]
 pub struct VoteCollector {
     validator_set: ValidatorSet,
-    votes: HashMap<(u64, [u8; 32]), HashMap<[u8; 32], (BlockSignature, u64)>>,
+    votes: HashMap<VoteKey, VoterSamples>,
     equivocations: Vec<Equivocation>,
     certified: HashSet<(u64, [u8; 32])>,
 }
@@ -974,7 +977,7 @@ mod tests {
 
     #[test]
     fn test_rotation_rejects_malformed_payloads() {
-        let (signers, _set, mut hubs) = setup(3);
+        let (signers, _set, hubs) = setup(3);
         let client = ConsensusSigner::generate();
 
         // Empty rotation set.
@@ -1300,7 +1303,7 @@ mod tests {
         let mut ledger =
             SovereignLedger::create_genesis(CHAIN_ID, set.clone(), &refs, 1_000, None).unwrap();
         for n in 1..=blocks {
-            let tx = client_tx(&client, n as u8, n as u8, n);
+            let tx = client_tx(client, n as u8, n as u8, n);
             let mut block = ledger
                 .propose_block(&signers[0], vec![tx], 1_000 + n * 1_000, None)
                 .unwrap();

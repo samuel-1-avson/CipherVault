@@ -39,6 +39,39 @@ pub enum ClusterTopology {
     PostgresCluster,
 }
 
+impl ClusterTopology {
+    /// Select topology from `CIPHERVAULT_DB_TOPOLOGY` (`sqlite` default,
+    /// `litefs`, `postgres`). Unknown values fail closed.
+    pub fn from_env() -> Result<Self, HaDatabaseError> {
+        match std::env::var("CIPHERVAULT_DB_TOPOLOGY")
+            .unwrap_or_else(|_| "sqlite".into())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "" | "sqlite" | "sqlite-local" => Ok(ClusterTopology::SqliteLocal),
+            "litefs" | "litefs-distributed" => Ok(ClusterTopology::LiteFsDistributed),
+            "postgres" | "postgres-cluster" => Ok(ClusterTopology::PostgresCluster),
+            other => Err(HaDatabaseError::Config(format!(
+                "unknown CIPHERVAULT_DB_TOPOLOGY '{other}': expected 'sqlite', 'litefs' or 'postgres'"
+            ))),
+        }
+    }
+
+    /// Leader flag from `CIPHERVAULT_DB_LEADER` (`1/true/yes/on`).
+    /// LiteFS replicas default to read-only: a node that forgot its role
+    /// must not take writes.
+    pub fn leader_from_env(default: bool) -> bool {
+        match std::env::var("CIPHERVAULT_DB_LEADER") {
+            Ok(raw) => matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => default,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClusterHealth {
     pub healthy: bool,
@@ -113,6 +146,24 @@ impl HaDatabaseStore {
             active_replicas: replicas_count,
             connection: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Open the topology selected by the environment (`from_env`).
+    /// Single-node SQLite always leads; LiteFS takes its role from
+    /// `CIPHERVAULT_DB_LEADER` (default read-only). PostgreSQL has no
+    /// backend yet: requesting it is a `Config` error, never a silent
+    /// fallback — the audit-chain sequencer design must land first.
+    pub fn open_selected(path: impl AsRef<Path>) -> Result<Self, HaDatabaseError> {
+        match ClusterTopology::from_env()? {
+            ClusterTopology::SqliteLocal => Self::open_local(path),
+            ClusterTopology::LiteFsDistributed => {
+                let leader = ClusterTopology::leader_from_env(false);
+                Self::connect_litefs(path, leader, 1)
+            }
+            ClusterTopology::PostgresCluster => Err(HaDatabaseError::Config(
+                "PostgresCluster backend is not implemented: stay on single-writer SQLite (or LiteFS) until the sequencer design in HA_DATABASE_CLUSTERING.md lands".into(),
+            )),
+        }
     }
 
     pub fn db_path(&self) -> &Path {
@@ -266,5 +317,64 @@ mod tests {
         let health = store.check_health();
         assert!(!health.healthy);
         assert_eq!(health.replication_lag_ms, 8000);
+    }
+
+    #[test]
+    fn test_topology_from_env_selection() {
+        // Serial env mutation: keep every case in one test so parallel
+        // runners cannot interleave values.
+        let prev_topology = std::env::var("CIPHERVAULT_DB_TOPOLOGY").ok();
+        let prev_leader = std::env::var("CIPHERVAULT_DB_LEADER").ok();
+
+        std::env::remove_var("CIPHERVAULT_DB_TOPOLOGY");
+        std::env::remove_var("CIPHERVAULT_DB_LEADER");
+        assert_eq!(
+            ClusterTopology::from_env().unwrap(),
+            ClusterTopology::SqliteLocal
+        );
+        assert!(ClusterTopology::leader_from_env(true));
+        assert!(!ClusterTopology::leader_from_env(false));
+
+        std::env::set_var("CIPHERVAULT_DB_TOPOLOGY", "litefs");
+        assert_eq!(
+            ClusterTopology::from_env().unwrap(),
+            ClusterTopology::LiteFsDistributed
+        );
+        // LiteFS forgetful node fails closed to read-only.
+        assert!(!ClusterTopology::leader_from_env(false));
+        std::env::set_var("CIPHERVAULT_DB_LEADER", "true");
+        assert!(ClusterTopology::leader_from_env(false));
+
+        std::env::set_var("CIPHERVAULT_DB_TOPOLOGY", "postgres");
+        assert_eq!(
+            ClusterTopology::from_env().unwrap(),
+            ClusterTopology::PostgresCluster
+        );
+
+        std::env::set_var("CIPHERVAULT_DB_TOPOLOGY", "cockroach");
+        assert!(matches!(
+            ClusterTopology::from_env(),
+            Err(HaDatabaseError::Config(_))
+        ));
+
+        // open_selected honors the environment end to end.
+        std::env::set_var("CIPHERVAULT_DB_TOPOLOGY", "sqlite");
+        let dir = std::env::temp_dir().join(format!("cv-ha-env-{}.db", rand::random::<u64>()));
+        let local = HaDatabaseStore::open_selected(&dir).unwrap();
+        assert!(local.is_leader());
+        let _ = std::fs::remove_file(&dir);
+
+        std::env::set_var("CIPHERVAULT_DB_TOPOLOGY", "postgres");
+        let err = HaDatabaseStore::open_selected(":memory:");
+        assert!(matches!(err, Err(HaDatabaseError::Config(_))));
+
+        match prev_topology {
+            Some(v) => std::env::set_var("CIPHERVAULT_DB_TOPOLOGY", v),
+            None => std::env::remove_var("CIPHERVAULT_DB_TOPOLOGY"),
+        }
+        match prev_leader {
+            Some(v) => std::env::set_var("CIPHERVAULT_DB_LEADER", v),
+            None => std::env::remove_var("CIPHERVAULT_DB_LEADER"),
+        }
     }
 }

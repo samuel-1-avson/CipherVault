@@ -666,7 +666,7 @@ impl PcscHardwareToken {
 
     /// Verifies the card PIN (standard default '123456' for testing or user-provided).
     pub fn verify_pin(&self, pin: &[u8]) -> Result<(), CryptoError> {
-        let guard = self.transport.lock().unwrap();
+        let guard = self.transport.lock().expect("piv transport mutex poisoned");
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token transport is disconnected".into())
         })?;
@@ -707,7 +707,7 @@ impl PcscHardwareToken {
 
     /// Reads slot metadata and public key bytes via YubiKey metadata command.
     fn query_slot_metadata(&self, slot_byte: u8) -> Result<(u8, Vec<u8>, u8), CryptoError> {
-        let guard = self.transport.lock().unwrap();
+        let guard = self.transport.lock().expect("piv transport mutex poisoned");
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token transport is disconnected".into())
         })?;
@@ -805,7 +805,7 @@ impl PcscHardwareToken {
 
 impl HardwareSecurityModule for PcscHardwareToken {
     fn is_connected(&self) -> bool {
-        let guard = self.transport.lock().unwrap();
+        let guard = self.transport.lock().expect("piv transport mutex poisoned");
         guard.is_some()
     }
 
@@ -818,12 +818,18 @@ impl HardwareSecurityModule for PcscHardwareToken {
         };
 
         if slot == HsmSlot::DigitalSignature {
-            let cache = self.cached_9c_pk.lock().unwrap();
+            let cache = self
+                .cached_9c_pk
+                .lock()
+                .expect("piv 9c cache mutex poisoned");
             if let Some(pk) = *cache {
                 return Ok(pk.to_vec());
             }
         } else if slot == HsmSlot::KeyManagement {
-            let cache = self.cached_9d_pk.lock().unwrap();
+            let cache = self
+                .cached_9d_pk
+                .lock()
+                .expect("piv 9d cache mutex poisoned");
             if let Some(pk) = *cache {
                 return Ok(pk.to_vec());
             }
@@ -834,9 +840,15 @@ impl HardwareSecurityModule for PcscHardwareToken {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&pk);
             if slot == HsmSlot::DigitalSignature {
-                *self.cached_9c_pk.lock().unwrap() = Some(arr);
+                *self
+                    .cached_9c_pk
+                    .lock()
+                    .expect("piv 9c cache mutex poisoned") = Some(arr);
             } else if slot == HsmSlot::KeyManagement {
-                *self.cached_9d_pk.lock().unwrap() = Some(arr);
+                *self
+                    .cached_9d_pk
+                    .lock()
+                    .expect("piv 9d cache mutex poisoned") = Some(arr);
             }
         }
 
@@ -907,7 +919,7 @@ impl HardwareSecurityModule for PcscHardwareToken {
         payload.push(b':');
         payload.extend_from_slice(message);
 
-        let guard = self.transport.lock().unwrap();
+        let guard = self.transport.lock().expect("piv transport mutex poisoned");
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token is not connected".into())
         })?;
@@ -959,7 +971,7 @@ impl HardwareSecurityModule for PcscHardwareToken {
             )));
         }
 
-        let guard = self.transport.lock().unwrap();
+        let guard = self.transport.lock().expect("piv transport mutex poisoned");
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token is not connected".into())
         })?;
@@ -1168,5 +1180,23 @@ mod tests {
         // Probe with a nonexistent reader filter returns Ok(None)
         let specific = probe_with_reader(Some("NonExistentVirtualReader12345")).unwrap();
         assert!(specific.is_none());
+    }
+
+    /// Manual hardware lane: requires a physical PIV token on a real reader.
+    /// CI never runs this (`#[ignore]`); run locally with a token attached:
+    /// `cargo test -p ciphervault-crypto --lib -- --ignored hardware_token`.
+    #[test]
+    #[ignore = "needs physical PIV hardware (e.g. YubiKey); run manually with a token attached"]
+    fn hardware_token_probe_and_slots() {
+        let readers = list_readers().expect("PC/SC service must be reachable for hardware lane");
+        assert!(
+            !readers.is_empty(),
+            "no smartcard readers: attach a PIV token and retry"
+        );
+        let tokens = probe_all().expect("PIV probe must succeed with a reader present");
+        assert!(
+            !tokens.is_empty(),
+            "no PIV applet answered: insert a PIV token and retry"
+        );
     }
 }

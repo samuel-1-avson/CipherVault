@@ -628,7 +628,10 @@ pub fn decrypt_snapshot(
                             "Invalid v2 chunk header or domain key".into(),
                         ));
                     }
-                    let opaque_id: [u8; 32] = chunk.file_version_id.as_slice().try_into().unwrap();
+                    let opaque_id: [u8; 32] =
+                        chunk.file_version_id.as_slice().try_into().map_err(|_| {
+                            SnapshotError::InvalidInput("invalid v2 file_version_id length".into())
+                        })?;
                     let (key, nonce) =
                         derive_v2_chunk_key_nonce(&domain_key, vault_id, epoch, &opaque_id);
                     if chunk.payload.get(..24) != Some(nonce.as_slice()) {

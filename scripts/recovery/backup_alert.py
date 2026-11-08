@@ -272,7 +272,14 @@ def run_alert(
                 print(f"PagerDuty event sent: {resp}")
 
     if not destinations_found:
+        sys.stderr.write(
+            f"WARNING: No alert destinations configured; "
+            f"[{status.upper()}] event for '{service}' was NOT delivered anywhere.\n"
+        )
         print(f"Notice: No alert destinations configured. Event: [{status.upper()}] {message}")
+        # A failure nobody can hear is a silent backup gap: fail loudly so
+        # systemd/cron records it instead of exiting 0.
+        return False
 
     return all_ok
 

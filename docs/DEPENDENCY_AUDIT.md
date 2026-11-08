@@ -51,3 +51,27 @@ cargo tree --target all -i paste
 
 The last local audit used the RustSec database updated on 29 September 2026.
 An audit is a point-in-time check; release CI must refresh the database.
+
+## License policy and supply-chain gates (`deny.toml`)
+
+`cargo deny` enforces the workspace license policy in CI
+(`.github/workflows/security.yml`, `supply-chain-licenses` job):
+
+```sh
+cargo deny check licenses bans sources   # offline-capable
+cargo deny check advisories               # needs network for the RustSec DB
+```
+
+- Allowed: MIT, Apache-2.0, ISC, BSD-2/3-Clause, Unlicense, Zlib, CC0-1.0,
+  MIT-0, BSL-1.0, Unicode-3.0. Anything else (including strong copyleft)
+  fails the build unless a per-crate exception with justification is added.
+- Narrow exceptions (2026-11-07): `colored` and `attohttpc` (MPL-2.0, weak
+  file-level copyleft, used unmodified) and `webpki-roots` (CDLA-Permissive-2.0
+  root-store data). Revisit if any of them is forked or statically patched.
+- `advisories` duplicates the `cargo audit` gate (including the RUSTSEC-2024-0436
+  exception above); `bans` keeps duplicate-version sprawl visible.
+- `libp2p` stays pinned at 0.57 with the minimal feature set in the workspace
+  root (`tcp, quic, dns, noise, yamux, identify, kad, gossipsub,
+  request-response, cbor, mdns, ping, relay, dcutr, autonat, rendezvous,
+  metrics, macros, ed25519`). Do not enable default features or add protocols
+  without updating this doc and re-running both audit gates.

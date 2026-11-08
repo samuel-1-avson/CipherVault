@@ -1,10 +1,10 @@
+use crate::diff::{ChangeType, DiffReport};
 use ciphervault_crypto::hsm::{
     list_pcsc_readers, probe_all as probe_hw_tokens, HardwareSecurityModule, HsmSlot,
     PcscHardwareToken,
 };
 use ciphervault_local_store::AccountStore;
 use ciphervault_snapshot::fastcdc::{config_from_env, fastcdc_chunk, FastCdcConfig, GEAR_MATRIX};
-use crate::diff::{ChangeType, DiffReport};
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -444,7 +444,10 @@ pub fn diff_display_lines(report: &DiffReport) -> Vec<TuiDiffLine> {
                     };
                     Some((format!("- {body}"), DiffLineLevel::Removed))
                 }
-                ChangeType::Modified { old_value, new_value } => {
+                ChangeType::Modified {
+                    old_value,
+                    new_value,
+                } => {
                     let body = if file.is_dotenv {
                         format!("{}: {} -> {}", entry.key, old_value, new_value)
                     } else {
@@ -1021,9 +1024,7 @@ impl TuiApp {
             Some(ConfirmAction::Anchor) => self.spawn_anchor(),
             Some(ConfirmAction::Untrack { path }) => self.untrack_path(&path),
             Some(ConfirmAction::Pull) => self.spawn_pull(false),
-            Some(ConfirmAction::Restore { snapshot_id_hex }) => {
-                self.spawn_restore(snapshot_id_hex)
-            }
+            Some(ConfirmAction::Restore { snapshot_id_hex }) => self.spawn_restore(snapshot_id_hex),
             Some(ConfirmAction::Logout) => self.logout_local_account(),
             None => {}
         }
@@ -1070,7 +1071,10 @@ impl TuiApp {
     /// typo from signing the operator out mid-shift.
     pub fn request_logout_confirm(&mut self) {
         if !self.account_authenticated {
-            self.set_status("No active local account session to sign out.", StatusLevel::Info);
+            self.set_status(
+                "No active local account session to sign out.",
+                StatusLevel::Info,
+            );
             return;
         }
         self.confirm_action = Some(ConfirmAction::Logout);
@@ -1099,8 +1103,7 @@ impl TuiApp {
             self.set_status("No snapshots to restore.", StatusLevel::Warning);
             return;
         }
-        if self.active_tab != TuiTab::Snapshots
-            || self.snapshot_table_index >= self.snapshots.len()
+        if self.active_tab != TuiTab::Snapshots || self.snapshot_table_index >= self.snapshots.len()
         {
             self.set_status(
                 "Switch to the Snapshots tab to restore a snapshot.",
@@ -1108,7 +1111,9 @@ impl TuiApp {
             );
             return;
         }
-        let snapshot_id_hex = self.snapshots[self.snapshot_table_index].snapshot_id_hex.clone();
+        let snapshot_id_hex = self.snapshots[self.snapshot_table_index]
+            .snapshot_id_hex
+            .clone();
         self.confirm_action = Some(ConfirmAction::Restore { snapshot_id_hex });
     }
 
@@ -1150,9 +1155,7 @@ impl TuiApp {
         }
         let (a, b, filter, title) = match self.active_tab {
             TuiTab::Snapshots => {
-                if self.snapshots.is_empty()
-                    || self.snapshot_table_index >= self.snapshots.len()
-                {
+                if self.snapshots.is_empty() || self.snapshot_table_index >= self.snapshots.len() {
                     self.set_status("No snapshots to diff.", StatusLevel::Warning);
                     return;
                 }
@@ -1162,7 +1165,7 @@ impl TuiApp {
                         Some("head".to_string()),
                         Some("working".to_string()),
                         None,
-                        format!("head vs working tree"),
+                        "head vs working tree".to_string(),
                     )
                 } else {
                     (
@@ -1171,7 +1174,11 @@ impl TuiApp {
                         None,
                         format!(
                             "snapshot {} vs head",
-                            selected.snapshot_id_hex.chars().take(12).collect::<String>()
+                            selected
+                                .snapshot_id_hex
+                                .chars()
+                                .take(12)
+                                .collect::<String>()
                         ),
                     )
                 }
@@ -1226,10 +1233,14 @@ impl TuiApp {
             })
             .await
             .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())));
-            TuiTaskOut::DiffFinished(result.map(|report| TuiDiffOutput {
-                title,
-                lines: diff_display_lines(&report),
-            }).map_err(|e| e.to_string()))
+            TuiTaskOut::DiffFinished(
+                result
+                    .map(|report| TuiDiffOutput {
+                        title,
+                        lines: diff_display_lines(&report),
+                    })
+                    .map_err(|e| e.to_string()),
+            )
         });
     }
 
@@ -2015,8 +2026,9 @@ impl TuiApp {
                         self.set_status(message, StatusLevel::Success);
                         self.refresh_local_state();
                     }
-                    Err(error) => self
-                        .set_status(format!("Pull failed: {error}"), StatusLevel::Error),
+                    Err(error) => {
+                        self.set_status(format!("Pull failed: {error}"), StatusLevel::Error)
+                    }
                 }
             }
             TuiTaskOut::RestoreFinished(result) => {
@@ -2027,8 +2039,9 @@ impl TuiApp {
                         self.set_status(message, StatusLevel::Success);
                         self.refresh_local_state();
                     }
-                    Err(error) => self
-                        .set_status(format!("Restore failed: {error}"), StatusLevel::Error),
+                    Err(error) => {
+                        self.set_status(format!("Restore failed: {error}"), StatusLevel::Error)
+                    }
                 }
             }
             TuiTaskOut::DiffFinished(result) => {
@@ -2041,8 +2054,9 @@ impl TuiApp {
                         self.show_diff_modal = true;
                         self.clamp_table_indices();
                     }
-                    Err(error) => self
-                        .set_status(format!("Diff failed: {error}"), StatusLevel::Error),
+                    Err(error) => {
+                        self.set_status(format!("Diff failed: {error}"), StatusLevel::Error)
+                    }
                 }
             }
             TuiTaskOut::UpdateChecked(outcome) => {
@@ -2184,8 +2198,7 @@ pub(crate) async fn execute_quick_anchor() -> anyhow::Result<String> {
     };
     let head_hex = hex::encode(&head_record.snapshot_id);
 
-    match crate::cmd_anchor(Some(head_hex)).await
-    {
+    match crate::cmd_anchor(Some(head_hex), None).await {
         Ok(_) => Ok("✓ Checkpoint anchored to CipherChain sovereign ledger.".into()),
         Err(e) => {
             // Alternate display renders the full anyhow chain (outer
@@ -2214,9 +2227,18 @@ pub(crate) async fn execute_quick_pull(dry_run: bool) -> anyhow::Result<String> 
 /// changes are overwritten, which is why the TUI gates this behind a
 /// confirmation modal telling the user to push first.
 pub(crate) fn execute_quick_restore(snapshot_id_hex: String) -> anyhow::Result<String> {
-    crate::cmd_restore(Some(snapshot_id_hex.clone()), None, false, None, None, false)?;
+    crate::cmd_restore(
+        Some(snapshot_id_hex.clone()),
+        None,
+        false,
+        None,
+        None,
+        false,
+    )?;
     let short: String = snapshot_id_hex.chars().take(12).collect();
-    Ok(format!("✓ Snapshot {short}... restored into working directory."))
+    Ok(format!(
+        "✓ Snapshot {short}... restored into working directory."
+    ))
 }
 
 fn explorer_json_str(value: &serde_json::Value, key: &str, fallback: &str) -> String {
@@ -3342,7 +3364,9 @@ mod tests {
         app.account_authenticated = false;
         super::super::events::handle_key_event(&mut app, o).await;
         assert!(app.confirm_action.is_none());
-        assert!(app.status_message.contains("No active local account session"));
+        assert!(app
+            .status_message
+            .contains("No active local account session"));
     }
 
     #[tokio::test]
@@ -3442,7 +3466,9 @@ mod tests {
         // Overview tab: redirects to the diff-capable tabs.
         app.switch_tab(TuiTab::Overview);
         super::super::events::handle_key_event(&mut app, f).await;
-        assert!(app.status_message.contains("Switch to the Snapshots or Files tab"));
+        assert!(app
+            .status_message
+            .contains("Switch to the Snapshots or Files tab"));
 
         // In-flight diff reports instead of stacking.
         app.diff_in_flight = true;
@@ -3468,7 +3494,9 @@ mod tests {
                 },
                 SecretDiffEntry {
                     key: "GONE".into(),
-                    change: ChangeType::Removed { value: "***".into() },
+                    change: ChangeType::Removed {
+                        value: "***".into(),
+                    },
                 },
                 SecretDiffEntry {
                     key: "CHANGED".into(),

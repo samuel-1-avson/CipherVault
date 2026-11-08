@@ -3337,6 +3337,11 @@ function initModals() {
   const btnCloseGuardian = document.getElementById('btn-close-modal-guardian');
   const btnCloseGuardianFooter = document.getElementById('btn-close-guardian-footer');
 
+  const modalCliDownloads = document.getElementById('modal-cli-downloads');
+  const btnOpenCliDownloads = document.getElementById('btn-open-cli-downloads');
+  const btnCloseCliDownloads = document.getElementById('btn-close-modal-cli-downloads');
+  const btnCancelCliDownloads = document.getElementById('btn-cancel-modal-cli-downloads');
+
   if (btnOpenSnapshot && modalSnapshot) {
     btnOpenSnapshot.addEventListener('click', () => {
       openModal(modalSnapshot, btnOpenSnapshot);
@@ -3356,6 +3361,16 @@ function initModals() {
 
   if (btnCloseGuardian) btnCloseGuardian.addEventListener('click', () => closeModal(modalGuardian));
   if (btnCloseGuardianFooter) btnCloseGuardianFooter.addEventListener('click', () => closeModal(modalGuardian));
+
+  if (btnOpenCliDownloads && modalCliDownloads) {
+    btnOpenCliDownloads.addEventListener('click', () => openModal(modalCliDownloads, btnOpenCliDownloads));
+  }
+  if (btnCloseCliDownloads && modalCliDownloads) {
+    btnCloseCliDownloads.addEventListener('click', () => closeModal(modalCliDownloads));
+  }
+  if (btnCancelCliDownloads && modalCliDownloads) {
+    btnCancelCliDownloads.addEventListener('click', () => closeModal(modalCliDownloads));
+  }
 
   // Close on backdrop click
   window.addEventListener('click', (e) => {
@@ -5045,8 +5060,20 @@ function handleTerminalCommand(cmd) {
 
   switch (root) {
     case 'help':
-      appendTerminalLog('SYS', 'Available commands: status, diff, audit, refresh, fleet, clear', 'var(--chain)');
+      appendTerminalLog('SYS', 'Available commands: status, diff, audit, refresh, fleet, download, version, clear', 'var(--chain)');
       break;
+    case 'version':
+    case 'cv':
+      appendTerminalLog('CLI', 'CipherVault v1.0.29 (cv / ciphervault) · Sovereign CipherChain PoA (777777)', 'var(--ok)');
+      break;
+    case 'download':
+    case 'downloads':
+    case 'install': {
+      const dlBtn = document.getElementById('btn-open-cli-downloads');
+      if (dlBtn) dlBtn.click();
+      appendTerminalLog('CLI', 'Opened CLI & Binary Downloads modal (v1.0.29)', 'var(--signal)');
+      break;
+    }
     case 'status':
       const vId = state.vault ? truncateHash(state.vault.vault_id_hex, 8, 6) : 'Uninitialized';
       const onlineOps = (state.operators || []).filter(operatorResponded).length;
@@ -5599,6 +5626,15 @@ function buildPaletteItems(query) {
     { title: 'Refresh Cluster State', category: 'Actions', action: () => {
       fetchAllData();
       showToast('Cluster telemetry refreshed', 'info');
+    }},
+    { title: 'Download CLI & Pre-Compiled Binaries (v1.0.29)...', category: 'Actions', badge: 'v1.0.29', action: () => {
+      const modal = document.getElementById('modal-cli-downloads');
+      if (modal) openModal(modal);
+    }},
+    { title: 'Copy CLI Self-Update Command (cv update)', category: 'Actions', badge: 'CLI', action: () => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText('cv update').then(() => showToast('Copied: cv update', 'info'));
+      }
     }},
     { title: 'Open Keyboard Shortcuts Help', category: 'Actions', action: () => {
       const modal = document.getElementById('modal-shortcuts');

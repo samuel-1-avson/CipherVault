@@ -137,5 +137,39 @@ class TestBackupAlert(unittest.TestCase):
         self.assertTrue(res)
 
 
+    def test_run_alert_failure_without_destinations_fails_loudly(self):
+        # A failure dispatch with nowhere to send must exit non-zero so
+        # systemd/cron records the gap instead of silently exiting 0.
+        with patch.dict(os.environ, {}, clear=False):
+            for key in (
+                "CIPHERVAULT_ALERT_WEBHOOK_URL",
+                "CIPHERVAULT_ALERT_HEALTHCHECK_URL",
+                "CIPHERVAULT_ALERT_PAGERDUTY_KEY",
+            ):
+                os.environ.pop(key, None)
+            res = alert.run_alert(
+                status="failure",
+                message="Backup FAILED",
+                service="test-service",
+            )
+            self.assertFalse(res)
+
+    def test_run_alert_success_without_destinations_warns(self):
+        # Undelivered success (no heartbeat armed) is also a gap: non-zero.
+        with patch.dict(os.environ, {}, clear=False):
+            for key in (
+                "CIPHERVAULT_ALERT_WEBHOOK_URL",
+                "CIPHERVAULT_ALERT_HEALTHCHECK_URL",
+                "CIPHERVAULT_ALERT_PAGERDUTY_KEY",
+            ):
+                os.environ.pop(key, None)
+            res = alert.run_alert(
+                status="success",
+                message="Backup ok",
+                service="test-service",
+            )
+            self.assertFalse(res)
+
+
 if __name__ == "__main__":
     unittest.main()

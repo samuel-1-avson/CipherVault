@@ -177,6 +177,22 @@ docker compose -f deploy/docker-compose.prod.yml ps
 ```
 All containers (`ciphervault-ingress`, `operator-1`, `operator-2`, `operator-3`, `maintenance`, `dashboard`) should report `healthy` or `running`.
 
+### Step 5: Account Database Topology & Failover
+The account service is single-writer by design (SQLite + WAL; audit hash-chain
+linearizability depends on it — see
+`services/account/docs/HA_DATABASE_CLUSTERING.md` §4–§5).
+- Default: nothing to set (`CIPHERVAULT_DB_TOPOLOGY=sqlite`, always leader).
+- LiteFS replica set: run one node with `CIPHERVAULT_DB_TOPOLOGY=litefs` +
+  `CIPHERVAULT_DB_LEADER=1`, the rest with the leader flag unset (read-only;
+  writes fail closed with `NotLeader`). Promote a replica by setting
+  `CIPHERVAULT_DB_LEADER=1` and restarting — LiteFS Raft elects a single
+  writer; never set the flag on two nodes at once.
+- `CIPHERVAULT_DB_TOPOLOGY=postgres` is a hard startup error until the
+  sequencer design lands. Unknown values are rejected the same way.
+- Watch the contention counters: any `sqlite_busy_retries` > 0 or repeated
+  `lock wait exceeds threshold` lines mean the single-writer assumption is
+  violated — treat as P0, not a tuning knob.
+
 ---
 
 ## 6. Ingress Hardening, Security Headers & Rate Limiting

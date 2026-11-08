@@ -1,0 +1,11 @@
+name: ciphervault
+version: "0.1.0"
+description: Zero-knowledge secret backup for AI coding agents — masked scan, RAM-only run, encrypted snapshots.
+provides_tools:
+  - ciphervault_status
+  - ciphervault_scan
+  - ciphervault_run
+  - ciphervault_push
+  - ciphervault_recovery_drill
+provides_hooks:
+  - post_tool_call

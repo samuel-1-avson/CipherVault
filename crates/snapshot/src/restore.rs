@@ -460,4 +460,46 @@ mod tests {
         assert_eq!(fs::read(root.join("a.env")).unwrap(), b"old-a");
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn publication_abort_on_storage_full_rolls_back_consistently() {
+        // True ENOSPC injection at the exact failure point: the publish
+        // closure fails with `StorageFull` on the second file after the
+        // first was really published. The journal must drive a full
+        // rollback (earlier files restored, later files absent, stage gone).
+        let root =
+            std::env::temp_dir().join(format!("cv-restore-enospc-{:032x}", rand::random::<u128>()));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        fs::write(root.join("a.env"), b"old-a").unwrap();
+        let files = vec![
+            DecryptedFile {
+                relative_path: "a.env".into(),
+                plaintext: b"new-a".to_vec(),
+            },
+            DecryptedFile {
+                relative_path: "b.env".into(),
+                plaintext: b"new-b".to_vec(),
+            },
+        ];
+        let err = publish_with(&root, &files, |index, source, destination| {
+            if index == 1 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::StorageFull,
+                    "no space left on device",
+                ))
+            } else {
+                atomic_replace(source, destination)
+            }
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, SnapshotError::IoError(_)),
+            "expected the injected StorageFull, got: {err}"
+        );
+        assert_eq!(fs::read(root.join("a.env")).unwrap(), b"old-a");
+        assert!(!root.join("b.env").exists());
+        assert!(!root.join(STAGE).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
