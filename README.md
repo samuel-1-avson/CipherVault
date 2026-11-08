@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version: v1.0.29](https://img.shields.io/badge/Version-v1.0.29-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.30](https://img.shields.io/badge/Version-v1.0.30-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
@@ -581,7 +581,7 @@ cv approve sign <CHALLENGE_ID>
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
 | `ciphervault anchor` | `[--head <CID>] [--daemon] [--interval <SECS>] [--rotate-to <KEYS>]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. `--rotate-to` (comma-separated member pubkeys) proposes a validator-set rotation taking effect next height. |
 | `ciphervault verify-anchor` | `[--head <CID>]` | Verifies cryptographic state commitment, Merkle audit path, and operator quorum signatures locally in <1ms. |
-| `ciphervault genesis` | `propose / sign / assemble` *(v1.0.29+; not in 1.0.28 binaries)* | Multi-party genesis ceremony: deterministic unsigned proposal, per-member device-key signatures, founder combines quorum into a chain dir. |
+| `ciphervault genesis` | `propose / sign / assemble` *(v1.0.30+; not in 1.0.28 binaries)* | Multi-party genesis ceremony: deterministic unsigned proposal, per-member device-key signatures, founder combines quorum into a chain dir. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
 | `ciphervault audit` | `[-o/--operators <URL...>] [--export-inventory <PATH>] [--operator-pin <ENDPOINT=64HEX...>] [--recovery-drill]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
 | `ciphervault repair` | `[-o/--operators <URL...>] [--replicas <N>]` | Detects degraded replicas and self-heals by streaming missing chunks from surviving operators. |

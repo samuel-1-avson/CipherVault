@@ -1,6 +1,6 @@
 # 🛡️ CipherVault: Master Documentation Hub
 
-**Release track:** `v1.0.29`; see the [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) for publication and live verification.
+**Release track:** `v1.0.30`; see the [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) for publication and live verification.
 **Classification:** Enterprise System Architecture, Protocol Specification & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)  
 
