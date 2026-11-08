@@ -29,6 +29,12 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
 
     render_header(frame, app, chunks[0]);
 
+    if !app.is_initialized {
+        render_onboarding(frame, app, chunks[1]);
+        render_footer(frame, app, chunks[2]);
+        return;
+    }
+
     match app.active_tab {
         TuiTab::Overview => render_overview_tab(frame, app, chunks[1]),
         TuiTab::Files => render_files_tab(frame, app, chunks[1]),
@@ -58,6 +64,42 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
     } else if app.show_diff_modal {
         render_diff_modal(frame, app);
     }
+}
+
+/// First-run panel shown when no vault exists in this directory. The
+/// TUI cannot run `init` itself (it ends with an interactive
+/// recovery-kit ritual that needs a plain terminal), so the panel is a
+/// numbered runway out of the TUI and back in.
+fn render_onboarding(frame: &mut Frame, _app: &TuiApp, area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled(
+            "No CipherVault in this directory yet",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("Get started (in a normal terminal):"),
+        Line::from("  1. Quit this TUI with [q]"),
+        Line::from(
+            "  2. Run:  ciphervault init        (records your recovery kit — keep it offline)",
+        ),
+        Line::from("  3. Run:  ciphervault track .env   (repeat for each secret file)"),
+        Line::from("  4. Run:  ciphervault push --local (first encrypted snapshot)"),
+        Line::from("  5. Run:  ciphervault run -- <your command>  (secrets injected in RAM)"),
+        Line::from(""),
+        Line::from("Then relaunch `ciphervault` and this panel becomes your vault dashboard."),
+        Line::from("Press [?] for help, [q] to quit."),
+    ];
+    let panel = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Welcome to CipherVault "),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(panel, area);
 }
 
 fn render_header(frame: &mut Frame, app: &TuiApp, area: Rect) {
@@ -1923,7 +1965,7 @@ fn render_help_modal(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("a          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Stage L2 anchor confirmation (on-chain cost; [y] confirms)"),
+            Span::raw("Stage CipherChain anchor confirmation (sovereign, zero-gas; [y] confirms)"),
         ]),
         Line::from(vec![
             Span::styled("y / Enter  ", Style::default().fg(Color::Yellow)),

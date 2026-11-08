@@ -300,14 +300,14 @@ pub enum TuiTable {
 }
 
 /// Destructive or expensive action awaiting explicit confirmation. Single-key
-/// presses for `anchor` (Arbitrum L2 transaction), `untrack` (stops
+/// presses for `anchor` (CipherChain commitment), `untrack` (stops
 /// future snapshots), `pull` (rewrites working files), `restore` (rewrites
 /// working files), and `logout` (revokes the local session) stage a
 /// `ConfirmAction` instead of executing; the confirm modal resolves it with
 /// `[y]/[Enter]` or drops it with `[n]/[Esc]`.
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    /// Anchor the active head commitment to Arbitrum L2 (on-chain cost).
+    /// Anchor the active head commitment to CipherChain (sovereign, zero-gas).
     Anchor,
     /// Untrack a file: future snapshots skip it, existing snapshots keep it.
     Untrack { path: String },
