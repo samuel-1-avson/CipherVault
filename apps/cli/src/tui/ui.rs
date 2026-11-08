@@ -2916,7 +2916,10 @@ mod tests {
         let text = drawn_text(&mut app, 140, 44);
         // Uninitialized apps now get the onboarding runway, which must
         // still point at init in plain language.
-        assert!(text.contains("No CipherVault in this directory yet"), "{text}");
+        assert!(
+            text.contains("No CipherVault in this directory yet"),
+            "{text}"
+        );
         assert!(text.contains("ciphervault init"), "{text}");
     }
 
