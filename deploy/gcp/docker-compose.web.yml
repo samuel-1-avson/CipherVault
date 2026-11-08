@@ -106,6 +106,9 @@ services:
       - OPERATOR_GATEWAY_UPSTREAM_3=${OPERATOR_GATEWAY_UPSTREAM_3:-10.142.0.2:80}
     volumes:
       - /opt/ciphervault-ui/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Static landing content for the cipherv.online site block.
+      # Populated by scripts/deploy-web.sh (landing); never bake into images.
+      - /var/www/ciphervault-landing:/var/www/ciphervault-landing:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

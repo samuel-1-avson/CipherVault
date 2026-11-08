@@ -195,6 +195,42 @@ linearizability depends on it — see
 
 ---
 
+## 5b. Web Deploy Pipeline — landing + dashboard without CI (`scripts/deploy-web.sh`)
+
+GitHub Actions is optional for web surfaces. The pipeline below runs on the
+web box itself (SSH), needs no runners, and is the supported way to ship
+`apps/landing` and the vault dashboard while CI is unavailable.
+
+```bash
+# 1. What is live right now? (safe, read-only)
+sudo bash scripts/deploy-web.sh status
+
+# 2. Ship the landing (verify -> backup -> swap -> health-check -> rollback on fail)
+sudo bash scripts/deploy-web.sh landing --expect v1.0.30
+
+# 3. Ship the dashboard (local image build; see warning below)
+sudo bash scripts/deploy-web.sh dashboard --allow-unsigned
+```
+
+Rules the script enforces (do not bypass):
+- **Landing:** bundle must contain `index.html`/`script.js`/`styles.css`/`CNAME`
+  with ciphervault.online markers (`--expect` pins a version string); the
+  current site is backed up to `/var/www/backups/` (last 5 kept) before any
+  swap, and a failed local health check restores the backup automatically.
+  Content swaps need no Caddy reload; Caddyfile edits always go through
+  `caddy validate` first.
+- **Dashboard:** refuses without `--allow-unsigned`, because a local image
+  build bypasses the signed GHCR digests. Re-pin to a signed digest as soon
+  as CI can publish one. The `.env` image pin is backed up and restored on
+  failed health checks.
+- **Never in git:** the box `.env` (service tokens, keys). The script reads
+  it; only the dashboard flow rewrites the two image pins, with backup.
+- **ACME_EMAIL must be real:** Let's Encrypt rejects documentation domains.
+  The template default is `admin@cipherv.online`; `admin@example.com`
+  fails issuance ("forbidden domain").
+
+---
+
 ## 6. Ingress Hardening, Security Headers & Rate Limiting
 
 ### Caddy Reverse Proxy Configuration (`deploy/gcp/Caddyfile.gcp`)
