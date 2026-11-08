@@ -140,3 +140,30 @@ jobs:
 
       - name: Run push bench (sequential vs concurrent)
         run: cargo test --locked -p ciphervault-cli --release --test push_bench -- --ignored --nocapture
+
+  coverage:
+    name: Coverage (informational)
+    runs-on: ubuntu-24.04
+    # Non-blocking by design: publishes a coverage summary artifact so
+    # trends are visible, without gating merges on a number yet.
+    continue-on-error: true
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Generate coverage summary
+        run: cargo llvm-cov --workspace --locked --summary-only | tee coverage-summary.txt
+
+      - name: Upload coverage summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-summary
+          path: coverage-summary.txt

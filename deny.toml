@@ -157,6 +157,11 @@ registries = [
 # More documentation about the 'bans' section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
 [bans]
+# AUDIT EXCEPTIONS (owner: maintainer; reviewed 2026-11-08):
+# multiple-versions/wildcards stay "warn" because the pinned libp2p and
+# Ratatui stacks legitimately carry duplicate transitive majors today.
+# Tighten to "deny" per-crate as those stacks converge; do not add new
+# duplicates without recording them here.
 # Lint level for when multiple versions of the same crate are detected
 multiple-versions = "warn"
 # Lint level for when a crate version requirement is `*`
@@ -236,6 +241,9 @@ skip-tree = [
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is not
 # in the allow list is encountered
+# Only the crates.io registry below is allowed in practice; "warn" (not
+# deny) is kept so offline CI mirrors don't hard-fail (audit exception,
+# owner: maintainer, reviewed 2026-11-08).
 unknown-registry = "warn"
 # Lint level for what to happen when a crate from a git repository that is not
 # in the allow list is encountered

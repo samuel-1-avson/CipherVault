@@ -466,21 +466,21 @@
           <div class="tui-quick-install hero-install-deck">
             <div class="install-bar-header">
               <div class="hero-target-pills" id="hero-install-pills" role="tablist" aria-label="Installation Target">
-                <button class="hero-target-pill active" data-install-target="cargo" role="tab" aria-selected="true">Cargo</button>
-                <button class="hero-target-pill" data-install-target="win" role="tab" aria-selected="false">PowerShell</button>
+                <button class="hero-target-pill" data-install-target="cargo" role="tab" aria-selected="false">Cargo (from source)</button>
+                <button class="hero-target-pill active" data-install-target="win" role="tab" aria-selected="true">PowerShell</button>
                 <button class="hero-target-pill" data-install-target="brew" role="tab" aria-selected="false">Homebrew</button>
                 <button class="hero-target-pill" data-install-target="winget" role="tab" aria-selected="false">Winget/Scoop</button>
                 <button class="hero-target-pill" data-install-target="nix" role="tab" aria-selected="false">Bash</button>
                 <button class="hero-target-pill" data-install-target="docker" role="tab" aria-selected="false">Docker</button>
               </div>
               <div class="install-header-meta">
-                <span class="os-label-badge" id="tui-os-label">RECOMMENDED (RUST 1.89+)</span>
+                <span class="os-label-badge" id="tui-os-label">RECOMMENDED (PREBUILT, WINDOWS)</span>
                 <span class="install-hint">Press C to copy</span>
               </div>
             </div>
             <div class="install-bar-body">
               <span class="tui-prompt">$</span>
-              <code class="install-cmd-code" id="tui-install-cmd">cargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli</code>
+              <code class="install-cmd-code" id="tui-install-cmd">irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex</code>
               <button class="tui-btn-copy" id="btn-tui-copy" aria-label="Copy install command">
                 Copy
               </button>
@@ -1318,7 +1318,7 @@ if !no_gitignore {
         </section>
 
         <!-- ====================================================================
-             PANE 4: SCOPED SECRETS & MULTI-ENVIRONMENT GOVERNANCE (v1.0.29)
+             PANE 4: SCOPED SECRETS & MULTI-ENVIRONMENT GOVERNANCE (v1.0.31)
              ==================================================================== -->
         <section class="tui-pane" id="pane-scoped" role="tabpanel" hidden>
           
@@ -1711,7 +1711,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
             <div class="tui-box scoped-cli-cheatsheet">
               <div class="tui-box-title">
                 <span>SCOPED SECRETS &amp; SESSION CLI REFERENCE</span>
-                <span class="badge-gold">v1.0.29 NATIVE</span>
+                <span class="badge-gold">v1.0.31 NATIVE</span>
               </div>
               <div class="cli-cheatsheet-grid">
                 <div class="cli-cmd-cell">
@@ -2674,7 +2674,14 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               <div class="plain-faq-card">
                 <div class="faq-question">What happens if my laptop is stolen or wiped? Can I recover without paper?</div>
                 <div class="faq-answer">
-                  <strong>Yes.</strong> In addition to offline paper kits and Shamir guardian shares, CipherVault v1.0.29 supports passphrase-wrapped vault-key backups (<code>CVKB1</code>). Your keys are sealed client-side with Argon2id and stored content-addressed on operator nodes. Recover on any wiped laptop with <code>cv recovery key-restore --locator &lt;HEX&gt;</code> and your memorable passphrase.
+                  <strong>Yes.</strong> In addition to offline paper kits and Shamir guardian shares, CipherVault v1.0.31 supports passphrase-wrapped vault-key backups (<code>CVKB1</code>). Your keys are sealed client-side with Argon2id and stored content-addressed on operator nodes. Recover on any wiped laptop with <code>cv recovery key-restore --locator &lt;HEX&gt;</code> and your memorable passphrase.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Can my AI coding agent use my secrets without seeing them?</div>
+                <div class="faq-answer">
+                  <strong>Yes — that's the Hermes Agent plugin.</strong> It scans for secret sprawl (masked), runs your commands with secrets injected in RAM (output scrubbed before the agent sees it), blocks accidental secret reads and dirty git commits, and can even source Hermes' own environment from your vault. Values never enter the model's context. See <code>plugins/ciphervault/</code> in the repo.
                 </div>
               </div>
 

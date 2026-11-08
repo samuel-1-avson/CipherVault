@@ -1,5 +1,11 @@
 name: CipherVault CI & Zero-Disk Secret Runner Validation
 
+# Scope note: this workflow covers developer-ergonomics/sync suites and
+# the zero-disk runner validation only. The main build/test matrix,
+# clippy -D warnings, MSRV, browser CSP, and benchmarks live in ci.yml;
+# dependency/secret scanning lives in security.yml. Keep new jobs in
+# whichever of those three owns the concern instead of adding a fourth.
+
 on:
   push:
     branches: [main, master]

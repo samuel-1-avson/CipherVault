@@ -1,12 +1,23 @@
 # Current security and operational guarantees
 
-Updated 1 October 2026. This describes the working implementation, not independent cryptographic certification or a claim that unpromoted changes run in production. Run current checks and review their actual results before release.
+Updated 8 November 2026 (v1.0.31). This describes the working implementation, not independent cryptographic certification or a claim that unpromoted changes run in production. Run current checks and review their actual results before release.
+
+## What changed in v1.0.31
+
+- **Agent-bridge scrubbing is exact:** `ciphervault run --json` scrubs captured output against the injected values themselves (raw, percent-encoded, base64) before returning it; every vault-sourced value is treated as secret. `ciphervault redact` exposes the same exact+shape redaction as a stdin filter, and `ciphervault export-env` (machine consumers only) refuses to write to a terminal.
+- **Private commitment transactions (opt-in):** `CIPHERVAULT_ANCHOR_TX_VERSION=2` anchors with only the commitment + a per-anchor vault pseudonym on-chain; salt/head stay in local checkpoint evidence. Default remains v1 (plaintext salt/head) until v1.0.31+ validators are deployed; both forms validate.
+- **Anchor quorum honesty:** with a multi-validator set the CLI publishes the proposal first and reports `PROPOSED — awaiting fleet quorum` instead of committing a local fork; solo mode is labeled as such.
+- **Signed dedup proofs:** the pre-upload dedup challenge now verifies the operator's signed PoS receipt, not just a proof hash.
+- **Threshold-aware recovery:** `combine_shares_with_threshold` rejects below-threshold share sets in the guardian path; new recovery kits add a SHA-256 checksum alongside the legacy CRC32 (old kits still load).
+- **Operator defaults tightened:** HTTP API binds loopback unless `0.0.0.0` is explicit; service tokens under 32 chars refuse startup (temporary override `CIPHERVAULT_OPERATOR_ALLOW_SHORT_TOKEN=1`).
+
+Stated limits, plainly: the operator challenge ("Proof-of-Storage") proves an operator can produce the object at challenge time — it is a possession/readback check, not a proof of storage over time. The account plane is **single-writer SQLite** (LiteFS optional); the documented PostgreSQL topology is not implemented and fails closed. CipherChain liveness under split votes needs operator coordination (see ADR-013); gossip state is capped, and proposal vetting is O(log n) in history.
 
 ## Chunk versions and deployment gate
 
 The default writer is **chunk protocol v2**. Set `CIPHERVAULT_CHUNK_V2_WRITE=0` to force legacy v1 captures. Unset or `1` selects protocol v2; empty, other or non-Unicode values fail capture before file processing. Library callers can pass `ChunkWriteVersion` explicitly to `create_snapshot_with_write_version` or `create_snapshot_with_signer_and_write_version`, avoiding process environment changes. Readers accept v1 and v2 independently of this gate and reject unknown chunk versions. Recovery records, certificates and encrypted manifests retain protocol version 1.
 
-V1 preserves historical IDs, KDFs and ciphertext addresses. Its public complete-file identifier permits an operator to confirm a candidate file using public vault/epoch fields. V1 also binds chunk encryption to the whole file version, preventing encrypted reuse across edits. These limitations remain in default captures and existing remote history; enabling v2 does not rewrite old objects.
+V1 preserves historical IDs, KDFs and ciphertext addresses. Its public complete-file identifier permits an operator to confirm a candidate file using public vault/epoch fields. V1 also binds chunk encryption to the whole file version, preventing encrypted reuse across edits. These limitations apply to v1 objects (written only under the explicit opt-out since v2 became the default) and to existing remote history; enabling v2 does not rewrite old objects.
 
 Opt-in v2 uses HKDF-SHA256 for keyed opaque file/chunk identifiers and separately derived chunk keys/nonces, with explicit version, domain, vault, epoch and identifier bindings. Unchanged padded chunk content has the same ciphertext CID within one vault and epoch, including chunks shifted by an insertion or repeated in one file. Cross-vault and cross-epoch reuse is deliberately excluded. Content-defined boundaries can change around an edit; no fixed deduplication percentage is promised. Small files receive a 4 KiB padding floor. The encrypted manifest authenticates file order, raw/padded lengths and the whole-file digest.
 
@@ -26,7 +37,7 @@ This provides recovery from interrupted publication, **not simultaneous atomic v
 
 Native notifications feed a bounded 128-event queue and a one-job capture queue. Bursts coalesce; overflow requests a rescan. A three-second fallback scan detects missed native events. The hash baseline comes from the committed manifest and advances using captured bytes only after the local head is saved. Detection alone never acknowledges bytes; a failed capture stays dirty for later retry. Dry-run acknowledges only its in-memory inspection baseline and writes no snapshot/counter/activity state.
 
-Hashing, capture and replication run in a dedicated worker. Upload cancellation keeps a locally committed pending upload durable; shutdown can cancel a stalled async request. Synchronous disk operations can still delay shutdown on a slow filesystem. Upload retries use each snapshot's retained signed head and original immutable recovery inventory, including the exact sealed envelope bytes. A local commit is not a remote durability guarantee; inspect replication status and rehearse recovery.
+Hashing, capture and replication run in a dedicated worker. Upload cancellation keeps a locally committed pending upload durable; shutdown can cancel a stalled async request. Synchronous disk operations can still delay shutdown on a slow filesystem. Upload retries use each snapshot's retained signed head and original immutable recovery inventory, including the exact sealed envelope bytes. A local commit is not a remote durability guarantee; inspect replication status and rehearse recovery. Dry-run inspection persists nothing and does not advance any baseline.
 
 ## Local keys and recovery authority
 

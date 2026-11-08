@@ -107,13 +107,13 @@ cd your-project
 ciphervault init            # creates the vault, prints the recovery kit: save it!
 ciphervault track .env      # or: ciphervault track --from-gitignore   (find secrets via .gitignore)
 ciphervault hook install    # block accidental secret commits
-ciphervault push -m "first backup"
+ciphervault push --local -m "first backup"
 ciphervault status
 ```
 
-Prefer clicking? Run bare `ciphervault` for the guided terminal UI.
+Prefer clicking? Run bare `ciphervault` for the guided terminal UI (it opens on a first-run guide when no vault exists yet).
 
-Before remote push, enroll the vault's device identity on every strict operator and configure independently obtained operator signing-key pins. Strict operators require a service token for administrative enrollment; self-signed `/v1/info` is not an independent pin ceremony. See [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md#operator-authentication-and-pins).
+Replicating (`ciphervault push` without `--local`) needs this device **enrolled** on the fleet first — a fresh vault's first remote push says so, with next steps (`push --local` meanwhile, `ciphervault doctor`, `ciphervault invite --help`). Before remote push, enroll the vault's device identity on every strict operator and configure independently obtained operator signing-key pins. Strict operators require a service token for administrative enrollment; self-signed `/v1/info` is not an independent pin ceremony. See [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md#operator-authentication-and-pins).
 
 Captures default to chunk protocol v2 with encrypted chunk reuse across edits, keyed identifiers, and domain-isolated KDFs. Legacy v1 remains supported via `CIPHERVAULT_CHUNK_V2_WRITE=0`. Both versions remain readable. [Protocol details](../crates/snapshot/CHUNK_PROTOCOL_V2.md).
 

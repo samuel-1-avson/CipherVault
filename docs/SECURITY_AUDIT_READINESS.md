@@ -138,7 +138,7 @@ use synthetic accounts and an isolated test fleet.
 
 ## Validation and closure
 
-The [release ledger](../report/DEPLOYMENT_2026-09-30.md) records **826 passed,
+The [release ledger](../report/DEPLOYMENT_2026-09-30.md) records the 2026-09-30 count; for the current release see [TEST_EVIDENCE_v1.0.31.md](../report/TEST_EVIDENCE_v1.0.31.md). Historical record: **826 passed,
 0 failed, 3 existing ignored tests**, strict formatting/Clippy, Rust 1.89,
 cross-platform CI, Foundry CI, browser/installer/bootstrap checks, signed
 artifacts, immutable deployment, and isolated account restore. Those are dated

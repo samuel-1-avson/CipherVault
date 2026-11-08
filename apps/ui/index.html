@@ -93,7 +93,7 @@
       <!-- Main Sidebar Navigation List -->
       <nav class="tabs-nav sidebar-nav" aria-label="Dashboard Navigation" role="tablist">
         <div class="nav-section-label" data-nav-group="network">Cluster &amp; Network</div>
-        <button class="tab-btn active" id="tab-btn-operators" data-target="tab-operators" data-category="network" role="tab" aria-selected="true" aria-controls="tab-operators" tabindex="0">
+        <button class="tab-btn" id="tab-btn-operators" data-target="tab-operators" data-category="network" role="tab" aria-selected="false" aria-controls="tab-operators" tabindex="-1">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
             <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
@@ -133,7 +133,7 @@
         </button>
 
         <div class="nav-section-label" data-nav-group="secrets">Secrets &amp; Storage</div>
-        <button class="tab-btn" id="tab-btn-overview" data-target="tab-overview" data-category="secrets" role="tab" aria-selected="false" aria-controls="tab-overview" tabindex="-1" data-private-surface>
+        <button class="tab-btn active" id="tab-btn-overview" data-target="tab-overview" data-category="secrets" role="tab" aria-selected="true" aria-controls="tab-overview" tabindex="0" data-private-surface>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="7" height="7"></rect>
             <rect x="14" y="3" width="7" height="7"></rect>
@@ -329,13 +329,13 @@
             </button>
           </div>
 
-          <button class="btn-action secondary small btn-cli-downloads" id="btn-open-cli-downloads" type="button" title="Download CipherVault CLI &amp; pre-compiled binaries (v1.0.30)">
+          <button class="btn-action secondary small btn-cli-downloads" id="btn-open-cli-downloads" type="button" title="Download CipherVault CLI &amp; pre-compiled binaries (v1.0.31)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
               <polyline points="7 10 12 15 17 10"></polyline>
               <line x1="12" y1="15" x2="12" y2="3"></line>
             </svg>
-            <span>CLI v1.0.30</span>
+            <span>CLI v1.0.31</span>
           </button>
 
           <button class="btn-action secondary small btn-github-signin" id="btn-header-signin" type="button" title="Sign in to CipherVault account">
@@ -381,7 +381,7 @@
         <section class="public-explorer-notice" id="public-explorer-notice" role="status" aria-live="polite" hidden>
           <strong>Public cluster explorer</strong>
           <span>This view shows sanitized operator health and checkpoint evidence. Vault files, history, recovery material, and administrative actions are available only from a local private workspace.</span>
-          <button class="btn-action secondary small" type="button" data-click-target="btn-open-cli-downloads">Download CLI v1.0.30</button>
+          <button class="btn-action secondary small" type="button" data-click-target="btn-open-cli-downloads">Download CLI v1.0.31</button>
         </section>
         <section class="public-explorer-notice hosted-session-summary" id="hosted-session-summary" role="status" aria-live="polite" hidden>
           <strong>Signed in</strong>
@@ -406,7 +406,7 @@
         <main id="main-content" tabindex="-1">
 
     <!-- Tab 1: Storage Operators Grid -->
-    <section class="tab-content active" id="tab-operators" role="tabpanel" aria-labelledby="tab-btn-operators" tabindex="0">
+    <section class="tab-content" id="tab-operators" role="tabpanel" aria-labelledby="tab-btn-operators" tabindex="0">
       <div class="quorum-topology-card" id="quorum-topology-card">
         <div class="topology-header">
           <div>
@@ -441,7 +441,7 @@
     </section>
 
     <!-- Tab: My Data Overview (local vault only) -->
-    <section class="tab-content" id="tab-overview" role="tabpanel" aria-labelledby="tab-btn-overview" tabindex="0" data-private-surface>
+    <section class="tab-content active" id="tab-overview" role="tabpanel" aria-labelledby="tab-btn-overview" tabindex="0" data-private-surface>
       <!-- Key Metrics Ribbon -->
       <section class="metrics-ribbon" aria-label="Vault Overview Metrics">
         <!-- Metric 1: Cluster Durability -->
@@ -1172,13 +1172,13 @@
         <div class="recovery-drill-guide">
           <h4 class="cv-layout-409feb082a">Disaster Recovery Procedure on a Clean Machine:</h4>
           <ol class="cv-layout-08c4aaac99">
-            <li>Install or download the standalone <code>cv.exe</code> or <code>ciphervault.exe</code> binary (v1.0.30) to your clean machine:</li>
+            <li>Install or download the standalone <code>cv.exe</code> or <code>ciphervault.exe</code> binary (v1.0.31) to your clean machine:</li>
             <li>Execute the clean recovery command with your paper recovery secret (both <code>cv</code> and <code>ciphervault</code> work identically):</li>
           </ol>
           <div class="recovery-binary-links">
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/cv.exe" class="btn-action secondary small" download>↓ cv.exe (v1.0.30)</a>
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault.exe" class="btn-action secondary small" download>↓ ciphervault.exe (v1.0.30)</a>
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-v1.0.30-x86_64-pc-windows-msvc.zip" class="btn-action secondary small" download>↓ Windows Full .zip (v1.0.30)</a>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/cv.exe" class="btn-action secondary small" download>↓ cv.exe (v1.0.31)</a>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/ciphervault.exe" class="btn-action secondary small" download>↓ ciphervault.exe (v1.0.31)</a>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/ciphervault-v1.0.31-x86_64-pc-windows-msvc.zip" class="btn-action secondary small" download>↓ Windows Full .zip (v1.0.31)</a>
             <button type="button" class="btn-action secondary small" data-click-target="btn-open-cli-downloads">All Platform Binaries &amp; Checksums…</button>
           </div>
           <div class="cli-code-pill cv-layout-f2835880c5">
@@ -1595,7 +1595,7 @@
         </p>
         <p class="form-help">Run this from the CipherVault repository that contains your vault. The command signs a short-lived browser handoff locally and prints a one-time production link; open that link to finish sign-in and enroll your passkey or authenticator:</p>
         <pre class="terminal-output cv-layout-869fedccfa"><code>cv auth connect --endpoint https://vault.cipherv.online/api/account</code></pre>
-        <p class="form-help cv-layout-63b04ba9d1">You can run either <code>cv auth connect</code> or <code>ciphervault auth connect</code>. If the command is unavailable, upgrade to v1.0.30 with <code>cv update</code> / <code>ciphervault update</code> or <button type="button" class="btn-inline-link" data-click-target="btn-open-cli-downloads">download the v1.0.30 binaries</button>.</p>
+        <p class="form-help cv-layout-63b04ba9d1">You can run either <code>cv auth connect</code> or <code>ciphervault auth connect</code>. If the command is unavailable, upgrade to v1.0.31 with <code>cv update</code> / <code>ciphervault update</code> or <button type="button" class="btn-inline-link" data-click-target="btn-open-cli-downloads">download the v1.0.31 binaries</button>.</p>
       </div>
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-cancel-modal-account-connect">Close</button>
@@ -1877,13 +1877,13 @@
     </div>
   </div>
 
-  <!-- Modal: CLI & Pre-Compiled Binary Downloads (v1.0.30) -->
+  <!-- Modal: CLI & Pre-Compiled Binary Downloads (v1.0.31) -->
   <div class="modal-backdrop" id="modal-cli-downloads" role="dialog" aria-modal="true" aria-labelledby="modal-cli-downloads-title" hidden>
     <div class="modal-card cli-downloads-modal-card">
       <div class="modal-header">
         <div class="cli-modal-title-group">
           <h3 id="modal-cli-downloads-title" class="modal-title">CipherVault CLI &amp; Pre-Compiled Binaries</h3>
-          <span class="badge-online">Release v1.0.30 · Signed</span>
+          <span class="badge-online">Release v1.0.31 · Signed</span>
         </div>
         <button class="btn-modal-close" id="btn-close-modal-cli-downloads" aria-label="Close modal">&times;</button>
       </div>
@@ -1920,50 +1920,50 @@
         <div class="cli-install-section">
           <span class="drawer-sec-title">Direct Pre-Compiled Release Binaries &amp; Role Bundles</span>
           <div class="cli-downloads-grid">
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-v1.0.30-x86_64-pc-windows-msvc.zip" class="cli-download-card" download>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/ciphervault-v1.0.31-x86_64-pc-windows-msvc.zip" class="cli-download-card" download>
               <div class="cli-dl-top">
                 <span class="cli-dl-badge">WINDOWS FULL</span>
-                <span class="cli-dl-meta">v1.0.30 · 31.0 MB</span>
+                <span class="cli-dl-meta">v1.0.31 · 31.0 MB</span>
               </div>
               <div class="cli-dl-name">cv.exe + ciphervault.exe</div>
               <div class="cli-dl-desc">Full Suite: CLI, Agent, Operator &amp; Maintenance</div>
               <span class="cli-dl-action">↓ Download Full .zip</span>
             </a>
 
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/cv.exe" class="cli-download-card" download>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/cv.exe" class="cli-download-card" download>
               <div class="cli-dl-top">
                 <span class="cli-dl-badge">WINDOWS CLI</span>
-                <span class="cli-dl-meta">v1.0.30 · 21.3 MB</span>
+                <span class="cli-dl-meta">v1.0.31 · 21.3 MB</span>
               </div>
               <div class="cli-dl-name">cv.exe</div>
               <div class="cli-dl-desc">Standalone Short-Alias CLI Executable (x86_64 MSVC)</div>
               <span class="cli-dl-action">↓ Download cv.exe</span>
             </a>
 
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault.exe" class="cli-download-card" download>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/ciphervault.exe" class="cli-download-card" download>
               <div class="cli-dl-top">
                 <span class="cli-dl-badge">WINDOWS CLI</span>
-                <span class="cli-dl-meta">v1.0.30 · 21.3 MB</span>
+                <span class="cli-dl-meta">v1.0.31 · 21.3 MB</span>
               </div>
               <div class="cli-dl-name">ciphervault.exe</div>
               <div class="cli-dl-desc">Standalone Canonical CLI Executable (x86_64 MSVC)</div>
               <span class="cli-dl-action">↓ Download ciphervault.exe</span>
             </a>
 
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-dev-v1.0.30-x86_64-pc-windows-msvc.zip" class="cli-download-card" download>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/ciphervault-dev-v1.0.31-x86_64-pc-windows-msvc.zip" class="cli-download-card" download>
               <div class="cli-dl-top">
                 <span class="cli-dl-badge">WINDOWS DEV</span>
-                <span class="cli-dl-meta">v1.0.30 · 20.0 MB</span>
+                <span class="cli-dl-meta">v1.0.31 · 20.0 MB</span>
               </div>
               <div class="cli-dl-name">ciphervault-dev.zip</div>
               <div class="cli-dl-desc">Developer Bundle: cv.exe, ciphervault.exe &amp; Agent</div>
               <span class="cli-dl-action">↓ Download Dev .zip</span>
             </a>
 
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-node-v1.0.30-x86_64-pc-windows-msvc.zip" class="cli-download-card" download>
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.31/ciphervault-node-v1.0.31-x86_64-pc-windows-msvc.zip" class="cli-download-card" download>
               <div class="cli-dl-top">
                 <span class="cli-dl-badge">WINDOWS NODE</span>
-                <span class="cli-dl-meta">v1.0.30 · 27.0 MB</span>
+                <span class="cli-dl-meta">v1.0.31 · 27.0 MB</span>
               </div>
               <div class="cli-dl-name">ciphervault-node.zip</div>
               <div class="cli-dl-desc">Node Runner: CLI, Storage Operator &amp; Maintenance</div>
@@ -1990,12 +1990,12 @@
               <span class="cli-dl-action">↓ Download .tar.gz</span>
             </a>
 
-            <a href="https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.30" target="_blank" rel="noopener noreferrer" class="cli-download-card">
+            <a href="https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.31" target="_blank" rel="noopener noreferrer" class="cli-download-card">
               <div class="cli-dl-top">
                 <span class="cli-dl-badge">CHECKSUMS &amp; SIGS</span>
                 <span class="cli-dl-meta">7 Release Assets</span>
               </div>
-              <div class="cli-dl-name">GitHub Release v1.0.30</div>
+              <div class="cli-dl-name">GitHub Release v1.0.31</div>
               <div class="cli-dl-desc">SHA256SUMS.txt, SHA256SUMS.txt.sig &amp; Release Notes</div>
               <span class="cli-dl-action">View on GitHub ↗</span>
             </a>
@@ -2003,7 +2003,7 @@
         </div>
 
         <div class="cli-install-section">
-          <span class="drawer-sec-title">Updated CLI Command Reference (v1.0.30)</span>
+          <span class="drawer-sec-title">Updated CLI Command Reference (v1.0.31)</span>
           <div class="cli-cmd-ref-grid">
             <div class="cli-cmd-ref-item"><code>cv init</code><span>Initialize vault &amp; print paper kit</span></div>
             <div class="cli-cmd-ref-item"><code>cv track .env</code><span>Enroll secret file into SQLite WAL</span></div>
@@ -2019,7 +2019,7 @@
         </div>
       </div>
       <div class="modal-footer">
-        <a href="https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.30" target="_blank" rel="noopener noreferrer" class="btn-action secondary">Release Notes &amp; SHA256SUMS ↗</a>
+        <a href="https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.31" target="_blank" rel="noopener noreferrer" class="btn-action secondary">Release Notes &amp; SHA256SUMS ↗</a>
         <button class="btn-action primary" id="btn-cancel-modal-cli-downloads" type="button">Done</button>
       </div>
     </div>

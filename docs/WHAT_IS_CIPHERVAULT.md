@@ -109,8 +109,8 @@ Then open a **new** terminal and go to your project folder:
 |------|---------|--------------|
 | 1. Start | `ciphervault init` | Creates your vault. **Save the offline recovery kit it shows you** — this is the only way back if all your machines die. |
 | 2. Protect | `ciphervault track .env` | Marks files as secrets (and auto-updates `.gitignore`). |
-| 3. Back up | `ciphervault push -m "Backup"` | Encrypts and replicates to the storage network. |
-| 4. Run safely | `ciphervault run -- npm start` | Starts your app with secrets fed from memory — no plaintext file needed. |
+| 3. Back up | `ciphervault push --local -m "Backup"` | Encrypts and seals a snapshot on this machine (replication to a fleet comes later, once your device is enrolled). |
+| 4. Run safely | `ciphervault run --legacy -- npm start` | Starts your app with secrets fed from memory — no plaintext file needed. |
 | 5. New machine | `ciphervault pull` / `restore` | Downloads and decrypts your secrets onto this machine. |
 
 Prefer menus over commands? Just run `ciphervault` alone and the
@@ -151,12 +151,13 @@ master key and no support desk that can peek.
 
 ## Honest limits (read before trusting it with your life)
 
-- **Default captures use the battle-tested v1 format**; the newer v2
-  format (better privacy against chunk-guessing) is opt-in pending
-  independent cryptographic review.
-- **Operators see shapes, not contents**: chunk sizes, counts, and
-  access patterns are visible to them even though file contents are
-  not.
+- **Default captures use chunk protocol v2** (keyed identifiers,
+  chunk reuse across edits); legacy v1 is readable forever and only
+  written under an explicit opt-out. Neither format has had
+  independent cryptographic certification yet.
+- **Operators see shapes, not contents**: chunk sizes, counts, chunk
+  *equality* within an epoch (that's how dedup works), and access
+  patterns are visible to them even though file contents are not.
 - **Restore writes real files**: during recovery, decrypted files
   exist on your disk (with strict permissions) — that's the point,
   but be aware of it on shared machines.

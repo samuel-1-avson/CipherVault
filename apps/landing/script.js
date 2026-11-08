@@ -1814,9 +1814,9 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault console (v1.0.29) — real CLI syntax, live where a browser can measure:',
+    'CipherVault console (v1.0.31) — real CLI syntax, live where a browser can measure:',
     '  Short alias: cv and ciphervault are the same tool — examples below use cv.',
-    '  Scoped secrets & enterprise management (v1.0.29):',
+    '  Scoped secrets & enterprise management (v1.0.31):',
     '    project <list|show|use> - List and inspect scoped secret projects',
     '    secret <get|set|rotate> - Granular per-secret CRUD with envelope encryption',
     '    migrate <plan|apply...> - 7-stage zero-downtime migration from raw vaults',
@@ -1847,7 +1847,7 @@ const REPL_RESPONSES = {
     '    clear                - Clear terminal log drawer'
   ],
   secret: [
-    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.29):',
+    'Discrete scoped-secret lifecycle with envelope encryption (v1.0.31):',
     '  cv secret set <NAME> [--value <VAL>] [--env <ENV>] [--project <PROJ>]',
     '  cv secret get <NAME> [--meta] [--env <ENV>] [--project <PROJ>]',
     '  cv secret list [--tag <TAG>] [--status active] [--env <ENV>]',
@@ -1859,7 +1859,7 @@ const REPL_RESPONSES = {
     '  wraps DEK with project KEK, and appends a tamper-evident entry to audit_chain.'
   ],
   project: [
-    'Scoped project boundary management (v1.0.29):',
+    'Scoped project boundary management (v1.0.31):',
     '  cv project list [--endpoint <URL>] [--token <TOKEN>]',
     '  cv project show <PROJECT_SLUG>',
     '  cv project use <PROJECT_SLUG>',
@@ -1868,14 +1868,14 @@ const REPL_RESPONSES = {
     '  are scoped strictly within their parent project to prevent cross-project disclosure.'
   ],
   scope: [
-    'Cryptographic scope tokens and DPoP authorization (v1.0.29):',
+    'Cryptographic scope tokens and DPoP authorization (v1.0.31):',
     '  cv scope token [--env <ENV>] [--project <PROJ>] [--ttl <SECONDS>]',
     '  What it really does: Issues a signed HMAC scope token (cvst1...) with embedded',
     '  claims (tenant, project, environment, allowed repos). Client HTTP calls attach',
     '  asymmetric DPoP-Lite proofs so stolen tokens cannot be replayed from other hosts.'
   ],
   migrate: [
-    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.29):',
+    'Zero-downtime, idempotent 7-stage migration ledger (v1.0.31):',
     '  cv migrate plan [--vault <DIR>] [--project <PROJ>] [--default-env <ENV>]',
     '  cv migrate apply --migration-id <ID> [--project <PROJ>]',
     '  cv migrate verify --migration-id <ID> [--project <PROJ>]',
@@ -1885,7 +1885,7 @@ const REPL_RESPONSES = {
     '  credential before atomic pointer cutover, and crypto-shreds legacy plaintext.'
   ],
   repo: [
-    'Immutable VCS repository bindings (v1.0.29):',
+    'Immutable VCS repository bindings (v1.0.31):',
     '  cv repo bind --project <PROJ> --provider <github|gitlab|bitbucket> --repo-id <NUMERIC_ID> --name <ORG/REPO> --url <URL>',
     '  cv repo list [--project <PROJ>]',
     '  What it really does: Binds projects to Git repositories by immutable numeric provider ID',
@@ -1893,7 +1893,7 @@ const REPL_RESPONSES = {
     '  without invalidating scoped secret bindings, verified by signed HMAC-SHA256 webhooks.'
   ],
   context: [
-    'Local developer workspace context pinning (v1.0.29):',
+    'Local developer workspace context pinning (v1.0.31):',
     '  cv context show',
     '  cv context set --project <PROJ> --env <ENV>',
     '  cv context clear',
@@ -1939,7 +1939,7 @@ const REPL_RESPONSES = {
     '  delta estimate for the next push. Values stay masked by default.'
   ],
   anchor: [
-    'Runs on your machine against your vault + the CipherChain PoA quorum (v1.0.29):',
+    'Runs on your machine against your vault + the CipherChain PoA quorum (v1.0.31):',
     '  cv anchor [--head <CID>] [--rotate-to <PUBKEYS>] [--daemon] [--interval <SECS>]',
     '  What it really does: computes SHA-256("CIPHERVAULT-ANCHOR-V1" || salt || head_cid)',
     '  and submits the salted commitment to the native CipherChain Proof-of-Authority ledger',
@@ -1947,27 +1947,27 @@ const REPL_RESPONSES = {
     '  Verify any real anchor with: cv verify-anchor [--head <CID>]'
   ],
   verify_anchor: [
-    'Runs on your machine against the CipherChain PoA ledger (v1.0.29):',
+    'Runs on your machine against the CipherChain PoA ledger (v1.0.31):',
     '  cv verify-anchor [--head <CID>]',
     '  What it really does: fetches the sovereign CipherChain receipt and verifies',
     '  the Merkle inclusion proof against header.tx_root plus Ed25519 validator',
     '  quorum signatures (2N/3 + 1) on chain 777777 (ciphervault-sovereign-1).'
   ],
   genesis: [
-    'Generate deterministic CipherChain genesis configuration (v1.0.29):',
+    'Generate deterministic CipherChain genesis configuration (v1.0.31):',
     '  cv genesis --validators <PUBKEY1,PUBKEY2,...> [--chain-id ciphervault-sovereign-1] [--output genesis.json]',
     '  What it really does: builds the canonical Block 0 genesis specification with',
     '  validator Ed25519 public keys and initial state root for sovereign PoA operators.'
   ],
   update: [
-    'Self-update the CipherVault CLI & companion binaries (v1.0.29):',
+    'Self-update the CipherVault CLI & companion binaries (v1.0.31):',
     '  cv update [--version <TAG>] [--role <full|dev|node>] [--check]',
     '  What it really does: queries the latest GitHub release, downloads SHA256SUMS.txt',
     '  and SHA256SUMS.txt.sig, verifies the Ed25519 release signature (key c34d6bb1a158184d)',
     '  and SHA-256 archive digest before replacing cv and ciphervault atomically.'
   ],
   release: [
-    'Release engineering & cryptographic signing commands (v1.0.29):',
+    'Release engineering & cryptographic signing commands (v1.0.31):',
     '  cv release keygen --out <KEY_PATH>',
     '  cv release sign --key <KEY_PATH> --file SHA256SUMS.txt',
     '  cv release verify --file SHA256SUMS.txt --sig SHA256SUMS.txt.sig',
@@ -2016,7 +2016,7 @@ const REPL_RESPONSES = {
     '  Drill it first: cv recovery test --kit <KIT.txt> --to <TEST_DIR>'
   ],
   recovery: [
-    'Sovereign clean-machine recovery & passphrase key backup (v1.0.29):',
+    'Sovereign clean-machine recovery & passphrase key backup (v1.0.31):',
     '  cv recovery key-backup --kit <KIT.txt> [--replicas N]',
     '  cv recovery key-restore --locator <HEX_SHA256> [--output <PATH>]',
     '  cv recovery test --kit <KIT.txt> --to <TEST_DIR>',
@@ -2026,7 +2026,7 @@ const REPL_RESPONSES = {
     '  Zero server unwrap oracle — restore on any clean machine with only your memorable passphrase.'
   ],
   mfa: [
-    'Enforced Multi-Factor Authentication & Session Binding (v1.0.29):',
+    'Enforced Multi-Factor Authentication & Session Binding (v1.0.31):',
     '  Managed account-side: enroll a device/passkey plus a TOTP authenticator,',
     '  then approve scoped sessions with a fresh TOTP step-up (strict attempt limits).',
     '  What it really does: Enforces RFC 6238 TOTP step-up authentication after passkey sign-in.',
@@ -2252,12 +2252,12 @@ function closeReplDrawer() {
    10. Install Snippet Tabs & One-Click Copy
    ============================================================================== */
 const INSTALL_SNIPPETS = {
-  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.30)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.30)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
-  cargo: `# Build and install standalone CLI directly from Git source (v1.0.30)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
-  brew: `# Install CipherVault on macOS or Linux via Homebrew (Release v1.0.28)\nbrew tap samuel-1-avson/ciphervault https://github.com/samuel-1-avson/CipherVault\nbrew install ciphervault`,
-  scoop: `# Install CipherVault on Windows via Winget or Scoop (Release v1.0.30)\n# Option A: Winget (Standard Windows Package Manager)\nwinget install CipherVault\n\n# Option B: Scoop\nscoop bucket add ciphervault https://github.com/samuel-1-avson/CipherVault\nscoop install ciphervault`,
-  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.29)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
+  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.31)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.31)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  cargo: `# Build and install standalone CLI directly from Git source (v1.0.31)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  brew: `# Homebrew/Scoop/Winget packages are not published yet (manifests live in dist/package-managers).\n# Use the installer instead (macOS/Linux):\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  scoop: `# Winget/Scoop packages are not published yet (manifests live in dist/package-managers).\n# Use the PowerShell installer instead (Windows):\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.31)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
 function initInstallSnippets() {
@@ -2295,19 +2295,19 @@ function initInstallSnippets() {
   const HERO_SNIPPETS = {
     cargo: {
       cmd: 'cargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli',
-      label: 'RECOMMENDED (RUST 1.89+)'
+      label: 'FROM SOURCE (RUST 1.89+, SEVERAL MINUTES)'
     },
     win: {
       cmd: 'irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex',
       label: 'WINDOWS (POWERSHELL)'
     },
     brew: {
-      cmd: 'brew install ciphervault',
-      label: 'MACOS / LINUX (HOMEBREW)'
+      cmd: 'curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash',
+      label: 'MACOS / LINUX (INSTALLER — HOMEBREW TAP COMING SOON)'
     },
     winget: {
-      cmd: 'winget install CipherVault',
-      label: 'WINDOWS (WINGET / SCOOP)'
+      cmd: 'irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex',
+      label: 'WINDOWS (POWERSHELL — WINGET/SCOOP COMING SOON)'
     },
     nix: {
       cmd: 'curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash',

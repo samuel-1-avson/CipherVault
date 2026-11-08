@@ -23,13 +23,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --locked --version 0.22.2
 
       - name: Audit Rust dependencies
         shell: bash
         run: |
           # One time-limited maintenance exception; vulnerabilities remain errors.
-          # See docs/DEPENDENCY_AUDIT.md for the Linux libp2p dependency path.
+          # OWNER: repo maintainer — review before 2026-12-31 (remove the
+          # RUSTSEC-2024-0436 ignore once the libp2p paste path is fixed
+          # upstream or the dependency is dropped). See docs/DEPENDENCY_AUDIT.md.
           if [[ "$(date -u +%F)" > "2026-12-31" ]]; then
             echo "Review the expired RUSTSEC-2024-0436 maintenance exception before continuing."
             exit 1
@@ -77,6 +79,20 @@ jobs:
           exit-code: "1"
           skip-files: secrets.env
           skip-dirs: .git,target,dist,.ciphervault,secrets,operator-data-1,operator-data-2,operator-data-3
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   automated-verification:
     name: Automated Cryptographic & Security Verification Matrix

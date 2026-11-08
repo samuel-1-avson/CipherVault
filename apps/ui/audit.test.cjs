@@ -953,7 +953,8 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(shellHtml.includes('data-code="ciphervault recover --kit recovery_kit.txt --to ./restored"'), 'Secret copy button must copy the recovery command');
   assert(!shellHtml.includes('>Reveal Secret<'), 'Secret toggle must not promise a reveal');
   assert(!shellHtml.includes('to Arbitrum One'), 'Anchor copy must not claim mainnet');
-  for (const dl of ['id="btn-open-cli-downloads"', 'id="modal-cli-downloads"', 'releases/download/v1.0.29/cv.exe', 'releases/download/v1.0.29/ciphervault.exe', 'releases/download/v1.0.29/ciphervault-v1.0.29-x86_64-pc-windows-msvc.zip', 'releases/download/v1.0.29/ciphervault-dev-v1.0.29-x86_64-pc-windows-msvc.zip', 'releases/download/v1.0.29/ciphervault-node-v1.0.29-x86_64-pc-windows-msvc.zip']) { assert(shellHtml.includes(dl), `Vault UI shell must include v1.0.29 CLI download marker: ${dl}`); }
+  const cargoVersion = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'Cargo.toml'), 'utf8').match(/\[workspace\.package\][\s\S]*?version = "([^"]+)"/)[1];
+  for (const dl of ['id="btn-open-cli-downloads"', 'id="modal-cli-downloads"', `releases/download/v${cargoVersion}/cv.exe`, `releases/download/v${cargoVersion}/ciphervault.exe`, `releases/download/v${cargoVersion}/ciphervault-v${cargoVersion}-x86_64-pc-windows-msvc.zip`, `releases/download/v${cargoVersion}/ciphervault-dev-v${cargoVersion}-x86_64-pc-windows-msvc.zip`, `releases/download/v${cargoVersion}/ciphervault-node-v${cargoVersion}-x86_64-pc-windows-msvc.zip`]) { assert(shellHtml.includes(dl), `Vault UI shell must include v${cargoVersion} CLI download marker: ${dl}`); }
 
   console.log('Dashboard behavior, DOM, accessibility and session-bound MFA regressions passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

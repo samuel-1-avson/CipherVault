@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version: v1.0.30](https://img.shields.io/badge/Version-v1.0.30-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.31](https://img.shields.io/badge/Version-v1.0.31-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
@@ -158,7 +158,7 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 
 | Component | Path | Language / Tech | Primary Responsibility |
 |---|---|---|---|
-| **CLI & Host** | `apps/cli` | Rust (Clap, Tokio, Axum) | Developer CLI (36 commands), embedded dashboard server, and Ratatui TUI host. |
+| **CLI & Host** | `apps/cli` | Rust (Clap, Tokio, Axum) | Developer CLI (40+ commands), embedded dashboard server, and Ratatui TUI host. |
 | **Agent Daemon** | `apps/agent` | Rust (Notify) | Autonomous background file watcher with debounced coherent snapshot capture. |
 | **Web Dashboard** | `apps/ui` | HTML5, CSS3, Vanilla JS | Embedded visual secrets explorer, telemetry viewer, diff viewer, and Shamir simulator. |
 | **Crypto Core** | `crates/crypto` | Rust (XChaCha20, Ed25519, Dalek) | AEAD primitives, custom Blake2b KDF, constant-time $\text{GF}(2^8)$ Shamir, sealed boxes, PC/SC PIV driver. |
@@ -247,24 +247,12 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
 curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
 ```
 
-> Private repo: the commands above need a token until the repo is public.
-> Create a fine-grained personal access token with **Contents: read-only**
-> on this repo, export it as `CIPHERVAULT_GITHUB_TOKEN` (`GH_TOKEN` /
-> `GITHUB_TOKEN` also work), and add the auth header to the bootstrap
-> fetch — the installer reuses the variable for the release download:
->
-> ```powershell
-> $env:CIPHERVAULT_GITHUB_TOKEN = '<paste-token-here>'
-> $h = @{ Authorization = "Bearer $env:CIPHERVAULT_GITHUB_TOKEN" }
-> irm -Headers $h https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex
-> ```
->
-> ```bash
-> export CIPHERVAULT_GITHUB_TOKEN='<paste-token-here>'
-> curl -fsSL -H "Authorization: Bearer $CIPHERVAULT_GITHUB_TOKEN" \
->   https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
-> ```
->
+> This repo is public, so the installers above work without a token.
+> For a private fork, create a fine-grained personal access token with
+> **Contents: read-only**, export it as `CIPHERVAULT_GITHUB_TOKEN`
+> (`GH_TOKEN` / `GITHUB_TOKEN` also work), and pass it as an
+> `Authorization: Bearer …` header on the bootstrap fetch — the
+> installer reuses the variable for the release download, and
 > `ciphervault update` reads the same variable.
 
 ---
@@ -333,39 +321,23 @@ cv completions fish > ~/.config/fish/completions/cv.fish
 
 ---
 
-## ⚡ Quickstart Guide
+## ⚡ Quickstart Guide (canonical — 5 minutes)
 
-### 1. Start a Local 3-Node Storage Cluster
+One path, start to finish. Self-hosted fleets and the public operator
+network are *Advanced* (below); you do not need a cluster for this.
 
-CipherVault replicates encrypted chunks across independent storage operators. For local development or testing, spin up a 3-node cluster using Docker Compose:
-
-```bash
-# Start 3 storage operators, maintenance scheduler, and dashboard
-docker compose up -d
-```
-
-*(Alternatively, run three local operator instances manually: `ciphervault-operator --port 8201 --data-dir ./data/op1 --operator-id op_8201`)*
-
----
-
-### 2. Initialize a Vault in Any Project
-
-Navigate to any project directory containing confidential files (`.env`, certificates, tokens):
+### 1. Initialize a Vault in Any Project
 
 ```bash
 cd ~/my-project
-
-# Initialize vault with the local 3-node operator cluster
-ciphervault init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://127.0.0.1:8203 --import-gitignore
+ciphervault init
 ```
 
 > [!IMPORTANT]
 > **RECORD YOUR EMERGENCY RECOVERY KIT!**
-> CipherVault will display your **Offline Emergency Recovery Kit** (containing Master Secret $R$). Write this key down and store it in a secure location. In accordance with CipherVault's zero-disk recovery policy, $R$ is immediately scrubbed from volatile RAM and is never written unencrypted to disk.
+> CipherVault will display your **Offline Emergency Recovery Kit** (containing Master Secret $R$). Write it down and store it offline. $R$ is scrubbed from RAM immediately and never written unencrypted to disk. `init` probes your configured operators for reachability but never fails on it.
 
----
-
-### 3. Track Confidential Files & Capture Encrypted Snapshot
+### 2. Track Confidential Files & Capture an Encrypted Snapshot
 
 ```bash
 # Track confidential files (automatically adds them to .gitignore)
@@ -374,35 +346,61 @@ ciphervault track .env certs/server.key config/credentials.json
 # Check vault status and tracked files
 ciphervault status
 
-# Slice (FastCDC), encrypt (XChaCha20-Poly1305), and replicate snapshot across all 3 operators
-ciphervault push -m "Initial production environment"
+# Slice (FastCDC), encrypt (XChaCha20-Poly1305), seal — locally for now
+ciphervault push --local -m "Initial production environment"
 ```
 
-Every push performs a per-object **Proof-of-Storage** challenge readback, both as pre-upload dedup (objects with a valid proof are not re-uploaded) and as mandatory post-upload verification before a replica counts toward quorum.
+### 3. Zero-Disk In-Memory Execution (`ciphervault run`)
+
+See §4 below: `run` injects secrets into your command's environment in
+RAM without writing plaintext to disk. On a fresh vault this is legacy
+snapshot mode (`--legacy` acknowledges it); `ciphervault migrate plan`
+adopts scoped secrets when you're ready.
+
+### Advanced: replicate to a fleet
+
+Replicated pushes (`ciphervault push` without `--local`) need operators
+that have **enrolled this device** — a fresh vault's first remote push
+fails with an enrollment/quorum message that tells you the next steps
+(`push --local` now, `ciphervault doctor`, fleet enrollment via
+`ciphervault invite --help`). Self-hosted:
+
+```bash
+# 3 local operators (loopback on the host), maintenance, dashboard
+docker compose up -d
+ciphervault init --operators http://127.0.0.1:8201 http://127.0.0.1:8202 http://127.0.0.1:8203 --import-gitignore
+```
+
+Every replicated push performs a per-object Proof-of-Storage challenge
+readback, both as pre-upload dedup (objects with a valid *signed* proof
+receipt are not re-uploaded) and as mandatory post-upload verification
+before a replica counts toward quorum. Honest naming: this proves an
+operator can produce the object on demand at challenge time — see
+`docs/CURRENT_SECURITY_GUARANTEES.md` for exactly what it does not prove.
 
 ---
 
 ### 4. Zero-Disk In-Memory Execution (`ciphervault run`)
 
-> **New projects start elsewhere:** bare snapshot-mode `run` (below) is legacy and prints a `LEGACY_PATH_DEPRECATED` warning. Run `ciphervault migrate plan` first to adopt scoped secrets, then `run` resolves from your project — or pass `--legacy` to keep the old behavior explicitly.
+> **New projects start elsewhere:** bare snapshot-mode `run` (below) is legacy and prints a `LEGACY_PATH_DEPRECATED` warning. Run `ciphervault migrate plan` first to adopt scoped secrets, then `run` resolves from your project — or pass `--legacy` to keep the old behavior explicitly (examples below use the explicit form so they work on a fresh Quickstart vault).
 
 Run your applications with secrets directly injected into their process environment in volatile RAM **without ever writing plaintext `.env` files to disk**:
 
 ```bash
 # Node.js
-ciphervault run -- npm start
+ciphervault run --legacy -- npm start
 
 # Python
-ciphervault run -- python main.py
+ciphervault run --legacy -- python main.py
 
 # Docker Compose
-ciphervault run -- docker compose up
+ciphervault run --legacy -- docker compose up
 
 # Hermetic isolation (strip host environment variables)
-ciphervault run --no-inherit -- python script.py
+ciphervault run --legacy --no-inherit -- python script.py
 
 # Dry-run inspection (view decrypted variable keys without exposing values)
-ciphervault run --dry-run -- node server.js
+ciphervault run --legacy --dry-run -- node server.js
 ```
 
 ---
@@ -438,6 +436,7 @@ ciphervault tui
 * **`[4] Operators`**: Real-time roundtrip latency gauges, healthy/degraded replica states, and PoS status.
 * **`[5] FastCDC`**: Content-defined chunk distributions and deduplication efficiency graphs.
 * **`[6] Token`**: Hardware token reader presence, PIV slot status, and touch policies.
+* **`[7] Explorer`**: Public checkpoint feed, cluster health, and object quorum lookup.
 * **Hotkeys**: Press `[p]` to commit and push a new snapshot; press `[a]` to anchor to CipherChain; press `[q]` to quit.
 
 ---
@@ -450,7 +449,7 @@ Launch the local web dashboard for visual exploration:
 ciphervault ui --port 8080
 ```
 
-Open **`http://127.0.0.1:8080`** in your browser to inspect chunk graphs, review telemetry, and test recovery ceremonies.
+Open **`http://127.0.0.1:8080`** in your browser to inspect chunk graphs, review telemetry, and test recovery ceremonies. (A `--port` implies `--local`; bare `ciphervault ui` opens the public cloud explorer instead, and `--serve` runs the public read-only explorer server.)
 
 ---
 
@@ -683,6 +682,17 @@ cargo test -p ciphervault-chain -p ciphervault-cli
 ```
 
 ---
+
+## 🤖 Use with Hermes Agent
+
+CipherVault ships a native [Hermes Agent](https://hermes-agent.nousresearch.com) plugin (`plugins/ciphervault/`): six tools (status, sprawl scan, RAM-only run, encrypted push, recovery drill, redact), a `pre_tool_call` leak guard that blocks secret reads and dirty git operations, a result scrubber, and a secret source so Hermes' own environment can come from your vault. Values never enter the model context.
+
+```bash
+hermes plugins install ciphervault
+hermes ciphervault bootstrap   # pinned, checksum-verified CLI (Windows)
+```
+
+See [plugins/ciphervault/README.md](plugins/ciphervault/README.md) for the full disclosure and demo script.
 
 ## 📚 Further Documentation
 

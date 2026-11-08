@@ -228,6 +228,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -300,6 +302,16 @@ jobs:
           test "$(head -n 1 dist-release/SHA256SUMS.txt.sig)" = "CIPHERVAULT-RELEASE-SIG-V2" || { echo "ERROR: release signer must emit V2 authenticated tags" >&2; exit 1; }
           ./ciphervault-signer release verify --tag "$TAG" --sums dist-release/SHA256SUMS.txt --sig dist-release/SHA256SUMS.txt.sig
           rm -f ./ciphervault-signer
+
+      - name: Attest build provenance for release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist-release/*.zip
+            dist-release/*.tar.gz
+            dist-release/ciphervault.exe
+            dist-release/cv.exe
+            dist-release/SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
