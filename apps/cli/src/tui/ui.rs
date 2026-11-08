@@ -29,7 +29,17 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
 
     render_header(frame, app, chunks[0]);
 
-    if !app.is_initialized {
+    if !app.is_initialized
+        && app.load_attempted
+        && app.active_tab == TuiTab::Overview
+        && app.confirm_action.is_none()
+        && !app.show_help
+        && !app.show_track_modal
+        && !app.show_explorer_search_modal
+        && !app.show_update_modal
+        && !app.show_snapshot_modal
+        && !app.show_diff_modal
+    {
         render_onboarding(frame, app, chunks[1]);
         render_footer(frame, app, chunks[2]);
         return;
@@ -2717,6 +2727,7 @@ mod tests {
     #[test]
     fn overview_reports_operator_health_honestly() {
         let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.is_initialized = true; // simulate a loaded vault (else onboarding shows)
         app.switch_tab(TuiTab::Overview);
         app.operators.clear();
         let text = drawn_text(&mut app, 140, 44);
@@ -2903,12 +2914,16 @@ mod tests {
         app.switch_tab(TuiTab::Overview);
         app.vault_id_hex = "Not Initialized (Run 'ciphervault init')".into();
         let text = drawn_text(&mut app, 140, 44);
-        assert!(text.contains("Not Initialized (Run 'ciphervault init')"));
+        // Uninitialized apps now get the onboarding runway, which must
+        // still point at init in plain language.
+        assert!(text.contains("No CipherVault in this directory yet"), "{text}");
+        assert!(text.contains("ciphervault init"), "{text}");
     }
 
     #[test]
     fn overview_reports_unpolled_operators_as_polling() {
         let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.is_initialized = true; // simulate a loaded vault (else onboarding shows)
         app.switch_tab(TuiTab::Overview);
         app.operators = vec![OperatorHealthItem {
             endpoint: "https://op1.example".into(),

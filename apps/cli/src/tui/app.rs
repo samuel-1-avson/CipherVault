@@ -498,6 +498,9 @@ pub struct TuiApp {
 
     // Vault metadata
     pub is_initialized: bool,
+    /// True once a vault load has actually been attempted (distinguishes
+    /// "no vault here" from a freshly constructed, never-refreshed app).
+    pub load_attempted: bool,
     pub vault_id_hex: String,
     pub active_epoch: u64,
     pub head_cid_hex: String,
@@ -626,6 +629,7 @@ impl TuiApp {
             last_status_update: Instant::now(),
 
             is_initialized: false,
+            load_attempted: false,
             vault_id_hex: "Not Initialized".into(),
             active_epoch: 0,
             head_cid_hex: "None".into(),
@@ -746,6 +750,7 @@ impl TuiApp {
     }
 
     pub fn refresh_local_state(&mut self) {
+        self.load_attempted = true;
         self.refresh_account_state();
         let store_result = crate::get_vault_store();
         match store_result {
