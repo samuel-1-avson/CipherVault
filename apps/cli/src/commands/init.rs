@@ -129,12 +129,8 @@ pub(crate) async fn cmd_init(
         // `--force` is recoverable even when the operator fat-fingers it.
         let stamp = Utc::now().format("%Y%m%d-%H%M%S");
         let backup = vault_dir.join(format!("{DB_FILE}.bak.{stamp}"));
-        fs::copy(&db_path, &backup).with_context(|| {
-            format!(
-                "backing up existing vault DB to '{}'",
-                backup.display()
-            )
-        })?;
+        fs::copy(&db_path, &backup)
+            .with_context(|| format!("backing up existing vault DB to '{}'", backup.display()))?;
         println!(
             "  Previous vault DB backed up to: {}",
             backup.display().to_string().yellow()
@@ -301,7 +297,9 @@ pub(crate) async fn cmd_init(
     println!();
     println!(
         "{}",
-        "Laptop-loss safety (do this today, not someday):".bold().yellow()
+        "Laptop-loss safety (do this today, not someday):"
+            .bold()
+            .yellow()
     );
     println!("  • Passphrase key-backup for clean-machine recovery without paper:");
     println!("      ciphervault recovery key-backup --kit <your saved kit file>");

@@ -460,17 +460,16 @@ pub(crate) fn cmd_device_export_key(out: PathBuf) -> Result<()> {
     let plaintext =
         Zeroizing::new(serde_json::to_vec(&bundle).context("encoding device key bundle")?);
     #[cfg(debug_assertions)]
-    let passphrase: Zeroizing<String> =
-        match std::env::var("CIPHERVAULT_TEST_PASSPHRASE").ok() {
-            Some(pass) if !pass.is_empty() => {
-                eprintln!("WARNING: using TEST-ONLY debug passphrase source (never for real backups)");
-                if pass.len() < 12 {
-                    bail!("test passphrase must be at least 12 characters");
-                }
-                Zeroizing::new(pass)
+    let passphrase: Zeroizing<String> = match std::env::var("CIPHERVAULT_TEST_PASSPHRASE").ok() {
+        Some(pass) if !pass.is_empty() => {
+            eprintln!("WARNING: using TEST-ONLY debug passphrase source (never for real backups)");
+            if pass.len() < 12 {
+                bail!("test passphrase must be at least 12 characters");
             }
-            _ => prompt_bundle_passphrase_pair()?,
-        };
+            Zeroizing::new(pass)
+        }
+        _ => prompt_bundle_passphrase_pair()?,
+    };
     #[cfg(not(debug_assertions))]
     let passphrase: Zeroizing<String> = prompt_bundle_passphrase_pair()?;
     let envelope = seal_passphrase_backup(passphrase.as_bytes(), &plaintext)
@@ -481,7 +480,11 @@ pub(crate) fn cmd_device_export_key(out: PathBuf) -> Result<()> {
         .with_context(|| format!("writing bundle to '{}'", out.display()))?;
     super::recovery_key::restrict_permissions(&out)?;
     println!("{}", "Device key bundle exported.".green().bold());
-    println!("  Wrote '{}' ({} epoch keys sealed)", out.display(), bundle.epoch_keys.len());
+    println!(
+        "  Wrote '{}' ({} epoch keys sealed)",
+        out.display(),
+        bundle.epoch_keys.len()
+    );
     println!(
         "{}",
         "Guard this file: it unlocks every snapshot this device can read. It does NOT replace your recovery kit.".yellow()
@@ -492,8 +495,7 @@ pub(crate) fn cmd_device_export_key(out: PathBuf) -> Result<()> {
 /// Prompts for a new bundle passphrase with confirmation (12-char floor).
 fn prompt_bundle_passphrase_pair() -> Result<Zeroizing<String>> {
     use anyhow::Context;
-    let first =
-        rpassword::prompt_password("Bundle passphrase: ").context("passphrase input")?;
+    let first = rpassword::prompt_password("Bundle passphrase: ").context("passphrase input")?;
     let mut second =
         rpassword::prompt_password("Confirm passphrase: ").context("passphrase input")?;
     if first != second {
@@ -517,23 +519,22 @@ pub(crate) fn cmd_device_import_keys(bundle_path: PathBuf) -> Result<()> {
     let envelope = std::fs::read(&bundle_path)
         .with_context(|| format!("reading bundle '{}'", bundle_path.display()))?;
     #[cfg(debug_assertions)]
-    let passphrase: Zeroizing<String> =
-        match std::env::var("CIPHERVAULT_TEST_PASSPHRASE").ok() {
-            Some(pass) if !pass.is_empty() => {
-                eprintln!("WARNING: using TEST-ONLY debug passphrase source (never for real backups)");
-                Zeroizing::new(pass)
-            }
-            _ => Zeroizing::new(
-                rpassword::prompt_password("Bundle passphrase: ")
-                    .context("passphrase input")?,
-            ),
-        };
+    let passphrase: Zeroizing<String> = match std::env::var("CIPHERVAULT_TEST_PASSPHRASE").ok() {
+        Some(pass) if !pass.is_empty() => {
+            eprintln!("WARNING: using TEST-ONLY debug passphrase source (never for real backups)");
+            Zeroizing::new(pass)
+        }
+        _ => Zeroizing::new(
+            rpassword::prompt_password("Bundle passphrase: ").context("passphrase input")?,
+        ),
+    };
     #[cfg(not(debug_assertions))]
     let passphrase: Zeroizing<String> = Zeroizing::new(
         rpassword::prompt_password("Bundle passphrase: ").context("passphrase input")?,
     );
-    let plaintext = open_passphrase_backup(passphrase.as_bytes(), &envelope)
-        .map_err(|_| anyhow::anyhow!("could not open bundle: wrong passphrase or corrupted file"))?;
+    let plaintext = open_passphrase_backup(passphrase.as_bytes(), &envelope).map_err(|_| {
+        anyhow::anyhow!("could not open bundle: wrong passphrase or corrupted file")
+    })?;
     drop(passphrase);
     let bundle: DeviceKeyBundle =
         serde_json::from_slice(&plaintext).context("bundle payload is not a device key bundle")?;
@@ -580,7 +581,11 @@ pub(crate) fn cmd_device_import_keys(bundle_path: PathBuf) -> Result<()> {
             .green()
             .bold()
     );
-    println!("  Bundle device: {} ({})", bundle.device_id_hex.cyan(), bundle.device_pk_hex);
+    println!(
+        "  Bundle device: {} ({})",
+        bundle.device_id_hex.cyan(),
+        bundle.device_pk_hex
+    );
     println!(
         "  Note: device identity is informational only — epoch keys are what keep old snapshots readable."
     );

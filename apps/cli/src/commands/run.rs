@@ -475,7 +475,8 @@ async fn cmd_run_snapshot(
     // Snapshot mode is the legacy path (§F-§4): it keeps working behind the
     // `--legacy` compat flag. Warn at most once per day per vault (marker
     // file) so scripts aren't spammed; CIPHERVAULT_LEGACY_WARN=0 opts out.
-    if !legacy && !quiet && !json && std::env::var("CIPHERVAULT_LEGACY_WARN").as_deref() != Ok("0") {
+    if !legacy && !quiet && !json && std::env::var("CIPHERVAULT_LEGACY_WARN").as_deref() != Ok("0")
+    {
         use std::io::Write;
         let marker = std::env::temp_dir().join(format!(
             "ciphervault-legacy-warn-{}",

@@ -42,7 +42,9 @@ pub(crate) fn cmd_recovery_export() -> Result<()> {
     );
     println!(
         "{}",
-        "Lost your paper kit? Work through this triage in order:".yellow().bold()
+        "Lost your paper kit? Work through this triage in order:"
+            .yellow()
+            .bold()
     );
     println!("  1. Paper copy — check the offline location where you stored it at init.");
     println!("  2. Guardian shares — gather M-of-N sheets and run 'recovery split' in reverse via 'recover --shares'.");

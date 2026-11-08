@@ -1128,17 +1128,15 @@ fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
     };
     let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
 
-    let mut text = vec![
-        Line::from(vec![
-            Span::styled("Operators:     ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{reachable}/{total} reachable"),
-                Style::default()
-                    .fg(health_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-    ];
+    let mut text = vec![Line::from(vec![
+        Span::styled("Operators:     ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{reachable}/{total} reachable"),
+            Style::default()
+                .fg(health_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
     if let Some(error) = first_error {
         text.push(Line::from(vec![
             Span::styled("First error:   ", Style::default().fg(Color::Gray)),

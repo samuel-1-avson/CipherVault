@@ -5,7 +5,8 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 use crate::util::{
-    ensure_file_in_gitignore, get_vault_store, remove_file_from_gitignore, scan_gitignore_for_secrets,
+    ensure_file_in_gitignore, get_vault_store, remove_file_from_gitignore,
+    scan_gitignore_for_secrets,
 };
 
 pub(crate) fn cmd_track(
@@ -119,7 +120,8 @@ pub(crate) fn cmd_untrack(paths: Vec<PathBuf>) -> Result<()> {
                 ),
                 Ok(false) => println!(
                     "    ↳ {}",
-                    "Left .gitignore untouched (no exact entry for this path; check wildcards)".dimmed()
+                    "Left .gitignore untouched (no exact entry for this path; check wildcards)"
+                        .dimmed()
                 ),
                 Err(error) => println!(
                     "    ↳ {}",

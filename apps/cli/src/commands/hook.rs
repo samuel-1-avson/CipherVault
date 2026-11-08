@@ -32,12 +32,15 @@ ciphervault hook check --deep
                 );
             }
             let backup = hooks_dir.join("pre-commit.ciphervault.bak");
-            fs::write(&backup, &existing).with_context(|| {
-                format!("backing up existing hook to '{}'", backup.display())
-            })?;
+            fs::write(&backup, &existing)
+                .with_context(|| format!("backing up existing hook to '{}'", backup.display()))?;
             println!(
                 "{}",
-                format!("Backed up existing pre-commit hook to '{}'", backup.display()).yellow()
+                format!(
+                    "Backed up existing pre-commit hook to '{}'",
+                    backup.display()
+                )
+                .yellow()
             );
         }
     }
@@ -394,20 +397,36 @@ mod hook_tests {
     fn gitignore_covers_last_match_wins() {
         // Exact + slash-prefixed.
         assert!(gitignore_covers(".env\n", ".env", ".env"));
-        assert!(gitignore_covers("/sub/nested.env\n", "sub/nested.env", "nested.env"));
+        assert!(gitignore_covers(
+            "/sub/nested.env\n",
+            "sub/nested.env",
+            "nested.env"
+        ));
         // Wildcards.
         assert!(gitignore_covers("*.key\n", "sub/nested.key", "nested.key"));
         assert!(gitignore_covers("**/.env\n", "sub/.env", ".env"));
-        assert!(!gitignore_covers("**/.env\n", "sub/nested.env", "nested.env"));
+        assert!(!gitignore_covers(
+            "**/.env\n",
+            "sub/nested.env",
+            "nested.env"
+        ));
         // Dir prefix.
         assert!(gitignore_covers("secrets/\n", "secrets/a.env", "a.env"));
         // Negation = explicit user decision to track: never flag, even
         // when it cancels an earlier ignore.
-        assert!(gitignore_covers("*.env\n!keep.env\n", "keep.env", "keep.env"));
+        assert!(gitignore_covers(
+            "*.env\n!keep.env\n",
+            "keep.env",
+            "keep.env"
+        ));
         // A later positive rule re-ignores only when no negation matches
         // the same file... a negation anywhere in the file still wins,
         // because it proves explicit intent.
-        assert!(gitignore_covers("*.env\n!keep.env\nkeep.env\n", "keep.env", "keep.env"));
+        assert!(gitignore_covers(
+            "*.env\n!keep.env\nkeep.env\n",
+            "keep.env",
+            "keep.env"
+        ));
         // Comments and blanks never match.
         assert!(!gitignore_covers("# *.env\n\n", "a.env", "a.env"));
     }

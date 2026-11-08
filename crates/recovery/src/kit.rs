@@ -225,9 +225,8 @@ Configured Operators:
         // U-H5: hand copies wrap lines, add spaces/dashes, or drop the
         // endpoint scheme. Strip everything that isn't hex for secrets and
         // accept scheme-less endpoints.
-        let clean_hex = |s: &str| -> String {
-            s.chars().filter(|c| c.is_ascii_hexdigit()).collect()
-        };
+        let clean_hex =
+            |s: &str| -> String { s.chars().filter(|c| c.is_ascii_hexdigit()).collect() };
         while i < lines.len() {
             let line = lines[i];
             if line.starts_with("Vault ID:") {

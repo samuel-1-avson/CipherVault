@@ -338,12 +338,10 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             "/v1/recovery/:locator/records",
             // Anonymous capability-URL reads get their own stricter tier
             // (default 60/min vs 600 global) to bound locator-guessing.
-            get(handlers::get_recovery_records).route_layer(
-                middleware::from_fn_with_state(
-                    HttpRateLimiter::new(recovery_read_limit_per_min()),
-                    http_rate_limit,
-                ),
-            ),
+            get(handlers::get_recovery_records).route_layer(middleware::from_fn_with_state(
+                HttpRateLimiter::new(recovery_read_limit_per_min()),
+                http_rate_limit,
+            )),
         )
         // Dynamic P2P Peer Gossip routes
         .route("/v1/peers/announce", post(handlers::post_peer_announce))

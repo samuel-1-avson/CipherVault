@@ -1181,7 +1181,10 @@ pub(crate) async fn cmd_invite_requests(via: Option<Vec<String>>) -> Result<()> 
             bail!("list join requests via {target}: HTTP {status} {body}");
         }
         let entries = resp.json::<Vec<JoinRequestEntry>>().await?;
-        println!("{}", format!("Inbox {target} ({} request(s)):", entries.len()).bold());
+        println!(
+            "{}",
+            format!("Inbox {target} ({} request(s)):", entries.len()).bold()
+        );
         for entry in &entries {
             println!(
                 "  {} {} {} [{}] contact={:?}",

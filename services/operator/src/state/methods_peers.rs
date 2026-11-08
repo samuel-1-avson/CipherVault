@@ -342,7 +342,10 @@ impl OperatorState {
         *lock_or_recover(&self.join_requests, "join_requests") = records;
     }
 
-    pub(crate) fn persist_join_requests(&self, records: &[JoinRequestRecord]) -> Result<(), String> {
+    pub(crate) fn persist_join_requests(
+        &self,
+        records: &[JoinRequestRecord],
+    ) -> Result<(), String> {
         let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
         self.persist_atomic(&self.join_requests_store_path(), &encoded)
     }

@@ -374,7 +374,9 @@ impl OperatorState {
         let same_key_live = lock
             .values()
             .filter(|record| {
-                record.vault_id_hex.eq_ignore_ascii_case(vault_id_hex.as_str())
+                record
+                    .vault_id_hex
+                    .eq_ignore_ascii_case(vault_id_hex.as_str())
                     && record
                         .public_key_hex
                         .eq_ignore_ascii_case(public_key_hex.as_str())

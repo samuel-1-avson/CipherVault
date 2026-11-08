@@ -378,9 +378,7 @@ pub async fn post_enroll_identity(
         "1" | "true" | "yes"
     );
     let mut permissions = req.permissions;
-    if !admin_grant_allowed
-        && permissions & crate::state::PERMISSION_FLEET_ADMIN != 0
-    {
+    if !admin_grant_allowed && permissions & crate::state::PERMISSION_FLEET_ADMIN != 0 {
         permissions &= !crate::state::PERMISSION_FLEET_ADMIN;
         eprintln!(
             "WARNING: FLEET_ADMIN bit stripped from enrollment (vault {}, key {}...); \
@@ -1124,9 +1122,7 @@ pub async fn get_metrics(
             .as_str(),
         "1" | "true" | "yes"
     );
-    if !public
-        && connect.is_some_and(|ConnectInfo(addr)| !addr.ip().is_loopback())
-    {
+    if !public && connect.is_some_and(|ConnectInfo(addr)| !addr.ip().is_loopback()) {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"code": 403, "error": "metrics are loopback-only"})),

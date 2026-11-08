@@ -630,12 +630,8 @@ pub(crate) fn load_configured_operators() -> Result<Vec<String>> {
     }
     let config_path = get_vault_directory().join(OPERATORS_FILE);
     if config_path.exists() {
-        let content = fs::read_to_string(&config_path).with_context(|| {
-            format!(
-                "reading operator config '{}'",
-                config_path.display()
-            )
-        })?;
+        let content = fs::read_to_string(&config_path)
+            .with_context(|| format!("reading operator config '{}'", config_path.display()))?;
         let ops: Vec<String> = serde_json::from_str(&content).with_context(|| {
             format!(
                 "parsing operator config '{}' as a JSON array of endpoint strings",
@@ -662,8 +658,7 @@ pub(crate) fn get_configured_operators() -> Vec<String> {
     {
         eprintln!(
             "{}",
-            "Note: using operators from CIPHERVAULT_OPERATORS, ignoring operators.json."
-                .yellow()
+            "Note: using operators from CIPHERVAULT_OPERATORS, ignoring operators.json.".yellow()
         );
     }
     match load_configured_operators() {

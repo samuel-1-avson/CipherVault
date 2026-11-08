@@ -175,7 +175,10 @@ enum Commands {
         #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
         reader: Option<String>,
 
-        #[arg(long, help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)")]
+        #[arg(
+            long,
+            help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)"
+        )]
         pin: Option<String>,
     },
 
@@ -250,7 +253,10 @@ enum Commands {
         #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
         reader: Option<String>,
 
-        #[arg(long, help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)")]
+        #[arg(
+            long,
+            help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)"
+        )]
         pin: Option<String>,
 
         #[arg(
@@ -338,7 +344,10 @@ enum Commands {
         #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
         reader: Option<String>,
 
-        #[arg(long, help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)")]
+        #[arg(
+            long,
+            help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)"
+        )]
         pin: Option<String>,
 
         #[arg(
@@ -1824,7 +1833,11 @@ enum InviteSubcommand {
         #[arg(long, help = "Own node endpoint (fetches our fresh descriptor)")]
         node: String,
 
-        #[arg(long, default_value = "", help = "Contact string for the fleet operator (≤140 chars)")]
+        #[arg(
+            long,
+            default_value = "",
+            help = "Contact string for the fleet operator (≤140 chars)"
+        )]
         contact: String,
 
         #[arg(
@@ -2021,7 +2034,11 @@ fn run_on_roomy_thread() {
                 }
                 eprintln!(
                     "{}",
-                    format!("Trace ID: {} (include this when asking for help)", hex::encode(trace)).dimmed()
+                    format!(
+                        "Trace ID: {} (include this when asking for help)",
+                        hex::encode(trace)
+                    )
+                    .dimmed()
                 );
                 std::process::exit(1);
             }
