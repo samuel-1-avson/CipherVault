@@ -236,9 +236,14 @@ impl VaultWatcher {
             .iter()
             .map(|chunk| chunk.payload.len() as u64)
             .sum();
-        // Dry-run must not acknowledge the capture: advancing the
-        // in-memory baseline would make later scans in this process
-        // report "no changes" for files that were never captured.
+        // In-memory acknowledgement only: a dry-run watcher never
+        // persists or captures for real (`dry_run` is fixed at
+        // construction), so advancing this baseline cannot hide a
+        // change from a real capture in this process. It exists so
+        // repeated inspections don't re-report the same edit forever.
+        if self.config.dry_run {
+            self.acknowledge_capture(&output.captured_file_hashes)?;
+        }
         Ok(WatchInspection {
             files: tracked.len(),
             chunks: output.chunks.len(),
