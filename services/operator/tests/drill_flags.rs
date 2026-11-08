@@ -134,7 +134,10 @@ async fn run_daemon_until(
         .arg("--p2p-quic-port")
         .arg("0")
         .args(extra_args)
-        .env("CIPHERVAULT_OPERATOR_SERVICE_TOKEN", "drill-token")
+        .env(
+            "CIPHERVAULT_OPERATOR_SERVICE_TOKEN",
+            "drill-token-0123456789abcdef0123",
+        )
         .env("CIPHERVAULT_SWARM_DEBUG", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

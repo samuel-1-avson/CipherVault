@@ -387,6 +387,12 @@ impl OperatorState {
             file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
+            if secure {
+                // Windows has no mode bits: apply the owner-only DACL
+                // explicitly (it was a no-op before, leaving bearer
+                // tokens at default ACLs). Fails closed.
+                ciphervault_file_lock::lock_secret_file(&temp)?;
+            }
             fs::rename(&temp, path)?;
             #[cfg(unix)]
             std::fs::File::open(path.parent().expect("lease temp path always has a parent"))?

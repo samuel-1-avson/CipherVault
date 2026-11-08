@@ -8,6 +8,7 @@ license.workspace = true
 description = "Sovereign Proof-of-Authority consensus ledger and Merkle state commitment engine for CipherVault"
 
 [dependencies]
+ciphervault-file-lock = { path = "../file-lock" }
 ciphervault-crypto.workspace = true
 ciphervault-format.workspace = true
 sha2.workspace = true

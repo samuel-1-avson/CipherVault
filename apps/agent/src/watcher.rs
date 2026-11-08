@@ -236,9 +236,9 @@ impl VaultWatcher {
             .iter()
             .map(|chunk| chunk.payload.len() as u64)
             .sum();
-        if self.config.dry_run {
-            self.acknowledge_capture(&output.captured_file_hashes)?;
-        }
+        // Dry-run must not acknowledge the capture: advancing the
+        // in-memory baseline would make later scans in this process
+        // report "no changes" for files that were never captured.
         Ok(WatchInspection {
             files: tracked.len(),
             chunks: output.chunks.len(),

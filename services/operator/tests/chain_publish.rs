@@ -21,6 +21,7 @@ fn client_tx(
     let head_cid = [cid_byte; 32];
     let commitment = CommitmentTx::calculate_commitment(&salt, &head_cid);
     let mut tx = CommitmentTx {
+        version: 0,
         vault_id: [0x44; 32],
         salt,
         head_cid,

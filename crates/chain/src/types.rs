@@ -206,6 +206,12 @@ impl BlockHeader {
 /// Salted cryptographic commitment transaction submitted by a vault client or operator.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitmentTx {
+    /// 0/1 (or absent in pre-v1.0.31 JSON) = legacy: salt, head CID and
+    /// vault id are on-chain in plaintext. 2 = private: `vault_id`
+    /// carries a per-anchor pseudonym and `salt`/`head_cid` are zeroed;
+    /// the preimage stays in local checkpoint evidence only.
+    #[serde(default)]
+    pub version: u8,
     pub vault_id: [u8; 32],
     pub salt: [u8; 32],
     pub head_cid: [u8; 32],
@@ -230,11 +236,61 @@ impl CommitmentTx {
         out
     }
 
+    /// Per-anchor vault pseudonym for private (v2) transactions:
+    /// SHA-256("CIPHERVAULT-VAULT-PSEUDONYM-V1" || vault_id || salt).
+    /// Unlinkable across anchors because the salt is per-head.
+    pub fn vault_pseudonym(vault_id: &[u8; 32], salt: &[u8; 32]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"CIPHERVAULT-VAULT-PSEUDONYM-V1");
+        hasher.update(vault_id);
+        hasher.update(salt);
+        let result = hasher.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&result);
+        out
+    }
+
+    /// Builds a private (v2) transaction: only the commitment, a
+    /// per-anchor pseudonym, the client key, nonce and timestamp go
+    /// on-chain. Salt and head CID stay in local checkpoint evidence;
+    /// inclusion is proven against the commitment (see light client).
+    pub fn new_private(
+        vault_id: &[u8; 32],
+        salt: &[u8; 32],
+        head_cid: &[u8; 32],
+        client_pubkey: [u8; 32],
+        nonce: u64,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            version: 2,
+            vault_id: Self::vault_pseudonym(vault_id, salt),
+            salt: [0u8; 32],
+            head_cid: [0u8; 32],
+            commitment: Self::calculate_commitment(salt, head_cid),
+            client_pubkey,
+            signature: [0u8; 64],
+            nonce,
+            timestamp_ms,
+        }
+    }
+
     /// Canonical serialization payload for client signature verification.
     pub fn signing_bytes(&self, chain_id: &str) -> Vec<u8> {
         let mut buf = Vec::with_capacity(128 + chain_id.len());
         buf.extend_from_slice(TX_SIGNING_DOMAIN);
         buf.extend_from_slice(chain_id.as_bytes());
+        if self.version >= 2 {
+            // Private form: salt/head are zeroed and must not be signed
+            // as if they were the preimage; bind the version explicitly.
+            buf.extend_from_slice(&[0x02]);
+            buf.extend_from_slice(&self.vault_id);
+            buf.extend_from_slice(&self.commitment);
+            buf.extend_from_slice(&self.client_pubkey);
+            buf.extend_from_slice(&self.nonce.to_le_bytes());
+            buf.extend_from_slice(&self.timestamp_ms.to_le_bytes());
+            return buf;
+        }
         buf.extend_from_slice(&[0x00]);
         buf.extend_from_slice(&self.vault_id);
         buf.extend_from_slice(&self.salt);
@@ -249,6 +305,9 @@ impl CommitmentTx {
     /// Computes the unique transaction leaf hash for the block's Merkle tree.
     pub fn tx_leaf_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
+        if self.version >= 2 {
+            hasher.update([0x02]);
+        }
         hasher.update(self.vault_id);
         hasher.update(self.commitment);
         hasher.update(self.client_pubkey);
@@ -260,12 +319,17 @@ impl CommitmentTx {
 
     /// Validates the internal commitment derivation and Ed25519 client signature.
     pub fn verify_signature(&self, chain_id: &str) -> Result<(), ChainError> {
-        let expected_commitment = Self::calculate_commitment(&self.salt, &self.head_cid);
-        if expected_commitment != self.commitment {
-            return Err(ChainError::CommitmentMismatch {
-                computed: hex::encode(expected_commitment),
-                declared: hex::encode(self.commitment),
-            });
+        // Private (v2) transactions carry no preimage on-chain, so the
+        // commitment cannot (and must not) be recomputed here; the
+        // signature over the v2 signing bytes is the authenticity check.
+        if self.version < 2 {
+            let expected_commitment = Self::calculate_commitment(&self.salt, &self.head_cid);
+            if expected_commitment != self.commitment {
+                return Err(ChainError::CommitmentMismatch {
+                    computed: hex::encode(expected_commitment),
+                    declared: hex::encode(self.commitment),
+                });
+            }
         }
 
         let verifying_key = VerifyingKey::from_bytes(&self.client_pubkey)

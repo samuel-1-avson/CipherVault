@@ -37,8 +37,8 @@ struct Args {
 
     #[arg(
         long,
-        default_value = "0.0.0.0",
-        help = "IP address for the HTTP API; use 127.0.0.1 for isolated local drills (P2P listeners are separate)"
+        default_value = "127.0.0.1",
+        help = "IP address for the HTTP API (default loopback; pass 0.0.0.0 explicitly to serve other machines — P2P listeners are separate)"
     )]
     bind_address: IpAddr,
 
@@ -261,11 +261,23 @@ fn validate_security_configuration() -> io::Result<()> {
     }
     if let Ok(token) = std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
         if !token.trim().is_empty() && token.trim().len() < 32 {
-            // Warn-only: existing deployments may run short tokens; do not fail closed here.
-            eprintln!(
-                "WARNING: CIPHERVAULT_OPERATOR_SERVICE_TOKEN is shorter than 32 characters; \
-                 use `openssl rand -hex 32` and rotate the token"
-            );
+            // Short tokens are brute-forceable; refuse by default.
+            // Deployments that cannot rotate yet may set
+            // CIPHERVAULT_OPERATOR_ALLOW_SHORT_TOKEN=1 (loudly logged).
+            if std::env::var("CIPHERVAULT_OPERATOR_ALLOW_SHORT_TOKEN").as_deref() == Ok("1") {
+                eprintln!(
+                    "WARNING: CIPHERVAULT_OPERATOR_SERVICE_TOKEN is shorter than 32 characters \
+                     and CIPHERVAULT_OPERATOR_ALLOW_SHORT_TOKEN=1 is set. This is unsafe; \
+                     rotate with `openssl rand -hex 32` as soon as possible."
+                );
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CIPHERVAULT_OPERATOR_SERVICE_TOKEN is shorter than 32 characters; \
+                     rotate it (`openssl rand -hex 32`) or set \
+                     CIPHERVAULT_OPERATOR_ALLOW_SHORT_TOKEN=1 to override temporarily",
+                ));
+            }
         }
     }
     Ok(())
@@ -543,7 +555,7 @@ mod identity_tests {
     #[test]
     fn http_bind_address_supports_loopback_and_rejects_hostnames() {
         let defaults = super::Args::try_parse_from(["ciphervault-operator"]).unwrap();
-        assert_eq!(defaults.bind_address.to_string(), "0.0.0.0");
+        assert_eq!(defaults.bind_address.to_string(), "127.0.0.1");
         for address in ["127.0.0.1", "::1"] {
             let args =
                 super::Args::try_parse_from(["ciphervault-operator", "--bind-address", address])

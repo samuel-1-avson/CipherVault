@@ -224,6 +224,19 @@ impl MultiOperatorPool {
         recovery_records: &[Vec<u8>],
         object_concurrency: usize,
     ) -> Option<([u8; 32], LeaseReceipt)> {
+        // Fetch + pin the operator identity first: the dedup challenge
+        // below must verify the signed receipt, not just compare a
+        // proof hash anyone who read the object could compute.
+        let Ok(info) = client.get_info().await else {
+            return None;
+        };
+        let Ok(pk_bytes) = hex::decode(&info.operator_signing_pk_hex) else {
+            return None;
+        };
+        let Ok(pk) = <[u8; 32]>::try_from(pk_bytes.as_slice()) else {
+            return None;
+        };
+
         // 1. Upload all objects (with bandwidth-conserving deduplication via PoS challenge)
         for chunk in objects.chunks(object_concurrency.max(1)) {
             let uploads = chunk.iter().map(|(cid, data)| async move {
@@ -235,7 +248,7 @@ impl MultiOperatorPool {
                     .challenge_object_pos(token, cid, &challenge_nonce)
                     .await
                 {
-                    Ok(proof) => proof.proof_hex == hex::encode(expected_proof),
+                    Ok(receipt) => receipt.verify(&pk, &expected_proof).is_ok(),
                     Err(_) => false,
                 };
                 if already_present {
@@ -270,16 +283,8 @@ impl MultiOperatorPool {
             }
         };
 
-        // Cryptographically verify operator lease signature
-        let Ok(info) = client.get_info().await else {
-            return None;
-        };
-        let Ok(pk_bytes) = hex::decode(&info.operator_signing_pk_hex) else {
-            return None;
-        };
-        let Ok(pk) = <[u8; 32]>::try_from(pk_bytes.as_slice()) else {
-            return None;
-        };
+        // Cryptographically verify operator lease signature (identity
+        // was fetched and pinned before the upload phase above).
         if receipt.verify(&pk).is_err()
             || receipt.operator_id != info.operator_id
             || receipt.closure_digest_hex != hex::encode(closure_digest)

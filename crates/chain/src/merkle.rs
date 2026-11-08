@@ -112,6 +112,54 @@ impl MerkleTree {
         }
     }
 
+    /// Root of this tree with `appended` leaves added, recomputing
+    /// only the suffix of each layer that can change (the right edge).
+    /// Equal to `MerkleTree::new(leaves ++ appended).root()` — pinned
+    /// by `root_with_appended_matches_full_rebuild` — but O(appended +
+    /// log n) hashes instead of O(n) per call, which is what proposal
+    /// vetting on a long-lived chain needs.
+    pub fn root_with_appended(&self, appended: &[[u8; 32]]) -> [u8; 32] {
+        if appended.is_empty() {
+            return self.root();
+        }
+        if self.is_empty() {
+            return Self::new(appended.to_vec()).root();
+        }
+        let mut current: Vec<[u8; 32]> = self.leaf_hashes.clone();
+        current.extend_from_slice(appended);
+        // First parent index (in the next layer) whose value can differ.
+        let mut affected = self.leaf_hashes.len() / 2;
+        for layer in self.layers.iter().skip(1) {
+            let keep = affected.min(layer.len());
+            let mut next: Vec<[u8; 32]> = layer[..keep].to_vec();
+            let mut i = affected * 2;
+            while i < current.len() {
+                let left = current[i];
+                let right = if i + 1 < current.len() {
+                    current[i + 1]
+                } else {
+                    current[i]
+                };
+                next.push(hash_nodes(&left, &right));
+                i += 2;
+            }
+            current = next;
+            affected /= 2;
+        }
+        while current.len() > 1 {
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for chunk in current.chunks(2) {
+                if chunk.len() == 2 {
+                    next.push(hash_nodes(&chunk[0], &chunk[1]));
+                } else {
+                    next.push(hash_nodes(&chunk[0], &chunk[0]));
+                }
+            }
+            current = next;
+        }
+        current.first().copied().unwrap_or(EMPTY_TREE_ROOT)
+    }
+
     /// Returns the 32-byte Merkle root.
     pub fn root(&self) -> [u8; 32] {
         if self.leaf_hashes.is_empty() {
@@ -223,6 +271,33 @@ mod tests {
             let mut fake_root = root;
             fake_root[31] ^= 0x01;
             assert!(!proof.verify(&fake_root));
+        }
+    }
+}
+
+#[cfg(test)]
+mod appended_tests {
+    use super::*;
+
+    fn leaf(i: u8) -> [u8; 32] {
+        [i; 32]
+    }
+
+    #[test]
+    fn root_with_appended_matches_full_rebuild() {
+        for n in 0..20usize {
+            let base: Vec<[u8; 32]> = (0..n).map(|i| leaf(i as u8)).collect();
+            let tree = MerkleTree::new(base.clone());
+            for m in 0..6usize {
+                let appended: Vec<[u8; 32]> = (0..m).map(|i| leaf(100 + i as u8)).collect();
+                let mut full = base.clone();
+                full.extend_from_slice(&appended);
+                assert_eq!(
+                    tree.root_with_appended(&appended),
+                    MerkleTree::new(full).root(),
+                    "n={n} m={m}"
+                );
+            }
         }
     }
 }

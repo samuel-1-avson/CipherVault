@@ -113,16 +113,39 @@ pub(crate) async fn cmd_anchor(
     };
 
     let now_ms = Utc::now().timestamp_millis() as u64;
-    let mut tx = ciphervault_chain::CommitmentTx {
-        vault_id,
-        salt,
-        head_cid: active_head,
-        commitment,
-        client_pubkey: [0u8; 32],
-        signature: [0u8; 64],
-        nonce: ledger.next_nonce(&device_signer.public_key()),
-        timestamp_ms: now_ms,
+    // Private (v2) commitment transactions keep the salt/head preimage
+    // off-chain. They are only understood by v1.0.31+ validators, so
+    // emission is opt-in until the fleet advertises support:
+    // CIPHERVAULT_ANCHOR_TX_VERSION=2. Local checkpoint evidence keeps
+    // the preimage either way (see below), so proofs keep working.
+    let private_tx = std::env::var("CIPHERVAULT_ANCHOR_TX_VERSION").as_deref() == Ok("2");
+    let mut tx = if private_tx {
+        ciphervault_chain::CommitmentTx::new_private(
+            &vault_id,
+            &salt,
+            &active_head,
+            [0u8; 32],
+            ledger.next_nonce(&device_signer.public_key()),
+            now_ms,
+        )
+    } else {
+        let mut tx = ciphervault_chain::CommitmentTx {
+            version: 0,
+            vault_id,
+            salt,
+            head_cid: active_head,
+            commitment,
+            client_pubkey: [0u8; 32],
+            signature: [0u8; 64],
+            nonce: ledger.next_nonce(&device_signer.public_key()),
+            timestamp_ms: now_ms,
+        };
+        tx.client_pubkey = [0u8; 32];
+        tx
     };
+    if private_tx {
+        println!("  Tx Privacy:        private v2 (preimage stays in local evidence)");
+    }
     device_signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
     println!("  Tx Nonce:          {}", tx.nonce);
 
@@ -132,6 +155,55 @@ pub(crate) async fn cmd_anchor(
         now_ms.saturating_add(10),
         rotation,
     )?;
+    let quorum = validator_set.quorum_threshold();
+    let sigs = proposed_block.header.signatures.len();
+
+    // Federate the proposal BEFORE any local commit: with a
+    // multi-validator set this device alone cannot reach quorum, and
+    // committing locally first would fork from the fleet. Operators
+    // vote through the chain sync hub; the block commits when a quorum
+    // certificate is assembled there (local catch-up follows sync).
+    let operators = crate::util::get_explicitly_configured_operators();
+    let mut accepted = 0usize;
+    if !operators.is_empty() {
+        let envelope = ciphervault_chain::ChainSyncEnvelope::seal(
+            &device_signer,
+            ciphervault_chain::ChainSyncMsg::Proposal(ciphervault_chain::ProposalMsg {
+                block: proposed_block.clone(),
+            }),
+        );
+        let body = serde_json::to_value(&envelope)?;
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        accepted = publish_proposal_to_operators(&http, &operators, &body).await;
+    }
+
+    if sigs < quorum {
+        // Persist the pending proposal for inspection/catch-up; do NOT
+        // save checkpoint evidence (nothing is anchored yet).
+        let pending_path = chain_dir.join("pending_proposal.json");
+        if let Ok(raw) = serde_json::to_string_pretty(&proposed_block) {
+            let _ = std::fs::write(&pending_path, raw);
+        }
+        println!("  Validator Quorum:  {sigs}/{quorum} signatures — NOT committed locally");
+        println!(
+            "  Fleet Publish:     {accepted}/{} operator(s) accepted the proposal",
+            operators.len()
+        );
+        println!(
+            "  Status:            PROPOSED — awaiting fleet quorum via chain sync (pending copy: {})",
+            pending_path.display()
+        );
+        bail!(
+            "anchor proposed but not committed: this device holds {sigs} of the {quorum} \
+             signatures required. The fleet commits it through chain sync; re-run \
+             'ciphervault verify-anchor' after sync. For a single-device chain, keep \
+             validators.json to this device only."
+        );
+    }
+
     ledger.commit_block(proposed_block.clone())?;
 
     let block_hash = proposed_block.header.block_hash();
@@ -158,8 +230,14 @@ pub(crate) async fn cmd_anchor(
     println!("  Block Height:      #{}", block_num);
     println!("  Block Hash:        0x{}", hex::encode(block_hash).cyan());
     println!(
-        "  Validator Quorum:  {} Operator Signatures (100% Threshold Valid)",
-        proposed_block.header.signatures.len()
+        "  Validator Quorum:  {}/{} signatures (quorum met{})",
+        proposed_block.header.signatures.len(),
+        quorum,
+        if validator_set.len() == 1 {
+            "; solo validator mode — single-device chain, no fleet quorum"
+        } else {
+            ""
+        }
     );
     println!(
         "  Cumulative Root:   0x{}",
@@ -175,27 +253,9 @@ pub(crate) async fn cmd_anchor(
         "{}",
         "=======================================================".cyan()
     );
-    // Federate the proposal: publish the sealed envelope to every
-    // explicitly-configured operator (best-effort; the local commit above
-    // is already durable). Skipped unless operators are explicitly
-    // configured, so default installs never spray proposals at the
-    // public fleet.
-    let operators = crate::util::get_explicitly_configured_operators();
     if operators.is_empty() {
         println!("  Fleet Publish:     skipped (no explicitly configured operators)");
     } else {
-        let envelope = ciphervault_chain::ChainSyncEnvelope::seal(
-            &device_signer,
-            ciphervault_chain::ChainSyncMsg::Proposal(ciphervault_chain::ProposalMsg {
-                block: proposed_block.clone(),
-            }),
-        );
-        let body = serde_json::to_value(&envelope)?;
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
-        let accepted = publish_proposal_to_operators(&http, &operators, &body).await;
         println!(
             "  Fleet Publish:     {accepted}/{} operator(s) accepted the proposal",
             operators.len()

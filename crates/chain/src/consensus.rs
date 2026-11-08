@@ -232,8 +232,11 @@ impl ConsensusSigner {
         }
         #[cfg(not(unix))]
         {
-            // No portable owner-only ACL via std; file lives under the vault dir.
+            // Windows: write then apply the owner-only DACL; fails
+            // closed so a consensus seed never sits at default ACLs.
             fs::write(path, seed).map_err(|e| ChainError::Io(e.to_string()))?;
+            ciphervault_file_lock::lock_secret_file(path)
+                .map_err(|e| ChainError::Io(e.to_string()))?;
         }
         Ok(())
     }

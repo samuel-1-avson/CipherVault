@@ -316,9 +316,17 @@ fn test_agentic_ai_json_redaction_and_guardian_hook() {
     assert!(parsed["secrets_injected_count"].as_u64().unwrap() >= 1);
 
     let stdout_val = parsed["stdout"].as_str().unwrap();
+    // Exact-value scrubbing: EVERY value sourced from the vault is a
+    // secret, including innocuous-looking ones like PUBLIC_NAME. A
+    // child echoing any injected value gets [REDACTED:<NAME>].
     assert!(
-        stdout_val.contains("AgentName=CipherVaultAgent"),
-        "Expected unmasked public name in output: {}",
+        stdout_val.contains("AgentName=[REDACTED:PUBLIC_NAME]"),
+        "Expected exact-value redaction of injected values: {}",
+        stdout_val
+    );
+    assert!(
+        !stdout_val.contains("CipherVaultAgent"),
+        "Injected value leaked into agent JSON stdout! Output: {}",
         stdout_val
     );
     // Crucial AI Safety assertion: Secret pattern MUST BE REDACTED in captured agent output!

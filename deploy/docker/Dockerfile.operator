@@ -51,4 +51,4 @@ WORKDIR /var/lib/ciphervault
 EXPOSE 8201
 
 ENTRYPOINT ["ciphervault-operator"]
-CMD ["--port", "8201", "--data-dir", "/var/lib/ciphervault", "--operator-id", "operator-1"]
+CMD ["--port", "8201", "--bind-address", "0.0.0.0", "--data-dir", "/var/lib/ciphervault", "--operator-id", "operator-1"]

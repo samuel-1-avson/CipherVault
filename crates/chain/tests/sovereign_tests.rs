@@ -44,6 +44,7 @@ fn test_sovereign_blockchain_full_lifecycle() {
     let commitment = CommitmentTx::calculate_commitment(&salt, &head_cid);
 
     let mut tx1 = CommitmentTx {
+        version: 0,
         vault_id,
         salt,
         head_cid,
@@ -61,6 +62,7 @@ fn test_sovereign_blockchain_full_lifecycle() {
     let head_cid2 = [0x66; 32];
     let commitment2 = CommitmentTx::calculate_commitment(&salt2, &head_cid2);
     let mut tx2 = CommitmentTx {
+        version: 0,
         vault_id,
         salt: salt2,
         head_cid: head_cid2,
@@ -180,6 +182,7 @@ fn test_byzantine_fault_tolerance_rejection() {
     let head_cid = [2u8; 32];
     let commitment = CommitmentTx::calculate_commitment(&salt, &head_cid);
     let mut tx = CommitmentTx {
+        version: 0,
         vault_id: [3u8; 32],
         salt,
         head_cid,
@@ -238,6 +241,7 @@ fn signed_tx(
     let head_cid = [cid_byte; 32];
     let commitment = CommitmentTx::calculate_commitment(&salt, &head_cid);
     let mut tx = CommitmentTx {
+        version: 0,
         vault_id: [9u8; 32],
         salt,
         head_cid,
@@ -335,4 +339,39 @@ fn test_nonce_table_survives_reopen() {
     assert_eq!(reopened.next_nonce(&client.public_key()), 6);
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn private_v2_tx_hides_preimage_and_verifies() {
+    use ciphervault_chain::{CommitmentTx, ConsensusSigner};
+    let dir = std::env::temp_dir().join(format!("cv-chain-v2-{}", std::process::id()));
+    let signer = ConsensusSigner::load_or_create(&dir.join("device.key")).unwrap();
+    let vault = [0xABu8; 32];
+    let salt = [0x11u8; 32];
+    let head = [0x22u8; 32];
+    let mut tx = CommitmentTx::new_private(
+        &vault,
+        &salt,
+        &head,
+        signer.public_key(),
+        1,
+        1_700_000_000_000,
+    );
+    assert_eq!(tx.version, 2);
+    assert_eq!(tx.salt, [0u8; 32]);
+    assert_eq!(tx.head_cid, [0u8; 32]);
+    assert_ne!(tx.vault_id, vault);
+    signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
+    tx.verify_signature(ciphervault_chain::SOVEREIGN_CHAIN_ID_STR)
+        .expect("private tx signature must verify without the preimage");
+    // Commitment still binds the (locally held) preimage.
+    assert_eq!(
+        tx.commitment,
+        CommitmentTx::calculate_commitment(&salt, &head)
+    );
+    // Legacy JSON (no version field) still deserializes as v0.
+    let legacy = r#"{"vault_id":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"salt":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"head_cid":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],"commitment":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4],"client_pubkey":[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],"signature":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","nonce":1,"timestamp_ms":1}"#;
+    let parsed: CommitmentTx = serde_json::from_str(legacy).expect("legacy tx JSON must parse");
+    assert_eq!(parsed.version, 0);
+    let _ = std::fs::remove_dir_all(&dir);
 }

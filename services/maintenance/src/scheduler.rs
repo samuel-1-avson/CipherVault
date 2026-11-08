@@ -112,6 +112,53 @@ pub async fn run_inventory_job(
     let mut report = engine
         .audit_recovery_set(&inventory.set, &inventory.head, &sessions)
         .await?;
+    // Predictive healing (opt-in): score degraded objects with the
+    // swarm healer and log the plan. Advisory only — execution stays
+    // with the verified repair path below.
+    if std::env::var("CIPHERVAULT_PREDICTIVE_HEALING").as_deref() == Ok("1")
+        && !report.objects.degraded_objects.is_empty()
+    {
+        use crate::predictive_healer::{
+            ChunkReplicaState, OperatorTelemetry, PredictiveSwarmHealer,
+        };
+        let endpoints: Vec<String> = engine.endpoints().to_vec();
+        let telemetry: std::collections::HashMap<String, OperatorTelemetry> = endpoints
+            .iter()
+            .map(|ep| {
+                (
+                    ep.clone(),
+                    OperatorTelemetry {
+                        endpoint: ep.clone(),
+                        is_online: true,
+                        latency_ms: 0,
+                        consecutive_ping_failures: 0,
+                        remaining_storage_quota_bytes: u64::MAX,
+                    },
+                )
+            })
+            .collect();
+        let states: Vec<ChunkReplicaState> = report
+            .objects
+            .degraded_objects
+            .iter()
+            .map(|o| ChunkReplicaState {
+                cid: o.cid,
+                present_on: o.present_on.clone(),
+                min_required_replicas: report.required_replicas,
+                lease_expiry_secs_remaining: Default::default(),
+            })
+            .collect();
+        let healer = PredictiveSwarmHealer::default();
+        let actions = healer.plan_healing(&states, &telemetry, &endpoints);
+        eprintln!(
+            "[maintenance] predictive healer planned {} action(s) for {} degraded object(s)",
+            actions.len(),
+            states.len()
+        );
+        for action in &actions {
+            eprintln!("[maintenance] predictive plan: {action:?}");
+        }
+    }
     let locator = hex::encode(inventory.set.locator);
     if let Some(key) = signing_key {
         if (!report.objects.degraded_objects.is_empty() || !report.discovery_missing.is_empty())

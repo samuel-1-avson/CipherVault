@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ciphervault_agent::{VaultWatcher, WatcherConfig};
+use ciphervault_agent::{LocalGuardian, VaultWatcher, WatcherConfig};
 
 #[derive(Parser)]
 #[command(name = "ciphervault-agent")]
@@ -38,6 +38,12 @@ struct Cli {
         help = "Inspector mode: report captures without persisting or replicating"
     )]
     dry_run: bool,
+
+    #[arg(
+        long,
+        help = "Also run the local Guardian secret-sprawl scanner periodically (or set CIPHERVAULT_GUARDIAN=1)"
+    )]
+    guardian: bool,
 }
 
 fn load_operators(vault_root: &Path) -> Vec<String> {
@@ -151,6 +157,41 @@ async fn main() -> Result<()> {
         operators,
         dry_run: cli.dry_run,
     };
+
+    let guardian_enabled =
+        cli.guardian || std::env::var("CIPHERVAULT_GUARDIAN").as_deref() == Ok("1");
+    if guardian_enabled {
+        let root = config.root_dir.clone();
+        println!(
+            "  Guardian:      {} (sprawl scan every 60s)",
+            "Enabled".green()
+        );
+        tokio::spawn(async move {
+            let guardian = LocalGuardian::new(&root);
+            loop {
+                let tracked = ciphervault_local_store::LocalVaultStore::open(
+                    root.join(".ciphervault").join("vault.db"),
+                )
+                .and_then(|s| s.list_tracked_files())
+                .map(|files| files.into_iter().map(|(p, _)| p).collect::<Vec<_>>())
+                .unwrap_or_default();
+                match guardian.scan(&tracked, false) {
+                    Ok(report) if !report.clean => {
+                        eprintln!(
+                            "[guardian] {} secret-sprawl violation(s) in {} scanned file(s)",
+                            report.violations_count, report.total_scanned
+                        );
+                        for v in &report.violations {
+                            eprintln!("[guardian] {} {}: {}", v.severity, v.path, v.kind);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[guardian] scan failed: {e}"),
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+    }
 
     let watcher = VaultWatcher::new(config)?;
 

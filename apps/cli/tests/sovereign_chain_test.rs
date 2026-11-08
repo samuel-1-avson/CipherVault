@@ -56,6 +56,7 @@ async fn test_sovereign_chain_end_to_end_anchoring_and_light_verification() {
     let client_signer = ConsensusSigner::generate();
 
     let mut tx = CommitmentTx {
+        version: 0,
         vault_id,
         salt,
         head_cid,

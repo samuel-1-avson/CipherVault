@@ -244,6 +244,12 @@ impl VoteCollector {
                     first_hash: *hash,
                     second_hash: key.1,
                 };
+                // Cap retained evidence: equivocation proof needs a
+                // handful of recent entries, not an ever-growing vec.
+                const MAX_EQUIVOCATIONS: usize = 256;
+                if self.equivocations.len() >= MAX_EQUIVOCATIONS {
+                    self.equivocations.remove(0);
+                }
                 self.equivocations.push(evidence.clone());
                 return VoteOutcome::Equivocation(evidence);
             }
@@ -448,6 +454,17 @@ impl ChainSyncHub {
         if self.proposals.contains_key(&key) {
             return IngestOutcome::Duplicate;
         }
+        // Bound gossip state: a validator (or a compromised one) must
+        // not grow proposals without limit. Caps are generous versus
+        // honest traffic (one proposal per validator per height).
+        const MAX_PROPOSALS_PER_HEIGHT: usize = 16;
+        const MAX_PROPOSALS_TOTAL: usize = 256;
+        let at_height = self.proposals.keys().filter(|(h, _)| *h == height).count();
+        if at_height >= MAX_PROPOSALS_PER_HEIGHT || self.proposals.len() >= MAX_PROPOSALS_TOTAL {
+            return IngestOutcome::Rejected(format!(
+                "proposal capacity reached at height {height}; try again after commit"
+            ));
+        }
         self.proposals.insert(key, block);
         if let Some(outcome) = self.attempt_commit(height, hash) {
             return outcome;
@@ -544,6 +561,8 @@ impl ChainSyncHub {
                 let committed = self.ledger.latest_block().header.block_hash();
                 self.collector.mark_certified(height, proposal_hash);
                 self.proposals.remove(&key);
+                // Prune decided heights so state stays bounded.
+                self.proposals.retain(|(h, _), _| *h > height);
                 Some(IngestOutcome::Committed {
                     height,
                     hash: hex::encode(committed),
@@ -633,6 +652,7 @@ mod tests {
         let head_cid = [cid_byte; 32];
         let commitment = CommitmentTx::calculate_commitment(&salt, &head_cid);
         let mut tx = CommitmentTx {
+            version: 0,
             vault_id: [0x33; 32],
             salt,
             head_cid,

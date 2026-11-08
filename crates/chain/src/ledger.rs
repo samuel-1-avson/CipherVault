@@ -291,7 +291,9 @@ impl SovereignLedger {
                 head_cid: tx.head_cid,
             };
             commitments_index.insert(tx.commitment, record);
-            cid_to_commitment.insert(tx.head_cid, tx.commitment);
+            if tx.version < 2 {
+                cid_to_commitment.insert(tx.head_cid, tx.commitment);
+            }
             nonces.insert(tx.client_pubkey, tx.nonce);
         }
         let ledger = Self {
@@ -556,15 +558,19 @@ impl SovereignLedger {
             });
         }
 
-        // 5. Verify prospective cumulative state_root
-        let mut prospective_commitments = self.cumulative_commitments.clone();
-        for tx in &block.transactions {
-            prospective_commitments.push(hash_leaf(&tx.commitment));
-        }
-        let prospective_state_tree = MerkleTree::new(prospective_commitments.clone());
-        if prospective_state_tree.root() != block.header.state_root {
+        // 5. Verify prospective cumulative state_root. Suffix-only
+        // recomputation from the committed tree (see
+        // MerkleTree::root_with_appended): vetting a proposal no
+        // longer clones and rehashes the whole commitment history.
+        let appended: Vec<[u8; 32]> = block
+            .transactions
+            .iter()
+            .map(|tx| hash_leaf(&tx.commitment))
+            .collect();
+        let prospective_root = self.state_merkle_tree.root_with_appended(&appended);
+        if prospective_root != block.header.state_root {
             return Err(ChainError::InvalidStateRoot {
-                expected: hex::encode(prospective_state_tree.root()),
+                expected: hex::encode(prospective_root),
                 found: hex::encode(block.header.state_root),
             });
         }
@@ -623,7 +629,9 @@ impl SovereignLedger {
                 head_cid: tx.head_cid,
             };
             self.commitments_index.insert(tx.commitment, record);
-            self.cid_to_commitment.insert(tx.head_cid, tx.commitment);
+            if tx.version < 2 {
+                self.cid_to_commitment.insert(tx.head_cid, tx.commitment);
+            }
             self.nonces.insert(tx.client_pubkey, tx.nonce);
         }
 

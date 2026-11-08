@@ -2,18 +2,38 @@
 """CipherVault Model Context Protocol (MCP) Server.
 
 Enables autonomous AI coding assistants (Antigravity, Claude Code, Cursor, AutoGen)
-to interact with CipherVault-managed environments with ZERO credential exposure.
+to interact with CipherVault-managed environments without writing secrets to disk.
 
-All command executions are performed directly in-memory via `ciphervault run --json`,
-and all output streams (stdout, stderr) are scrubbed of secret patterns before
-returning to the LLM agent token window.
+Executions go through `ciphervault run --json`, which injects values in RAM and
+exact-value-scrubs captured output before returning it. Non-JSON fallback output
+is shape-scrubbed here (Bearer/PEM/credential assignments/URLs) before it can
+reach the LLM; only the CLI --json path also scrubs bare echoed values exactly.
 """
 
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+
+TOOL_TIMEOUT_SECS = 120
+
+_TOKEN_RE = re.compile(r"(cvst1\.[A-Za-z0-9._~=-]+|sk_live[\w-]+|sk_test[\w-]+|ghp_[\w]+|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.?[A-Za-z0-9_-]*)")
+_BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
+_PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
+_KV_RE = re.compile(r"(?i)((?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)\s*[=:]\s*)([^\s\"']+)")
+_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:)[^\s/@]+(@)")
+
+
+def scrub_text(text):
+    if not text:
+        return text
+    text = _PEM_RE.sub("[REDACTED] PRIVATE KEY", text)
+    text = _BEARER_RE.sub(r"\1[REDACTED]", text)
+    text = _URL_RE.sub(r"\1[REDACTED]\2", text)
+    text = _TOKEN_RE.sub("[REDACTED]", text)
+    return _KV_RE.sub(r"\1[REDACTED]", text)
 
 
 def find_ciphervault_binary():
@@ -45,6 +65,31 @@ class CipherVaultMcpServer:
         self.binary_path = binary_path or find_ciphervault_binary()
         self.repo_root = repo_root or Path(__file__).resolve().parents[2]
 
+    def server_version(self):
+        """Version of the wrapped CLI (cached); never a stale literal."""
+        if getattr(self, "_version", None) is None:
+            try:
+                proc = subprocess.run(
+                    [self.binary_path, "--version"],
+                    capture_output=True, text=True, encoding="utf-8", timeout=15,
+                )
+                parts = (proc.stdout or "").strip().split()
+                self._version = parts[-1] if parts else "unknown"
+            except Exception:
+                self._version = "unknown"
+        return self._version
+
+    def run_cli(self, cli_args, args):
+        """Run the CLI with a timeout and caller-selected cwd."""
+        cwd = (args or {}).get("cwd") or str(self.repo_root)
+        try:
+            return subprocess.run(
+                cli_args, cwd=cwd, capture_output=True, text=True,
+                encoding="utf-8", timeout=TOOL_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"ciphervault timed out after {TOOL_TIMEOUT_SECS}s")
+
     def handle_request(self, request: dict) -> dict:
         """Dispatch a single JSON-RPC 2.0 request."""
         req_id = request.get("id")
@@ -62,7 +107,7 @@ class CipherVaultMcpServer:
                     },
                     "serverInfo": {
                         "name": "ciphervault-mcp-server",
-                        "version": "1.0.28",
+                        "version": self.server_version(),
                     },
                 },
             }
@@ -196,21 +241,15 @@ class CipherVaultMcpServer:
                     cli_args.append("--")
                     cli_args.extend(cmd)
 
-                proc = subprocess.run(
-                    cli_args,
-                    cwd=str(self.repo_root),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
+                proc = self.run_cli(cli_args, args)
 
                 output_text = proc.stdout.strip()
                 try:
                     payload = json.loads(output_text)
                 except Exception:
                     payload = {
-                        "raw_output": output_text,
-                        "raw_stderr": proc.stderr.strip(),
+                        "raw_output": scrub_text(output_text),
+                        "raw_stderr": scrub_text(proc.stderr.strip()),
                         "exit_code": proc.returncode,
                     }
 
@@ -234,19 +273,13 @@ class CipherVaultMcpServer:
                 if fix:
                     cli_args.append("--fix")
 
-                proc = subprocess.run(
-                    cli_args,
-                    cwd=str(self.repo_root),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
+                proc = self.run_cli(cli_args, args)
 
                 output_text = proc.stdout.strip()
                 try:
                     payload = json.loads(output_text)
                 except Exception:
-                    payload = {"output": output_text, "stderr": proc.stderr.strip()}
+                    payload = {"output": scrub_text(output_text), "stderr": scrub_text(proc.stderr.strip())}
 
                 return {
                     "jsonrpc": "2.0",
@@ -260,19 +293,13 @@ class CipherVaultMcpServer:
 
             elif tool_name == "ciphervault_list_secrets":
                 cli_args = [self.binary_path, "status", "--json"]
-                proc = subprocess.run(
-                    cli_args,
-                    cwd=str(self.repo_root),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
+                proc = self.run_cli(cli_args, args)
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
                         "content": [
-                            {"type": "text", "text": proc.stdout.strip() or proc.stderr.strip()}
+                            {"type": "text", "text": scrub_text(proc.stdout.strip() or proc.stderr.strip())}
                         ]
                     },
                 }
@@ -284,19 +311,13 @@ class CipherVaultMcpServer:
                 if local_only:
                     cli_args.append("--local")
 
-                proc = subprocess.run(
-                    cli_args,
-                    cwd=str(self.repo_root),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
+                proc = self.run_cli(cli_args, args)
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
                         "content": [
-                            {"type": "text", "text": proc.stdout.strip() or proc.stderr.strip()}
+                            {"type": "text", "text": scrub_text(proc.stdout.strip() or proc.stderr.strip())}
                         ]
                     },
                 }
