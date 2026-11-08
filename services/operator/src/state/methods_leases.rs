@@ -61,8 +61,17 @@ impl OperatorState {
         {
             return Err("Invalid closure digest or retention term".into());
         }
+        // Upper bound: leases are promises, not storage — cap at ~100 years so
+        // u32::MAX (~12M years) cannot sit in the ledger. Renew path already
+        // uses checked_add; create expiry uses it below for the same reason.
+        if term_days > 36_500 {
+            return Err("Retention term exceeds maximum (36500 days)".into());
+        }
         let _stripe_guard = lock_or_recover(self.io_stripe(closure_digest_hex), "io_stripe");
         let now = Utc::now().timestamp() as u64;
+        let expires_at_utc = now
+            .checked_add(u64::from(term_days) * 86400)
+            .ok_or("Expiry overflow")?;
         self.persist_lease(LeaseReceipt {
             lease_id: hex::encode(rand::random::<[u8; 16]>()),
             operator_id: self.operator_id.clone(),
@@ -70,7 +79,7 @@ impl OperatorState {
             term_days,
             bytes,
             issued_at_utc: now,
-            expires_at_utc: now + u64::from(term_days) * 86400,
+            expires_at_utc,
             signature_hex: String::new(),
         })
     }
@@ -223,7 +232,7 @@ impl OperatorState {
                 .join("leases")
                 .join(format!("{lease_id}.owner"));
             let owned_by_caller = fs::read_to_string(owner_path)
-                .map(|owner| owner.trim() == vault_id_hex)
+                .map(|owner| owner.trim().eq_ignore_ascii_case(vault_id_hex))
                 .unwrap_or(false);
             if !owned_by_caller {
                 continue;

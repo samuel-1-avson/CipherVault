@@ -19,8 +19,11 @@ COPY crates ./crates
 COPY services ./services
 COPY apps ./apps
 
+# Build commit SHA is baked into /v1/info (build_sha) so fleets can detect
+# version drift. Pass --build-arg GIT_SHA=$(git rev-parse --short HEAD).
+ARG GIT_SHA=unknown
 # Build production operator binary
-RUN cargo build --release --locked --bin ciphervault-operator
+RUN CIPHERVAULT_BUILD_SHA=${GIT_SHA} cargo build --release --locked --bin ciphervault-operator
 
 # ==============================================================================
 # Runtime Stage

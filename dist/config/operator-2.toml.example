@@ -1,3 +1,4 @@
+# REFERENCE TEMPLATE ONLY — nothing in this repo reads this file. The operator takes CLI flags (see --help); keep this beside your real launcher as documentation.
 # CipherVault Operator 2 Configuration (Port 8202)
 
 operator_id = "op_8202"

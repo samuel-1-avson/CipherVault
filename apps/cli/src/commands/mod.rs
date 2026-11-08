@@ -95,6 +95,8 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
         crate::Commands::Device { sub } => match sub {
             DeviceSubcommand::List => cmd_device_list(),
             DeviceSubcommand::Revoke { device_id } => cmd_device_revoke(&device_id).await,
+            DeviceSubcommand::ExportKey { out } => cmd_device_export_key(out),
+            DeviceSubcommand::ImportKeys { bundle } => cmd_device_import_keys(bundle),
         },
         crate::Commands::Vault { sub } => match sub {
             VaultSubcommand::Link { alias } => cmd_vault_link(&alias),
@@ -129,7 +131,8 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             paths,
             from_gitignore,
             no_gitignore,
-        } => cmd_track(paths, from_gitignore, no_gitignore),
+            allow_planned,
+        } => cmd_track(paths, from_gitignore, no_gitignore, allow_planned),
         crate::Commands::Untrack { paths } => cmd_untrack(paths),
         crate::Commands::Status { json, overview } => cmd_status(json, overview),
         crate::Commands::Push {
@@ -168,7 +171,8 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             hardware_token,
             reader,
             pin,
-        } => cmd_restore(snapshot, to, hardware_token, reader, pin, dry_run),
+            force,
+        } => cmd_restore(snapshot, to, hardware_token, reader, pin, dry_run, force),
         crate::Commands::Recover {
             kit,
             shares,
@@ -178,13 +182,14 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             force,
         } => cmd_recover(kit, shares, to, require_approval, approver_key, force).await,
         crate::Commands::Recovery { sub } => match sub {
-            RecoverySubcommand::Export => cmd_recovery_export(),
+            RecoverySubcommand::ShowDescriptors => cmd_recovery_export(),
             RecoverySubcommand::Split {
                 threshold,
                 shares,
                 kit,
                 out_dir,
-            } => cmd_recovery_split(threshold, shares, kit, out_dir).await,
+                stdout,
+            } => cmd_recovery_split(threshold, shares, kit, out_dir, stdout).await,
             RecoverySubcommand::Test { kit, to } => cmd_recovery_test(kit, to).await,
             RecoverySubcommand::KeyBackup {
                 kit,
@@ -274,7 +279,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             crate::cmd_publish_public_feed(output, network)
         }
         crate::Commands::Hook { sub } => match sub {
-            HookSubcommand::Install => cmd_hook_install(),
+            HookSubcommand::Install { force } => cmd_hook_install(force),
             HookSubcommand::Check { deep, fix, json } => cmd_hook_check(deep, fix, json),
         },
         crate::Commands::Audit {
@@ -392,6 +397,15 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 fleet_keys,
                 quorum_k,
             } => cmd_invite_verify(ticket, fleet_keys, quorum_k),
+            InviteSubcommand::Requests { via } => cmd_invite_requests(via).await,
+            InviteSubcommand::Decide {
+                request_id,
+                decision,
+                via,
+            } => cmd_invite_decide(request_id, decision, via).await,
+            InviteSubcommand::Apply { node, contact, via } => {
+                cmd_invite_apply(node, contact, via).await
+            }
         },
         crate::Commands::Node { sub } => match sub {
             NodeSubcommand::Setup {

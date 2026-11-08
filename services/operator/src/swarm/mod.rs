@@ -483,7 +483,24 @@ impl SwarmHandle {
 
     /// Raw DHT write escape hatch for tests and future record kinds. Values
     /// written here are still filtered by client-side verification on read.
+    ///
+    /// Gated by default: arbitrary DHT writes are a same-key blanking
+    /// primitive (last-writer-wins), so production code must never reach
+    /// here. Set `CIPHERVAULT_ENABLE_RAW_DHT_PUT=1` to opt in (tests do).
     pub async fn put_raw_record(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), SwarmError> {
+        let enabled = matches!(
+            std::env::var("CIPHERVAULT_ENABLE_RAW_DHT_PUT")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes"
+        );
+        if !enabled {
+            return Err(SwarmError::Config(
+                "raw DHT writes disabled; set CIPHERVAULT_ENABLE_RAW_DHT_PUT=1 to opt in".into(),
+            ));
+        }
         self.send(Command::PutRawRecord { key, value }).await
     }
 
@@ -1175,6 +1192,16 @@ fn finish_repair_check(
     if !holders.contains(&self_peer) {
         holders.push(self_peer);
     }
+    // Holders must also be routing-table members: a live-but-unvetted peer
+    // (e.g. a fake provider-record holder) must never win pusher election or
+    // receive repair pushes. Self is always trusted.
+    holders.retain(|peer| {
+        *peer == self_peer
+            || loop_state
+                .liveness
+                .operator_for(peer)
+                .is_some_and(|op| state.is_routing_member(&op))
+    });
     let Some(plan) = repair::plan_repair(&cid, &holders, &live, loop_state.repair.config.target)
     else {
         // Healthy, hopeless, or target-less: a future regression starts

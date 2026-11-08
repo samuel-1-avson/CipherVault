@@ -280,8 +280,27 @@ gcloud compute ssh cv-operator-1 --zone=us-central1-a --command="sudo docker log
 ### Autonomous Self-Repair (Maintenance Daemon)
 The maintenance daemon (`ciphervault-maintenance`) continuously:
 1. Pings operator health endpoints (`/v1/info`) every 30 seconds.
-2. If an operator reports degraded durability, triggers a Proof-of-Storage audit across all stored CIDs.
-3. Automatically replicates missing chunk replicas from surviving quorum nodes to restore 3-of-3 durability.
+2. Records each reachable node's `binary_version` + `build_sha` into
+   the fleet DB `operator_nodes` table (columns `binary_version` /
+   `build_sha`, backfilled by idempotent migration on open for older
+   DBs; unreachable nodes keep their last-known pair — empty means
+   "not yet observed", never a version). The sweep log prints
+   `[REACHABLE] <id> (<endpoint>) — <ms>ms — v<ver> [<sha>]`.
+3. Warns on version skew: when the healthy reporting nodes show more
+   than one distinct `version@sha` build, the sweep prints
+   `[SKEW] Fleet version skew detected (N distinct builds): ...`.
+   Skew is informational (mixed builds serve fine) but a rolling
+   update that stalls here means one node never picked up the new
+   binary — investigate before declaring the rollout done.
+4. If an operator reports degraded durability, triggers a Proof-of-Storage audit across all stored CIDs.
+5. Automatically replicates missing chunk replicas from surviving quorum nodes to restore 3-of-3 durability.
+
+`/v1/info` is public and reports `binary_version` (operator crate
+version) plus `build_sha` (compile-time `CIPHERVAULT_BUILD_SHA`,
+`"unknown"` for ad-hoc builds). Both are deliberately excluded from
+the identity signature so descriptors stay verifiable across releases
+— treat them as informational (a node reports its own build), not as
+authentication.
 
 ## 8. Operator Identity Ceremony & Rotation
 
@@ -409,6 +428,34 @@ digest onto it, so no compose edits are needed.
 4. Verify live: all three `/healthz` endpoints `ready`, and
    `docker exec ciphervault-operator ciphervault-operator --version`
    reports the new version on each node.
+
+### R5b: binary-swap update (non-compose hosts: systemd / Windows / dist)
+
+For hosts that run the operator binary directly instead of the compose
+stack (proven procedure — one node at a time, quorum holds the rest):
+
+1. **Back up.** Stop the node first (per-file atomics do not make a
+   live data dir snapshot crash-consistent), then copy the whole
+   data dir (`cp -a` / `rsync -p` to preserve the 0600 secret modes;
+   keep any `voucher-ledger.corrupt-*` forensics files with the
+   backup, never restore them over the live files).
+2. **Stop** the service (`systemctl stop ciphervault-operator`, or
+   stop the Windows service / kill the process).
+3. **Swap** in the new binary. Keep the previous binary renamed
+   alongside (e.g. `ciphervault-operator.prev`) for instant rollback.
+4. **Start** the service and gate on health: `/healthz` `ready`, then
+   `ciphervault-operator --version` and `GET /v1/info`
+   `binary_version`/`build_sha` report the new build. The daemon
+   `[SKEW]` warning clears once every node converges.
+5. **Re-enroll note.** Current binaries persist enrollments
+   (`identities.json` in the data dir, fsync + atomic rename), so a
+   restart loses nothing. Only nodes upgrading *from* a binary that
+   predates enrollment persistence (e.g. the 1.0.0 dist binaries, which
+   also lack the enrollment routes entirely) come up with an empty
+   identity store: re-enroll device identities (`POST /v1/identities`
+   with the service token) after the swap, then confirm writes succeed
+   before moving to the next node. Rollback is the reverse swap; the
+   data dir needs no migration.
 
 ### Phase 1 exit criteria
 - R1: dashboard env pins all 3 operator identities; cards show Verified; rotation drilled.
@@ -557,6 +604,14 @@ ciphervault-maintenance --db fleet.db --metrics > /var/lib/node_exporter/cipherv
 
 `ciphervault_fleet_last_repair_lag_seconds` is the repair-lag signal;
 `repairs_recorded_total` / `repair_failures_total` count sweep outcomes.
+Per-node versions are NOT in this output (nor in `--fleet-status`,
+which covers vaults/operators/repairs only): skew is visible in the
+daemon sweep log (`[REACHABLE] ... v<ver> [<sha>]` lines plus the
+`[SKEW]` warning) and by querying the fleet DB directly:
+
+```sh
+sqlite3 <fleet-db> "SELECT endpoint, binary_version, build_sha, is_healthy FROM operator_nodes ORDER BY endpoint;"
+```
 Repairs are recorded via `record_repair` by CLI-driven repair flows; the
 daemon loop audits but does not yet repair autonomously (it carries no vault
 credentials), so daemon-only deployments show zero repairs until autonomous

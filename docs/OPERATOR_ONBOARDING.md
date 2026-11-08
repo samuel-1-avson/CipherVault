@@ -34,18 +34,34 @@ The wizard prints your node identity — a 64-character public key —
 and asks whether you have a ticket yet. You do not: leave it running
 standalone for now.
 
-**2. Send your node public key to a fleet keyholder.**
+**2. Apply from your own node — this also sends your node public key to a
+fleet keyholder.**
 
-Any ordinary channel (email, chat). This is also the vetting step: a
-short conversation about who you are and what you will run. Expect to
-share your planned endpoint and how you will keep the node online.
+```sh
+ciphervault invite apply --node <your-own-endpoint> [--contact "<how to reach you, ≤140 chars>"] \
+  --via <fleet-url-1> [--via <fleet-url-2>...]
+```
+
+This fetches your fresh self-signed descriptor and submits it to each
+fleet endpoint's join-request inbox (`POST /v1/peers/join-requests`,
+public by design — no token needed). It prints a request id per
+endpoint plus the next steps. Send one request id to a keyholder over
+any ordinary channel (email, chat) with a short note on who you are
+and what you will run — that message is also the vetting step. Expect
+to share your planned endpoint and how you will keep the node online.
+(If your node cannot reach the fleet yet, fall back to sending the
+64-hex node key from step 1 by hand; the keyholder triages both the
+same way.)
 
 **3. Receive your ticket plus connection details.**
 
-The keyholders will send you back:
+The keyholders will send you back (after approving your request in the
+fleet inbox — approval alone does not admit you; the ticket below does):
 
-- `ticket.json` — your invite ticket (single-use, expires; default
-  TTL 7 days for grace rejoin).
+- `ticket.json` — your invite ticket (single-use, expires; the CLI
+  default TTL is 24 h — for a real join ask for `--ttl 604800`
+  (7 days) so a lapsed routing entry can grace-rejoin on the
+  original ticket instead of needing a fresh one).
 - The fleet `--via` endpoints (HTTP URLs of admitting nodes).
 - P2P bootstrap multiaddrs so your node can mesh after joining.
 

@@ -120,6 +120,12 @@ pub struct OperatorState {
     // so restarts keep the full history. Read via the control-plane
     // admissions route.
     admissions: Mutex<Vec<AdmissionRecord>>,
+    // Inbound fleet-join requests: one record per candidate operator id,
+    // resubmits update in place. No trust granted — admission still goes
+    // through tickets/graduation. Persisted via join-requests.json so the
+    // inbox survives restarts. Read via the control-plane join-requests
+    // route; written by the public join-request route.
+    join_requests: Mutex<Vec<JoinRequestRecord>>,
     // Write-voucher spend ledger (D4): nonce -> charge. Held across
     // verify→charge→persist so concurrent writes on one voucher cannot
     // overspend (in memory or in the file). Spend survives restarts via

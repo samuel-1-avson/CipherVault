@@ -1856,6 +1856,10 @@ function renderOperators(operators) {
             <span class="op-meta-val">${escapeHtml(op.endpoint || 'Not reported')}${op.transport_security === 'https' ? ' <span class="shield-badge cv-layout-640b2caab8">🔒 HTTPS configured</span>' : ''}</span>
           </div>
           <div class="op-meta-row">
+            <span class="op-meta-label">Build</span>
+            <span class="op-meta-val">${escapeHtml(op.binary_version || 'Not reported')}${op.build_sha && op.build_sha !== 'unknown' ? ` <span title="${escapeHtml(op.build_sha)}">(${escapeHtml(String(op.build_sha).slice(0, 8))})</span>` : ''}</span>
+          </div>
+          <div class="op-meta-row">
             <span class="op-meta-label">Public Key</span>
             <span class="op-meta-val" title="${escapeHtml(op.operator_signing_pk_hex || '')}">
               ${escapeHtml(pkDisplay)}

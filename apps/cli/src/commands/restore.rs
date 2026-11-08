@@ -13,6 +13,76 @@ use crate::util::{
     configured_operator_pool, get_configured_operators, get_vault_store, resolve_hardware_token,
 };
 
+/// U-H8: shared dirty-working-file guard. Compares tracked working files
+/// against the last captured snapshot head and bails listing the dirty
+/// ones. Used by `pull` (remote) and `restore` (local) — both overwrite
+/// working files, so both need the guard.
+fn ensure_no_uncommitted_changes(
+    store: &ciphervault_local_store::LocalVaultStore,
+    vault_id: &[u8; 32],
+) -> Result<()> {
+    let tracked = store.list_tracked_files()?;
+    let mut captured = std::collections::HashMap::new();
+    if let Some(head) = store.get_active_head()? {
+        let snapshot_id: [u8; 32] = head
+            .snapshot_id
+            .as_slice()
+            .try_into()
+            .context("Invalid local snapshot head")?;
+        let (previous, encrypted) = store.get_snapshot(&snapshot_id)?;
+        let previous_key = store.get_epoch_key(previous.epoch)?;
+        let aad = [
+            b"CipherVault-Manifest:",
+            vault_id.as_slice(),
+            &previous.epoch.to_le_bytes(),
+        ]
+        .concat();
+        let plaintext = Zeroizing::new(ciphervault_crypto::decrypt_chunk(
+            &previous_key.derive_manifest_key(previous.epoch)?,
+            &encrypted,
+            &aad,
+        )?);
+        let manifest: SnapshotManifest = from_canonical_cbor(&plaintext)?;
+        for file in &manifest.files {
+            if !file.is_deleted {
+                captured.insert(file.relative_path.clone(), file.plaintext_sha256.clone());
+            }
+        }
+    }
+    let root = crate::util::get_workspace_root()?;
+    let mut dirty_files = Vec::new();
+    for (rel_path, _) in &tracked {
+        let full_path = root.join(rel_path);
+        if full_path.exists() {
+            {
+                let bytes = read_current_file(&full_path).with_context(|| {
+                    format!(
+                        "Cannot check local changes in {}; refusing to overwrite",
+                        rel_path.display()
+                    )
+                })?;
+                use sha2::Digest;
+                let cur_hash = sha2::Sha256::digest(&bytes);
+                if !captured
+                    .get(&rel_path.to_string_lossy().replace('\\', "/"))
+                    .is_some_and(|hash| cur_hash.as_slice() == hash.as_slice())
+                {
+                    dirty_files.push(rel_path.display().to_string());
+                }
+            }
+        } else if captured.contains_key(&rel_path.to_string_lossy().replace('\\', "/")) {
+            dirty_files.push(rel_path.display().to_string());
+        }
+    }
+    if !dirty_files.is_empty() {
+        bail!(
+            "Local tracked file(s) have uncommitted modifications: {}\nCommit changes with 'ciphervault push' or discard with '--force'",
+            dirty_files.join(", ")
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_restore(
     snapshot_hex_opt: Option<String>,
     to_dir_opt: Option<PathBuf>,
@@ -20,6 +90,7 @@ pub(crate) fn cmd_restore(
     reader_opt: Option<String>,
     pin_opt: Option<String>,
     dry_run: bool,
+    force: bool,
 ) -> Result<()> {
     let store = get_vault_store()?;
     let vault_id = store.get_vault_id()?;
@@ -45,11 +116,19 @@ pub(crate) fn cmd_restore(
     }
 
     let root = crate::util::get_workspace_root()?;
-    let target_dir = match to_dir_opt {
-        Some(path) if path.is_absolute() => path,
+    let into_workspace = to_dir_opt.is_none();
+    let target_dir = match &to_dir_opt {
+        Some(path) if path.is_absolute() => path.clone(),
         Some(path) => root.join(path),
-        None => root,
+        None => root.clone(),
     };
+
+    // U-H8: restoring into the workspace overwrites working files — same
+    // guard as `pull`. A separate `--to` dir is out of the way; still
+    // previewable with --dry-run.
+    if into_workspace && !dry_run && !force {
+        ensure_no_uncommitted_changes(&store, &vault_id)?;
+    }
 
     let snapshot_id = match snapshot_hex_opt {
         Some(hex_str) => {
@@ -256,66 +335,9 @@ pub(crate) async fn cmd_pull(dry_run: bool, force: bool) -> Result<()> {
     }
 
     // Safety guard against uncommitted local modifications unless --force
+    // (shared with `restore`: both overwrite working files).
     if !force {
-        let tracked = store.list_tracked_files()?;
-        let mut captured = std::collections::HashMap::new();
-        if let Some(head) = store.get_active_head()? {
-            let snapshot_id: [u8; 32] = head
-                .snapshot_id
-                .as_slice()
-                .try_into()
-                .context("Invalid local snapshot head")?;
-            let (previous, encrypted) = store.get_snapshot(&snapshot_id)?;
-            let previous_key = store.get_epoch_key(previous.epoch)?;
-            let aad = [
-                b"CipherVault-Manifest:",
-                vault_id.as_slice(),
-                &previous.epoch.to_le_bytes(),
-            ]
-            .concat();
-            let plaintext = zeroize::Zeroizing::new(ciphervault_crypto::decrypt_chunk(
-                &previous_key.derive_manifest_key(previous.epoch)?,
-                &encrypted,
-                &aad,
-            )?);
-            let manifest: SnapshotManifest = from_canonical_cbor(&plaintext)?;
-            for file in &manifest.files {
-                if !file.is_deleted {
-                    captured.insert(file.relative_path.clone(), file.plaintext_sha256.clone());
-                }
-            }
-        }
-        let root = crate::util::get_workspace_root()?;
-        let mut dirty_files = Vec::new();
-        for (rel_path, _) in &tracked {
-            let full_path = root.join(rel_path);
-            if full_path.exists() {
-                {
-                    let bytes = read_current_file(&full_path).with_context(|| {
-                        format!(
-                            "Cannot check local changes in {}; refusing to overwrite",
-                            rel_path.display()
-                        )
-                    })?;
-                    use sha2::Digest;
-                    let cur_hash = sha2::Sha256::digest(&bytes);
-                    if !captured
-                        .get(&rel_path.to_string_lossy().replace('\\', "/"))
-                        .is_some_and(|hash| cur_hash.as_slice() == hash.as_slice())
-                    {
-                        dirty_files.push(rel_path.display().to_string());
-                    }
-                }
-            } else if captured.contains_key(&rel_path.to_string_lossy().replace('\\', "/")) {
-                dirty_files.push(rel_path.display().to_string());
-            }
-        }
-        if !dirty_files.is_empty() {
-            bail!(
-                "Local tracked file(s) have uncommitted modifications: {}\nCommit changes with 'ciphervault push' or discard with 'ciphervault pull --force'",
-                dirty_files.join(", ")
-            );
-        }
+        ensure_no_uncommitted_changes(&store, &vault_id)?;
     }
 
     // Fetch and authenticate snapshot record object

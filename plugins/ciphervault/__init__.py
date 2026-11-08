@@ -97,9 +97,11 @@ def register(ctx):
 
     def handle_scan(params, **kwargs):
         params = params or {}
-        # NOTE: `hook check` takes no flags on this binary; deep/fix are
-        # accepted for API compat and documented as no-ops below.
-        res = _run_cli(["hook", "check"], params.get("cwd"))
+        # `--deep` enables the recursive workspace sprawl scan (staged-only
+        # without it). `fix` is accepted for API compat but stays a no-op:
+        # findings go in `.gitignore` manually (see note below).
+        cmd = ["hook", "check", "--deep"]
+        res = _run_cli(cmd, params.get("cwd"))
         if params.get("fix") and res.get("success"):
             res["note"] = "autofix not supported by this CLI build; add findings to .gitignore manually."
         return json.dumps(res)

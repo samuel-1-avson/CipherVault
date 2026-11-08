@@ -1,4 +1,4 @@
-# CipherVault System Workflow (v1.0.17)
+# CipherVault System Workflow
 
 Practical guide to how the whole system runs: the decentralized operator
 network, the day-to-day user flow, and how to run a node and contribute.
@@ -42,7 +42,7 @@ flowchart LR
     end
 
     subgraph L2 ["Settlement Layer"]
-        Arbitrum["Arbitrum One L2\nImmutable State Commitments"]
+        CipherChain["CipherChain Sovereign PoA Ledger\nImmutable State Commitments"]
     end
 
     AEAD ==>|Opaque Ciphertext Chunks by SHA-256 CID| Quorum
@@ -60,7 +60,7 @@ flowchart LR
     class Mesh,OP1,OP2,OP3,Quorum o;
     class Maint,MaintDaemon m;
     class Control,Dashboard cp;
-    class L2,Arbitrum l;
+    class L2,CipherChain l;
 ```
 
 ### What each piece does
@@ -121,8 +121,8 @@ curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dis
 ```
 
 The installer fetches the latest release, verifies it against the
-published SHA256SUMS, and installs all four binaries (`ciphervault`,
-`ciphervault-operator`, `ciphervault-agent`, `ciphervault-maintenance`)
+published SHA256SUMS, and installs the CLI (`ciphervault` + short alias `cv`) plus
+the service binaries (`ciphervault-operator`, `ciphervault-agent`, `ciphervault-maintenance`, `ciphervault-account`)
 with a PATH entry — no manual download.
 
 > The repo is currently private, so the one-liners need a token. Create
@@ -227,7 +227,7 @@ vault identities, files, and snapshots stay private by design.
   readable, new writes use the new key.
 - **Teams:** `auth` (account login), `device list|revoke`, and guardian
   ceremonies (`recovery`) share recovery power without sharing secrets.
-- **Auditability:** `ciphervault anchor` commits head state to Arbitrum;
+- **Auditability:** `ciphervault anchor` commits head state to the CipherChain sovereign ledger;
   `ciphervault verify-anchor` re-checks it. `audit` and `repair` inspect
   and heal replica health.
 
@@ -501,15 +501,14 @@ Stop-Process -Id $p.Id -Force
 Set-Content extra.key "fake-key-material"; & $cli track extra.key
 # Expect: "Appended 'extra.key' to .gitignore..." + "Tracked files registered."
 & $cli untrack extra.key                  # Expect: "- extra.key [untracked]".
-& $cli update --check                     # Expect: current version reported.
+& $cli update --check                     # Expect: latest-release check only, no install.
 ```
 
 ### 8. Manual-only steps (not scriptable here)
 
-- `ciphervault tui` — interactive 7-tab console; run it and tab through
+- `ciphervault tui` — interactive console; run it and tab through
   Files/Snapshots/Operators/Explorer with `?` for help, `q` to quit.
-- `ciphervault anchor` — needs a deployed `CipherVaultRegistry` + funded
-  key on Arbitrum Sepolia; the loop is untested until the on-chain step.
+- `ciphervault anchor` — needs a deployed CipherChain + validator key; the loop is untested until the on-chain step.
 - `ciphervault ui` — serves the web dashboard; open the printed URL,
   check Overview + Explorer tabs, then stop the server.
 

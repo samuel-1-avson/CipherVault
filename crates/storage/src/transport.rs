@@ -1347,6 +1347,10 @@ impl OperatorTransport for MemoryTransport {
                 identity_signature_hex: String::new(),
                 // The real operator advertises a 24h identity descriptor.
                 identity_expires_at_utc: now_utc_secs() + 86_400,
+                binary_version: env!("CARGO_PKG_VERSION").to_string(),
+                build_sha: option_env!("CIPHERVAULT_BUILD_SHA")
+                    .unwrap_or("unknown")
+                    .to_string(),
             };
             let sig = sign_with_domain(
                 &state.signing_key,

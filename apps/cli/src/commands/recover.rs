@@ -181,7 +181,14 @@ pub(crate) async fn cmd_recover(
     println!("\nQuerying operators directly for recovery records...");
     let raw_records = pool.query_recovery_records(&locator).await;
     if raw_records.is_empty() {
-        bail!("No recovery records found on any surviving operator for this locator.");
+        bail!(
+            "No recovery records found on any surviving operator for this locator.\n\
+             Checklist before retrying:\n\
+             1. Reachability — can you open each --via endpoint in a browser (or curl /v1/info)?\n\
+             2. Locator — does it match the kit your vault was created with? (one wrong character = a different, empty vault)\n\
+             3. Was anything ever pushed? A vault that never completed 'push' has no recovery records anywhere.\n\
+             4. Alternative — if you ran 'recovery key-backup', restore with 'recovery key-restore --locator <HEX>'."
+        );
     }
     println!(
         "Found {} recovery records from surviving operators.",
@@ -463,7 +470,8 @@ fn rebuild_store_after_recovery(
         bail!(
             "No genesis record found under this locator: the vault was never pushed with \
              recovery records, so no store can be rebuilt. Restore `.ciphervault` from a \
-             surviving device backup and `pull` instead (copy+pull)."
+             surviving device backup and `pull` instead (copy+pull). If no device survives \
+             but you have a passphrase key-backup, use 'recovery key-restore --locator <HEX>'."
         );
     };
 
@@ -1129,6 +1137,158 @@ pub(crate) async fn fetch_self_descriptor(
         .verify()
         .with_context(|| format!("self descriptor from {node} has a bad signature"))?;
     Ok(descriptor)
+}
+
+/// One entry of the fleet-join request inbox (`GET /v1/peers/join-requests`).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct JoinRequestEntry {
+    pub request_id: String,
+    pub operator_id: String,
+    pub endpoint: String,
+    pub node_pk_hex: String,
+    pub contact: String,
+    pub requested_at_utc: u64,
+    pub status: String,
+}
+
+fn join_request_targets(via: Option<Vec<String>>) -> Result<Vec<String>> {
+    match via {
+        Some(endpoints) if !endpoints.is_empty() => Ok(endpoints),
+        _ => {
+            let configured = get_configured_operators();
+            if configured.is_empty() {
+                bail!("No fleet endpoints: pass --via or run 'ciphervault init' first.");
+            }
+            Ok(configured)
+        }
+    }
+}
+
+/// Lists the inbound fleet-join request inbox (oldest first) on each fleet
+/// endpoint. Control-plane route: needs `CIPHERVAULT_OPERATOR_SERVICE_TOKEN`.
+pub(crate) async fn cmd_invite_requests(via: Option<Vec<String>>) -> Result<()> {
+    let targets = join_request_targets(via)?;
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    for target in &targets {
+        let url = format!("{}/v1/peers/join-requests", target.trim_end_matches('/'));
+        let resp = operator_service_request(http.get(&url)).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("list join requests via {target}: HTTP {status} {body}");
+        }
+        let entries = resp.json::<Vec<JoinRequestEntry>>().await?;
+        println!("{}", format!("Inbox {target} ({} request(s)):", entries.len()).bold());
+        for entry in &entries {
+            println!(
+                "  {} {} {} [{}] contact={:?}",
+                entry.request_id, entry.operator_id, entry.endpoint, entry.status, entry.contact,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Resolves one join request (`approved` or `rejected`) on each fleet
+/// endpoint. Approving prints the candidate's node key: feed it to the
+/// offline `ciphervault invite issue <node-pk>` ceremony, then hand the
+/// ticket to the joiner out of band. The server never mints tickets.
+pub(crate) async fn cmd_invite_decide(
+    request_id: String,
+    decision: String,
+    via: Option<Vec<String>>,
+) -> Result<()> {
+    let decision = decision.trim().to_ascii_lowercase();
+    if decision != "approved" && decision != "rejected" {
+        bail!("decision must be \"approved\" or \"rejected\"");
+    }
+    let targets = join_request_targets(via)?;
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    for target in &targets {
+        let url = format!(
+            "{}/v1/peers/join-requests/{}/resolve",
+            target.trim_end_matches('/'),
+            request_id
+        );
+        let resp = operator_service_request(http.post(&url))
+            .json(&serde_json::json!({ "decision": decision }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("resolve {request_id} via {target}: HTTP {status} {body}");
+        }
+        let resolved = resp.json::<JoinRequestEntry>().await?;
+        println!(
+            "{}",
+            format!(
+                "  ✓ {} marked {} by {}",
+                resolved.request_id, resolved.status, target
+            )
+            .green()
+        );
+        if resolved.status == "approved" {
+            println!("  node key for `invite issue`: {}", resolved.node_pk_hex);
+        }
+    }
+    Ok(())
+}
+
+/// Applies to join the fleet: fetches our fresh descriptor, submits it as
+/// a join request to every `--via` endpoint, and prints the request id
+/// plus what happens next. No service token needed — the request is a
+/// self-signed announcement, not a credential. The ticket arrives out of
+/// band after approval, so there is nothing to poll: submit, then wait
+/// for the operator to hand you a ticket file.
+pub(crate) async fn cmd_invite_apply(
+    node: String,
+    contact: String,
+    via: Option<Vec<String>>,
+) -> Result<()> {
+    let targets = join_request_targets(via)?;
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let descriptor = fetch_self_descriptor(&http, &node).await?;
+    for target in &targets {
+        let url = format!("{}/v1/peers/join-requests", target.trim_end_matches('/'));
+        let resp = http
+            .post(&url)
+            .json(&serde_json::json!({
+                "descriptor": descriptor,
+                "contact": contact,
+            }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("apply via {target}: HTTP {status} {body}");
+        }
+        let body = resp.json::<serde_json::Value>().await?;
+        let request_id = body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        println!(
+            "{}",
+            format!("  ✓ request {request_id} accepted by {target} (status: pending)").green()
+        );
+    }
+    println!("Next steps:");
+    println!("  1. Send a request id to the fleet operator out of band.");
+    println!("  2. When they approve, they hand you a ticket file.");
+    println!("  3. Run: ciphervault invite join <ticket.json> --node {node}");
+    Ok(())
 }
 
 /// Presents a join ticket to fleet nodes: the joiner's fresh descriptor

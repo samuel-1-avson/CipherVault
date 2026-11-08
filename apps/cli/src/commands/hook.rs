@@ -1,13 +1,13 @@
 //! Git hook install and secret leak prevention check commands.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::util::get_vault_store;
 
-pub(crate) fn cmd_hook_install() -> Result<()> {
+pub(crate) fn cmd_hook_install(force: bool) -> Result<()> {
     let git_dir = Path::new(".git");
     if !git_dir.exists() {
         bail!("No .git directory found. Ensure you are in the root of a Git repository.");
@@ -21,6 +21,27 @@ pub(crate) fn cmd_hook_install() -> Result<()> {
 ciphervault hook check --deep
 "#;
 
+    // U-H7: never silently clobber an existing hook chain. Back ours up
+    // when replacing only with explicit consent.
+    if pre_commit_path.exists() {
+        let existing = fs::read_to_string(&pre_commit_path).unwrap_or_default();
+        if !existing.contains("ciphervault hook check") {
+            if !force {
+                bail!(
+                    "'.git/hooks/pre-commit' already exists and is not ours. Re-run with 'hook install --force' to replace it (the current file is backed up to '.git/hooks/pre-commit.ciphervault.bak'), or chain manually by appending 'ciphervault hook check --deep' to your hook."
+                );
+            }
+            let backup = hooks_dir.join("pre-commit.ciphervault.bak");
+            fs::write(&backup, &existing).with_context(|| {
+                format!("backing up existing hook to '{}'", backup.display())
+            })?;
+            println!(
+                "{}",
+                format!("Backed up existing pre-commit hook to '{}'", backup.display()).yellow()
+            );
+        }
+    }
+
     fs::write(&pre_commit_path, script)?;
 
     println!(
@@ -33,6 +54,69 @@ ciphervault hook check --deep
         "CipherVault will now inspect Git staging before every commit to prevent secret leaks."
     );
     Ok(())
+}
+
+/// Minimal `*`-only glob match for gitignore-style patterns (no crates).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let (px, tx) = (pattern.as_bytes(), text.as_bytes());
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut star_at, mut back_at): (Option<usize>, usize) = (None, 0);
+    while ti < tx.len() {
+        if pi < px.len() && px[pi] == b'*' {
+            star_at = Some(pi);
+            pi += 1;
+            back_at = ti;
+        } else if pi < px.len() && px[pi] == tx[ti] {
+            pi += 1;
+            ti += 1;
+        } else if let Some(s) = star_at {
+            pi = s + 1;
+            back_at += 1;
+            ti = back_at;
+        } else {
+            return false;
+        }
+    }
+    while pi < px.len() && px[pi] == b'*' {
+        pi += 1;
+    }
+    pi == px.len()
+}
+
+/// Returns true when a `.gitignore` text leaves `rel_norm` ignored OR
+/// explicitly re-included. Git semantics for ignores: the LAST matching
+/// positive pattern wins; but any matching `!` negation counts as covered
+/// regardless of order — a negation is always an explicit user decision
+/// to track the file, and the hook must not veto explicit intent or nag
+/// on every commit (it still won't be proposed by secret import).
+fn gitignore_covers(content: &str, rel_norm: &str, name: &str) -> bool {
+    let mut ignored = false;
+    let mut negated = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (pattern, is_neg) = match trimmed.strip_prefix('!') {
+            Some(rest) => (rest.trim_start_matches('/'), true),
+            None => (trimmed.trim_start_matches('/'), false),
+        };
+        let matched = pattern == name
+            || pattern == rel_norm
+            || (pattern.ends_with('/') && rel_norm.starts_with(pattern))
+            || (pattern.contains('*')
+                && (glob_match(pattern, name)
+                    || glob_match(pattern, rel_norm)
+                    || glob_match(pattern.trim_start_matches("**/"), name)));
+        if matched {
+            if is_neg {
+                negated = true;
+            } else {
+                ignored = true;
+            }
+        }
+    }
+    ignored || negated
 }
 
 /// Identifies if a relative filename looks like a confidential credential file.
@@ -165,43 +249,59 @@ pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
             }
         }
 
-        // 3. Workspace sprawl detection: check for unignored .env files
-        if let Ok(entries) = std::fs::read_dir(".") {
-            let gitignore_path = Path::new(".gitignore");
-            let gitignore_content = if gitignore_path.exists() {
-                std::fs::read_to_string(gitignore_path).unwrap_or_default()
-            } else {
-                String::new()
-            };
-
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if is_suspicious_secret_file(&name) {
-                    let is_tracked = tracked.iter().any(|(p, _)| p.to_string_lossy() == name);
-                    let is_in_gitignore = gitignore_content.lines().any(|l| {
-                        l.trim() == name || l.trim() == format!("/{name}") || l.trim() == ".env*"
-                    });
-
-                    if !is_tracked && !is_in_gitignore {
-                        if fix {
-                            // Automatically append to .gitignore
-                            use std::io::Write;
-                            if let Ok(mut f) = fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(gitignore_path)
-                            {
-                                let _ = writeln!(f, "{name}");
-                                fixed_files.push(name.clone());
-                            }
-                        } else {
-                            violations.push(HookViolation {
-                                kind: "UNPROTECTED_SECRET_SPRAWL".to_string(),
-                                path: name.clone(),
-                                details: format!("Confidential file '{name}' is not in .gitignore and not tracked by CipherVault."),
-                                remediation: format!("Add '{name}' to .gitignore or run `ciphervault track {name}` (or pass --fix to auto-ignore)"),
-                            });
+        // 3. Workspace sprawl detection: recursive walk for unignored secret
+        // files. Honors exact, /-prefixed, *-wildcard, and dir-prefix
+        // gitignore rules (negations excluded — re-included example files
+        // must never be flagged).
+        let gitignore_path = Path::new(".gitignore");
+        let gitignore_content = if gitignore_path.exists() {
+            std::fs::read_to_string(gitignore_path).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        for entry in walkdir::WalkDir::new(".")
+            .max_depth(6)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let rel_norm = entry
+                .path()
+                .to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches("./")
+                .to_string();
+            if rel_norm.starts_with(".git/")
+                || rel_norm.starts_with("target/")
+                || rel_norm.starts_with("node_modules/")
+                || rel_norm.starts_with(".ciphervault/")
+            {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_suspicious_secret_file(&name) {
+                let is_tracked = tracked.iter().any(|(p, _)| p.to_string_lossy() == rel_norm);
+                if !is_tracked && !gitignore_covers(&gitignore_content, &rel_norm, &name) {
+                    if fix {
+                        // Automatically append to .gitignore
+                        use std::io::Write;
+                        if let Ok(mut f) = fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(gitignore_path)
+                        {
+                            let _ = writeln!(f, "{rel_norm}");
+                            fixed_files.push(rel_norm.clone());
                         }
+                    } else {
+                        violations.push(HookViolation {
+                            kind: "UNPROTECTED_SECRET_SPRAWL".to_string(),
+                            path: rel_norm.clone(),
+                            details: format!("Confidential file '{rel_norm}' is not in .gitignore and not tracked by CipherVault."),
+                            remediation: format!("Add '{rel_norm}' to .gitignore or run `ciphervault track {rel_norm}` (or pass --fix to auto-ignore)"),
+                        });
                     }
                 }
             }
@@ -274,4 +374,41 @@ pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
 
     println!("✓ CipherVault pre-commit check: No confidential secrets staged in Git.");
     Ok(())
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    #[test]
+    fn glob_match_star_forms() {
+        assert!(glob_match("*.env", ".env"));
+        assert!(glob_match("*.env", "prod.env"));
+        assert!(!glob_match("*.env", ".env.example.bak"));
+        assert!(glob_match(".env*", ".env.production"));
+        assert!(!glob_match("*.key", "monkey"));
+        assert!(glob_match("*", "anything"));
+    }
+
+    #[test]
+    fn gitignore_covers_last_match_wins() {
+        // Exact + slash-prefixed.
+        assert!(gitignore_covers(".env\n", ".env", ".env"));
+        assert!(gitignore_covers("/sub/nested.env\n", "sub/nested.env", "nested.env"));
+        // Wildcards.
+        assert!(gitignore_covers("*.key\n", "sub/nested.key", "nested.key"));
+        assert!(gitignore_covers("**/.env\n", "sub/.env", ".env"));
+        assert!(!gitignore_covers("**/.env\n", "sub/nested.env", "nested.env"));
+        // Dir prefix.
+        assert!(gitignore_covers("secrets/\n", "secrets/a.env", "a.env"));
+        // Negation = explicit user decision to track: never flag, even
+        // when it cancels an earlier ignore.
+        assert!(gitignore_covers("*.env\n!keep.env\n", "keep.env", "keep.env"));
+        // A later positive rule re-ignores only when no negation matches
+        // the same file... a negation anywhere in the file still wins,
+        // because it proves explicit intent.
+        assert!(gitignore_covers("*.env\n!keep.env\nkeep.env\n", "keep.env", "keep.env"));
+        // Comments and blanks never match.
+        assert!(!gitignore_covers("# *.env\n\n", "a.env", "a.env"));
+    }
 }

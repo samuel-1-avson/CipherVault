@@ -238,13 +238,13 @@ pub(crate) async fn cmd_recovery_key_restore(
 }
 
 #[cfg(unix)]
-fn restrict_permissions(path: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn restrict_permissions(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn restrict_permissions(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 

@@ -120,6 +120,23 @@ impl OfflineRecoveryKit {
         Ok(secret)
     }
 
+    /// Groups a 64-hex secret as 8×8 for hand transcription. Spaces are
+    /// cosmetic: the parser strips all non-hex characters.
+    fn grouped_secret_hex(&self) -> String {
+        self.recovery_secret_hex
+            .as_bytes()
+            .chunks(8)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn human_created_at(&self) -> String {
+        chrono::DateTime::from_timestamp(self.created_at_utc as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| format!("{} (unix epoch)", self.created_at_utc))
+    }
+
     /// Generates a clean, human-readable printable text sheet with safety warnings.
     pub fn format_printable(&self) -> String {
         format!(
@@ -132,9 +149,9 @@ Loss of this secret means permanent, unrecoverable loss of your encrypted vault.
 ================================================================================
 
 Vault ID:              {}
-Creation Date (UTC):   {}
+Creation Date (UTC):   {} ({})
 
-MASTER RECOVERY SECRET R:
+MASTER RECOVERY SECRET R (copy exactly; spaces are optional):
 {}
 
 Checksum (CRC32):      {:#010x}
@@ -152,7 +169,8 @@ Configured Operators:
 "#,
             self.vault_id_hex,
             self.created_at_utc,
-            self.recovery_secret_hex,
+            self.human_created_at(),
+            self.grouped_secret_hex(),
             self.checksum,
             self.recovery_signing_pk_hex,
             self.recovery_encryption_pk_hex,
@@ -204,42 +222,68 @@ Configured Operators:
 
         let lines: Vec<&str> = text.lines().map(|l| l.trim()).collect();
         let mut i = 0;
+        // U-H5: hand copies wrap lines, add spaces/dashes, or drop the
+        // endpoint scheme. Strip everything that isn't hex for secrets and
+        // accept scheme-less endpoints.
+        let clean_hex = |s: &str| -> String {
+            s.chars().filter(|c| c.is_ascii_hexdigit()).collect()
+        };
         while i < lines.len() {
             let line = lines[i];
             if line.starts_with("Vault ID:") {
-                vault_id_hex = line.trim_start_matches("Vault ID:").trim().to_string();
+                vault_id_hex = clean_hex(line.trim_start_matches("Vault ID:"));
             } else if line.starts_with("Creation Date (UTC):") {
-                created_at_utc = line
-                    .trim_start_matches("Creation Date (UTC):")
-                    .trim()
-                    .parse()
-                    .unwrap_or(0);
-            } else if line.starts_with("MASTER RECOVERY SECRET R:") {
-                if i + 1 < lines.len() {
-                    recovery_secret_hex = lines[i + 1].trim().to_string();
-                    i += 1;
+                // Accepts both the bare epoch and "epoch (human date)".
+                let rest = line.trim_start_matches("Creation Date (UTC):").trim();
+                let epoch_part = rest.split_whitespace().next().unwrap_or("");
+                created_at_utc = epoch_part.parse().unwrap_or(0);
+            } else if line.starts_with("MASTER RECOVERY SECRET R") {
+                // Accumulate wrapped continuation lines until 64 hex chars.
+                let mut acc = String::new();
+                let mut j = i + 1;
+                while j < lines.len() && acc.len() < 64 {
+                    let next = lines[j];
+                    if next.is_empty()
+                        || next.contains(':')
+                        || next.starts_with('=')
+                        || next.starts_with('-')
+                    {
+                        break;
+                    }
+                    acc.push_str(&clean_hex(next));
+                    j += 1;
                 }
+                if acc.len() != 64 {
+                    return Err(RecoveryError::InvalidKitFormat(format!(
+                        "Recovery secret must be 64 hex characters, found {} — check for missing or extra characters",
+                        acc.len()
+                    )));
+                }
+                recovery_secret_hex = acc;
+                i = j - 1;
             } else if line.starts_with("Checksum (CRC32):") {
                 let val_str = line.trim_start_matches("Checksum (CRC32):").trim();
-                let clean_hex = val_str.trim_start_matches("0x");
-                checksum = u32::from_str_radix(clean_hex, 16).unwrap_or(0);
+                let clean = clean_hex(val_str.trim_start_matches("0x"));
+                checksum = u32::from_str_radix(&clean, 16).unwrap_or(0);
             } else if line.starts_with("Recovery Signing PK:") {
-                recovery_signing_pk_hex = line
-                    .trim_start_matches("Recovery Signing PK:")
-                    .trim()
-                    .to_string();
+                recovery_signing_pk_hex =
+                    clean_hex(line.trim_start_matches("Recovery Signing PK:"));
             } else if line.starts_with("Recovery Encrypt PK:") {
-                recovery_encryption_pk_hex = line
-                    .trim_start_matches("Recovery Encrypt PK:")
-                    .trim()
-                    .to_string();
+                recovery_encryption_pk_hex =
+                    clean_hex(line.trim_start_matches("Recovery Encrypt PK:"));
             } else if line.starts_with("Recovery Locator:") {
-                recovery_locator_hex = line
-                    .trim_start_matches("Recovery Locator:")
-                    .trim()
-                    .to_string();
-            } else if line.starts_with("- http://") || line.starts_with("- https://") {
-                operator_endpoints.push(line.trim_start_matches("- ").trim().to_string());
+                recovery_locator_hex = clean_hex(line.trim_start_matches("Recovery Locator:"));
+            } else if let Some(rest) = line.strip_prefix("- ") {
+                // Operator lines: printed as "- <endpoint>"; tolerate a
+                // hand-copied endpoint missing its scheme.
+                let endpoint = rest.trim();
+                if !endpoint.is_empty()
+                    && (endpoint.contains('.')
+                        || endpoint.contains(':')
+                        || endpoint.starts_with("http"))
+                {
+                    operator_endpoints.push(endpoint.to_string());
+                }
             }
             i += 1;
         }
@@ -635,6 +679,37 @@ mod tests {
         let mut bad_kit = kit.clone();
         bad_kit.recovery_secret_hex = hex::encode([0x00u8; 32]);
         assert!(bad_kit.validate_and_extract_secret().is_err());
+    }
+
+    #[test]
+    fn test_hand_copied_kit_with_wraps_and_schemeless_endpoint_parses() {
+        // Simulates a hand transcription: secret wrapped over two lines
+        // with dashes, scheme-less operator endpoint, human date suffix.
+        let vault_id = [0x55u8; 32];
+        let secret = RecoverySecret::generate();
+        let kit =
+            OfflineRecoveryKit::create(&vault_id, &secret, vec!["https://op1.example.com".into()])
+                .unwrap();
+        let secret_hex = kit.recovery_secret_hex.clone();
+        let printable = kit.format_printable();
+        // Rewrap the grouped secret line the way a hand copy would: two
+        // lines, dash and space separators, scheme-less endpoint.
+        let wrapped = format!(
+            "{}-{}\n{} {}",
+            &secret_hex[..16],
+            &secret_hex[16..32],
+            &secret_hex[32..48],
+            &secret_hex[48..]
+        );
+        let mangled = printable
+            .replace(&kit.grouped_secret_hex(), &wrapped)
+            .replace("- https://op1.example.com", "- op1.example.com:8201");
+        let parsed = OfflineRecoveryKit::parse_from_printable(&mangled).unwrap();
+        assert_eq!(parsed.recovery_secret_hex, secret_hex);
+        assert_eq!(parsed.operator_endpoints, vec!["op1.example.com:8201"]);
+        // The mangled-but-complete copy still validates against its PKs.
+        let extracted = parsed.validate_and_extract_secret().unwrap();
+        assert_eq!(extracted.as_bytes(), secret.as_bytes());
     }
 
     #[test]

@@ -199,7 +199,45 @@ ciphervault-operator --print-identity --operator-id <id> \
 # <id>=<64-hex node pk>  -> send the pk to a fleet admin
 ```
 
-Admin (fully offline; the seed never leaves this machine):
+Contributor requests (inbox triage — how joiners arrive):
+
+The preferred joiner path is a join request, not a bare key handoff.
+The joiner runs (no token needed — the descriptor self-verifies):
+
+```sh
+ciphervault invite apply --node <their-own-endpoint> [--contact "..."] \
+  --via https://fleet-node-1:8201 [...]
+# prints one request id per fleet endpoint + next steps
+```
+
+Each fleet node keeps its own inbox (`join-requests.json` in the data
+dir, survives restarts): one record per operator id (resubmits update
+in place), 512-entry cap, statuses `pending`/`approved`/`rejected`.
+Review it (needs `CIPHERVAULT_OPERATOR_SERVICE_TOKEN`):
+
+```sh
+ciphervault invite requests --via https://fleet-node-1:8201
+# Inbox <url> (N request(s)): <request-id> <operator-id> <endpoint> [<status>] contact="..."
+```
+
+Decide (approve prints the candidate's node key for the offline
+ceremony below; the server never mints tickets):
+
+```sh
+ciphervault invite decide <request-id> approved --via https://fleet-node-1:8201
+# or: ciphervault invite decide <request-id> rejected --via ...
+```
+
+Routes: `POST /v1/peers/join-requests` (public submit, pre-auth rate
+limited) · `GET /v1/peers/join-requests` (control-plane list) ·
+`POST /v1/peers/join-requests/:id/resolve` with `{"decision":
+"approved"|"rejected"}` (control-plane: service-token checked; unknown id
+404, re-resolving a decided entry 409, any other word 400). Decided
+entries are final — review the inbox before resolving.
+
+Admin (fully offline; the seed never leaves this machine). Take the
+approved node key from `invite decide` (or a key handed over directly
+by a known operator) and mint the ticket:
 
 ```sh
 ciphervault invite issue <node-pk> --ttl 604800 \

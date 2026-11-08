@@ -1,15 +1,16 @@
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 use ciphervault_storage::types::{
     AppendRecordResponse, ChallengeRequest, ChallengeResponse, LeaseReceipt, LeaseRequest,
-    OperatorInfo, RecoveryRecordsResponse, SessionRequest, SessionResponse,
+    OperatorInfo, PeerDescriptor, RecoveryRecordsResponse, SessionRequest, SessionResponse,
 };
 
 use ciphervault_storage::invites::{JoinRefreshRequest, JoinRequest, JoinResponse};
@@ -49,11 +50,15 @@ async fn bounded_io_with_limit<T: Send + 'static>(
 }
 
 pub(crate) fn extract_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("Authorization")?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
+    let value = headers.get("Authorization")?.to_str().ok()?;
+    // RFC 7235: the auth scheme is case-insensitive. Accept any casing of
+    // "Bearer " so valid clients never silently downgrade to anonymous.
+    value.strip_prefix("Bearer ").or_else(|| {
+        value
+            .get(..7)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("bearer "))
+            .map(|_| &value[7..])
+    })
 }
 
 pub(crate) fn extract_vault_id(headers: &HeaderMap) -> Option<&str> {
@@ -83,6 +88,11 @@ pub(crate) fn require_control_auth(
     if !state.security.strict_auth && extract_token(headers).is_none() {
         // Kept as an explicit migration switch for existing operator-to-operator clients.
         // Production compose enables strict mode; local legacy callers can migrate separately.
+        // Loud on purpose: this branch disables authentication entirely.
+        eprintln!(
+            "WARNING: non-strict control-plane bypass taken (no Authorization header); \
+             set CIPHERVAULT_OPERATOR_STRICT_AUTH=true in any non-loopback deployment"
+        );
         return Ok(());
     }
     let token = require_session(state, headers, true)?;
@@ -123,6 +133,13 @@ pub(crate) fn approval_scope(
     if require_service_token(headers).is_ok()
         || (!state.security.strict_auth && extract_token(headers).is_none())
     {
+        if require_service_token(headers).is_err() {
+            // Non-strict anonymous bypass: fleet-wide approval scope with no authentication.
+            eprintln!(
+                "WARNING: non-strict approval-scope bypass taken (no Authorization header); \
+                 set CIPHERVAULT_OPERATOR_STRICT_AUTH=true in any non-loopback deployment"
+            );
+        }
         return Ok(None);
     }
     let token = require_session(state, headers, write)?;
@@ -246,6 +263,10 @@ pub(crate) fn build_operator_info(state: &OperatorState) -> OperatorInfo {
         retention_terms: "90-day immutable retention minimum".into(),
         identity_signature_hex: String::new(),
         identity_expires_at_utc: chrono::Utc::now().timestamp() as u64 + 86_400,
+        binary_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_sha: option_env!("CIPHERVAULT_BUILD_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
     };
     let signature = ciphervault_crypto::signatures::sign_with_domain(
         &state.signing_key,
@@ -344,11 +365,35 @@ pub async fn post_enroll_identity(
     Json(req): Json<IdentityRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     require_service_token(&headers)?;
+    // Split enrollment from privilege grant: FLEET_ADMIN is stripped unless the
+    // operator explicitly opts in with CIPHERVAULT_OPERATOR_ALLOW_FLEET_ADMIN_GRANT=1.
+    // A service-token holder can always enroll devices, but cannot mint fleet
+    // admins by default — not even for themselves.
+    let admin_grant_allowed = matches!(
+        std::env::var("CIPHERVAULT_OPERATOR_ALLOW_FLEET_ADMIN_GRANT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    );
+    let mut permissions = req.permissions;
+    if !admin_grant_allowed
+        && permissions & crate::state::PERMISSION_FLEET_ADMIN != 0
+    {
+        permissions &= !crate::state::PERMISSION_FLEET_ADMIN;
+        eprintln!(
+            "WARNING: FLEET_ADMIN bit stripped from enrollment (vault {}, key {}...); \
+             set CIPHERVAULT_OPERATOR_ALLOW_FLEET_ADMIN_GRANT=1 to grant fleet admin explicitly",
+            req.vault_id_hex,
+            req.public_key_hex.get(..8).unwrap_or("?"),
+        );
+    }
     state
         .enroll_identity_with_binding(
             &req.vault_id_hex,
             &req.public_key_hex,
-            req.permissions,
+            permissions,
             req.account_id.as_deref(),
             req.device_id_hex.as_deref(),
         )
@@ -888,6 +933,79 @@ pub async fn get_peer_admissions(
     Ok(Json(state.admissions_snapshot()))
 }
 
+/// Inbound fleet-join request body: the candidate's self-signed descriptor
+/// plus an optional contact string (free text, ≤140 chars).
+#[derive(Debug, Deserialize)]
+pub struct JoinRequestBody {
+    pub descriptor: PeerDescriptor,
+    #[serde(default)]
+    pub contact: String,
+}
+
+/// Accepts a fleet-join request from a prospective operator. Public by
+/// design, behind the global pre-auth rate limiter: the descriptor must
+/// self-verify (same bar as announces/joins) or the request is refused.
+/// Grants no trust — admission still requires the ticket/graduation flow.
+/// One record per operator id; resubmits update in place.
+pub async fn post_peer_join_request(
+    State(state): State<Arc<OperatorState>>,
+    Json(req): Json<JoinRequestBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let request_id = state
+        .submit_join_request(&req.descriptor, &req.contact)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    Ok(Json(serde_json::json!({
+        "status": "pending",
+        "request_id": request_id,
+        "operator_id": req.descriptor.operator_id,
+    })))
+}
+
+/// Decision body for resolving one inbound fleet-join request.
+#[derive(Debug, Deserialize)]
+pub struct JoinRequestDecision {
+    pub decision: String,
+}
+
+/// Resolves one inbound fleet-join request: `approved` (hand the returned
+/// node key to the offline `invite issue` ceremony, then give the ticket to
+/// the joiner) or `rejected`. Control-plane route; pending entries only —
+/// resolving a consumed entry is a 409, never a silent re-mint.
+pub async fn post_peer_join_request_resolve(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    Json(body): Json<JoinRequestDecision>,
+) -> Result<Json<crate::state::JoinRequestRecord>, (StatusCode, String)> {
+    // Control-plane route: deciding who may join is fleet administration.
+    // (Without this, anyone could permanently lock a request id with a
+    // hostile "rejected" — decisions are final by design.)
+    require_control_auth(&state, &headers)?;
+    let resolved = state
+        .resolve_join_request(&request_id, &body.decision)
+        .map_err(|error| {
+            let status = if error == "join request not found" {
+                StatusCode::NOT_FOUND
+            } else if error.starts_with("join request already ") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, error)
+        })?;
+    Ok(Json(resolved))
+}
+
+/// Lists the inbound fleet-join request inbox, oldest first.
+/// Control-plane route: who asked to join is fleet administration.
+pub async fn get_peer_join_requests(
+    State(state): State<Arc<OperatorState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::state::JoinRequestRecord>>, (StatusCode, String)> {
+    require_control_auth(&state, &headers)?;
+    Ok(Json(state.list_join_requests()))
+}
+
 /// Admin graduation override: confers full membership immediately.
 /// Control-plane route like `/v1/peers/announce`. Unknown ids → 404.
 pub async fn post_peer_graduate(
@@ -989,14 +1107,38 @@ pub async fn post_submit_approval(
     })))
 }
 
-/// Prometheus exposition for operator counters and latency histograms (R11).
-/// Unauthenticated like `/healthz`; firewall it or scrape via loopback.
-pub async fn get_metrics(State(state): State<Arc<OperatorState>>) -> impl IntoResponse {
+/// Prometheus exposition for operator counters and latency histograms.
+/// Loopback-only by default: non-loopback callers get 403 unless
+/// CIPHERVAULT_METRICS_PUBLIC=1 explicitly opts the API port back in.
+/// (The live server always provides ConnectInfo; a missing address only
+/// happens in test harnesses, which are allowed through.)
+pub async fn get_metrics(
+    State(state): State<Arc<OperatorState>>,
+    connect: Option<ConnectInfo<SocketAddr>>,
+) -> Response {
+    let public = matches!(
+        std::env::var("CIPHERVAULT_METRICS_PUBLIC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    );
+    if !public
+        && connect.is_some_and(|ConnectInfo(addr)| !addr.ip().is_loopback())
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"code": 403, "error": "metrics are loopback-only"})),
+        )
+            .into_response();
+    }
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         state.metrics.render_prometheus(),
     )
+        .into_response()
 }
 
 #[cfg(test)]

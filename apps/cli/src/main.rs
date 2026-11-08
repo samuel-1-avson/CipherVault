@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use colored::*;
+use rand::RngCore;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -54,7 +55,7 @@ Developer: vault & secrets:
   repo                 Bind VCS repositories to a project by immutable provider id
   context              Inspect and edit the local scope context file
   project              List and resolve scoped-secret projects
-  secret               Manage scoped secrets (set, get, list, rotate)
+  secret               Manage scoped secrets (set, get, list, find, update, delete, rotate)
   migrate              Migrate a legacy vault into scoped secrets (ledgered: plan, apply, verify, resolve, shred)
   audit                Audit ciphertext replica health across independent operators
   repair               Detect and repair degraded replicas across operators
@@ -174,7 +175,7 @@ enum Commands {
         #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
         reader: Option<String>,
 
-        #[arg(long, help = "Hardware token user PIN for automated verification")]
+        #[arg(long, help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)")]
         pin: Option<String>,
     },
 
@@ -184,7 +185,6 @@ enum Commands {
         paths: Vec<PathBuf>,
 
         #[arg(
-            short = 'i',
             long,
             help = "Scan .gitignore for confidential secret files (.env, keys, certs) and track them"
         )]
@@ -195,6 +195,12 @@ enum Commands {
             help = "Do not automatically append newly tracked files to .gitignore"
         )]
         no_gitignore: bool,
+
+        #[arg(
+            long,
+            help = "Register paths that don't exist yet (otherwise a missing path is an error)"
+        )]
+        allow_planned: bool,
     },
 
     /// Remove confidential files from vault tracking
@@ -237,14 +243,14 @@ enum Commands {
 
         #[arg(
             long,
-            help = "Automatically anchor newly created snapshot head commitment to Arbitrum L2"
+            help = "Automatically anchor newly created snapshot head commitment to the CipherChain sovereign ledger"
         )]
         anchor: bool,
 
         #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
         reader: Option<String>,
 
-        #[arg(long, help = "Hardware token user PIN for automated verification")]
+        #[arg(long, help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)")]
         pin: Option<String>,
 
         #[arg(
@@ -332,8 +338,14 @@ enum Commands {
         #[arg(long, help = "Specify PC/SC smartcard reader name or substring filter")]
         reader: Option<String>,
 
-        #[arg(long, help = "Hardware token user PIN for automated verification")]
+        #[arg(long, help = "Hardware token user PIN (visible in shell history/ps — prefer CIPHERVAULT_PIN env var or interactive prompt)")]
         pin: Option<String>,
+
+        #[arg(
+            long,
+            help = "Overwrite uncommitted working-file changes when restoring into the workspace"
+        )]
+        force: bool,
     },
 
     /// Recover a vault from an offline recovery kit or threshold guardian shares on a clean machine
@@ -691,7 +703,7 @@ enum Commands {
         sub: ProjectSubcommand,
     },
 
-    /// Manage scoped secrets (set, get, list, rotate)
+    /// Manage scoped secrets (set, get, list, find, update, delete, rotate)
     Secret {
         #[command(subcommand)]
         sub: SecretSubcommand,
@@ -907,6 +919,18 @@ enum DeviceSubcommand {
 
     /// Revoke a device by its 32-byte hex device ID
     Revoke { device_id: String },
+
+    /// Export device identity + epoch keys to a passphrase-sealed bundle
+    ExportKey {
+        #[arg(help = "Output bundle path (refuses to overwrite)")]
+        out: PathBuf,
+    },
+
+    /// Import epoch keys from an export-key bundle into this vault
+    ImportKeys {
+        #[arg(help = "Bundle path from `device export-key`")]
+        bundle: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1784,12 +1808,60 @@ enum InviteSubcommand {
         )]
         quorum_k: Option<usize>,
     },
+
+    /// List inbound fleet-join requests (control-plane; needs service token)
+    Requests {
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Fleet endpoints to query (default: configured operators)"
+        )]
+        via: Option<Vec<String>>,
+    },
+
+    /// Apply to join the fleet (joiner side): submit our descriptor, print the request id
+    Apply {
+        #[arg(long, help = "Own node endpoint (fetches our fresh descriptor)")]
+        node: String,
+
+        #[arg(long, default_value = "", help = "Contact string for the fleet operator (≤140 chars)")]
+        contact: String,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Fleet endpoints to apply to (default: configured operators)"
+        )]
+        via: Option<Vec<String>>,
+    },
+
+    /// Approve or reject one join request; approving prints the node key for `invite issue`
+    Decide {
+        #[arg(help = "Join request id from `invite requests`")]
+        request_id: String,
+
+        #[arg(help = "\"approved\" or \"rejected\"")]
+        decision: String,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            help = "Fleet endpoints to decide on (default: configured operators)"
+        )]
+        via: Option<Vec<String>>,
+    },
 }
 
 #[derive(Subcommand)]
 enum HookSubcommand {
     /// Install Git pre-commit hook into .git/hooks/pre-commit
-    Install,
+    Install {
+        #[arg(
+            long,
+            help = "Replace an existing non-CipherVault pre-commit hook (it is backed up first)"
+        )]
+        force: bool,
+    },
 
     /// Check for staged confidential files, secret sprawl, and unbacked modifications
     Check {
@@ -1817,8 +1889,9 @@ enum HookSubcommand {
 
 #[derive(Subcommand)]
 enum RecoverySubcommand {
-    /// Export or view the offline emergency recovery kit
-    Export,
+    /// Show public recovery descriptors (vault ID, keys, locator) — this is NOT the secret kit
+    #[command(visible_alias = "export")]
+    ShowDescriptors,
 
     /// Split the master recovery secret into M-of-N threshold guardian shares
     Split {
@@ -1851,6 +1924,12 @@ enum RecoverySubcommand {
             help = "Directory to save generated guardian share sheets (e.g. ./guardians)"
         )]
         out_dir: Option<PathBuf>,
+
+        #[arg(
+            long,
+            help = "Print all guardian shares to stdout (defeats M-of-N separation; prefer --out-dir)"
+        )]
+        stdout: bool,
     },
 
     /// Test clean restore from recovery kit into an isolated folder
@@ -1930,7 +2009,20 @@ fn run_on_roomy_thread() {
             let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
 
             if let Err(err) = run(cli).await {
+                // U-H6: never flatten the chain — the outer message alone
+                // ("connect failed") is undebuggable without the causes.
+                // A per-failure trace id gives fleet operators something
+                // greppable when users paste this block.
+                let mut trace = [0u8; 8];
+                rand::thread_rng().fill_bytes(&mut trace);
                 eprintln!("{} {}", "Error:".bold().red(), err);
+                for cause in err.chain().skip(1) {
+                    eprintln!("  caused by: {cause}");
+                }
+                eprintln!(
+                    "{}",
+                    format!("Trace ID: {} (include this when asking for help)", hex::encode(trace)).dimmed()
+                );
                 std::process::exit(1);
             }
         });

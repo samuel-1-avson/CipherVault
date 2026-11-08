@@ -134,6 +134,29 @@ const HTTP_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// Upper bound on tracked client keys. Past this, untracked keys fail
 /// closed (429) so the tracker itself cannot be memory-DoSed.
 const MAX_HTTP_RATE_TRACKED_KEYS: usize = 4096;
+/// Stricter rate tier for anonymous recovery-log reads (capability URLs are
+/// unauthenticated by design; this bounds locator-guessing and log-scraping).
+/// `CIPHERVAULT_RECOVERY_READ_LIMIT_PER_MIN` overrides; 0 disables the extra
+/// tier (global limiter still applies).
+const DEFAULT_RECOVERY_READ_LIMIT_PER_MIN: u32 = 60;
+
+fn recovery_read_limit_per_min() -> u32 {
+    match std::env::var("CIPHERVAULT_RECOVERY_READ_LIMIT_PER_MIN")
+        .ok()
+        .as_deref()
+    {
+        Some(value) if !value.trim().is_empty() => match value.trim().parse::<u32>() {
+            Ok(limit) => limit,
+            Err(_) => {
+                eprintln!(
+                    "operator limit CIPHERVAULT_RECOVERY_READ_LIMIT_PER_MIN={value} invalid; using default {DEFAULT_RECOVERY_READ_LIMIT_PER_MIN}"
+                );
+                DEFAULT_RECOVERY_READ_LIMIT_PER_MIN
+            }
+        },
+        _ => DEFAULT_RECOVERY_READ_LIMIT_PER_MIN,
+    }
+}
 
 fn http_rate_limit_per_min() -> u32 {
     match std::env::var("CIPHERVAULT_HTTP_RATE_LIMIT_PER_MIN")
@@ -309,7 +332,18 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/leases/:id/renew", post(handlers::post_renew_lease))
         .route(
             "/v1/recovery/:locator/records",
-            post(handlers::post_recovery_record).get(handlers::get_recovery_records),
+            post(handlers::post_recovery_record),
+        )
+        .route(
+            "/v1/recovery/:locator/records",
+            // Anonymous capability-URL reads get their own stricter tier
+            // (default 60/min vs 600 global) to bound locator-guessing.
+            get(handlers::get_recovery_records).route_layer(
+                middleware::from_fn_with_state(
+                    HttpRateLimiter::new(recovery_read_limit_per_min()),
+                    http_rate_limit,
+                ),
+            ),
         )
         // Dynamic P2P Peer Gossip routes
         .route("/v1/peers/announce", post(handlers::post_peer_announce))
@@ -317,9 +351,19 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/peers/self", get(handlers::get_self_peer))
         .route("/v1/peers/p2p", get(handlers::get_p2p_info))
         // Verified community join routes: join + refresh are public (the
-        // ticket / node-key signature is the authorization); membership
-        // and graduation are control-plane administration.
+        // ticket / node-key signature is the authorization); join-requests
+        // accepts inbound applications (public submit, control-plane list);
+        // resolve is the admin decision on one request; membership and
+        // graduation are control-plane administration.
         .route("/v1/peers/join", post(handlers::post_peer_join))
+        .route(
+            "/v1/peers/join-requests",
+            post(handlers::post_peer_join_request).get(handlers::get_peer_join_requests),
+        )
+        .route(
+            "/v1/peers/join-requests/:request_id/resolve",
+            post(handlers::post_peer_join_request_resolve),
+        )
         .route(
             "/v1/peers/join/refresh",
             post(handlers::post_peer_join_refresh),

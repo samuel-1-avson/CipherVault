@@ -339,6 +339,8 @@ pub struct ExplorerOperatorRow {
     pub reachable: bool,
     pub latency_ms: Option<u64>,
     pub identity: String,
+    /// Short probe diagnostic for the cluster card when unreachable.
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2223,9 +2225,9 @@ pub(crate) async fn execute_quick_pull(dry_run: bool) -> anyhow::Result<String> 
 }
 
 /// Restores one snapshot's confidential files into the working directory.
-/// Unlike pull there is no dirty-file abort: uncommitted working-tree
-/// changes are overwritten, which is why the TUI gates this behind a
-/// confirmation modal telling the user to push first.
+/// The TUI confirmation modal (telling the user to push first) is the
+/// explicit consent, so this passes force=true; the CLI path without
+/// --force aborts on dirty files via the shared pull guard.
 pub(crate) fn execute_quick_restore(snapshot_id_hex: String) -> anyhow::Result<String> {
     crate::cmd_restore(
         Some(snapshot_id_hex.clone()),
@@ -2234,6 +2236,7 @@ pub(crate) fn execute_quick_restore(snapshot_id_hex: String) -> anyhow::Result<S
         None,
         None,
         false,
+        true,
     )?;
     let short: String = snapshot_id_hex.chars().take(12).collect();
     Ok(format!(
@@ -2260,6 +2263,10 @@ fn explorer_operator_rows(operators: &[serde_json::Value]) -> Vec<ExplorerOperat
                 == Some("reachable"),
             latency_ms: operator.get("latency_ms").and_then(|value| value.as_u64()),
             identity: explorer_json_str(operator, "identity_verification", "not_observed"),
+            last_error: operator
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(|s| s.to_string()),
         })
         .collect()
 }
