@@ -460,7 +460,7 @@ def _make_secret_source():
                     result.error = "ciphervault binary not found; run `hermes ciphervault bootstrap`."
                     result.error_kind = ErrorKind.BINARY_MISSING
                     return result
-                argv = [binary, "export-env", "--json"]
+                argv = [binary, "export-env"]
                 if cfg.get("env_file"):
                     argv += ["--env-file", str(cfg["env_file"])]
                 if cfg.get("allow_working_copy"):

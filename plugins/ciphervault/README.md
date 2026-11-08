@@ -41,7 +41,7 @@ machine and never enter the model context.
   tracked secret files *inside the CLI process* for exact-value
   redaction (values never enter the plugin process or the model).
 - **Credentials:** the plugin holds none. The secret source passes the
-  CLI's `export-env --json` output straight to Hermes' orchestrator.
+  CLI's `export-env` JSON output straight to Hermes' orchestrator.
 - **Approvals/unattended:** tools fail with structured JSON errors when
   the binary or vault is missing; nothing prompts or hangs.
 
