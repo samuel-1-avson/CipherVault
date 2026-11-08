@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="100%" height="100%" style="background:#0b0f19; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <linearGradient id="pGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+
+    <marker id="mArr" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8" />
+    </marker>
+    <marker id="mArrGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="mArrAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="480" y="32" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700">Workflow 5: Clean-Machine Disaster Recovery Sequence (`ciphervault recover`)</text>
+  <text x="480" y="50" text-anchor="middle" fill="#94a3b8" font-size="11">Zero-Disk Shamir Recombination in RAM, Envelope Unwrapping &amp; Atomic Staging Validation</text>
+
+  <!-- Lifelines -->
+  <!-- 1: Dev on clean laptop -->
+  <rect x="25" y="70" width="125" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="87" y="93" text-anchor="middle" fill="#f8fafc" font-size="11" font-weight="600">Clean Workstation</text>
+  <line x1="87" y1="106" x2="87" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 2: Recovery CLI -->
+  <rect x="175" y="70" width="130" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="240" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Recovery CLI</text>
+  <line x1="240" y1="106" x2="240" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 3: Volatile RAM (Shamir) -->
+  <rect x="330" y="70" width="145" height="36" rx="6" fill="url(#pGrad)" stroke="#f59e0b" stroke-width="1.2" />
+  <text x="402" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Volatile RAM Engine</text>
+  <line x1="402" y1="106" x2="402" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 4: Operator Federation -->
+  <rect x="500" y="70" width="145" height="36" rx="6" fill="url(#pGrad)" stroke="#34d399" stroke-width="1.2" />
+  <text x="572" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Storage Operators</text>
+  <line x1="572" y1="106" x2="572" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 5: Atomic Staging -->
+  <rect x="670" y="70" width="135" height="36" rx="6" fill="url(#pGrad)" stroke="#38bdf8" stroke-width="1.2" />
+  <text x="737" y="93" text-anchor="middle" fill="#f8fafc" font-size="11" font-weight="600">.ciphervault_staging_*</text>
+  <line x1="737" y1="106" x2="737" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- 6: Final Destination -->
+  <rect x="830" y="70" width="105" height="36" rx="6" fill="url(#pGrad)" stroke="#34d399" stroke-width="1.2" />
+  <text x="882" y="93" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="600">Target Files</text>
+  <line x1="882" y1="106" x2="882" y2="505" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- Step 1 -->
+  <line x1="87" y1="125" x2="236" y2="125" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="160" y="118" text-anchor="middle" fill="#f8fafc" font-size="10">ciphervault recover --shares S1 S2 S3</text>
+
+  <!-- Step 2 -->
+  <line x1="240" y1="150" x2="398" y2="150" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#mArrAmber)" />
+  <text x="320" y="143" text-anchor="middle" fill="#f59e0b" font-size="10">Load M Shares, verify CRC32</text>
+
+  <!-- Step 3: Lagrange Interpolation -->
+  <path d="M 402 165 C 452 165, 452 195, 406 195" fill="none" stroke="#f59e0b" stroke-width="1.2" marker-end="url(#mArrAmber)" />
+  <text x="455" y="183" text-anchor="start" fill="#fde68a" font-size="9">Lagrange interpolation over GF(2^8) -> R</text>
+
+  <!-- Step 4 -->
+  <line x1="240" y1="215" x2="568" y2="215" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="405" y="208" text-anchor="middle" fill="#38bdf8" font-size="10">GET /v1/recovery/:locator/records</text>
+
+  <!-- Step 5 -->
+  <line x1="572" y1="235" x2="244" y2="235" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#mArr)" />
+  <text x="405" y="228" text-anchor="middle" fill="#94a3b8" font-size="9">Signed RecoveryRecord + Sealed Epoch Envelope</text>
+
+  <!-- Step 6 -->
+  <line x1="240" y1="260" x2="398" y2="260" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#mArr)" />
+  <text x="320" y="255" text-anchor="middle" fill="#38bdf8" font-size="9">Unwrap sealed box with E_SK -> VaultEpochKey</text>
+
+  <!-- Step 7 -->
+  <line x1="240" y1="285" x2="568" y2="285" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="405" y="278" text-anchor="middle" fill="#38bdf8" font-size="10">GET /v1/objects/:head_cid (Fetch Head &amp; Decrypt Manifest)</text>
+
+  <!-- Step 8: Chunk Download & Staging -->
+  <rect x="230" y="305" width="515" height="80" rx="6" fill="#0f172a" stroke="#0284c7" stroke-width="1" stroke-dasharray="4,3" />
+  <text x="240" y="320" fill="#38bdf8" font-size="10" font-weight="700">ATOMIC CHUNK DOWNLOAD &amp; DIGEST VALIDATION</text>
+
+  <line x1="240" y1="335" x2="568" y2="335" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#mArr)" />
+  <text x="405" y="330" text-anchor="middle" fill="#94a3b8" font-size="9">GET /v1/objects/:cid</text>
+
+  <line x1="572" y1="352" x2="244" y2="352" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#mArr)" />
+  <text x="405" y="347" text-anchor="middle" fill="#94a3b8" font-size="9">Ciphertext bytes</text>
+
+  <line x1="240" y1="370" x2="733" y2="370" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#mArr)" />
+  <text x="485" y="365" text-anchor="middle" fill="#38bdf8" font-size="9">Decrypt chunk &amp; write to staging file; verify SHA-256</text>
+
+  <!-- Step 9: Atomic Rename -->
+  <line x1="737" y1="410" x2="878" y2="410" stroke="#34d399" stroke-width="2" marker-end="url(#mArrGreen)" />
+  <text x="807" y="403" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600">Atomic Move / Replace</text>
+
+  <!-- Step 10: Clean RAM -->
+  <line x1="240" y1="440" x2="398" y2="440" stroke="#ef4444" stroke-width="1.5" marker-end="url(#mArr)" />
+  <text x="320" y="433" text-anchor="middle" fill="#ef4444" font-size="9">Zeroize R, keys, and memory buffers</text>
+
+  <!-- Step 11: Complete -->
+  <line x1="240" y1="475" x2="91" y2="475" stroke="#34d399" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#mArrGreen)" />
+  <text x="165" y="468" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">✓ Bit-for-Bit Recovery Complete (0 Bitflips)</text>
+
+</svg>

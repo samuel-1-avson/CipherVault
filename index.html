@@ -1,0 +1,2894 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-view-mode="simple">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="CipherVault — The simplest, safest way for developers and teams to back up and share secret keys, passwords, and .env files. Git tracks source code; CipherVault protects your secrets.">
+  <meta name="theme-color" content="#07090e">
+  
+  <title>CipherVault [v1.0.30] — Sovereign Zero-Knowledge Secrets Engine</title>
+  
+  <!-- Canonical & OpenGraph Social Metadata -->
+  <link rel="canonical" href="https://cipherv.online/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CipherVault">
+  <meta property="og:url" content="https://cipherv.online/">
+  <meta property="og:title" content="CipherVault — The Safest Way to Back Up Developer Secrets">
+  <meta property="og:description" content="Git tracks your source code. CipherVault protects your secrets. Automatic private backups, smart delta sync, and 30-second disaster recovery without cloud custodians.">
+  <meta property="og:image" content="https://cipherv.online/og-card.svg">
+  <meta property="og:image:secure_url" content="https://cipherv.online/og-card.svg">
+  <meta property="og:image:type" content="image/svg+xml">
+  <meta property="og:image:width" content="960">
+  <meta property="og:image:height" content="560">
+  <meta property="og:image:alt" content="CipherVault Sovereign Clean-Machine Disaster Recovery Diagram">
+  
+  <!-- Twitter Card Metadata -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@CipherVault">
+  <meta name="twitter:title" content="CipherVault [v1.0.30] — Sovereign Secrets Protection">
+  <meta name="twitter:description" content="Client-side encryption, smart delta sync, and 30-second disaster recovery without cloud custodians.">
+  <meta name="twitter:image" content="https://cipherv.online/og-card.svg">
+  
+  <!-- SEO & Author Metadata -->
+  <meta name="keywords" content="secrets management, developer tools, .env backup, password sharing, rust, zero-knowledge, disaster recovery, devops, security, dotfiles, env">
+  <meta name="author" content="CipherVault Contributors">
+  
+  <!-- Editorial Serif & Modern Clean Grotesque Typography (minimalist-ui protocol) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Geist:wght@400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23FFB000'><path d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 6c1.66 0 3 1.34 3 3 0 .78-.3 1.49-.8 2.02l1.3 2.98h-7l1.3-2.98c-.5-.53-.8-1.24-.8-2.02 0-1.66 1.34-3 3-3z'/></svg>">
+
+  <!-- Structured Data (JSON-LD) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "CipherVault",
+    "operatingSystem": "Windows, macOS, Linux",
+    "applicationCategory": "DeveloperApplication",
+    "description": "Sovereign, zero-knowledge secret backup, version control, and clean-machine disaster recovery.",
+    "url": "https://cipherv.online",
+    "softwareVersion": "1.0.30",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+</head>
+<body class="tui-body">
+  <!-- Terminal Frame Container -->
+  <div class="terminal-shell" id="terminal-shell">
+    
+    <!-- Unified 2-Tier Terminal Masthead (Pristine Organization & Zero Text Clipping) -->
+    <header class="tui-masthead" id="tui-header">
+      
+      <!-- Tier 1: Global Identity, Live Quorum Status & Utilities -->
+      <div class="tui-topbar">
+        <div class="topbar-left">
+          <a href="https://cipherv.online" class="tui-brand" id="brand-home-link" aria-label="CipherVault Home">
+            <span class="brand-highlight">CIPHER</span><span class="brand-title">VAULT</span>
+            <span class="brand-tag">v1.0.30</span>
+          </a>
+          <div class="tui-meta-badge" title="Quorum Consensus: 3 Independent Nodes Synchronized">
+            <span class="tui-pulse-dot"></span>
+            <span class="tui-meta-text">3 Nodes Live</span>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <!-- Audience Explanation Mode Switcher (Plain English vs Deep Tech) -->
+          <div class="view-mode-switcher-box" id="view-mode-switcher-box" aria-label="Explanation Mode">
+            <button class="mode-pill-btn active" id="btn-mode-simple" data-mode="simple" title="Plain English explanation with relatable analogies">Plain English</button>
+            <button class="mode-pill-btn" id="btn-mode-tech" data-mode="tech" title="Deep technical and cryptographic specifications">Deep Tech</button>
+          </div>
+
+          <!-- Interactive Theme Switcher Pills (Light | Mono) -->
+          <div class="theme-switcher-box" id="theme-switcher-box" aria-label="Color Themes">
+            <button class="theme-pill-btn active" data-theme="light" id="theme-btn-light" title="Warm Paper Light">Light</button>
+            <button class="theme-pill-btn" data-theme="mono" id="theme-btn-mono" title="Minimal Monochrome Black & White">Mono</button>
+          </div>
+
+          <div class="topbar-actions">
+            <a href="https://vault.cipherv.online" target="_blank" rel="noopener noreferrer" class="tui-ext-btn" title="Open live production explorer">
+              <span class="ext-dot"></span> Explorer ↗
+            </a>
+            <a href="https://github.com/samuel-1-avson/CipherVault" target="_blank" rel="noopener noreferrer" class="tui-git-btn" title="GitHub Repository">
+              GitHub
+            </a>
+            <button class="tui-donate-btn" id="btn-open-donate" title="Support CipherVault infrastructure with crypto">
+              <span class="donate-heart"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></span> Donate
+            </button>
+          </div>
+        </div>
+
+        <!-- Mobile Navigation Controls (Compact & Minimalist) -->
+        <div class="topbar-mobile-controls">
+          <button class="tui-mobile-hamburger" id="btn-mobile-hamburger" aria-label="Open Navigation Menu" aria-expanded="false" aria-controls="mobile-nav-drawer">
+            <span class="hamburger-box">
+              <span class="hamburger-inner"></span>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tier 2: Primary Navigation Deck -->
+      <div class="tui-navdeck">
+        <nav class="tui-tabs-bar" role="tablist" aria-label="Terminal Navigation">
+          <button class="tui-tab-btn active" id="tab-nav-overview" data-target="pane-overview" role="tab" aria-selected="true">
+            <span class="key-shortcut">01</span>
+            <span class="tab-label">Overview</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-dilemma" data-target="pane-dilemma" role="tab" aria-selected="false">
+            <span class="key-shortcut">02</span>
+            <span class="tab-label">Dilemma</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-engine" data-target="pane-engine" role="tab" aria-selected="false">
+            <span class="key-shortcut">03</span>
+            <span class="tab-label">Engine</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-scoped" data-target="pane-scoped" role="tab" aria-selected="false">
+            <span class="key-shortcut">04</span>
+            <span class="tab-label">Scoped Secrets</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-benchmarks" data-target="pane-benchmarks" role="tab" aria-selected="false">
+            <span class="key-shortcut">05</span>
+            <span class="tab-label">Benchmarks</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-recovery" data-target="pane-recovery" role="tab" aria-selected="false">
+            <span class="key-shortcut">06</span>
+            <span class="tab-label">Recovery</span>
+          </button>
+          <button class="tui-tab-btn" id="tab-nav-quickstart" data-target="pane-quickstart" role="tab" aria-selected="false">
+            <span class="key-shortcut">07</span>
+            <span class="tab-label">Install</span>
+          </button>
+        </nav>
+
+        <div class="navdeck-shortcuts-hint" aria-hidden="true">
+          <span class="hint-item"><kbd class="tui-kbd">1-7</kbd> Switch Tab</span>
+          <span class="hint-sep">/</span>
+          <span class="hint-item"><kbd class="tui-kbd">/</kbd> REPL Console</span>
+        </div>
+      </div>
+
+    </header>
+
+    <!-- Modern Minimalist Mobile Navigation Drawer & Backdrop -->
+    <div class="mobile-nav-backdrop" id="mobile-nav-backdrop" aria-hidden="true"></div>
+    <aside class="mobile-nav-drawer" id="mobile-nav-drawer" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Mobile Navigation Drawer">
+      <div class="drawer-scroller">
+        
+        <!-- Drawer Top Bar -->
+        <div class="drawer-header">
+          <div class="drawer-brand">
+            <span class="brand-bracket">[</span><span class="brand-highlight">CIPHER</span><span class="brand-title">VAULT</span><span class="brand-tag">v1.0.30</span><span class="brand-bracket">]</span>
+          </div>
+          <button class="btn-close-drawer" id="btn-close-mobile-drawer" aria-label="Close Navigation Menu">[✕ CLOSE]</button>
+        </div>
+
+        <!-- Live Quorum Status Ribbon -->
+        <div class="drawer-status-ribbon">
+          <span class="tui-pulse-dot"></span>
+          <span class="drawer-status-text">FLEET: 3 OPERATORS · PROBED LIVE FROM THIS PAGE</span>
+        </div>
+
+        <!-- Section 1: Core Navigation Tabs -->
+        <div class="drawer-nav-group">
+          <div class="drawer-section-label">SYSTEM WORKSTATIONS</div>
+          <nav class="drawer-nav-list" role="tablist">
+            <button class="drawer-tab-btn active" data-target="pane-overview" role="tab">
+              <span class="d-tab-num">[1]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Overview</span>
+                <span class="d-tab-desc">Zero-knowledge secret backups &amp; recovery</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-dilemma" role="tab">
+              <span class="d-tab-num">[2]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">The Dilemma</span>
+                <span class="d-tab-desc">4 unsolved secrets vulnerabilities in Git</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-engine" role="tab">
+              <span class="d-tab-num">[3]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Cryptographic Engine</span>
+                <span class="d-tab-desc">FastCDC slicer &amp; 6-stage pipeline deep-dive</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-scoped" role="tab">
+              <span class="d-tab-num">[4]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Scoped Secrets</span>
+                <span class="d-tab-desc">Resource hierarchy, envelope encryption &amp; DPoP</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-benchmarks" role="tab">
+              <span class="d-tab-num">[5]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Benchmarks</span>
+                <span class="d-tab-desc">362 MiB/s chunk+encrypt pipeline &amp; 96% deduplication</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-recovery" role="tab">
+              <span class="d-tab-num">[6]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Clean-Machine Recovery</span>
+                <span class="d-tab-desc">Shamir M-of-N threshold guardians &amp; paper kit</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+
+            <button class="drawer-tab-btn" data-target="pane-quickstart" role="tab">
+              <span class="d-tab-num">[7]</span>
+              <div class="d-tab-content">
+                <span class="d-tab-title">Installation &amp; Setup</span>
+                <span class="d-tab-desc">PowerShell, Brew, Scoop, Cargo, Bash &amp; Docker</span>
+              </div>
+              <span class="d-tab-arrow">➔</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- Section 2: Audience Mode Switch -->
+        <div class="drawer-settings-group">
+          <div class="drawer-section-label">EXPLANATION MODE</div>
+          <div class="drawer-themes-wrap">
+            <button class="drawer-theme-pill active" id="drawer-btn-mode-simple">Plain English</button>
+            <button class="drawer-theme-pill" id="drawer-btn-mode-tech">Deep Tech</button>
+          </div>
+        </div>
+
+        <!-- Section 3: Appearance & Theme -->
+        <div class="drawer-settings-group">
+          <div class="drawer-section-label">APPEARANCE</div>
+          <div class="drawer-themes-wrap">
+            <button class="drawer-theme-pill active" data-theme="light">Light</button>
+            <button class="drawer-theme-pill" data-theme="mono">Mono</button>
+          </div>
+        </div>
+
+        <!-- Section 3: Community & External Links -->
+        <div class="drawer-actions-group">
+          <div class="drawer-section-label">INFRASTRUCTURE &amp; REPOSITORY</div>
+          <button class="drawer-action-btn primary-donate" id="drawer-btn-donate">
+            <span class="donate-heart"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></span> Donate with Crypto
+          </button>
+          <div class="drawer-links-row">
+            <a href="https://vault.cipherv.online" target="_blank" rel="noopener noreferrer" class="drawer-link-btn">
+              <span class="ext-dot"></span> Explorer ↗
+            </a>
+            <a href="https://github.com/samuel-1-avson/CipherVault" target="_blank" rel="noopener noreferrer" class="drawer-link-btn">
+              GitHub ↗
+            </a>
+          </div>
+        </div>
+
+        <!-- Drawer Footer -->
+        <div class="drawer-footer">
+          <span>CipherVault v1.0.30 &bull; Apache 2.0 / MIT Dual Licensed</span>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- Main Workspace (Spacious, Minimal & Centered 1200px Canvas) -->
+    <div class="tui-workspace-body">
+      
+      <!-- Center Main Content Panes (Spacious, Airy & Clean) -->
+      <main class="tui-main-panel" id="tui-main-panel">
+        
+        <!-- ====================================================================
+             PANE 1: OVERVIEW & HERO
+             ==================================================================== -->
+        <!-- ====================================================================
+             PANE 1: OVERVIEW (Minimalist Developer Terminal Hero)
+             ==================================================================== -->
+        <section class="tui-pane active" id="pane-overview" role="tabpanel">
+          
+          <!-- Minimal Hero Kicker Tag -->
+          <div class="hero-kicker-strip">
+            <span class="hero-status-dot">●</span>
+            <span class="hero-kicker-title">v1.0.30</span>
+            <span class="hero-kicker-divider">·</span>
+            <span class="hero-kicker-lead mode-simple-only">Safe Backup for Developer Secrets</span>
+            <span class="hero-kicker-lead mode-tech-only">Sovereign Zero-Knowledge Secrets</span>
+          </div>
+
+          <!-- Headline & Core Thesis with Clean Whitespace -->
+          <div class="hero-thesis-box">
+            <h1 class="hero-core-title">
+              Git tracks your source code.<br>
+              <span class="text-gold">CipherVault protects your secrets.</span>
+            </h1>
+            <p class="hero-core-lead mode-simple-only">
+              The simplest, safest way for developers and teams to back up and share API keys, passwords, and <code class="tui-code">.env</code> files. No cloud accounts. No monthly fees. Encrypted on your machine so only you hold the keys.
+            </p>
+            <p class="hero-core-lead mode-tech-only">
+              Hierarchical resource-scoped secrets, zero-cloud version control, envelope encryption with DPoP key binding, and clean-machine disaster recovery for modern development teams.
+            </p>
+          </div>
+
+          <!-- Clean Minimalist Reassurance & Mode Switcher Row -->
+          <div class="hero-audience-banner">
+            <div class="hero-reassurance-strip">
+              <span class="reassurance-item"><span class="reassurance-dot">●</span> Zero cloud accounts</span>
+              <span class="reassurance-sep">·</span>
+              <span class="reassurance-item"><span class="reassurance-dot">●</span> Local hardware encryption</span>
+              <span class="reassurance-sep">·</span>
+              <span class="reassurance-item mode-simple-only"><span class="reassurance-dot">●</span> No wallet or crypto tokens needed</span>
+              <span class="reassurance-item mode-tech-only"><span class="reassurance-dot">●</span> ChaCha20-Poly1305 + Shamir M-of-N</span>
+            </div>
+            <div class="audience-banner-text">
+              <a href="#" class="audience-banner-action mode-simple-only" id="banner-link-switch-tech">Deep Tech Specs →</a>
+              <a href="#" class="audience-banner-action mode-tech-only" id="banner-link-switch-simple">← Plain English</a>
+            </div>
+          </div>
+
+          <!-- 3 Everyday Developer Scenarios (Interactive Flashcards) -->
+          <div class="plain-scenarios-deck mode-simple-only">
+            <div class="scenarios-deck-header">
+              <h3 class="scenarios-deck-title">Everyday Secrets Problems &amp; Solutions</h3>
+              <div class="flashcards-hint">
+                <span class="flashcards-hint-text">Click card to reveal fix ⟳</span>
+              </div>
+            </div>
+            <div class="plain-scenarios-grid" id="scenarios-flashcard-deck">
+              
+              <div class="scenario-flashcard" tabindex="0" role="button" aria-label="Scenario 1: Accidental Git Push. Click to flip.">
+                <div class="scenario-inner">
+                  <div class="scenario-face scenario-front border-danger">
+                    <div>
+                      <div class="scenario-card-header">
+                        <span class="scenario-num-tag">01</span>
+                        <span class="scenario-name">Accidental Git Push</span>
+                      </div>
+                      <div class="scenario-text">
+                        A quick <code class="tui-code">git add .</code> publishes live database passwords and Stripe tokens directly to public GitHub repos.
+                      </div>
+                    </div>
+                    <div class="scenario-footer">
+                      <span class="scenario-tag tag-problem">Headache</span>
+                      <span class="flashcard-flip-prompt">Flip card ⟳</span>
+                    </div>
+                  </div>
+
+                  <div class="scenario-face scenario-back border-mint">
+                    <div>
+                      <div class="scenario-card-header">
+                        <span class="scenario-num-tag mint">01 FIX</span>
+                        <span class="scenario-name">Local Vault Guard</span>
+                      </div>
+                      <div class="scenario-text">
+                        Secrets are sealed on your machine in a hardware-backed vault that Git never stages, sees, or commits.
+                      </div>
+                    </div>
+                    <div class="scenario-footer">
+                      <span class="scenario-tag tag-solution">CipherVault Fix</span>
+                      <span class="flashcard-flip-prompt">Flip back ⟳</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="scenario-flashcard" tabindex="0" role="button" aria-label="Scenario 2: Wiped Laptop. Click to flip.">
+                <div class="scenario-inner">
+                  <div class="scenario-face scenario-front border-warning">
+                    <div>
+                      <div class="scenario-card-header">
+                        <span class="scenario-num-tag">02</span>
+                        <span class="scenario-name">Wiped or New Laptop</span>
+                      </div>
+                      <div class="scenario-text">
+                        Laptop lost or upgraded? Git restores source code, but unbacked local <code class="tui-code">.env</code> files vanish completely.
+                      </div>
+                    </div>
+                    <div class="scenario-footer">
+                      <span class="scenario-tag tag-problem">Headache</span>
+                      <span class="flashcard-flip-prompt">Flip card ⟳</span>
+                    </div>
+                  </div>
+
+                  <div class="scenario-face scenario-back border-mint">
+                    <div>
+                      <div class="scenario-card-header">
+                        <span class="scenario-num-tag mint">02 FIX</span>
+                        <span class="scenario-name">30-Second Restore</span>
+                      </div>
+                      <div class="scenario-text">
+                        Run <code class="tui-code">cv pull</code> to reconstruct all project secrets in 30 seconds on any clean machine.
+                      </div>
+                    </div>
+                    <div class="scenario-footer">
+                      <span class="scenario-tag tag-solution">CipherVault Fix</span>
+                      <span class="flashcard-flip-prompt">Flip back ⟳</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="scenario-flashcard" tabindex="0" role="button" aria-label="Scenario 3: Slack Password Sharing. Click to flip.">
+                <div class="scenario-inner">
+                  <div class="scenario-face scenario-front border-cyan">
+                    <div>
+                      <div class="scenario-card-header">
+                        <span class="scenario-num-tag">03</span>
+                        <span class="scenario-name">Passwords in Slack</span>
+                      </div>
+                      <div class="scenario-text">
+                        Teams paste production keys into Slack, email, or tickets during onboarding, leaking credentials across chat history.
+                      </div>
+                    </div>
+                    <div class="scenario-footer">
+                      <span class="scenario-tag tag-problem">Headache</span>
+                      <span class="flashcard-flip-prompt">Flip card ⟳</span>
+                    </div>
+                  </div>
+
+                  <div class="scenario-face scenario-back border-mint">
+                    <div>
+                      <div class="scenario-card-header">
+                        <span class="scenario-num-tag mint">03 FIX</span>
+                        <span class="scenario-name">Scoped Team Vaults</span>
+                      </div>
+                      <div class="scenario-text">
+                        Encrypted team vaults share secrets end-to-end. Stolen bearer tokens are rejected on unauthorized computers.
+                      </div>
+                    </div>
+                    <div class="scenario-footer">
+                      <span class="scenario-tag tag-solution">CipherVault Fix</span>
+                      <span class="flashcard-flip-prompt">Flip back ⟳</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Spacious Hero Quick-Install Command Strip -->
+          <div class="tui-quick-install hero-install-deck">
+            <div class="install-bar-header">
+              <div class="hero-target-pills" id="hero-install-pills" role="tablist" aria-label="Installation Target">
+                <button class="hero-target-pill active" data-install-target="cargo" role="tab" aria-selected="true">Cargo</button>
+                <button class="hero-target-pill" data-install-target="win" role="tab" aria-selected="false">PowerShell</button>
+                <button class="hero-target-pill" data-install-target="brew" role="tab" aria-selected="false">Homebrew</button>
+                <button class="hero-target-pill" data-install-target="winget" role="tab" aria-selected="false">Winget/Scoop</button>
+                <button class="hero-target-pill" data-install-target="nix" role="tab" aria-selected="false">Bash</button>
+                <button class="hero-target-pill" data-install-target="docker" role="tab" aria-selected="false">Docker</button>
+              </div>
+              <div class="install-header-meta">
+                <span class="os-label-badge" id="tui-os-label">RECOMMENDED (RUST 1.89+)</span>
+                <span class="install-hint">Press C to copy</span>
+              </div>
+            </div>
+            <div class="install-bar-body">
+              <span class="tui-prompt">$</span>
+              <code class="install-cmd-code" id="tui-install-cmd">cargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli</code>
+              <button class="tui-btn-copy" id="btn-tui-copy" aria-label="Copy install command">
+                Copy
+              </button>
+            </div>
+            <div class="tui-copy-alert" id="tui-copy-alert">✓ COMMAND COPIED TO CLIPBOARD</div>
+
+            <!-- Instant Action CTAs & Zero-Knowledge Trust Strip -->
+            <div class="hero-actions-trust-row">
+              <div class="hero-cta-group">
+                <button class="tui-btn-action primary-gold pane-pager-btn" data-target="pane-quickstart">
+                  Quickstart Guide →
+                </button>
+                <a href="https://github.com/samuel-1-avson/CipherVault" target="_blank" rel="noopener noreferrer" class="tui-btn-action secondary">
+                  Star on GitHub
+                </a>
+              </div>
+              <div class="hero-trust-badges">
+                <span class="trust-badge"><span class="badge-dot green">●</span> Zero-Knowledge</span>
+                <span class="trust-badge"><span class="badge-dot cyan">●</span> 100% Client-Side</span>
+                <span class="trust-badge"><span class="badge-dot purple">●</span> DPoP Key Bound</span>
+                <span class="trust-badge"><span class="badge-dot gold">●</span> MIT / Apache-2.0</span>
+                <span class="trust-badge"><span class="badge-dot green">●</span> Auto-Push Timers</span>
+                <span class="trust-badge"><span class="badge-dot cyan">●</span> CVKB1 Passphrase Key</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Four Minimalist Architectural Capability Pillars -->
+          <div class="tui-pillars-grid">
+            
+            <div class="pillar-card" tabindex="0" role="button" aria-expanded="false" aria-controls="pillar-drawer-1">
+              <div class="pillar-top-meta">
+                <span class="pillar-num">01 · LOCAL-FIRST</span>
+                <span class="pillar-badge badge-mint">ZERO CLOUD</span>
+              </div>
+              <h3 class="pillar-title">
+                <span class="mode-simple-only">Zero-Cloud Safety</span>
+                <span class="mode-tech-only">Hardware-Sealed Vault</span>
+              </h3>
+              <div class="pillar-stat-line">
+                <span class="pillar-val text-mint">100% Private</span>
+                <span class="pillar-lbl mode-simple-only">Hardware-enclave sealed</span>
+                <span class="pillar-lbl mode-tech-only">YubiKey PIV slots, touch-gated</span>
+              </div>
+              <div class="pillar-toggle-bar">
+                <span class="pillar-toggle-text mode-simple-only">How it works</span>
+                <span class="pillar-toggle-text mode-tech-only">Architecture details</span>
+                <svg class="pillar-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="pillar-dropdown-drawer" id="pillar-drawer-1">
+                <div class="pillar-dropdown-inner">
+                  <p class="pillar-desc mode-simple-only">
+                    Device hardware enclaves seal secrets locally before sync. Git never touches plaintext.
+                  </p>
+                  <p class="pillar-desc mode-tech-only">
+                    SQLite WAL ledger sealed by OS hardware enclaves (DPAPI, Keychain, SecretService).
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="pillar-card" tabindex="0" role="button" aria-expanded="false" aria-controls="pillar-drawer-2">
+              <div class="pillar-top-meta">
+                <span class="pillar-num">02 · CHUNKING</span>
+                <span class="pillar-badge badge-cyan">FASTCDC</span>
+              </div>
+              <h3 class="pillar-title">
+                <span class="mode-simple-only">Smart Delta Sync</span>
+                <span class="mode-tech-only">96.15% Deduplication</span>
+              </h3>
+              <div class="pillar-stat-line">
+                <span class="pillar-val text-cyan">96.15% Saved</span>
+                <span class="pillar-lbl mode-simple-only">Sub-second sync</span>
+                <span class="pillar-lbl mode-tech-only">Chunk+encrypt pipeline</span>
+              </div>
+              <div class="pillar-toggle-bar">
+                <span class="pillar-toggle-text mode-simple-only">How it works</span>
+                <span class="pillar-toggle-text mode-tech-only">Architecture details</span>
+                <svg class="pillar-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="pillar-dropdown-drawer" id="pillar-drawer-2">
+                <div class="pillar-dropdown-inner">
+                  <p class="pillar-desc mode-simple-only">
+                    Editing one key only encrypts and syncs that tiny change—saving bandwidth and time.
+                  </p>
+                  <p class="pillar-desc mode-tech-only">
+                    FastCDC Gear-rolling hashing (4–64 KiB). Only modified delta chunks re-encrypt and sync (chunk protocol v2, opt-in).
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="pillar-card" tabindex="0" role="button" aria-expanded="false" aria-controls="pillar-drawer-3">
+              <div class="pillar-top-meta">
+                <span class="pillar-num">03 · SCOPED RBAC</span>
+                <span class="pillar-badge badge-purple">DPOP BOUND</span>
+              </div>
+              <h3 class="pillar-title">
+                <span class="mode-simple-only">Scoped Environments</span>
+                <span class="mode-tech-only">Hierarchical Scopes</span>
+              </h3>
+              <div class="pillar-stat-line">
+                <span class="pillar-val text-purple">Token-Theft Proof</span>
+                <span class="pillar-lbl mode-simple-only">Client device bound</span>
+                <span class="pillar-lbl mode-tech-only">Quorum gates &amp; Merkle audit</span>
+              </div>
+              <div class="pillar-toggle-bar">
+                <span class="pillar-toggle-text mode-simple-only">How it works</span>
+                <span class="pillar-toggle-text mode-tech-only">Architecture details</span>
+                <svg class="pillar-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="pillar-dropdown-drawer" id="pillar-drawer-3">
+                <div class="pillar-dropdown-inner">
+                  <p class="pillar-desc mode-simple-only">
+                    Dev, Staging, and Production separated by project. Stolen tokens cannot decrypt on other PCs.
+                  </p>
+                  <p class="pillar-desc mode-tech-only">
+                    Tenant → Project → Env hierarchy with XChaCha20 DEK/KEK envelopes and RFC 9449 DPoP.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="pillar-card" tabindex="0" role="button" aria-expanded="false" aria-controls="pillar-drawer-4">
+              <div class="pillar-top-meta">
+                <span class="pillar-num">04 · RECOVERY</span>
+                <span class="pillar-badge badge-gold">AIR-GAPPED &amp; CVKB1</span>
+              </div>
+              <h3 class="pillar-title">
+                <span class="mode-simple-only">Disaster Restore</span>
+                <span class="mode-tech-only">Clean-Machine Restore</span>
+              </h3>
+              <div class="pillar-stat-line">
+                <span class="pillar-val text-gold">30-Second Restore</span>
+                <span class="pillar-lbl mode-simple-only">Zero vendor dependency</span>
+                <span class="pillar-lbl mode-tech-only">Paper kit, Shamir, or CVKB1</span>
+              </div>
+              <div class="pillar-toggle-bar">
+                <span class="pillar-toggle-text mode-simple-only">How it works</span>
+                <span class="pillar-toggle-text mode-tech-only">Architecture details</span>
+                <svg class="pillar-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="pillar-dropdown-drawer" id="pillar-drawer-4">
+                <div class="pillar-dropdown-inner">
+                  <p class="pillar-desc mode-simple-only">
+                    Reconstruct your workspace on any clean PC in 30 seconds via offline paper kit, trusted guardians, or client-side passphrase backup.
+                  </p>
+                  <p class="pillar-desc mode-tech-only">
+                    Reconstruct environment on wiped machines via CVKB1 Argon2id passphrase envelopes, Paper Kit, or M-of-N Shamir shares over GF(2^8).
+                  </p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Pane 1 Bottom Pager -->
+          <div class="pane-pager-bar">
+            <span class="pager-hint">CONTINUE GUIDED TOUR:</span>
+            <button class="pane-pager-btn next" data-target="pane-dilemma">
+              [NEXT: 02 Secrets Dilemma →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 2: THE DILEMMA (4 Critical Secrets Failure Modes)
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-dilemma" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">
+              <span class="mode-simple-only">[WHY DEVELOPERS NEED THIS]</span>
+              <span class="mode-tech-only">[INCIDENT ROOT-CAUSE ANALYSIS]</span>
+            </div>
+            <h2 class="pane-title" data-scramble-text="The Four Critical Secrets Failure Modes">
+              <span class="mode-simple-only">The Four Big Secret Headaches (And How We Fix Them)</span>
+              <span class="mode-tech-only">The Four Critical Secrets Failure Modes</span>
+            </h2>
+            <p class="pane-desc">
+              <span class="mode-simple-only">Git ignores <code class="tui-code">.env</code> files, leaving developers exposed to four critical failure modes:</span>
+              <span class="mode-tech-only">Git tracks source code. Once secrets are excluded by <code class="tui-code">.gitignore</code>, four systemic vulnerabilities emerge:</span>
+            </p>
+          </div>
+
+          <!-- Flashcard Deck Controls & Hint -->
+          <div class="flashcards-toolbar">
+            <div class="flashcards-hint">
+              <span class="flashcards-hint-text">Click card to reveal shield ⟳</span>
+            </div>
+            <div class="flashcards-actions">
+              <button class="flashcard-action-btn" id="btn-flashcard-show-crises" title="Show all crises">View Crises</button>
+              <button class="flashcard-action-btn" id="btn-flashcard-show-solutions" title="Show all shields">View Shields</button>
+              <button class="flashcard-action-btn" id="btn-flashcard-flip-all" title="Flip all cards">Flip All ⟳</button>
+            </div>
+          </div>
+
+          <div class="dilemma-flashcard-deck" id="dilemma-flashcard-deck">
+            
+            <!-- Card 01 -->
+            <div class="flashcard-item" tabindex="0" role="button" aria-label="Flashcard 1: Accidental Git Leaks. Click to flip.">
+              <div class="flashcard-inner">
+                <div class="flashcard-face flashcard-front border-danger">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-danger">Crisis 01</span>
+                      <span class="flashcard-status-tag text-danger">Unresolved by Git</span>
+                    </div>
+                    <div class="flashcard-title">Accidental Git Leaks</div>
+                    <p class="flashcard-body">
+                      One careless <code class="tui-code">git add .</code> publishes API tokens, private keys, and database passwords directly to public Git mirrors.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">Vulnerability in Git</span>
+                    <span class="flashcard-flip-prompt">Reveal Shield ⟳</span>
+                  </div>
+                </div>
+
+                <div class="flashcard-face flashcard-back border-mint">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-mint">Shield 01</span>
+                      <span class="flashcard-status-tag text-mint">Hardware Sealed</span>
+                    </div>
+                    <div class="flashcard-title">Out-of-Band Vault</div>
+                    <p class="flashcard-body">
+                      Secrets are tracked in a hardware-sealed local ledger (DPAPI/Keychain). Git commits never touch plaintext secrets.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">Zero Plaintext Commits</span>
+                    <span class="flashcard-flip-prompt">View Crisis ⟳</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 02 -->
+            <div class="flashcard-item" tabindex="0" role="button" aria-label="Flashcard 2: Clean-Machine Wipe. Click to flip.">
+              <div class="flashcard-inner">
+                <div class="flashcard-face flashcard-front border-warning">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-warning">Crisis 02</span>
+                      <span class="flashcard-status-tag text-warning">Days Lost Rebuilding</span>
+                    </div>
+                    <div class="flashcard-title">Clean-Machine Wipe</div>
+                    <p class="flashcard-body">
+                      Laptop lost, damaged, or upgraded? Git restores source code, but all unbacked local <code class="tui-code">.env</code> files and certificates vanish.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">No Git Secret Backup</span>
+                    <span class="flashcard-flip-prompt">Reveal Shield ⟳</span>
+                  </div>
+                </div>
+
+                <div class="flashcard-face flashcard-back border-mint">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-mint">Shield 02</span>
+                      <span class="flashcard-status-tag text-mint">30-Second Restore</span>
+                    </div>
+                    <div class="flashcard-title">Clean-Machine Recovery</div>
+                    <p class="flashcard-body">
+                      Reconstruct your complete secret tree on any clean machine in 30 seconds via offline Paper Kit, Shamir guardians, or client-side passphrase key backup (CVKB1).
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">3-Way Sovereign Restore</span>
+                    <span class="flashcard-flip-prompt">View Crisis ⟳</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 03 -->
+            <div class="flashcard-item" tabindex="0" role="button" aria-label="Flashcard 3: Centralized SaaS Lock-in. Click to flip.">
+              <div class="flashcard-inner">
+                <div class="flashcard-face flashcard-front border-cyan">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-cyan">Crisis 03</span>
+                      <span class="flashcard-status-tag text-cyan">Third-Party Risk</span>
+                    </div>
+                    <div class="flashcard-title">SaaS Custody Lock-in</div>
+                    <p class="flashcard-body">
+                      Centralized vaults introduce third-party custodial risk, vendor outages, internet dependencies during local builds, and monthly fees.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">Vendor Dependency</span>
+                    <span class="flashcard-flip-prompt">Reveal Shield ⟳</span>
+                  </div>
+                </div>
+
+                <div class="flashcard-face flashcard-back border-mint">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-mint">Shield 03</span>
+                      <span class="flashcard-status-tag text-mint">100% Sovereign</span>
+                    </div>
+                    <div class="flashcard-title">Sovereign &amp; Zero Custody</div>
+                    <p class="flashcard-body">
+                      100% self-hosted, sovereign, and peer-replicated. Zero vendor dependencies, zero tracking, zero recurring license fees.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">Zero SaaS Subscriptions</span>
+                    <span class="flashcard-flip-prompt">View Crisis ⟳</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 04 -->
+            <div class="flashcard-item" tabindex="0" role="button" aria-label="Flashcard 4: Plaintext Disk Residue. Click to flip.">
+              <div class="flashcard-inner">
+                <div class="flashcard-face flashcard-front border-purple">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-purple">Crisis 04</span>
+                      <span class="flashcard-status-tag text-purple">SSD Exposure</span>
+                    </div>
+                    <div class="flashcard-title">Plaintext Disk Residue</div>
+                    <p class="flashcard-body">
+                      Plaintext <code class="tui-code">.env</code> files sitting on SSDs expose secrets to malicious npm dependency hooks, local malware, and casual eyes.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">Plaintext on SSD</span>
+                    <span class="flashcard-flip-prompt">Reveal Shield ⟳</span>
+                  </div>
+                </div>
+
+                <div class="flashcard-face flashcard-back border-mint">
+                  <div>
+                    <div class="flashcard-top">
+                      <span class="dilemma-badge badge-mint">Shield 04</span>
+                      <span class="flashcard-status-tag text-mint">Zero-Disk Injection</span>
+                    </div>
+                    <div class="flashcard-title">In-Memory Execution</div>
+                    <p class="flashcard-body">
+                      <code class="tui-code">cv run -- npm start</code> decrypts secrets strictly in volatile process memory with automatic Zeroize scrubbers.
+                    </p>
+                  </div>
+                  <div class="flashcard-footer">
+                    <span class="flashcard-hint-text">Zero SSD Plaintext</span>
+                    <span class="flashcard-flip-prompt">View Crisis ⟳</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Pane 2 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-overview">
+              [← PREV: 01 Overview]
+            </button>
+            <button class="pane-pager-btn next" data-target="pane-engine">
+              [NEXT: 03 Engine Pipeline →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 3: ENGINE & ARCHITECTURE
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-engine" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">
+              <span class="mode-simple-only">[HOW IT WORKS BEHIND THE SCENES]</span>
+              <span class="mode-tech-only">[CRYPTOGRAPHIC SPECIFICATION]</span>
+            </div>
+            <h2 class="pane-title" data-scramble-text="Cryptographic Sovereignty & Engine Pipeline">
+              <span class="mode-simple-only">Smart Sync &amp; Safe Transfer Engine</span>
+              <span class="mode-tech-only">Cryptographic Sovereignty &amp; Engine Pipeline</span>
+            </h2>
+            <p class="pane-desc">
+              <span class="mode-simple-only">See how CipherVault locks your secrets on your laptop and only syncs the tiny parts that change—saving speed and bandwidth.</span>
+              <span class="mode-tech-only">Built in pure memory-safe Rust with zero external C-FFI libraries. Pure client-side zero-knowledge guarantees.</span>
+            </p>
+          </div>
+
+          <!-- Dual-Engine Architecture Selector / Bridge Banner -->
+          <div class="engine-dual-banner" id="engine-dual-banner">
+            <div class="dual-banner-left">
+              <div class="dual-banner-status">
+                <span class="pulse-dot-mini"></span>
+                <span class="dual-banner-tag">[DUAL-ENGINE ARCHITECTURE: BLOB SNAPSHOT PIPELINE ACTIVE]</span>
+              </div>
+              <p class="dual-banner-text">
+                This pane benchmarks the <strong>Sovereign Blob &amp; FastCDC Slicing Engine</strong> for whole files, dotfiles, keys, certificates, and disaster recovery.
+              </p>
+            </div>
+            <div class="dual-banner-right">
+              <span class="dual-banner-hint">Managing discrete runtime KV credentials?</span>
+              <button class="tui-btn-action dual-jump-btn" id="btn-jump-to-scoped" data-target="pane-scoped" title="Switch to Scoped Secrets &amp; Envelope Encryption workstation">
+                <span>[04] Scoped Secrets &amp; Envelope Encryption</span> <span class="jump-arrow">→</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Interactive FastCDC Chunking Demonstration -->
+          <div class="tui-box engine-fastcdc-demo">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">
+                  <span class="mode-simple-only">INTERACTIVE SMART SYNC PLAYGROUND</span>
+                  <span class="mode-tech-only">INTERACTIVE FASTCDC CHUNKING WORKSTATION</span>
+                </span>
+                <span class="box-title-badge mode-tech-only">Gear Rolling Hash (4 KiB - 64 KiB)</span>
+                <span class="analogy-tag mode-simple-only">Only changed blocks are re-encrypted</span>
+              </div>
+              <div class="box-title-meta">
+                <span class="cdc-live-tag"><span class="pulse-dot-mini"></span> LIVE SLICER ACTIVE</span>
+              </div>
+            </div>
+
+            <div class="fastcdc-sim-content">
+              <div class="analogy-notice-box mode-simple-only">
+                <div class="analogy-notice-header">
+                  <div class="analogy-badge-wrap">
+                    <span class="analogy-badge">SMART DEDUPLICATION</span>
+                  </div>
+                  <p class="analogy-lead">
+                    Modifying a 32-byte key in a 128 KiB file re-encrypts only that single variable slice. All untouched blocks are verified in-place and reused without wire upload.
+                  </p>
+                  <button type="button" class="analogy-toggle-btn" id="btn-toggle-fastcdc-expl" aria-expanded="false" title="Expand deep-dive explanation">
+                    <span>How it works</span> <span class="toggle-chevron">▾</span>
+                  </button>
+                </div>
+                <div class="analogy-expandable-content" id="fastcdc-expl-drawer">
+                  <div class="analogy-expl-grid">
+                    <div class="expl-col">
+                      <span class="expl-col-title">Traditional Fixed-Chunking Flaw</span>
+                      <p>Fixed 4 KiB boundaries shift completely when bytes are inserted mid-file, destroying all subsequent chunk hashes and forcing 100% re-upload.</p>
+                    </div>
+                    <div class="expl-col">
+                      <span class="expl-col-title">FastCDC Gear Rolling Hash</span>
+                      <p>Dual-mask Gear hashing dynamically aligns cuts with byte content itself, isolating edits locally (0% boundary cascade, &gt;80% bandwidth saved).</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <!-- Edit Scenarios / Presets Strip (each performs a real byte-level edit) -->
+              <div class="sim-presets-deck">
+                <span class="presets-label">EDIT SCENARIOS:</span>
+                <div class="presets-pills" id="sim-presets-pills">
+                  <button class="preset-pill active" data-preset="api-key" title="Rotate a 32-byte secret key mid-file">
+                    [1] Rotate API Key (32-byte Δ)
+                  </button>
+                  <button class="preset-pill" data-preset="db-pass" title="Flip 1 byte (DB password modification)">
+                    [2] Change DB Port (1-byte Δ)
+                  </button>
+                  <button class="preset-pill" data-preset="tls-cert" title="Append a 16 KiB TLS certificate chain block">
+                    [3] Append TLS Cert (+16 KiB)
+                  </button>
+                  <button class="preset-pill" data-preset="clean" title="Verify zero-diff clean checkout cache hit">
+                    [4] Clean Re-snapshot (0-byte Δ)
+                  </button>
+                </div>
+              </div>
+
+              <!-- Terminal-style Code & File Editor Canvas -->
+              <div class="sim-editor-shell">
+                <div class="editor-window-header">
+                  <div class="window-decor-dots">
+                    <span class="dot-red"></span>
+                    <span class="dot-yellow"></span>
+                    <span class="dot-green"></span>
+                  </div>
+                  <span class="editor-file-path">config/production.env</span>
+                  <div class="editor-meta-tags">
+                    <span class="editor-tag-badge">UTF-8</span>
+                    <span class="editor-tag-badge">128 KiB PAYLOAD</span>
+                  </div>
+                </div>
+                <div class="sim-editor-inner">
+                  <div class="editor-gutter">
+                    <span>14</span>
+                    <span class="active-line">15</span>
+                    <span>16</span>
+                  </div>
+                  <div class="editor-code-area">
+                    <div class="code-line-dim"># Database replica credentials & external API gateways</div>
+                    <div class="code-line-active">
+                      <span class="code-key">API_KEY_ROTATE=</span>
+                      <input type="text" class="sim-input" id="sim-input-editor" value="ROTATED_API_KEY_32B_SECRET_VALUE" spellcheck="false" aria-label="File edit value (spliced into the payload and re-chunked)">
+                      <span class="code-cursor-blink"></span>
+                      <span class="editor-live-badge" title="Type any text to re-slice FastCDC chunks live">✎ Live Editable</span>
+                    </div>
+                    <div class="code-line-dim">DATABASE_URL=postgres://vault_op:******@127.0.0.1:5432/secrets</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Chunk Visualization Grid Header & Legend -->
+              <div class="chunk-grid-header">
+                <div class="grid-header-title">
+                  <span id="chunk-grid-title-count">CONTENT-DEFINED VARIABLE SLICES (6 CHUNKS · 128 KiB)</span>
+                  <span class="grid-sub-hint">Click or hover any block to inspect cryptographic chunk metadata</span>
+                </div>
+                <div class="chunk-legend">
+                  <span class="legend-item"><span class="legend-dot green"></span> Reused DAG Chunk (Cached)</span>
+                  <span class="legend-item"><span class="legend-dot amber"></span> Modified Chunk (Re-encrypt & Sync)</span>
+                </div>
+              </div>
+
+              <!-- Chunk Visualization Grid -->
+              <div class="chunk-visual-grid" id="chunk-visual-grid">
+                <!-- 26 chunk blocks dynamically generated -->
+              </div>
+
+              <!-- Interactive Live Chunk Inspector Card -->
+              <div class="chunk-inspector-card" id="chunk-inspector-card">
+                <div class="inspector-header">
+                  <div class="inspector-chunk-id" id="insp-chunk-id">
+                    <span class="insp-pill mod" id="insp-status-badge">DELTA CHUNK #15</span>
+                    <span class="insp-title" id="insp-chunk-title">Target of Edit</span>
+                  </div>
+                  <div class="insp-meta-row">
+                    <span class="insp-hash" id="insp-chunk-hash">SHA-256: <code class="hash-code">sha256:…</code></span>
+                    <span class="insp-size" id="insp-chunk-size">SIZE: <strong>4.00 KiB</strong></span>
+                  </div>
+                </div>
+                <div class="inspector-details-row">
+                  <div class="insp-detail-cell">
+                    <span class="d-label">Byte Range:</span>
+                    <span class="d-val" id="insp-chunk-range">0x0001D000 - 0x00021000 (57,344 - 61,440 B)</span>
+                  </div>
+                  <div class="insp-detail-cell">
+                    <span class="d-label">Rolling Hash Match:</span>
+                    <span class="d-val text-cyan" id="insp-chunk-gear">Gear Mask 0x00001FFF (Hit at 4,096 B)</span>
+                  </div>
+                  <div class="insp-detail-cell">
+                    <span class="d-label">Wire Synchronization:</span>
+                    <span class="d-val text-gold" id="insp-chunk-sync">AEAD Re-encryption -> 3/3 Storage Quorum</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Refined KPI Metric Cards Strip -->
+              <div class="chunk-stats-cards" id="chunk-stats-summary">
+                <div class="chunk-kpi-card">
+                  <span class="kpi-label">TOTAL CHUNKS</span>
+                  <span class="kpi-val" id="stat-chunks-total">—</span>
+                  <span class="kpi-sub" id="stat-payload-total">—</span>
+                </div>
+                <div class="chunk-kpi-card">
+                  <span class="kpi-label">UNCHANGED CHUNKS</span>
+                  <span class="kpi-val text-mint" id="stat-chunks-reused">—</span>
+                  <span class="kpi-sub">0 Bytes Uploaded</span>
+                </div>
+                <div class="chunk-kpi-card">
+                  <span class="kpi-label">MODIFIED DELTA</span>
+                  <span class="kpi-val text-gold" id="stat-chunks-modified">—</span>
+                  <span class="kpi-sub" id="stat-chunks-modified-sub">—</span>
+                </div>
+                <div class="chunk-kpi-card">
+                  <span class="kpi-label">BANDWIDTH SAVINGS</span>
+                  <span class="kpi-val text-cyan" id="stat-bandwidth-saved">—</span>
+                  <span class="kpi-sub">FastCDC Efficiency</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Architecture Pipeline Interactive Visual Diagram -->
+          <div class="tui-box engine-pipeline-box">
+            <div class="tui-box-title">
+              <span class="pipeline-main-title">END-TO-END CRYPTOGRAPHIC PIPELINE</span>
+              <div class="pipeline-actions-bar">
+                <span class="pipeline-status-text" id="pipeline-status-text">Click any stage or tour the pipeline:</span>
+                <button class="tui-btn-action" id="btn-run-pipeline-sim">[▶ TOUR ALL STAGES]</button>
+              </div>
+            </div>
+
+            <!-- The Visual Interactive Pipeline Canvas -->
+            <div class="pipeline-visual-canvas" id="pipeline-visual-canvas">
+              
+              <!-- Upper Row: Stages 1 -> 2 -> 3 -->
+              <div class="pipeline-row pipeline-row-top">
+                
+                <!-- Stage 1 -->
+                <div class="pipeline-node active" data-stage="1" tabindex="0" role="button" aria-expanded="true" id="pipe-node-1" title="Click to inspect Stage 01 details">
+                  <div class="node-header">
+                    <span class="node-stage-badge">[01] LOCAL</span>
+                    <span class="node-pulse-dot"></span>
+                  </div>
+                  <div class="node-title">Developer File</div>
+                  <div class="node-sub">(.env, certs, jwt)</div>
+                  <div class="node-tag badge-danger">Plaintext Disk</div>
+                  <div class="node-inspect-hint">Active [01] ↵</div>
+                </div>
+
+                <!-- Animated Connector 1 -> 2 -->
+                <div class="pipeline-connector conn-horizontal">
+                  <div class="connector-line">
+                    <span class="flow-particle flow-p1"></span>
+                  </div>
+                  <span class="flow-arrow">→</span>
+                </div>
+
+                <!-- Stage 2 -->
+                <div class="pipeline-node" data-stage="2" tabindex="0" role="button" aria-expanded="false" id="pipe-node-2" title="Click to inspect Stage 02 details">
+                  <div class="node-header">
+                    <span class="node-stage-badge">[02] CHUNKING</span>
+                    <span class="node-pulse-dot"></span>
+                  </div>
+                  <div class="node-title">FastCDC Slicer</div>
+                  <div class="node-sub">Gear Rolling Hash</div>
+                  <div class="node-tag badge-cyan">4 KiB - 64 KiB</div>
+                  <div class="node-inspect-hint">Inspect [02] ↵</div>
+                </div>
+
+                <!-- Animated Connector 2 -> 3 -->
+                <div class="pipeline-connector conn-horizontal">
+                  <div class="connector-line">
+                    <span class="flow-particle flow-p2"></span>
+                  </div>
+                  <span class="flow-arrow">→</span>
+                </div>
+
+                <!-- Stage 3 -->
+                <div class="pipeline-node" data-stage="3" tabindex="0" role="button" aria-expanded="false" id="pipe-node-3" title="Click to inspect Stage 03 details">
+                  <div class="node-header">
+                    <span class="node-stage-badge">[03] ENCRYPT</span>
+                    <span class="node-pulse-dot"></span>
+                  </div>
+                  <div class="node-title">XChaCha20-Poly1305</div>
+                  <div class="node-sub">Client AEAD &amp; Envelopes</div>
+                  <div class="node-tag badge-gold">Zeroize RAM Fence</div>
+                  <div class="node-inspect-hint">Inspect [03] ↵</div>
+                </div>
+
+              </div>
+
+              <!-- Mid Row Vertical Transfer Connector (Stage 3 down to Stage 4) -->
+              <div class="pipeline-row-connector">
+                <div class="conn-vertical">
+                  <div class="connector-line-v">
+                    <span class="flow-particle-v flow-p3"></span>
+                  </div>
+                  <span class="flow-arrow-v">▼</span>
+                </div>
+              </div>
+
+              <!-- Lower Row: Stages 6 <- 5 <- 4 -->
+              <div class="pipeline-row pipeline-row-bottom">
+
+                <!-- Stage 6 -->
+                <div class="pipeline-node" data-stage="6" tabindex="0" role="button" aria-expanded="false" id="pipe-node-6" title="Click to inspect Stage 06 details">
+                  <div class="node-header">
+                    <span class="node-stage-badge">[06] ANCHOR</span>
+                    <span class="node-pulse-dot"></span>
+                  </div>
+                  <div class="node-title">CipherChain Anchor</div>
+                  <div class="node-sub">PoA Ledger · Quorum 2N/3+1</div>
+                  <div class="node-tag badge-purple">Quorum Signed</div>
+                  <div class="node-inspect-hint">Inspect [06] ↵</div>
+                </div>
+
+                <!-- Animated Connector 5 -> 6 (flows leftwards) -->
+                <div class="pipeline-connector conn-horizontal conn-reverse">
+                  <div class="connector-line">
+                    <span class="flow-particle flow-p5"></span>
+                  </div>
+                  <span class="flow-arrow">←</span>
+                </div>
+
+                <!-- Stage 5 -->
+                <div class="pipeline-node" data-stage="5" tabindex="0" role="button" aria-expanded="false" id="pipe-node-5" title="Click to inspect Stage 05 details">
+                  <div class="node-header">
+                    <span class="node-stage-badge">[05] PROOF</span>
+                    <span class="node-pulse-dot"></span>
+                  </div>
+                  <div class="node-title">PoS Durability</div>
+                  <div class="node-sub">461-byte Wire Proof</div>
+                  <div class="node-tag badge-mint">Challenge-Response</div>
+                  <div class="node-inspect-hint">Inspect [05] ↵</div>
+                </div>
+
+                <!-- Animated Connector 4 -> 5 (flows leftwards) -->
+                <div class="pipeline-connector conn-horizontal conn-reverse">
+                  <div class="connector-line">
+                    <span class="flow-particle flow-p4"></span>
+                  </div>
+                  <span class="flow-arrow">←</span>
+                </div>
+
+                <!-- Stage 4 -->
+                <div class="pipeline-node" data-stage="4" tabindex="0" role="button" aria-expanded="false" id="pipe-node-4" title="Click to inspect Stage 04 details">
+                  <div class="node-header">
+                    <span class="node-stage-badge">[04] QUORUM</span>
+                    <span class="node-pulse-dot"></span>
+                  </div>
+                  <div class="node-title">K-of-N Quorum</div>
+                  <div class="node-sub">Multi-Sig &amp; Quotas</div>
+                  <div class="node-tag badge-cyan">ADR-011 Admissions</div>
+                  <div class="node-inspect-hint">Inspect [04] ↵</div>
+                </div>
+
+              </div>
+
+            </div>
+
+            <!-- Interactive Stage Detailed Pop-Up Inspector Panel -->
+            <div class="pipeline-inspector-panel" id="pipeline-inspector-panel">
+              <div class="inspector-header">
+                <div class="inspector-title-wrap">
+                  <span class="inspector-kicker" id="insp-kicker">STAGE [01] DEEP-DIVE SPECIFICATION</span>
+                  <h3 class="inspector-heading" id="insp-heading">Developer Working Tree Enrollment</h3>
+                </div>
+                <button class="btn-close-inspector" id="btn-close-inspector" title="Minimize inspector (Esc)">Minimize <kbd class="esc-kbd">Esc ✕</kbd></button>
+              </div>
+
+              <div class="inspector-grid">
+                <!-- Column 1: Core Mechanics & Security Invariant -->
+                <div class="inspector-col">
+                  <div class="insp-section insp-mechanics-box">
+                    <div class="insp-label text-cyan">CRYPTOGRAPHIC & ARCHITECTURAL MECHANICS:</div>
+                    <p class="insp-body" id="insp-mechanics">
+                      CipherVault tracks secret files out-of-band from Git. During enrollment via <code class="tui-code">cv track .env</code>, the path is registered in the local SQLite WAL ledger and appended to <code class="tui-code">.gitignore</code> (skip with <code class="tui-code">--no-gitignore</code>). Content digests bind at snapshot time, not at enrollment.
+                    </p>
+                  </div>
+                  <div class="insp-section insp-security-box">
+                    <div class="insp-label text-gold">SECURITY INVARIANT GUARANTEE:</div>
+                    <p class="insp-body" id="insp-security">
+                      Guarantees zero accidental staging into Git commits (<code class="tui-code">git add .</code> will never expose secrets). Host OS hardware keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R.
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Column 2: Measured Benchmark & Rust Implementation -->
+                <div class="inspector-col">
+                  <div class="insp-section">
+                    <div class="insp-label text-mint">EMPIRICAL BENCHMARK & WIRE PROFILE:</div>
+                    <div class="insp-stat-badge">
+                      <span class="insp-stat-val text-mint" id="insp-stat-val">Out-of-band</span>
+                      <span class="insp-stat-desc" id="insp-stat-desc">SQLite WAL ledger + `.gitignore` guard (skip with `--no-gitignore`)</span>
+                    </div>
+                  </div>
+                  <div class="insp-section">
+                    <div class="insp-label text-purple">RUST ENGINE IMPLEMENTATION:</div>
+                    <pre class="insp-code-block"><code id="insp-code">// apps/cli/src/commands/track.rs — cmd_track (real flow)
+let file_id = store.track_file(&amp;path_str)?;  // SQLite WAL registry
+if !no_gitignore {
+    ensure_file_in_gitignore(&amp;path)?;        // appended, not untouched
+}</code></pre>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Quick Switcher Pills for all 6 stages inside the Inspector -->
+              <div class="inspector-stage-pills" id="inspector-stage-pills">
+                <span class="pills-label">JUMP TO STAGE:</span>
+                <button class="stage-nav-pill active" data-stage="1">[01] Local File</button>
+                <button class="stage-nav-pill" data-stage="2">[02] FastCDC Slicer</button>
+                <button class="stage-nav-pill" data-stage="3">[03] AEAD Encrypt</button>
+                <button class="stage-nav-pill" data-stage="4">[04] Quorum Mesh</button>
+                <button class="stage-nav-pill" data-stage="5">[05] PoS Proof</button>
+                <button class="stage-nav-pill" data-stage="6">[06] CipherChain</button>
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Live Telemetry Feed & Quorum Mesh Status -->
+          <div class="engine-telemetry-grid">
+            <div class="tui-box engine-stream-box">
+              <div class="tui-box-title">
+                <span>LIVE CRYPTOGRAPHIC TELEMETRY STREAM</span>
+                <span class="stream-pulse">●</span>
+              </div>
+              <div class="tui-stream-feed" id="tui-stream-feed" aria-live="polite">
+                <!-- Dynamically populated stream lines -->
+              </div>
+            </div>
+
+            <div class="tui-box engine-fleet-box">
+              <div class="tui-box-title">STORAGE OPERATOR QUORUM STATUS</div>
+              <div class="fleet-node-item">
+                <div class="node-status-line">
+                  <span class="node-dot active">●</span>
+                  <span class="node-id">cv-operator-1</span>
+                  <span class="node-ping" id="live-ping-op1">…</span>
+                </div>
+                <div class="node-sub">Council Bluffs, Iowa • us-central1-a (TLS 1.3 Verified)</div>
+              </div>
+              <div class="fleet-node-item">
+                <div class="node-status-line">
+                  <span class="node-dot active">●</span>
+                  <span class="node-id">cv-operator-2</span>
+                  <span class="node-ping" id="live-ping-op2">…</span>
+                </div>
+                <div class="node-sub">Council Bluffs, Iowa • us-central1-b (TLS 1.3 Verified)</div>
+              </div>
+              <div class="fleet-node-item">
+                <div class="node-status-line">
+                  <span class="node-dot active">●</span>
+                  <span class="node-id">cv-operator-3</span>
+                  <span class="node-ping" id="live-ping-op3">…</span>
+                </div>
+                <div class="node-sub">Moncks Corner, SC • us-east1-b (TLS 1.3 Verified)</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pane 3 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-dilemma">
+              [← PREV: 02 Secrets Dilemma]
+            </button>
+            <button class="pane-pager-btn next" data-target="pane-scoped">
+              [NEXT: 04 Scoped Secrets &amp; RBAC →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 4: SCOPED SECRETS & MULTI-ENVIRONMENT GOVERNANCE (v1.0.29)
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-scoped" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">
+              <span class="mode-simple-only">[TEAM &amp; ENVIRONMENT CONTROL]</span>
+              <span class="mode-tech-only">[RESOURCE-SCOPED SECRETS &amp; ENVELOPE ENCRYPTION]</span>
+            </div>
+            <h2 class="pane-title" data-scramble-text="Hierarchical Scopes, Envelope Encryption &amp; DPoP Binding">
+              <span class="mode-simple-only">Separate Secrets for Dev, Staging &amp; Production</span>
+              <span class="mode-tech-only">Hierarchical Scopes, Envelope Encryption &amp; DPoP Binding</span>
+            </h2>
+            <p class="pane-desc">
+              <span class="mode-simple-only">Stop sharing one big unencrypted .env file. Organize passwords neatly by team and project. Keep production keys locked down while giving developers instant local testing access.</span>
+              <span class="mode-tech-only">Move beyond monolithic <code class="tui-code">.env</code> files. Isolate credentials across Tenants, Workspaces, Projects, and Environments with per-version envelope encryption, dual-admin approvals, and tamper-evident audit chains.</span>
+            </p>
+          </div>
+
+          <!-- Interactive Scoped Architecture & Envelope Encryption Workstation -->
+          <div class="tui-box scoped-workstation-box">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">INTERACTIVE SCOPE &amp; ENVELOPE ENCRYPTION WORKSTATION</span>
+                <span class="box-title-badge">XChaCha20-Poly1305 + DPoP-Lite (RFC 9449)</span>
+              </div>
+              <div class="box-title-meta">
+                <span class="cdc-live-tag"><span class="pulse-dot-mini"></span> LIVE ENVELOPE SIMULATOR</span>
+              </div>
+            </div>
+
+            <!-- Environment Selector Strip -->
+            <div class="scoped-env-bar">
+              <span class="env-bar-label">TARGET ENVIRONMENT:</span>
+              <div class="scoped-env-pills" id="scoped-env-pills" role="tablist" aria-label="Environment Selection">
+                <button class="scoped-env-pill active" id="btn-env-prod" data-env="production" role="tab" aria-selected="true">
+                  <span class="env-pill-dot gold">●</span> Production (Dual-Admin &amp; Main Branch Gate)
+                </button>
+                <button class="scoped-env-pill" id="btn-env-stage" data-env="staging" role="tab" aria-selected="false">
+                  <span class="env-pill-dot cyan">●</span> Staging (Branch / PR Gated)
+                </button>
+                <button class="scoped-env-pill" id="btn-env-dev" data-env="development" role="tab" aria-selected="false">
+                  <span class="env-pill-dot mint">●</span> Development (Local Developer Fast-Path)
+                </button>
+              </div>
+            </div>
+
+            <!-- Two-Column Architecture Deck -->
+            <div class="scoped-hierarchy-grid">
+              
+              <!-- Column 1: Resource Scope Hierarchy Tree -->
+              <div class="scope-tree-card">
+                <div class="tree-card-header">
+                  <span class="tree-title">RESOURCE SCOPE HIERARCHY TREE</span>
+                  <span class="tree-badge">STRICT CONTAINMENT</span>
+                </div>
+                <div class="scope-tree-canvas">
+                  <div class="tree-node node-tenant">
+                    <span class="node-icon">[ORG]</span>
+                    <span class="node-label">TENANT:</span>
+                    <span class="node-val text-purple">apex-fintech</span>
+                    <span class="node-tag">Root Authority</span>
+                  </div>
+                  <div class="tree-branch-line">│</div>
+                  <div class="tree-node node-workspace">
+                    <span class="node-icon">[DIR]</span>
+                    <span class="node-label">WORKSPACE:</span>
+                    <span class="node-val text-cyan">payments-infra</span>
+                  </div>
+                  <div class="tree-branch-line">│  └──</div>
+                  <div class="tree-node node-project">
+                    <span class="node-icon">[PRJ]</span>
+                    <span class="node-label">PROJECT:</span>
+                    <span class="node-val text-gold">checkout-api</span>
+                    <span class="node-tag">Security Boundary</span>
+                  </div>
+                  <div class="tree-branch-line">│      ├──</div>
+                  <div class="tree-node node-repo">
+                    <span class="node-icon">[VCS]</span>
+                    <span class="node-label">VCS BINDING:</span>
+                    <span class="node-val text-mint">GitHub #84920194 (apex/checkout)</span>
+                  </div>
+                  <div class="tree-branch-line">│      └──</div>
+                  <div class="tree-node node-env active" id="tree-active-env-node">
+                    <span class="node-icon">[ENV]</span>
+                    <span class="node-label">ENVIRONMENT:</span>
+                    <span class="node-val text-gold" id="tree-active-env-val">production</span>
+                    <span class="node-tag" id="tree-active-env-tag">Dual-Admin Active</span>
+                  </div>
+                  <div class="tree-branch-line">           └──</div>
+                  <div class="tree-node node-secret">
+                    <span class="node-icon">[KEY]</span>
+                    <span class="node-label">SECRET:</span>
+                    <span class="node-val text-white">DATABASE_URL</span>
+                    <span class="node-version-badge">v4 (Active)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Column 2: Live Cryptographic Envelope Deck -->
+              <div class="scope-envelope-card">
+                <div class="envelope-card-header">
+                  <span class="envelope-title">CRYPTOGRAPHIC ENVELOPE &amp; DPOP EVIDENCE</span>
+                  <span class="envelope-badge" id="scoped-gate-status">DUAL-ADMIN REQUIRED</span>
+                </div>
+                
+                <div class="envelope-specs-list">
+                  
+                  <!-- Field 1: Scope Token -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-cyan">SCOPE TOKEN (HMAC-SHA256 SIGNED):</span>
+                      <span class="field-hint">Embedded claims (tenant, project, env, expiry)</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-token" id="scoped-token-preview">cvst1_apex_checkout_api_prod_8f3a9e2d...</code>
+                    </div>
+                  </div>
+
+                  <!-- Field 2: DEK Envelope -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-gold">PER-VERSION DATA ENCRYPTION KEY (DEK):</span>
+                      <span class="field-hint">256-bit XChaCha20 ephemeral key wrapped by Project KEK</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-hex" id="scoped-dek-hex">DEK: 8b4f129c... [ZeroizeOnDrop]</code>
+                    </div>
+                  </div>
+
+                  <!-- Field 3: Scope-Bound AAD -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-mint">AUTHENTICATED ADDITIONAL DATA (AAD):</span>
+                      <span class="field-hint">Cryptographic scope binding (cross-scope replay fails Poly1305 MAC)</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-aad" id="scoped-aad-display">tenant:apex-fintech|project:checkout-api|env:production|secret:DATABASE_URL|v:4</code>
+                    </div>
+                    <div class="field-subline">
+                      <span class="sub-label">AAD SHA-256 Digest:</span>
+                      <code class="sub-val" id="scoped-aad-hash">Computing...</code>
+                    </div>
+                  </div>
+
+                  <!-- Field 4: DPoP Asymmetric Proof -->
+                  <div class="envelope-row">
+                    <div class="field-meta">
+                      <span class="field-label text-purple">DPOP-LITE ASYMMETRIC KEY PROOF:</span>
+                      <span class="field-hint">RFC 9449-style client key binding prevents token theft replay</span>
+                    </div>
+                    <div class="field-code-box">
+                      <code class="code-dpop" id="scoped-dpop-thumbprint">DPoP Fingerprint: ed25519:... (Verified on Loopback)</code>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Invariant Highlight Callout Banner -->
+            <div class="scoped-invariant-banner">
+              <div class="invariant-item">
+                <span class="inv-dot green">●</span>
+                <strong>Zero Cross-Scope Replay</strong>: Because AAD cryptographically binds <code class="tui-code">project_id ‖ env_id ‖ secret ‖ version</code>, staging ciphertext can never be injected into production.
+              </div>
+              <div class="invariant-item">
+                <span class="inv-dot cyan">●</span>
+                <strong>DPoP Stolen Token Defense</strong>: Stolen bearer tokens are useless to adversaries without the client device's private signing key.
+              </div>
+            </div>
+          </div>
+
+          <!-- Cryptographic Tamper-Evident Audit Ledger (T-901 / §20) -->
+          <div class="tui-box audit-chain-box">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">CRYPTOGRAPHIC TAMPER-EVIDENT AUDIT CHAIN (T-901 / §20)</span>
+                <span class="box-title-badge">12 Canonical Events • SHA-256 Hash Chained • Append-Only</span>
+              </div>
+              <div class="box-title-meta">
+                <span class="title-meta text-mint">MERKLE PROOF VERIFIABLE</span>
+              </div>
+            </div>
+
+            <p class="audit-box-desc">
+              Every secret creation, read, rotation, and deletion appends an immutable record into the control-plane SQLite WAL ledger. Each entry cryptographically incorporates the prior block's hash. Any retroactive row modification breaks the entire chain immediately.
+            </p>
+
+            <!-- Visual Audit Chain Grid -->
+            <div class="audit-chain-grid">
+              
+              <!-- Block 0: Genesis -->
+              <div class="audit-block-card verified" id="audit-block-0">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #00</span>
+                  <span class="block-type badge-purple">GENESIS</span>
+                </div>
+                <div class="block-actor">Root Key Setup</div>
+                <div class="block-target">Project Creation</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-0">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint">✓ Root Anchor</div>
+              </div>
+
+              <div class="audit-arrow">→</div>
+
+              <!-- Block 1: Secret Created -->
+              <div class="audit-block-card verified" id="audit-block-1">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #01</span>
+                  <span class="block-type badge-mint">secret.created</span>
+                </div>
+                <div class="block-actor">admin-alice@apex.fintech</div>
+                <div class="block-target">DATABASE_URL (v1)</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-1">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint">✓ Chained to #00</div>
+              </div>
+
+              <div class="audit-arrow">→</div>
+
+              <!-- Block 2: Secret Read -->
+              <div class="audit-block-card verified" id="audit-block-2">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #02</span>
+                  <span class="block-type badge-cyan">secret.read</span>
+                </div>
+                <div class="block-actor" id="audit-actor-2">ci-runner-88 (DPoP Proof)</div>
+                <div class="block-target">DATABASE_URL (v1)</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-2">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint" id="audit-status-2">✓ Chained to #01</div>
+              </div>
+
+              <div class="audit-arrow">→</div>
+
+              <!-- Block 3: Secret Rotated -->
+              <div class="audit-block-card verified" id="audit-block-3">
+                <div class="block-top">
+                  <span class="block-idx">BLOCK #03</span>
+                  <span class="block-type badge-gold">secret.rotated</span>
+                </div>
+                <div class="block-actor">sec-lead-bob + sre-carol</div>
+                <div class="block-target">DATABASE_URL (v2)</div>
+                <div class="block-hash-line">
+                  <span class="hash-lbl">CHAIN HASH:</span>
+                  <code class="hash-val" id="audit-hash-3">Computing...</code>
+                </div>
+                <div class="block-status-pill text-mint" id="audit-status-3">✓ Chained to #02</div>
+              </div>
+
+            </div>
+
+            <!-- Live Status & Interactive Tamper Simulation Buttons -->
+            <div class="audit-actions-deck">
+              <div class="audit-status-banner verified" id="audit-chain-status">
+                <span class="status-dot green">●</span>
+                <span class="status-msg">CHAIN VERIFIED: All 4 audit blocks cryptographically linked via SHA-256 preimages.</span>
+              </div>
+              <div class="audit-btn-group">
+                <button class="tui-btn-action danger" id="btn-tamper-audit" title="Simulate an attacker altering a past audit record in SQLite">
+                  [ SIMULATE DATABASE TAMPER IN BLOCK #02 ]
+                </button>
+                <button class="tui-btn-action primary-gold" id="btn-verify-audit" title="Recalculate genuine hashes and verify chain integrity">
+                  [ RESTORE &amp; VERIFY MERKLE INTEGRITY ]
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- 7-Stage Idempotent Migration Ledger (cv migrate) -->
+          <div class="tui-box migration-ledger-box">
+            <div class="tui-box-title">
+              <div class="box-title-left">
+                <span class="box-title-main">ZERO-DOWNTIME 7-STAGE MIGRATION LEDGER</span>
+                <span class="box-title-badge">cv migrate plan | apply | verify</span>
+              </div>
+              <span class="title-meta text-cyan">RESUMABLE &amp; SAFE</span>
+            </div>
+
+            <p class="migration-desc">
+              Migrate monolithic <code class="tui-code">.env</code> files and legacy raw vault snapshots into scoped secrets with zero downtime, zero plaintext disk writes, and readback verification before atomic cutover:
+            </p>
+
+            <div class="migration-steps-grid">
+              
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 01</span>
+                  <span class="m-step-badge badge-cyan">AST PARSE</span>
+                </div>
+                <div class="m-step-title">Classify &amp; Diff</div>
+                <p class="m-step-desc">Parses legacy dotenv files into discrete keys; computes SHA-256 pre-migration digests.</p>
+                <code class="m-step-cmd">cv migrate plan</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 02</span>
+                  <span class="m-step-badge badge-danger">QUARANTINE</span>
+                </div>
+                <div class="m-step-title">Collision Check</div>
+                <p class="m-step-desc">Detects name collisions or invalid slugs; isolates conflicts into a non-destructive quarantine.</p>
+                <code class="m-step-cmd">migrate resolve --migration-id &lt;ID&gt; --entry &lt;id&gt;</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 03</span>
+                  <span class="m-step-badge badge-gold">ENVELOPE</span>
+                </div>
+                <div class="m-step-title">Apply &amp; Wrap</div>
+                <p class="m-step-desc">Generates per-version DEKs under XChaCha20-Poly1305 with scope-bound AAD and project KEK wrap.</p>
+                <code class="m-step-cmd">cv migrate apply</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 04</span>
+                  <span class="m-step-badge badge-mint">READBACK</span>
+                </div>
+                <div class="m-step-title">Integrity Verify</div>
+                <p class="m-step-desc">Reads back ciphertext over loopback TLS, decrypts in memory, and asserts bit-identical match.</p>
+                <code class="m-step-cmd">cv migrate verify</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 05</span>
+                  <span class="m-step-badge badge-purple">QUORUM</span>
+                </div>
+                <div class="m-step-title">Dual-Admin Signoff</div>
+                <p class="m-step-desc">Production migrations require second-approver cryptographic signature before pointer promotion.</p>
+                <code class="m-step-cmd">cv approve --sign</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 06</span>
+                  <span class="m-step-badge badge-cyan">ATOMIC</span>
+                </div>
+                <div class="m-step-title">Pointer Cutover</div>
+                <p class="m-step-desc">Atomically updates the active version pointer; older applications continue without interruption.</p>
+                <code class="m-step-cmd">Atomic DB Flip (WAL)</code>
+              </div>
+
+              <div class="migration-card">
+                <div class="m-step-top">
+                  <span class="m-step-idx">STAGE 07</span>
+                  <span class="m-step-badge badge-danger">ZEROIZE</span>
+                </div>
+                <div class="m-step-title">Crypto-Shred</div>
+                <p class="m-step-desc">Zeroizes RAM buffers and shreds obsolete un-scoped plaintext copies from disks.</p>
+                <code class="m-step-cmd">ZeroizeOnDrop Memory Wipe</code>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- VCS Repository Bindings & Scoped CLI Cheatsheet -->
+          <div class="scoped-bottom-grid">
+            
+            <!-- VCS Binding Card -->
+            <div class="tui-box vcs-binding-box">
+              <div class="tui-box-title">
+                <span>VCS BINDINGS &amp; MONOREPO CONFINEMENT</span>
+                <span class="badge-mint">IMMUTABLE PROVIDER IDS</span>
+              </div>
+              <p class="vcs-box-desc">
+                Repositories are bound to projects by immutable provider IDs (GitHub numeric ID, GitLab project ID, Bitbucket UUID). Survives renames, transfers, and monorepos:
+              </p>
+              <div class="vcs-code-wrap">
+                <pre class="tui-code-block"><code># Bind GitHub repo with signed HMAC-SHA256 webhooks
+cv repo bind --project checkout-api --provider github --repo-id 84920194 --name apex/checkout --url https://github.com/apex/checkout
+
+# Confine secret to specific repository binding or service
+cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code></pre>
+              </div>
+            </div>
+
+            <!-- Scoped CLI Cheatsheet -->
+            <div class="tui-box scoped-cli-cheatsheet">
+              <div class="tui-box-title">
+                <span>SCOPED SECRETS &amp; SESSION CLI REFERENCE</span>
+                <span class="badge-gold">v1.0.29 NATIVE</span>
+              </div>
+              <div class="cli-cheatsheet-grid">
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-cyan">cv secret set &lt;NAME&gt;</span>
+                  <span class="cmd-desc">Create/update secret with envelope AAD</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-mint">cv secret get &lt;NAME&gt;</span>
+                  <span class="cmd-desc">Bare value retrieval for piping</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-gold">cv secret rotate &lt;NAME&gt;</span>
+                  <span class="cmd-desc">Rotate to new version (dual-admin in prod)</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-purple">cv run --env prod -- &lt;cmd&gt;</span>
+                  <span class="cmd-desc">Fail-closed zero-disk RAM injection</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-mint">cv audit --recovery-drill</span>
+                  <span class="cmd-desc">Verify head rebuild in zeroizing memory</span>
+                </div>
+                <div class="cli-cmd-cell">
+                  <span class="cmd-label text-cyan">cv recovery key-backup</span>
+                  <span class="cmd-desc">Seal root keys into Argon2id CVKB1 envelope</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Pane 4 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-engine">
+              [← PREV: 03 Engine Pipeline]
+            </button>
+            <button class="pane-pager-btn next" data-target="pane-benchmarks">
+              [NEXT: 05 Performance Benchmarks →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 5: BENCHMARKS & SYSTEMS COMPARISON
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-benchmarks" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">
+              <span class="mode-simple-only">[SPEED &amp; EFFICIENCY]</span>
+              <span class="mode-tech-only">[EMPIRICAL DATA &amp; COMPARATIVE MATRIX]</span>
+            </div>
+            <h2 class="pane-title" data-scramble-text="Performance Metrics vs. Traditional Systems">
+              <span class="mode-simple-only">Lightning Fast on Any Computer</span>
+              <span class="mode-tech-only">Performance Metrics vs. Traditional Systems</span>
+            </h2>
+            <p class="pane-desc">
+              <span class="mode-simple-only">Because CipherVault runs directly on your computer instead of waiting for slow cloud servers, operations happen in milliseconds with zero lag.</span>
+              <span class="mode-tech-only">Empirical benchmarks measured on x86_64 release builds, backed by 150+ workspace test files and live multi-region nodes.</span>
+            </p>
+          </div>
+
+          <!-- Benchmark Gauges -->
+          <div class="tui-box benchmark-gauges-box">
+            <div class="tui-box-title">
+              <div class="bench-title-wrap">
+                <span class="bench-title-main">MEASURED PERFORMANCE GAUGES</span>
+                <span class="bench-harness-tag">x86_64 • release-mode repo benchmarks (throughput_benchmark + push_bench + scoped_load_gate)</span>
+              </div>
+              <div class="bench-actions-bar">
+                <div class="bench-filter-pills" id="bench-filter-pills" role="tablist" aria-label="Benchmark Categories">
+                  <button class="bench-pill active" data-filter="all">All (7)</button>
+                  <button class="bench-pill" data-filter="crypto">Crypto</button>
+                  <button class="bench-pill" data-filter="storage">Storage</button>
+                  <button class="bench-pill" data-filter="scoped">Scoped Secrets</button>
+                </div>
+                <button class="tui-btn-action bench-rerun-btn" id="btn-rerun-benchmarks" title="Measure SHA-256, FastCDC, and Shamir on this device">
+                  [Rerun Benchmarks]
+                </button>
+              </div>
+              <div class="bench-live-result" id="bench-live-result" role="status"></div>
+            </div>
+
+            <div class="benchmark-gauges-list" id="benchmark-gauges-list">
+              
+              <!-- Metric 1: End-to-end chunk+encrypt pipeline -->
+              <div class="gauge-row" data-category="crypto">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Chunk+Encrypt Pipeline (FastCDC + XChaCha20-Poly1305)</span>
+                    <span class="gauge-compare-pill tag-gold">101.7x faster than debug build</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-gold" id="gauge-val-1" data-target="362.21" data-suffix=" MiB/s">362.21 MiB/s</span>
+                    <span class="gauge-baseline-val">vs 3.56 MiB/s debug-mode</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 9%;" title="Debug-mode baseline (same test): 3.56 MiB/s"></div>
+                  <div class="gauge-bar-fill fill-gold" data-target-width="85%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>Pure Rust • 10 MiB payload • 160 chunks • release mode</span>
+                  <span class="baseline-legend">Debug-mode, same test: 3.56 MiB/s ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 2: Decryption Throughput -->
+              <div class="gauge-row" data-category="crypto">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Decryption Throughput (In-Memory Streaming)</span>
+                    <span class="gauge-compare-pill tag-mint">157.6x faster than debug build</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-mint" id="gauge-val-2" data-target="669.74" data-suffix=" MiB/s">669.74 MiB/s</span>
+                    <span class="gauge-baseline-val">vs 4.25 MiB/s debug-mode</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 10%;" title="Debug-mode baseline (same test): 4.25 MiB/s"></div>
+                  <div class="gauge-bar-fill fill-mint" data-target-width="95%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>In-memory reassembly • byte-identical round-trip verified</span>
+                  <span class="baseline-legend">Debug-mode, same test: 4.25 MiB/s ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 3: FastCDC Deduplication Ratio -->
+              <div class="gauge-row" data-category="storage">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">FastCDC Deduplication Ratio</span>
+                    <span class="gauge-compare-pill tag-cyan">96.15% upload wire reduced</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-cyan" id="gauge-val-3" data-target="96.15" data-suffix="% (25/26 Chunks Reused)">96.15% (25/26 Chunks Reused)</span>
+                    <span class="gauge-baseline-val">vs 0% Git Blob</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 4%;" title="Git/S3 Raw Blob Baseline: 0% Dedup"></div>
+                  <div class="gauge-bar-fill fill-cyan" data-target-width="96%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>Gear rolling hash boundary detection (4–64 KiB) • 1 line edit re-syncs only 4 KiB</span>
+                  <span class="baseline-legend">Git/S3 Full Re-upload: 0% Savings ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 4: Proof-of-Storage Readback Savings -->
+              <div class="gauge-row" data-category="storage">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Proof-of-Storage (PoS) Readback Savings</span>
+                    <span class="gauge-compare-pill tag-mint">2,274x smaller audit wire</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-mint" id="gauge-val-4" data-target="99.956" data-suffix="% (1 MiB -> 461 B)">99.956% (1 MiB -> 461 B)</span>
+                    <span class="gauge-baseline-val">vs 1,048,576 B Audit</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 1%;" title="Full Blob Download Audit: 1,048,576 Bytes"></div>
+                  <div class="gauge-bar-fill fill-mint" data-target-width="99.9%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>Merkle-root challenge leaf verification • Operator sends 461 B proof instead of 1 MiB payload</span>
+                  <span class="baseline-legend">Full Object Download: 1,048,576 B ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 5: Concurrent push speedup (measured push_bench) -->
+              <div class="gauge-row" data-category="storage">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Concurrent Push Speedup (8-way vs sequential)</span>
+                    <span class="gauge-compare-pill tag-gold">62 ms vs 197 ms replication</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-white" id="gauge-val-5" data-target="3.17" data-suffix="x concurrent push speedup">3.17x concurrent push speedup</span>
+                    <span class="gauge-baseline-val">vs 1x sequential</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 15%;" title="Sequential baseline: 1x"></div>
+                  <div class="gauge-bar-fill fill-gold" data-target-width="92%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>48 x 16 KiB objects • 3 loopback operators • release mode</span>
+                  <span class="baseline-legend">Sequential c=1: 197.36 ms ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 6: Scoped Secret Read Throughput (measured scoped_load_gate) -->
+              <div class="gauge-row" data-category="scoped">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Scoped Secret Read Throughput (Concurrent Load Gate)</span>
+                    <span class="gauge-compare-pill tag-gold">574 reads/s with FULL fsync audit</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-gold" id="gauge-val-6" data-target="574" data-suffix=" reads/s">574 reads/s</span>
+                    <span class="gauge-baseline-val">p50: 11ms • p99: 36ms</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 21%;" title="Cloud API Rate Limit Baseline: ~120 reads/s"></div>
+                  <div class="gauge-bar-fill fill-gold" data-target-width="88%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>secret_routes::scoped_load_gate • 8 workers • 200 reads • 0 busy retries • SHA-256 chained audit</span>
+                  <span class="baseline-legend">Cloud API Quota: ~120 reads/s ↗</span>
+                </div>
+              </div>
+
+              <!-- Metric 7: Audit Chain Verification Latency (measured audit_chain.rs) -->
+              <div class="gauge-row" data-category="scoped">
+                <div class="gauge-meta">
+                  <div class="gauge-title-group">
+                    <span class="gauge-name">Tamper-Evident Audit Chain Hash Verification</span>
+                    <span class="gauge-compare-pill tag-mint">&lt;0.04 ms per block verify</span>
+                  </div>
+                  <div class="gauge-val-group">
+                    <span class="gauge-val text-mint" id="gauge-val-7" data-target="25000" data-suffix=" blocks/s">25,000 blocks/s</span>
+                    <span class="gauge-baseline-val">vs 250 ms cloud audit query</span>
+                  </div>
+                </div>
+                <div class="gauge-bar-track">
+                  <div class="track-ticks">
+                    <span class="tick t-25"></span>
+                    <span class="tick t-50"></span>
+                    <span class="tick t-75"></span>
+                  </div>
+                  <div class="gauge-baseline-marker" style="left: 5%;" title="Cloud Audit Query Latency Baseline"></div>
+                  <div class="gauge-bar-fill fill-mint" data-target-width="96%" style="width: 0%;"></div>
+                </div>
+                <div class="gauge-detail-foot">
+                  <span>services/account/src/audit_chain.rs • In-memory SHA-256 preimages • Sub-millisecond tamper tripwire</span>
+                  <span class="baseline-legend">Cloudtrail/SaaS Query: ~250 ms ↗</span>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Summary Footnote Banner -->
+            <div class="bench-summary-banner">
+              <div class="summary-pill">
+                <span class="summary-dot green">●</span> <strong>Autonomous Client Engine</strong>: Zero network delay for encryption or local reads.
+              </div>
+              <div class="summary-pill">
+                <span class="summary-dot cyan">●</span> <strong>Deterministic Storage</strong>: SHA-256 content-defined deduplication eliminates repeat backups.
+              </div>
+              <div class="summary-pill">
+                <span class="summary-dot gold">●</span> <strong>Enterprise Scale</strong>: 574 reads/s concurrent load gate with full SQLite WAL fsync durability.
+              </div>
+              <div class="summary-pill">
+                <span class="summary-dot mint">●</span> <strong>Bounded Admission (503 Shedding)</strong>: Disk permits &amp; client backoff prevent I/O thrashing during quorum bursts.
+              </div>
+            </div>
+          </div>
+
+          <!-- High-Density TUI Comparison Table -->
+          <div class="tui-box tui-table-box">
+            <div class="tui-box-title">ARCHITECTURAL COMPARISON: CIPHERVAULT VS. INDUSTRY STANDARDS</div>
+            <div class="tui-table-scroll">
+              <table class="tui-table">
+                <thead>
+                  <tr>
+                    <th>EVALUATION DIMENSION</th>
+                    <th class="col-highlight">CIPHERVAULT</th>
+                    <th>AWS SECRETS MGR</th>
+                    <th>HASHICORP VAULT</th>
+                    <th>1PASSWORD / DOPPLER</th>
+                    <th>SOPS / GIT-CRYPT</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Trust Model</strong></td>
+                    <td class="col-highlight text-mint">Zero-Knowledge (Client)</td>
+                    <td class="text-danger">Custodial (Cloud KMS)</td>
+                    <td class="text-warning">Semi-Custodial (Server)</td>
+                    <td class="text-danger">SaaS Custodial</td>
+                    <td class="text-mint">Sovereign (Local)</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Deduplication</strong></td>
+                    <td class="col-highlight text-mint">FastCDC 96.15%</td>
+                    <td class="text-danger">0% (Full Blob)</td>
+                    <td class="text-danger">0% (Full Blob)</td>
+                    <td class="text-danger">0% (Full Blob)</td>
+                    <td class="text-danger">0% (Full Blob)</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Durability Proof</strong></td>
+                    <td class="col-highlight text-mint">PoS Nonce (461 B)</td>
+                    <td class="text-danger">None (Cloud SLA)</td>
+                    <td class="text-warning">Raft Heartbeat</td>
+                    <td class="text-danger">None (SaaS SLA)</td>
+                    <td class="text-danger">Git Hash Only</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Disaster Recovery</strong></td>
+                    <td class="col-highlight text-mint">Paper Kit / Shamir / CVKB1</td>
+                    <td class="text-danger">Cloud Account Auth</td>
+                    <td class="text-warning">3-of-5 Unseal Keys</td>
+                    <td class="text-danger">Account PDF Key</td>
+                    <td class="text-warning">PGP Master Key</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Disk Exposure</strong></td>
+                    <td class="col-highlight text-mint">Zero-Disk RAM Execution</td>
+                    <td class="text-danger">Plaintext Disk Export</td>
+                    <td class="text-danger">Plaintext Disk Export</td>
+                    <td class="text-danger">Plaintext .env File</td>
+                    <td class="text-danger">Checked out Plaintext</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Scope Model &amp; Isolation</strong></td>
+                    <td class="col-highlight text-mint">Hierarchical (Tenant/Proj/Env) + AAD Envelope</td>
+                    <td class="text-danger">Flat ARNs / Paths</td>
+                    <td class="text-warning">Path Mount Namespaces</td>
+                    <td class="text-danger">SaaS Project / Env</td>
+                    <td class="text-danger">Single File PGP/KMS</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Token Security (DPoP)</strong></td>
+                    <td class="col-highlight text-mint">Asymmetric DPoP-Lite (Anti-Replay)</td>
+                    <td class="text-danger">Bearer IAM Credentials</td>
+                    <td class="text-warning">Bearer Vault Token</td>
+                    <td class="text-danger">Bearer Service Token</td>
+                    <td class="text-mint">N/A (Local Key Only)</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Audit Verification</strong></td>
+                    <td class="col-highlight text-mint">SHA-256 Chained Hash Ledger + PoA Anchor</td>
+                    <td class="text-danger">Centralized CloudTrail</td>
+                    <td class="text-warning">Flat File Audit Log</td>
+                    <td class="text-danger">SaaS Audit Export</td>
+                    <td class="text-danger">Git Commit History Only</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Zero-Downtime Migration</strong></td>
+                    <td class="col-highlight text-mint">7-Stage Pipeline with Readback Verify &amp; Rollback</td>
+                    <td class="text-danger">Manual Scripted (Risk of Outage)</td>
+                    <td class="text-warning">KV v1→v2 Engine Migration</td>
+                    <td class="text-danger">Manual Secret Re-entry</td>
+                    <td class="text-danger">Full Git Re-encrypt</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Offline Autonomy</strong></td>
+                    <td class="col-highlight text-mint">100% Offline-First</td>
+                    <td class="text-danger">Fails on Cloud Outage</td>
+                    <td class="text-danger">Requires Vault Host</td>
+                    <td class="text-danger">Requires SaaS API</td>
+                    <td class="text-mint">100% Offline</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Cost & Licensing</strong></td>
+                    <td class="col-highlight text-mint">Free / MIT / Apache-2.0</td>
+                    <td class="text-danger">$0.40/secret + API calls</td>
+                    <td class="text-danger">BSL / Commercial</td>
+                    <td class="text-danger">$3-$18/user/month</td>
+                    <td class="text-mint">Free / Open Source</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Pane 5 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-scoped">
+              [← PREV: 04 Scoped Secrets &amp; RBAC]
+            </button>
+            <button class="pane-pager-btn next" data-target="pane-recovery">
+              [NEXT: 06 Sovereign Disaster Recovery →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 6: SOVEREIGN DISASTER RECOVERY
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-recovery" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">
+              <span class="mode-simple-only">[DISASTER RECOVERY]</span>
+              <span class="mode-tech-only">[ZERO VENDOR DEPENDENCY • AIR-GAPPED BY DESIGN]</span>
+            </div>
+            <h2 class="pane-title" data-scramble-text="Clean-Machine Sovereign Disaster Recovery">
+              <span class="mode-simple-only">Restore Everything if Your Computer Dies</span>
+              <span class="mode-tech-only">Clean-Machine Sovereign Disaster Recovery</span>
+            </h2>
+            <p class="pane-desc">
+              <span class="mode-simple-only">If your laptop is lost, stolen, or destroyed, how do you get your passwords and keys back? Choose the method that fits your team:</span>
+              <span class="mode-tech-only">Reconstruct confidential developer files on a completely wiped machine without asking permission from any cloud custodian or SaaS provider.</span>
+            </p>
+            
+            <!-- Quick Feature Ribbon -->
+            <div class="sovereign-status-bar">
+              <span class="sov-tag"><span class="sov-icon">[OFFLINE]</span> 100% OFFLINE KEY DERIVATION</span>
+              <span class="sov-tag"><span class="sov-icon">[SOVEREIGN]</span> ZERO SaaS PERMISSION NEEDED</span>
+              <span class="sov-tag"><span class="sov-icon">[ZEROIZE]</span> MEMORY SCRUBBED VIA ZEROIZE</span>
+            </div>
+          </div>
+
+          <div class="recovery-split-grid">
+            
+            <!-- Method A: Paper Recovery Kit Card -->
+            <div class="tui-box recovery-box recovery-box-paper">
+              <div class="card-accent-tag tag-gold">
+                <span class="accent-dot gold">●</span> COLD DISASTER VOUCHER • 256-BIT HIGH ENTROPY
+              </div>
+              <div class="tui-box-title">METHOD A: EMERGENCY PAPER RECOVERY KIT</div>
+              <p class="recovery-desc">
+                During <code class="tui-code">cv init</code>, a 256-bit Master Secret <span class="text-gold">R</span> with CRC32 checksum is printed exclusively to your terminal. 
+                It is never written to disk, and volatile RAM is purged immediately with <code class="tui-code">ZeroizeOnDrop</code> compiler fences.
+              </p>
+              
+              <!-- High-Tech Perforated Cold Key Card -->
+              <div class="paper-kit-voucher-card">
+                <div class="voucher-top-bar">
+                  <div class="voucher-serial">
+                    <span class="v-label">VOUCHER ID:</span>
+                    <span class="v-val">CV-…-…</span>
+                  </div>
+                  <div class="voucher-seal">
+                    <span class="seal-badge">AIR-GAPPED COLD STORAGE</span>
+                  </div>
+                </div>
+
+                <div class="voucher-secret-display">
+                  <div class="secret-label-row">
+                    <span class="secret-field-name">MASTER KEY SEED (R):</span>
+                    <span class="secret-crc-badge" id="paper-crc-badge">✓ CRC32: …</span>
+                  </div>
+
+                  <!-- The Key Slots (Monospace Illuminated Boxes) -->
+                  <div class="voucher-key-slots" id="paper-key-display">
+                    <span class="key-slot masked">••••••••••••••••</span>
+                    <span class="key-slot-sep">-</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
+                    <span class="key-slot-sep">-</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
+                    <span class="key-slot-sep">-</span>
+                    <span class="key-slot masked">••••••••••••••••</span>
+                  </div>
+                </div>
+
+                <!-- Voucher Actions Bar -->
+                <div class="voucher-actions-bar">
+                  <button class="tui-btn-action" id="btn-toggle-paper-key">[REVEAL KEY]</button>
+                  <button class="tui-btn-action secondary" id="btn-copy-paper-cmd" title="Copy CLI recovery command">[COPY CLI RESTORE CMD]</button>
+                </div>
+                <div class="voucher-copy-toast" id="voucher-copy-toast">✓ COPIED: cv recovery test --kit &lt;PATH&gt; --to &lt;TEST_DIR&gt;</div>
+
+                <!-- Step Checklist -->
+                <div class="voucher-steps-list">
+                  <div class="v-step-item">
+                    <span class="v-step-num">01</span>
+                    <span class="v-step-text"><strong>Printed to stdout:</strong> Master secret R is never stored in swap or SSD.</span>
+                  </div>
+                  <div class="v-step-item">
+                    <span class="v-step-num">02</span>
+                    <span class="v-step-text"><strong>Safe Deposit Storage:</strong> Air-gapped on physical steel plate or paper.</span>
+                  </div>
+                  <div class="v-step-item">
+                    <span class="v-step-num">03</span>
+                    <span class="v-step-text"><strong>ZeroizeOnDrop Fence:</strong> Buffer zeroized in volatile memory immediately.</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Feature Bullets -->
+              <div class="recovery-feature-strip">
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-mint">✓</span>
+                  <span>Air-gapped safe deposit storage</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-mint">✓</span>
+                  <span>100% offline master key derivation</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-mint">✓</span>
+                  <span>Zero plaintext stored on hard drive</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Method B: Shamir 2-of-3 Workstation Card (real GF(2^8) math) -->
+            <div class="tui-box recovery-box recovery-box-shamir">
+              <div class="card-accent-tag tag-mint">
+                <span class="accent-dot mint">●</span> POLYNOMIAL ESCROW • GALOIS FIELD GF(2^8)
+              </div>
+              <div class="tui-box-title">METHOD B: M-OF-N SHAMIR THRESHOLD GUARDIANS</div>
+              <p class="recovery-desc">
+                Split recovery power among team leads using polynomial interpolation over Galois Field <span class="text-gold">GF(2<sup>8</sup>)</span>. 
+                Any 2 of 3 guardians can cooperatively reconstruct the epoch root.
+              </p>
+
+              <!-- Interactive Shamir Workstation -->
+              <div class="shamir-workstation-card">
+                
+                <div class="shamir-inst-bar">
+                  <div class="shamir-inst-title">
+                    <span class="shamir-kicker">INTERACTIVE WORKSTATION:</span>
+                    <span>SELECT ANY 2 GUARDIANS (THRESHOLD = 2/3)</span>
+                  </div>
+                  <span class="shamir-badge" id="tui-shamir-badge">0/2 SELECTED</span>
+                </div>
+
+                <!-- 3 Guardians Grid -->
+                <div class="shamir-guardians-grid">
+                  
+                  <label class="shamir-guardian-box" id="guardian-box-1" tabindex="0">
+                    <input type="checkbox" class="tui-guardian-check" data-id="1">
+                    <div class="custom-check-box">
+                      <span class="check-icon">✓</span>
+                    </div>
+                    <div class="guardian-inner">
+                      <div class="guardian-top-line">
+                        <span class="guardian-idx">[G1]</span>
+                        <span class="guardian-role">Lead Dev</span>
+                      </div>
+                      <span class="guardian-name">Alice</span>
+                      <span class="guardian-share" title="Share coordinate (1, y1)">0x01-…</span>
+                    </div>
+                  </label>
+
+                  <label class="shamir-guardian-box" id="guardian-box-2" tabindex="0">
+                    <input type="checkbox" class="tui-guardian-check" data-id="2">
+                    <div class="custom-check-box">
+                      <span class="check-icon">✓</span>
+                    </div>
+                    <div class="guardian-inner">
+                      <div class="guardian-top-line">
+                        <span class="guardian-idx">[G2]</span>
+                        <span class="guardian-role">DevOps</span>
+                      </div>
+                      <span class="guardian-name">Bob</span>
+                      <span class="guardian-share" title="Share coordinate (2, y2)">0x02-…</span>
+                    </div>
+                  </label>
+
+                  <label class="shamir-guardian-box" id="guardian-box-3" tabindex="0">
+                    <input type="checkbox" class="tui-guardian-check" data-id="3">
+                    <div class="custom-check-box">
+                      <span class="check-icon">✓</span>
+                    </div>
+                    <div class="guardian-inner">
+                      <div class="guardian-top-line">
+                        <span class="guardian-idx">[G3]</span>
+                        <span class="guardian-role">SecOps</span>
+                      </div>
+                      <span class="guardian-name">Carol</span>
+                      <span class="guardian-share" title="Share coordinate (3, y3)">0x03-…</span>
+                    </div>
+                  </label>
+
+                </div>
+
+                <!-- Polynomial Status & Lagrange HUD -->
+                <div class="shamir-math-hud" id="shamir-math-hud">
+                  <div class="hud-status-line">
+                    <span class="hud-badge text-gold">POLYNOMIAL STATUS:</span>
+                    <span class="hud-text" id="shamir-hud-text">Degree-1 polynomial f(x) over GF(2^8) awaiting 2 coordinate shares...</span>
+                  </div>
+                </div>
+
+                <!-- Dynamic Output Terminal -->
+                <div class="shamir-terminal-output" id="shamir-terminal-output">
+                  [STATUS] Awaiting threshold (select any 2 guardians above)...
+                </div>
+
+                <!-- Quick Action Buttons for Instant Testing -->
+                <div class="shamir-actions-bar">
+                  <button class="tui-btn-action secondary" id="btn-quick-shamir">[TEST: ALICE + BOB]</button>
+                  <button class="tui-btn-action secondary" id="btn-reset-shamir">[RESET GUARDIANS]</button>
+                </div>
+
+              </div>
+
+              <!-- Feature Bullets -->
+              <div class="recovery-feature-strip">
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-mint">✓</span>
+                  <span>Constant-time <strong class="text-gold">GF(2<sup>8</sup>)</strong> math safety</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-mint">✓</span>
+                  <span>Eliminates single points of failure</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-mint">✓</span>
+                  <span>Zero cloud or vendor intervention</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Method C: Passphrase-Wrapped Vault-Key Backup (CVKB1 Format) -->
+          <div class="tui-box recovery-box-cvkb">
+            <div class="card-accent-tag tag-cyan">
+              <span class="accent-dot cyan">●</span> CLIENT-SEALED KDF • ARGON2ID + XCHACHA20-POLY1305
+            </div>
+            <div class="tui-box-title">METHOD C: PASSPHRASE-WRAPPED VAULT-KEY BACKUP (CVKB1)</div>
+            <p class="recovery-desc">
+              Back up your root keys into an immutable, content-addressed operator object protected by your memorable master passphrase. 
+              Derived purely client-side via memory-hard <strong class="text-gold">Argon2id</strong> (64 MiB RAM, 3 passes, 4 lanes) and sealed with authenticated <strong class="text-mint">XChaCha20-Poly1305</strong>. 
+              Zero server unwrap oracle — restore on any wiped PC with only your passphrase.
+            </p>
+
+            <!-- Interactive CVKB1 Workstation Simulator -->
+            <div class="cvkb-interactive-card">
+              <div class="cvkb-header-row">
+                <div class="cvkb-tag-title">
+                  <span class="cvkb-kicker">INTERACTIVE SIMULATOR:</span>
+                  <span>CLIENT-SIDE CVKB1 ENVELOPE &amp; LOCATOR DERIVATION</span>
+                </div>
+                <span class="cvkb-spec-badge">CVKB1 · ARGON2ID + XCHACHA20</span>
+              </div>
+
+              <div class="cvkb-simulator-body">
+                <div class="cvkb-input-group">
+                  <label for="cvkb-passphrase-input" class="cvkb-input-label">TEST PASSPHRASE (SEALED LOCALLY IN VOLATILE MEMORY):</label>
+                  <div class="cvkb-input-wrap">
+                    <input type="text" id="cvkb-passphrase-input" class="cvkb-text-input" value="correct-horse-battery-staple-vault-2026" placeholder="Enter memorable passphrase (min 12 chars)" autocomplete="off" spellcheck="false">
+                    <button class="tui-btn-action" id="btn-cvkb-generate">[SEAL &amp; DERIVE LOCATOR]</button>
+                  </div>
+                </div>
+
+                <div class="cvkb-derived-details">
+                  <div class="cvkb-detail-row">
+                    <span class="detail-label">CONTENT-ADDRESSED LOCATOR:</span>
+                    <code class="detail-val text-cyan" id="cvkb-locator-preview">sha256(envelope) calculating...</code>
+                  </div>
+                  <div class="cvkb-detail-row">
+                    <span class="detail-label">ENVELOPE FORMAT:</span>
+                    <span class="detail-val text-mint">CVKB1 (Magic: 0x43564B4231) • Salt: 16B • Nonce: 24B • Tag: 16B Poly1305</span>
+                  </div>
+                </div>
+
+                <div class="cvkb-restore-cmd-box">
+                  <div class="restore-cmd-header">
+                    <span>CLEAN-MACHINE CLI RESTORATION COMMAND:</span>
+                    <button class="tui-btn-copy-mini" id="btn-copy-cvkb-cmd" title="Copy CLI restore command">[COPY CMD]</button>
+                  </div>
+                  <div class="restore-cmd-code-line">
+                    <span class="tui-prompt">$</span>
+                    <code class="cmd-text" id="cvkb-restore-cmd">cv recovery key-restore --locator … --output recovery-kit.txt</code>
+                  </div>
+                </div>
+                <div class="cvkb-copy-toast" id="cvkb-copy-toast">✓ RESTORE COMMAND COPIED TO CLIPBOARD</div>
+              </div>
+
+              <!-- Feature Bullets -->
+              <div class="recovery-feature-strip">
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-cyan">✓</span>
+                  <span>64 MiB Argon2id client memory-hardness</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-cyan">✓</span>
+                  <span>Content-addressed immutable storage</span>
+                </div>
+                <div class="recovery-feat-pill">
+                  <span class="feat-icon text-cyan">✓</span>
+                  <span>Zero server decrypt or oracle capabilities</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recover-then-Rebuild Architecture Highlight -->
+          <div class="tui-box recovery-rebuild-box">
+            <div class="tui-box-title">
+              <span class="text-gold">SOVEREIGN ZERO-FRICTION REBUILD (init_vault_at_epoch)</span>
+              <span class="badge-gold">AUTO-RESUME</span>
+            </div>
+            <p class="pillar-desc recovery-rebuild-desc">
+              Disaster recovery does not merely dump loose files on disk. On a completely wiped machine, <code class="tui-code">cv recover</code> resolves the immutable genesis locator, automatically initializes a new SQLite <code class="tui-code">vault.db</code> store at the recovered epoch (<code class="tui-code">init_vault_at_epoch</code>), mints a fresh recovery-signed device identity, and pulls all snapshot chunks. The clean device is instantly primed for immediate <code class="tui-code">push</code>, <code class="tui-code">diff</code>, and <code class="tui-code">pull</code> commands without manual re-configuration.
+            </p>
+          </div>
+
+          <!-- Pane 6 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-benchmarks">
+              [← PREV: 05 Performance Benchmarks]
+            </button>
+            <button class="pane-pager-btn next" data-target="pane-quickstart">
+              [NEXT: 07 Installation & Quickstart →]
+            </button>
+          </div>
+
+        </section>
+
+        <!-- ====================================================================
+             PANE 7: INSTALLATION & QUICKSTART
+             ==================================================================== -->
+        <section class="tui-pane" id="pane-quickstart" role="tabpanel" hidden>
+          
+          <div class="pane-header-wrap">
+            <div class="pane-kicker">
+              <span class="mode-simple-only">[GET STARTED IN 60 SECONDS]</span>
+              <span class="mode-tech-only">[DEVELOPER ONBOARDING HUB]</span>
+            </div>
+            <h2 class="pane-title" data-scramble-text="Developer Quickstart & Node Setup">
+              <span class="mode-simple-only">Install CipherVault on Your Computer</span>
+              <span class="mode-tech-only">Developer Quickstart &amp; Node Setup</span>
+            </h2>
+            <p class="pane-desc">
+              <span class="mode-simple-only">Download pre-compiled binaries for Windows, Mac, or Linux, or install via your favorite terminal package manager:</span>
+              <span class="mode-tech-only">Get started in 60 seconds using pre-compiled native binaries, direct Cargo source compilation, or Docker Compose.</span>
+            </p>
+          </div>
+
+          <!-- Tabbed Install Snippets -->
+          <div class="tui-box install-snippet-box">
+            <div class="snippet-tabs-bar">
+              <button class="snippet-tab active" data-target-os="win">[Windows PowerShell]</button>
+              <button class="snippet-tab" data-target-os="nix">[Linux / macOS Bash]</button>
+              <button class="snippet-tab" data-target-os="cargo">[Cargo (Rust)]</button>
+              <button class="snippet-tab" data-target-os="brew">[Homebrew]</button>
+              <button class="snippet-tab" data-target-os="scoop">[Scoop &amp; Winget]</button>
+              <button class="snippet-tab" data-target-os="docker">[Docker Compose]</button>
+            </div>
+            <div class="snippet-code-wrap">
+              <pre class="snippet-code-pre" id="snippet-code-pre"><code># Install CipherVault for Windows via PowerShell (Release v1.0.30)
+irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex</code></pre>
+              <button class="snippet-copy-btn" id="btn-snippet-copy">[COPY SNIPPET]</button>
+            </div>
+          </div>
+
+          <!-- Direct Pre-Compiled Binary Releases Deck (v1.0.30) -->
+          <div class="tui-box direct-downloads-box">
+            <div class="tui-box-title">
+              <span>DIRECT PRE-COMPILED BINARY RELEASES [v1.0.30]</span>
+              <span class="title-meta text-mint">✓ SHA-256 &amp; ED25519 SIGNED</span>
+            </div>
+            <p class="download-deck-desc">
+              Prefer standalone executables or role-specific bundles without running package scripts? Download official signed archives and executables directly from the release feed:
+            </p>
+            <div class="binary-downloads-grid">
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-v1.0.30-x86_64-pc-windows-msvc.zip" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS FULL</span>
+                  <span class="bin-arch">x86_64 • v1.0.30</span>
+                </div>
+                <div class="bin-card-name">cv.exe + ciphervault.exe</div>
+                <div class="bin-card-meta">Full Suite: CLI, Agent, Operator &amp; Maintenance • 31.0 MB</div>
+                <div class="bin-download-action">[ ↓ Download Full .zip ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/cv.exe" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS CLI</span>
+                  <span class="bin-arch">x86_64 • v1.0.30</span>
+                </div>
+                <div class="bin-card-name">cv.exe</div>
+                <div class="bin-card-meta">Standalone Short-Alias CLI Binary • MSVC Native • 21.3 MB</div>
+                <div class="bin-download-action">[ ↓ Download cv.exe ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault.exe" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS CLI</span>
+                  <span class="bin-arch">x86_64 • v1.0.30</span>
+                </div>
+                <div class="bin-card-name">ciphervault.exe</div>
+                <div class="bin-card-meta">Standalone Canonical CLI Binary • MSVC Native • 21.3 MB</div>
+                <div class="bin-download-action">[ ↓ Download ciphervault.exe ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-dev-v1.0.30-x86_64-pc-windows-msvc.zip" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS DEV</span>
+                  <span class="bin-arch">x86_64 • v1.0.30</span>
+                </div>
+                <div class="bin-card-name">ciphervault-dev.zip</div>
+                <div class="bin-card-meta">Developer Bundle: cv.exe, ciphervault.exe &amp; Agent • 20.0 MB</div>
+                <div class="bin-download-action">[ ↓ Download Dev .zip ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.30/ciphervault-node-v1.0.30-x86_64-pc-windows-msvc.zip" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-win">WINDOWS NODE</span>
+                  <span class="bin-arch">x86_64 • v1.0.30</span>
+                </div>
+                <div class="bin-card-name">ciphervault-node.zip</div>
+                <div class="bin-card-meta">Node Runner: CLI, Storage Operator &amp; Maintenance • 27.0 MB</div>
+                <div class="bin-download-action">[ ↓ Download Node .zip ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.28/ciphervault-v1.0.28-x86_64-unknown-linux-gnu.tar.gz" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-linux">LINUX</span>
+                  <span class="bin-arch">x86_64</span>
+                </div>
+                <div class="bin-card-name">ciphervault</div>
+                <div class="bin-card-meta">GNU Linux glibc 2.31+ • .tar.gz • latest: v1.0.28</div>
+                <div class="bin-download-action">[ ↓ Download .tar.gz ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.28/ciphervault-v1.0.28-aarch64-apple-darwin.tar.gz" class="bin-download-card" download>
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-mac">MACOS</span>
+                  <span class="bin-arch">ARM64 (Apple Silicon)</span>
+                </div>
+                <div class="bin-card-name">ciphervault</div>
+                <div class="bin-card-meta">macOS 12+ M1-M4 Native • .tar.gz • latest: v1.0.28</div>
+                <div class="bin-download-action">[ ↓ Download .tar.gz ]</div>
+              </a>
+
+              <a href="https://github.com/samuel-1-avson/CipherVault/releases/tag/v1.0.30" target="_blank" rel="noopener noreferrer" class="bin-download-card all-assets">
+                <div class="bin-card-top">
+                  <span class="bin-os-badge os-all">ALL ARTIFACTS</span>
+                  <span class="bin-arch">7 Assets • Signed</span>
+                </div>
+                <div class="bin-card-name">GitHub Release v1.0.30</div>
+                <div class="bin-card-meta">SHA256SUMS.txt, .sig &amp; Signed Release Bundles</div>
+                <div class="bin-download-action">[ View All Assets ↗ ]</div>
+              </a>
+            </div>
+          </div>
+
+          <!-- 4-Step Quickstart Workflow Cards -->
+          <div class="tui-grid-steps">
+            
+            <div class="step-card">
+              <div class="step-idx">STEP 01</div>
+              <div class="step-card-title">Initialize Vault</div>
+              <p class="step-card-desc">Generates master secret <span class="text-gold">R</span>, binds OS hardware keyring, and prints emergency paper kit.</p>
+              <div class="step-cmd">cv init</div>
+            </div>
+
+            <div class="step-card">
+              <div class="step-idx">STEP 02</div>
+              <div class="step-card-title">Track Secrets</div>
+              <p class="step-card-desc">Enroll confidential files without changing your Git working tree or commit index.</p>
+              <div class="step-cmd">cv track .env config/jwt.key</div>
+            </div>
+
+            <div class="step-card">
+              <div class="step-idx">STEP 03</div>
+              <div class="step-card-title">Push &amp; Replicate</div>
+              <p class="step-card-desc">FastCDC slices changes into encrypted chunks and replicates them across storage operators.</p>
+              <div class="step-cmd">cv push -m "Initial secrets snapshot"</div>
+            </div>
+
+            <div class="step-card">
+              <div class="step-idx">STEP 04</div>
+              <div class="step-card-title">Anchor to CipherChain</div>
+              <p class="step-card-desc">Anchors snapshot commitments to the sovereign PoA ledger for immutable timestamp verification.</p>
+              <div class="step-cmd">cv anchor &amp;&amp; cv verify-anchor</div>
+            </div>
+
+            <div class="step-card">
+              <div class="step-idx">STEP 05</div>
+              <div class="step-card-title">Zero-Disk Run</div>
+              <p class="step-card-desc">Injects decrypted secrets directly into process RAM without writing to SSD storage.</p>
+              <div class="step-cmd">cv run -- npm start</div>
+            </div>
+
+            <div class="step-card">
+              <div class="step-idx">STEP 06</div>
+              <div class="step-card-title">Seal Key Backup &amp; Verify</div>
+              <p class="step-card-desc">Back up root keys into an Argon2id CVKB1 envelope and monitor continuous replication health.</p>
+              <div class="step-cmd">cv recovery key-backup &amp;&amp; cv status</div>
+            </div>
+
+          </div>
+
+          <p class="download-deck-desc">
+            Short on typing: <code>cv</code> and <code>ciphervault</code> are the same tool — every command on this page works with either name.
+          </p>
+
+          <!-- Run a Storage Operator Node Callout -->
+          <div class="tui-box operator-node-box">
+            <div class="tui-box-title">RUN A STORAGE OPERATOR NODE (JOIN THE QUORUM)</div>
+            <p class="node-box-desc">
+              Run an independent zero-knowledge storage operator node for your team with K-of-N multi-sig admission:
+            </p>
+            <div class="node-cmd-wrap">
+              <code>cv node setup --port 8201 --data-dir /var/lib/ciphervault &amp;&amp; cv invite join ticket.json --node https://&lt;node-url&gt;</code>
+            </div>
+          </div>
+
+          <!-- Beginner-Friendly FAQ Section (Plain English Mode) -->
+          <div class="plain-faq-container mode-simple-only">
+            <h3 class="plain-faq-title">Frequently Asked Questions</h3>
+            <p class="plain-faq-desc">Clear answers without technical jargon:</p>
+            <div class="plain-faq-grid">
+              
+              <div class="plain-faq-card">
+                <div class="faq-question">Do I need to know about crypto or blockchain to use CipherVault?</div>
+                <div class="faq-answer">
+                  <strong>Not at all.</strong> No wallet or tokens are required. CipherVault installs like standard developer tooling (PowerShell, Homebrew, Cargo) and uses familiar CLI commands like <code>push</code> and <code>pull</code>.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">How is this different from putting .env in .gitignore?</div>
+                <div class="faq-answer">
+                  <code>.gitignore</code> only stops files from being pushed to Git—it does not back them up or sync them. CipherVault securely backs up and syncs your secrets out-of-band.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Can anyone else see my passwords or API keys?</div>
+                <div class="faq-answer">
+                  <strong>Never.</strong> Secrets are client-encrypted on your physical hardware before leaving your machine. Only your master key can decrypt them.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Is CipherVault free? Are there monthly subscription fees?</div>
+                <div class="faq-answer">
+                  <strong>100% free and open-source</strong> under dual Apache-2.0 and MIT licenses. No monthly fees, no credit cards, zero vendor lock-in.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">What happens if my laptop is stolen or wiped? Can I recover without paper?</div>
+                <div class="faq-answer">
+                  <strong>Yes.</strong> In addition to offline paper kits and Shamir guardian shares, CipherVault v1.0.29 supports passphrase-wrapped vault-key backups (<code>CVKB1</code>). Your keys are sealed client-side with Argon2id and stored content-addressed on operator nodes. Recover on any wiped laptop with <code>cv recovery key-restore --locator &lt;HEX&gt;</code> and your memorable passphrase.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Do I have to remember to run "push" manually every time?</div>
+                <div class="faq-answer">
+                  <strong>No.</strong> CipherVault includes automated scheduled push timers (<code>ciphervault-push.timer</code> on Linux systemd or <code>register-push-task.ps1</code> on Windows Task Scheduler) plus <code>cv watch</code> for continuous, automatic zero-lag secret replication.
+                </div>
+              </div>
+
+              <div class="plain-faq-card">
+                <div class="faq-question">Is there a shorter command than "ciphervault"?</div>
+                <div class="faq-answer">
+                  <strong>Yes — just type <code>cv</code>.</strong> Every install ships both names for the same tool, so <code>cv init</code>, <code>cv push</code>, and <code>cv --help</code> all work everywhere <code>ciphervault</code> does.
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Support Decentralized Infrastructure Pre-Footer Card -->
+          <div class="tui-box support-infrastructure-box" id="support-infrastructure-box">
+            <div class="tui-box-title">
+              <span class="text-gold">SUPPORT OPEN-SOURCE INFRASTRUCTURE</span>
+              <span class="badge-mint">COMMUNITY TREASURY</span>
+            </div>
+            <div class="support-infra-content">
+              <p class="support-infra-desc">
+                CipherVault is 100% sovereign, open-source, and operated without SaaS subscriptions. Donations fund testnet quorum nodes and continuous build runners.
+              </p>
+              <div class="support-infra-actions">
+                <button class="tui-btn-action primary-gold" id="btn-trigger-donate-card">
+                  <span class="donate-heart"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></span> Donate Crypto (ETH, USDT, ARB)
+                </button>
+                <div class="support-network-badges">
+                  <span class="net-badge"><span class="badge-dot cyan">●</span> Arbitrum One L2</span>
+                  <span class="net-badge"><span class="badge-dot purple">●</span> Ethereum Mainnet</span>
+                  <span class="net-badge"><span class="badge-dot green">●</span> USDT (ERC-20)</span>
+                  <span class="net-badge"><span class="badge-dot yellow">●</span> Sepolia Testnet</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pane 7 Bottom Pager -->
+          <div class="pane-pager-bar split">
+            <button class="pane-pager-btn prev" data-target="pane-recovery">
+              [← PREV: 06 Sovereign Disaster Recovery]
+            </button>
+            <button class="pane-pager-btn top" data-target="pane-overview">
+              [↑ BACK TO OVERVIEW (01) ⇪]
+            </button>
+          </div>
+
+        </section>
+
+      </main>
+
+    </div>
+
+    <!-- Bottom Interactive CLI REPL Console (Collapsible Minimal Status Dock) -->
+    <footer class="tui-bottom-repl collapsed" id="tui-bottom-repl">
+      <div class="repl-control-bar">
+        <button class="repl-toggle-btn" id="btn-toggle-repl" aria-expanded="false" title="Click to open interactive terminal console (Shortcut: [/])">
+          <span class="repl-indicator">▶</span>
+          <span class="repl-label">CLI REPL CONSOLE</span>
+        </button>
+        <div class="repl-shortcuts-bar">
+          <span class="shortcuts-label">CMDS:</span>
+          <button class="cmd-pill" data-cmd="help">help</button>
+          <button class="cmd-pill" data-cmd="secret">secret</button>
+          <button class="cmd-pill" data-cmd="project">project</button>
+          <button class="cmd-pill" data-cmd="migrate">migrate</button>
+          <button class="cmd-pill" data-cmd="init">init</button>
+          <button class="cmd-pill" data-cmd="track">track .env</button>
+          <button class="cmd-pill" data-cmd="push">push</button>
+          <button class="cmd-pill" data-cmd="anchor">anchor</button>
+          <button class="cmd-pill" data-cmd="verify-anchor">verify-anchor</button>
+          <button class="cmd-pill" data-cmd="genesis">genesis</button>
+          <button class="cmd-pill" data-cmd="update">update</button>
+          <button class="cmd-pill" data-cmd="invite">invite</button>
+          <button class="cmd-pill" data-cmd="status">status</button>
+          <button class="cmd-pill" data-cmd="run">run -- npm start</button>
+          <button class="cmd-pill" data-cmd="bench">bench</button>
+          <button class="cmd-pill" data-cmd="compare">compare</button>
+          <button class="cmd-pill" data-cmd="recover">recover</button>
+          <button class="cmd-pill" data-cmd="clear">clear</button>
+        </div>
+      </div>
+
+      <div class="repl-drawer-container" id="repl-drawer-container">
+        <div class="repl-command-row">
+          <span class="repl-prompt-symbol">cv &gt;</span>
+          <input type="text" class="repl-input" id="repl-input" placeholder="Type a command (or click quick pills above): 'help', 'init', 'anchor', 'update'..." spellcheck="false" autocomplete="off">
+          <button class="repl-btn-exec" id="btn-repl-exec">[EXECUTE ↵]</button>
+        </div>
+
+        <!-- REPL Live Output Drawer -->
+        <div class="repl-output-drawer" id="repl-output-drawer" hidden>
+          <div class="output-drawer-header">
+            <span>TERMINAL LOG STREAM</span>
+            <button class="btn-close-drawer" id="btn-close-drawer">[CLEAR / DISMISS]</button>
+          </div>
+          <div class="output-drawer-content" id="output-drawer-content">
+            <!-- Dynamically populated output -->
+          </div>
+        </div>
+      </div>
+    </footer>
+
+  <!-- Cryptocurrency Donation Modal Dialog -->
+  <div class="donation-modal-overlay" id="donation-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-donate-title" hidden>
+    <div class="donation-modal-card" id="donation-modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div class="modal-eyebrow">
+            <span class="status-pulse-dot"></span>
+            <span class="modal-kicker">COMMUNITY INFRASTRUCTURE SPONSORSHIP</span>
+          </div>
+          <h3 class="modal-title" id="modal-donate-title">Support CipherVault with Crypto</h3>
+        </div>
+        <button class="btn-close-modal" id="btn-close-donate-modal" aria-label="Close donation modal" title="Close modal (Esc)">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>
+          <kbd class="kbd-esc">ESC</kbd>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <p class="modal-lead">
+          Directly fund independent storage operator quorums, Arbitrum L2 gas settlement, and reproducible zero-knowledge security research.
+        </p>
+
+        <!-- Network Tabs (Linear-Grade Segmented Control) -->
+        <div class="donation-net-tabs" role="tablist" aria-label="Donation Network">
+          <button class="net-tab-btn active" id="tab-net-arb" data-net="arbitrum" role="tab" aria-selected="true">
+            <span class="tab-net-dot cyan">●</span>
+            <span class="tab-net-name">Arbitrum One</span>
+            <span class="net-fee-tag">&lt; $0.05</span>
+          </button>
+          <button class="net-tab-btn" id="tab-net-eth" data-net="ethereum" role="tab" aria-selected="false">
+            <span class="tab-net-dot purple">●</span>
+            <span class="tab-net-name">Ethereum L1</span>
+          </button>
+          <button class="net-tab-btn" id="tab-net-sep" data-net="sepolia" role="tab" aria-selected="false">
+            <span class="tab-net-dot yellow">●</span>
+            <span class="tab-net-name">Sepolia Testnet</span>
+          </button>
+        </div>
+
+        <!-- Accepted Assets Line -->
+        <div class="modal-assets-row">
+          <span class="assets-label">ACCEPTED ASSETS:</span>
+          <div class="assets-chips-wrap">
+            <span class="asset-pill" id="pill-asset-eth">ETH</span>
+            <span class="asset-pill" id="pill-asset-usdt">USDT</span>
+            <span class="asset-pill" id="pill-asset-arb">ARB</span>
+            <span class="asset-pill" id="pill-asset-sep">Sepolia ETH</span>
+          </div>
+        </div>
+
+        <!-- QR Code & Address Display Deck -->
+        <div class="modal-qr-address-deck">
+          <div class="qr-preview-wrapper">
+            <div class="qr-canvas-box" id="donation-qr-container" title="Scan with mobile wallet">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 33 33" shape-rendering="crispEdges" role="img" aria-label="EVM Donation Address QR Code"><path fill="#ffffff" d="M0 0h33v33H0z"/><path stroke="#07090e" stroke-width="1" d="M2 2.5h7m1 0h1m1 0h1m5 0h1m1 0h3m1 0h7M2 3.5h1m5 0h1m1 0h1m1 0h1m3 0h1m7 0h1m5 0h1M2 4.5h1m1 0h3m1 0h1m2 0h2m2 0h3m3 0h2m1 0h1m1 0h3m1 0h1M2 5.5h1m1 0h3m1 0h1m1 0h2m2 0h1m2 0h1m2 0h1m3 0h1m1 0h3m1 0h1M2 6.5h1m1 0h3m1 0h1m2 0h2m1 0h1m2 0h5m2 0h1m1 0h3m1 0h1M2 7.5h1m5 0h1m6 0h1m2 0h1m2 0h2m1 0h1m5 0h1M2 8.5h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7M10 9.5h3m3 0h1m1 0h2m2 0h1M2 10.5h1m1 0h2m1 0h3m3 0h1m1 0h1m2 0h2m1 0h2m1 0h1m2 0h1m1 0h2M3 11.5h1m1 0h2m2 0h3m1 0h3m2 0h1m1 0h2m2 0h1m1 0h2m1 0h2M3 12.5h1m3 0h4m1 0h3m3 0h3m1 0h1m1 0h2m3 0h1M6 13.5h2m2 0h1m1 0h1m2 0h2m1 0h2m2 0h1m1 0h1m1 0h2m1 0h2M2 14.5h4m1 0h6m1 0h2m1 0h1m4 0h2m1 0h1m1 0h2M3 15.5h2m1 0h2m2 0h1m3 0h1m2 0h3m1 0h5m1 0h4M2 16.5h1m1 0h2m1 0h3m1 0h3m2 0h1m2 0h1m1 0h1m2 0h4m2 0h1M10 17.5h1m1 0h2m2 0h2m1 0h2m1 0h2m2 0h1m2 0h1M3 18.5h4m1 0h1m3 0h3m1 0h1m1 0h3m4 0h3m2 0h1M10 19.5h3m4 0h2m1 0h1m2 0h1m1 0h1m1 0h1m1 0h1M2 20.5h1m4 0h7m1 0h4m1 0h1m4 0h2m1 0h1M5 21.5h2m5 0h1m1 0h4m1 0h1m3 0h2m3 0h1M3 22.5h1m1 0h1m2 0h1m1 0h1m1 0h1m2 0h2m2 0h8m1 0h1m1 0h1M10 23.5h2m1 0h2m4 0h2m1 0h1m3 0h2m2 0h1M2 24.5h7m1 0h1m2 0h1m2 0h1m1 0h1m2 0h2m1 0h1m1 0h1m1 0h1M2 25.5h1m5 0h1m1 0h1m1 0h5m1 0h2m2 0h1m3 0h1m2 0h1M2 26.5h1m1 0h3m1 0h1m2 0h1m1 0h1m3 0h1m2 0h1m1 0h5m1 0h1M2 27.5h1m1 0h3m1 0h1m1 0h1m1 0h2m1 0h1m1 0h4m4 0h2m1 0h2M2 28.5h1m1 0h3m1 0h1m1 0h1m2 0h3m4 0h1m2 0h1m1 0h1m1 0h2m1 0h1M2 29.5h1m5 0h1m7 0h1m1 0h1m1 0h1m1 0h2m2 0h1m2 0h1M2 30.5h7m1 0h1m1 0h1m1 0h2m3 0h1m1 0h4m2 0h1m1 0h1"/></svg>
+            </div>
+            <span class="qr-caption-hint">SCAN WITH WALLET</span>
+          </div>
+          <div class="address-details-box">
+            <div class="address-label-row">
+              <span class="address-hint-tag" id="donation-network-label">ARBITRUM ONE (L2) EVM ADDRESS:</span>
+              <span class="address-sec-badge">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                NON-CUSTODIAL
+              </span>
+            </div>
+            <div class="address-code-block" id="donation-address-text" title="Click to copy address">
+              0x5f424b4ec88073fd461eb194833681a31adfa311
+            </div>
+            <div class="address-actions-row">
+              <button class="btn-copy-address" id="btn-copy-donation-address">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Copy Address</span>
+              </button>
+              <a href="https://arbiscan.io/address/0x5f424b4ec88073fd461eb194833681a31adfa311" target="_blank" rel="noopener noreferrer" class="btn-view-explorer" id="link-view-explorer" title="Verify on-chain in public block explorer">
+                <span>Explorer</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+              </a>
+            </div>
+            <div class="donation-copy-feedback" id="donation-copy-feedback">✓ Address copied to clipboard</div>
+          </div>
+        </div>
+
+        <!-- Sleek Minimalist Notice Box -->
+        <div class="modal-notice-box">
+          <span class="notice-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+          </span>
+          <span class="notice-text" id="donation-notice-text">
+            Send only <strong>ETH</strong>, <strong>USDT</strong>, or <strong>ARB</strong> to this EVM address on Arbitrum One or Ethereum Mainnet. Transactions on unsupported networks may result in lost funds.
+          </span>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="modal-footer-meta">
+          <span class="meta-dot"></span>
+          <span>Single EVM address across Arbitrum One, Ethereum Mainnet, and Sepolia.</span>
+        </div>
+        <button class="tui-btn-action secondary" id="btn-dismiss-donate">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
