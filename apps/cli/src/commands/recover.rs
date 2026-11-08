@@ -1186,9 +1186,19 @@ pub(crate) async fn cmd_invite_requests(via: Option<Vec<String>>) -> Result<()> 
             format!("Inbox {target} ({} request(s)):", entries.len()).bold()
         );
         for entry in &entries {
+            let requested = i64::try_from(entry.requested_at_utc)
+                .ok()
+                .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+                .map(|ts| ts.format("%Y-%m-%d %H:%M UTC").to_string())
+                .unwrap_or_else(|| entry.requested_at_utc.to_string());
             println!(
-                "  {} {} {} [{}] contact={:?}",
-                entry.request_id, entry.operator_id, entry.endpoint, entry.status, entry.contact,
+                "  {} {} {} [{}] requested={} contact={:?}",
+                entry.request_id,
+                entry.operator_id,
+                entry.endpoint,
+                entry.status,
+                requested,
+                entry.contact,
             );
         }
     }

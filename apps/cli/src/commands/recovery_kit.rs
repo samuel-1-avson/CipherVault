@@ -1,11 +1,9 @@
 //! Recovery-kit export, test and split commands.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use colored::Colorize;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
 
 use ciphervault_recovery::OfflineRecoveryKit;
 
