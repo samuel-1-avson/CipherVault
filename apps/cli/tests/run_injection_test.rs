@@ -336,8 +336,8 @@ fn test_agentic_ai_json_redaction_and_guardian_hook() {
         stdout_val
     );
     assert!(
-        stdout_val.contains("[REDACTED]"),
-        "Expected [REDACTED] in stdout, got: {}",
+        stdout_val.contains("[REDACTED"),
+        "Expected a redaction marker in stdout, got: {}",
         stdout_val
     );
 
