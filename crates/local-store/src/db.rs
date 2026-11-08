@@ -114,7 +114,7 @@ pub struct LeaseReceiptRecord {
 impl LocalVaultStore {
     /// Opens or creates a local SQLite vault database at the specified file path.
     pub fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, LocalStoreError> {
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(&db_path)?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -125,6 +125,30 @@ impl LocalVaultStore {
         let store = Self { conn };
         store.init_tables()?;
         store.run_migrations()?;
+        // Lock the database (and WAL/SHM sidecars) down to the current
+        // user. Best-effort with a loud warning: existing vaults on
+        // filesystems without ACL support must keep opening, but the
+        // operator should know the metadata store is not private.
+        let path = db_path.as_ref();
+        if path.to_string_lossy() != ":memory:" {
+            for candidate in [
+                path.to_path_buf(),
+                path.with_extension("db-wal"),
+                path.with_extension("db-shm"),
+            ] {
+                if candidate.exists() {
+                    if let Err(err) = ciphervault_file_lock::lock_secret_file(&candidate) {
+                        eprintln!(
+                            "WARNING: could not restrict permissions on {}: {err}.                              Vault metadata may be readable by other local users.",
+                            candidate.display()
+                        );
+                    }
+                }
+            }
+            if let Some(parent) = path.parent() {
+                let _ = ciphervault_file_lock::lock_secret_directory(parent);
+            }
+        }
         Ok(store)
     }
 

@@ -117,7 +117,7 @@ pub struct WrappedDek {
 /// implementation of [`KeyWrappingService`] instead.
 pub struct LocalKekService {
     kek_id: String,
-    kek: [u8; KEY_SIZE],
+    kek: zeroize::Zeroizing<[u8; KEY_SIZE]>,
 }
 
 impl LocalKekService {
@@ -125,7 +125,7 @@ impl LocalKekService {
     pub fn new(kek_id: &str, kek: [u8; KEY_SIZE]) -> Self {
         Self {
             kek_id: kek_id.to_string(),
-            kek,
+            kek: zeroize::Zeroizing::new(kek),
         }
     }
 

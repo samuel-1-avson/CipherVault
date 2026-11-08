@@ -309,8 +309,12 @@ mod imp {
         }
 
         let sid_len = GetLengthSid(sid) as usize;
-        let acl_len =
-            std::mem::size_of::<Acl>() + std::mem::size_of::<AccessAllowedAce>() - 4 + sid_len;
+        // Checked: a corrupt/hostile token must not overflow the ACL size.
+        let acl_len = std::mem::size_of::<Acl>()
+            .checked_add(std::mem::size_of::<AccessAllowedAce>())
+            .and_then(|n| n.checked_sub(4))
+            .and_then(|n| n.checked_add(sid_len))
+            .ok_or_else(|| io::Error::other("ACL size overflow"))?;
         let mut acl_buf = vec![0u64; acl_len.div_ceil(8)];
         let acl = acl_buf.as_mut_ptr() as Pacl;
         if InitializeAcl(acl, acl_len as Dword, ACL_REVISION) == 0 {

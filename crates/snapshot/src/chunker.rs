@@ -33,8 +33,12 @@ pub struct ChunkedFile {
 }
 
 /// Legacy v1 chunk capture retained for API and historical wire compatibility.
-/// Whole-file bindings reuse unchanged files. Explicitly opted-in v2 captures
-/// reuse unchanged encrypted chunks across file edits; default captures remain v1.
+/// Whole-file bindings reuse unchanged files. V2 is the default capture
+/// protocol (keyed identifiers, chunk reuse across edits); v1 is kept only
+/// for the explicit `CIPHERVAULT_CHUNK_V2_WRITE=0` opt-out and for reading
+/// historical objects. WARNING: v1 file-version IDs are publicly derivable
+/// from candidate plaintext (candidate-file confirmation); do not write new
+/// v1 objects for sensitive data.
 pub fn chunk_and_encrypt_file(
     vault_id: &[u8; 32],
     key_epoch: u64,

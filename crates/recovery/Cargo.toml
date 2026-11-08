@@ -10,6 +10,7 @@ license.workspace = true
 ciphervault-crypto = { path = "../crypto" }
 ciphervault-format = { path = "../format" }
 crc32fast.workspace = true
+sha2.workspace = true
 hex.workspace = true
 serde.workspace = true
 thiserror.workspace = true

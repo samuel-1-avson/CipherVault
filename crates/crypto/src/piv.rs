@@ -9,36 +9,42 @@
 use crate::error::CryptoError;
 use crate::hsm::{HardwareSecurityModule, HsmSlot, HsmSlotInfo};
 use std::sync::{Arc, Mutex, RwLock};
-use zeroize::Zeroize;
 
-static GLOBAL_PIN_CACHE: RwLock<Option<Vec<u8>>> = RwLock::new(None);
+/// How long a verified PIN stays cached before it must be re-entered.
+const PIN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+static GLOBAL_PIN_CACHE: RwLock<Option<(std::time::Instant, zeroize::Zeroizing<Vec<u8>>)>> =
+    RwLock::new(None);
 
 /// Sets the process-level cached PIN for hardware token operations.
+/// Stored zeroizing, expires after [`PIN_CACHE_TTL`].
 pub fn set_cached_pin(pin: &[u8]) {
     if let Ok(mut guard) = GLOBAL_PIN_CACHE.write() {
-        if let Some(ref mut existing) = *guard {
-            existing.zeroize();
-        }
-        *guard = Some(pin.to_vec());
+        *guard = Some((
+            std::time::Instant::now(),
+            zeroize::Zeroizing::new(pin.to_vec()),
+        ));
     }
 }
 
-/// Retrieves the process-level cached PIN, or resolves from environment variables
-/// (CIPHERVAULT_PIN, CIPHERVAULT_TOKEN_PIN, YUBIKEY_PIN) if in-memory cache is empty.
+/// Retrieves the process-level cached PIN (if unexpired), or resolves
+/// from environment variables (CIPHERVAULT_PIN, CIPHERVAULT_TOKEN_PIN,
+/// YUBIKEY_PIN) for headless automation. Env-supplied PINs are returned
+/// for immediate use but are NOT promoted into the long-lived cache.
 pub fn get_cached_pin() -> Option<Vec<u8>> {
-    if let Ok(guard) = GLOBAL_PIN_CACHE.read() {
-        if let Some(ref p) = *guard {
-            return Some(p.clone());
+    if let Ok(mut guard) = GLOBAL_PIN_CACHE.write() {
+        let expired = matches!(&*guard, Some((at, _)) if at.elapsed() > PIN_CACHE_TTL);
+        if expired {
+            *guard = None; // Zeroizing drop wipes the bytes.
+        } else if let Some((_, p)) = &*guard {
+            return Some(p.as_slice().to_vec());
         }
     }
-    // Check environment variables for headless automation
     for var in &["CIPHERVAULT_PIN", "CIPHERVAULT_TOKEN_PIN", "YUBIKEY_PIN"] {
         if let Ok(val) = std::env::var(var) {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
-                let pin_bytes = trimmed.as_bytes().to_vec();
-                set_cached_pin(&pin_bytes);
-                return Some(pin_bytes);
+                return Some(trimmed.as_bytes().to_vec());
             }
         }
     }
@@ -48,9 +54,6 @@ pub fn get_cached_pin() -> Option<Vec<u8>> {
 /// Clears and securely zeroizes the process-level cached PIN.
 pub fn clear_cached_pin() {
     if let Ok(mut guard) = GLOBAL_PIN_CACHE.write() {
-        if let Some(ref mut existing) = *guard {
-            existing.zeroize();
-        }
         *guard = None;
     }
 }
@@ -74,7 +77,9 @@ pub fn probe_all() -> Result<Vec<PcscHardwareToken>, CryptoError> {
                         transport: Arc::new(Mutex::new(Some(transport))),
                         cached_9c_pk: Arc::new(Mutex::new(None)),
                         cached_9d_pk: Arc::new(Mutex::new(None)),
-                        cached_pin: Arc::new(Mutex::new(get_cached_pin())),
+                        cached_pin: Arc::new(Mutex::new(
+                            get_cached_pin().map(zeroize::Zeroizing::new),
+                        )),
                     });
                 }
             }
@@ -500,6 +505,13 @@ impl NativePcscTransport {
             )));
         }
 
+        // Never trust the driver's reported length beyond our buffer.
+        if (recv_len as usize) > recv_buf.len() {
+            return Err(CryptoError::HsmError(format!(
+                "SCardTransmit reported {recv_len} bytes into a {}-byte buffer",
+                recv_buf.len()
+            )));
+        }
         recv_buf.truncate(recv_len as usize);
         ResponseApdu::parse(&recv_buf)
     }
@@ -586,7 +598,7 @@ pub struct PcscHardwareToken {
     transport: Arc<Mutex<Option<NativePcscTransport>>>,
     cached_9c_pk: Arc<Mutex<Option<[u8; 32]>>>,
     cached_9d_pk: Arc<Mutex<Option<[u8; 32]>>>,
-    cached_pin: Arc<Mutex<Option<Vec<u8>>>>,
+    cached_pin: Arc<Mutex<Option<zeroize::Zeroizing<Vec<u8>>>>>,
 }
 
 impl Clone for PcscHardwareToken {
@@ -635,7 +647,7 @@ impl PcscHardwareToken {
             transport: Arc::new(Mutex::new(Some(transport))),
             cached_9c_pk: Arc::new(Mutex::new(None)),
             cached_9d_pk: Arc::new(Mutex::new(None)),
-            cached_pin: Arc::new(Mutex::new(get_cached_pin())),
+            cached_pin: Arc::new(Mutex::new(get_cached_pin().map(zeroize::Zeroizing::new))),
         })
     }
 
@@ -646,10 +658,7 @@ impl PcscHardwareToken {
     /// Updates the cached PIN for this token and the ambient process session.
     pub fn set_pin(&self, pin: &[u8]) {
         if let Ok(mut guard) = self.cached_pin.lock() {
-            if let Some(ref mut existing) = *guard {
-                existing.zeroize();
-            }
-            *guard = Some(pin.to_vec());
+            *guard = Some(zeroize::Zeroizing::new(pin.to_vec()));
         }
         set_cached_pin(pin);
     }
@@ -658,7 +667,7 @@ impl PcscHardwareToken {
     pub fn get_pin(&self) -> Option<Vec<u8>> {
         if let Ok(guard) = self.cached_pin.lock() {
             if let Some(ref p) = *guard {
-                return Some(p.clone());
+                return Some(p.as_slice().to_vec());
             }
         }
         get_cached_pin()
@@ -666,7 +675,10 @@ impl PcscHardwareToken {
 
     /// Verifies the card PIN (standard default '123456' for testing or user-provided).
     pub fn verify_pin(&self, pin: &[u8]) -> Result<(), CryptoError> {
-        let guard = self.transport.lock().expect("piv transport mutex poisoned");
+        let guard = self
+            .transport
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token transport is disconnected".into())
         })?;
@@ -676,10 +688,7 @@ impl PcscHardwareToken {
         if resp.is_success() {
             // Securely cache PIN upon verified success
             if let Ok(mut pin_guard) = self.cached_pin.lock() {
-                if let Some(ref mut existing) = *pin_guard {
-                    existing.zeroize();
-                }
-                *pin_guard = Some(pin.to_vec());
+                *pin_guard = Some(zeroize::Zeroizing::new(pin.to_vec()));
             }
             set_cached_pin(pin);
             Ok(())
@@ -707,7 +716,10 @@ impl PcscHardwareToken {
 
     /// Reads slot metadata and public key bytes via YubiKey metadata command.
     fn query_slot_metadata(&self, slot_byte: u8) -> Result<(u8, Vec<u8>, u8), CryptoError> {
-        let guard = self.transport.lock().expect("piv transport mutex poisoned");
+        let guard = self
+            .transport
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token transport is disconnected".into())
         })?;
@@ -805,7 +817,10 @@ impl PcscHardwareToken {
 
 impl HardwareSecurityModule for PcscHardwareToken {
     fn is_connected(&self) -> bool {
-        let guard = self.transport.lock().expect("piv transport mutex poisoned");
+        let guard = self
+            .transport
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.is_some()
     }
 
@@ -919,7 +934,10 @@ impl HardwareSecurityModule for PcscHardwareToken {
         payload.push(b':');
         payload.extend_from_slice(message);
 
-        let guard = self.transport.lock().expect("piv transport mutex poisoned");
+        let guard = self
+            .transport
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token is not connected".into())
         })?;
@@ -971,7 +989,10 @@ impl HardwareSecurityModule for PcscHardwareToken {
             )));
         }
 
-        let guard = self.transport.lock().expect("piv transport mutex poisoned");
+        let guard = self
+            .transport
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let transport = guard.as_ref().ok_or_else(|| {
             CryptoError::HsmError("Physical hardware token is not connected".into())
         })?;

@@ -15,6 +15,12 @@ pub struct OfflineRecoveryKit {
     pub vault_id_hex: String,
     pub recovery_secret_hex: String,
     pub checksum: u32,
+    /// SHA-256 (truncated, hex) over the secret + descriptors, added in
+    /// v1.0.31. `None` on kits written by older versions; verification
+    /// falls back to the legacy CRC32 `checksum` for those, and always
+    /// re-derives the public descriptors from the secret itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum_v2: Option<String>,
     pub recovery_signing_pk_hex: String,
     pub recovery_encryption_pk_hex: String,
     pub recovery_locator_hex: String,
@@ -46,6 +52,20 @@ impl std::fmt::Debug for OfflineRecoveryKit {
     }
 }
 
+/// Stronger kit integrity check (v1.0.31+): first 16 bytes of
+/// SHA-256("CipherVault-KitChecksum-v2" || secret || vault_id_hex),
+/// hex-encoded. CRC32 stays for backward compatibility with old kits;
+/// descriptor re-derivation in `validate_and_extract_secret` remains
+/// the authoritative check for both generations.
+fn kit_checksum_v2(secret_bytes: &[u8; 32], vault_id_hex: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"CipherVault-KitChecksum-v2");
+    hasher.update(secret_bytes);
+    hasher.update(vault_id_hex.as_bytes());
+    hex::encode(&hasher.finalize()[..16])
+}
+
 impl OfflineRecoveryKit {
     /// Creates a new offline recovery kit from a master recovery secret.
     pub fn create(
@@ -60,12 +80,14 @@ impl OfflineRecoveryKit {
         let mut hasher = Hasher::new();
         hasher.update(secret.as_bytes());
         let checksum = hasher.finalize();
+        let checksum_v2 = Some(kit_checksum_v2(secret.as_bytes(), &hex::encode(vault_id)));
 
         Ok(Self {
             version: 1,
             vault_id_hex: hex::encode(vault_id),
             recovery_secret_hex: hex::encode(secret.as_bytes()),
             checksum,
+            checksum_v2,
             recovery_signing_pk_hex: hex::encode(signing_key.verifying_key().as_bytes()),
             recovery_encryption_pk_hex: hex::encode(enc_pk.as_bytes()),
             recovery_locator_hex: hex::encode(locator),
@@ -92,6 +114,18 @@ impl OfflineRecoveryKit {
                 expected: self.checksum,
                 calculated,
             });
+        }
+        if let Some(expected_v2) = &self.checksum_v2 {
+            let mut arr2 = [0u8; 32];
+            arr2.copy_from_slice(&raw_bytes);
+            let actual_v2 = kit_checksum_v2(&arr2, &self.vault_id_hex);
+            arr2.zeroize();
+            if !actual_v2.eq_ignore_ascii_case(expected_v2) {
+                raw_bytes.zeroize();
+                return Err(RecoveryError::InvalidKitFormat(
+                    "Recovery kit v2 checksum mismatch".into(),
+                ));
+            }
         }
 
         let mut arr = [0u8; 32];
@@ -298,6 +332,7 @@ Configured Operators:
             vault_id_hex,
             recovery_secret_hex,
             checksum,
+            checksum_v2: None,
             recovery_signing_pk_hex,
             recovery_encryption_pk_hex,
             recovery_locator_hex,
@@ -479,7 +514,8 @@ impl ThresholdRecoveryKit {
             shares.push(kit.validate_and_extract_share()?);
         }
 
-        let mut secret_bytes = ciphervault_crypto::combine_shares(&shares)?;
+        let mut secret_bytes =
+            ciphervault_crypto::combine_shares_with_threshold(&shares, kits[0].threshold)?;
         let secret = RecoverySecret::from_bytes(secret_bytes);
         secret_bytes.zeroize();
 

@@ -180,7 +180,20 @@ pub struct ChunkWireObject {
 
 impl ChunkWireObject {
     /// Computes the AAD that must bind this chunk.
+    ///
+    /// The two variable-length fields (`vault_id`, `file_version_id`)
+    /// are concatenated without length prefixes, which is unambiguous
+    /// only because both are exactly 32 bytes in every valid object.
+    /// Decryption enforces that (`vault_id` equality with the 32-byte
+    /// vault id and `file_version_id.len() == 32`) before calling this;
+    /// the debug assertions pin the invariant for producers.
     pub fn compute_aad(&self) -> Vec<u8> {
+        debug_assert_eq!(self.vault_id.len(), 32, "chunk vault_id must be 32 bytes");
+        debug_assert_eq!(
+            self.file_version_id.len(),
+            32,
+            "chunk file_version_id must be 32 bytes"
+        );
         let mut aad = Vec::new();
         aad.extend_from_slice(&self.version.to_le_bytes());
         aad.extend_from_slice(&self.vault_id);

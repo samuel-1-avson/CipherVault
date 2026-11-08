@@ -219,6 +219,9 @@ pub fn create_snapshot_with_signer_and_write_version(
 
         let chunked = match write_version {
             ChunkWriteVersion::LegacyV1 => {
+                eprintln!(
+                    "WARNING: writing legacy v1 chunks (CIPHERVAULT_CHUNK_V2_WRITE=0).                      V1 file-version IDs allow public candidate-file confirmation;                      unset the variable to return to protocol v2."
+                );
                 chunk_and_encrypt_file(vault_id, epoch, epoch_key, &contents)?
             }
             ChunkWriteVersion::V2 => {

@@ -117,6 +117,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_kdf_known_answer() {
+        // Pins CipherVault-KDF-v1 outputs forever: existing recovery
+        // kits, manifest keys and v1 chunks derive with this function,
+        // so any change here silently bricks them. Values computed
+        // independently (hashlib.blake2b, digest_size=64).
+        let master = [0x42u8; 32];
+        assert_eq!(
+            hex::encode(derive_subkey(&master, 1, CTX_RECOVERY_SIGNING).unwrap()),
+            "6758df54f436b19d1550b2db1a847253bd4dff9fb16ae5ae058cc2997c627c68"
+        );
+        assert_eq!(
+            hex::encode(derive_subkey(&master, 7, CTX_MANIFEST_KEY).unwrap()),
+            "fa71266bc3c7cb1f4d6ef9c7d709f4f8be390dbf4523bf83d7e2b54b2816307e"
+        );
+    }
+
+    #[test]
     fn test_kdf_determinism() {
         let master = [0x42u8; 32];
         let sub1 = derive_subkey(&master, 1, CTX_RECOVERY_SIGNING).unwrap();

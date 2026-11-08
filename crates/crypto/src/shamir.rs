@@ -177,7 +177,37 @@ pub fn split_secret(
     Ok(result)
 }
 
+/// Reconstructs the secret from exactly `threshold` or more distinct
+/// shares, verifying the share count against the expected threshold.
+/// Prefer this over [`combine_shares`]: with too few shares Shamir
+/// reconstruction still returns 32 bytes — wrong ones, with no error —
+/// so callers that know the threshold must check the count themselves.
+/// Errors when fewer than `threshold` distinct shares are supplied.
+pub fn combine_shares_with_threshold(
+    shares: &[ShamirShare],
+    threshold: u8,
+) -> Result<[u8; 32], CryptoError> {
+    if threshold < 2 {
+        return Err(CryptoError::ThresholdError(
+            "Threshold must be at least 2".into(),
+        ));
+    }
+    if (shares.len() as u32) < u32::from(threshold) {
+        return Err(CryptoError::ThresholdError(format!(
+            "Insufficient shares: have {}, need at least {threshold}",
+            shares.len()
+        )));
+    }
+    combine_shares(shares)
+}
+
 /// Reconstructs the 32-byte secret from M or more distinct Shamir shares.
+///
+/// NOTE: below the original split threshold this returns a *wrong*
+/// secret with `Ok` — Shamir has no built-in authentication. Callers
+/// that know the threshold should use
+/// [`combine_shares_with_threshold`]; other callers MUST verify the
+/// result against a commitment/descriptor before trusting it.
 pub fn combine_shares(shares: &[ShamirShare]) -> Result<[u8; 32], CryptoError> {
     if shares.is_empty() {
         return Err(CryptoError::ThresholdError(
@@ -274,6 +304,19 @@ mod tests {
 
         let recovered_23 = combine_shares(&[shares[1].clone(), shares[2].clone()]).unwrap();
         assert_eq!(recovered_23, original_secret);
+    }
+
+    #[test]
+    fn threshold_api_rejects_insufficient_shares() {
+        let secret = [7u8; 32];
+        let shares = split_secret(&secret, 3, 5).unwrap();
+        assert!(combine_shares_with_threshold(&shares[..2], 3).is_err());
+        assert!(combine_shares_with_threshold(&shares[..3], 3).is_ok());
+        assert_eq!(
+            combine_shares_with_threshold(&shares[..4], 3).unwrap(),
+            secret
+        );
+        assert!(combine_shares_with_threshold(&shares[..3], 1).is_err());
     }
 
     #[test]

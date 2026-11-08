@@ -271,12 +271,42 @@ pub mod portable_keystore {
             });
         }
         let path = get_default_keyfile_path()?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"CipherVault-MasterKey-Salt-v3");
-        hasher.update(path.to_string_lossy().as_bytes());
-        let digest = hasher.finalize();
+        // New keystores (v1.0.31+): a random 16-byte salt persisted
+        // beside the keystore (owner-only where the platform supports
+        // it). Existing keystores keep the legacy path-derived salt so
+        // their passphrases keep working (dual-read by file presence).
+        let salt_path = path.with_extension("salt");
+        if let Ok(raw) = std::fs::read_to_string(&salt_path) {
+            let bytes = hex::decode(raw.trim()).map_err(|_| {
+                LocalStoreError::KeyProtectionError("keystore salt file is not hex".into())
+            })?;
+            return bytes.try_into().map_err(|_| {
+                LocalStoreError::KeyProtectionError("keystore salt must be 16 bytes".into())
+            });
+        }
+        if path.exists() {
+            // Legacy keystore: keep deriving from the path (compat).
+            let mut hasher = Sha256::new();
+            hasher.update(b"CipherVault-MasterKey-Salt-v3");
+            hasher.update(path.to_string_lossy().as_bytes());
+            let digest = hasher.finalize();
+            let mut salt = [0u8; 16];
+            salt.copy_from_slice(&digest[..16]);
+            return Ok(salt);
+        }
+        // Brand-new keystore: generate + persist a random salt.
         let mut salt = [0u8; 16];
-        salt.copy_from_slice(&digest[..16]);
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+        if let Some(parent) = salt_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&salt_path, hex::encode(salt)).map_err(|e| {
+            LocalStoreError::KeyProtectionError(format!(
+                "could not persist keystore salt {}: {e}",
+                salt_path.display()
+            ))
+        })?;
+        let _ = ciphervault_file_lock::lock_secret_file(&salt_path);
         Ok(salt)
     }
 
