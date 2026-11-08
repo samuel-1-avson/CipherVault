@@ -152,6 +152,13 @@ struct Args {
     )]
     user_quota_bytes: u64,
 
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Largest single voucher grant honored, in bytes; 0 = unset (unbounded up to u64::MAX). Required with --require-write-vouchers."
+    )]
+    max_voucher_quota_bytes: u64,
+
     #[command(subcommand)]
     command: Option<OperatorCommand>,
 }
@@ -252,6 +259,15 @@ fn validate_security_configuration() -> io::Result<()> {
             "strict operator auth requires CIPHERVAULT_OPERATOR_SERVICE_TOKEN",
         ));
     }
+    if let Ok(token) = std::env::var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") {
+        if !token.trim().is_empty() && token.trim().len() < 32 {
+            // Warn-only: existing deployments may run short tokens; do not fail closed here.
+            eprintln!(
+                "WARNING: CIPHERVAULT_OPERATOR_SERVICE_TOKEN is shorter than 32 characters; \
+                 use `openssl rand -hex 32` and rotate the token"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -307,11 +323,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.data_dir.clone(),
         signing_key,
     ));
-    if args.require_write_vouchers {
-        state.set_vouchers_required(true);
-        println!("  Write vouchers: required (D4)");
+    if args.enable_p2p
+        && std::env::var("CIPHERVAULT_TRUSTED_PEER_KEYS")
+            .ok()
+            .is_none_or(|v| v.trim().is_empty())
+    {
+        // Repair trust rides on routing-table membership; without a pinned
+        // peer-key allowlist a service-token compromise (or non-strict bypass)
+        // can redirect repair pushes. Warn-only: single-node and fresh fleets
+        // legitimately start unpinned.
+        eprintln!(
+            "WARNING: P2P enabled without CIPHERVAULT_TRUSTED_PEER_KEYS; \
+             set it to pin fleet peer keys before enabling repair on an open network"
+        );
     }
-    if args.user_quota_bytes > 0 {
+    if args.require_write_vouchers {
+        // Single-profile enforcement: the flag alone is theater (unlimited mints,
+        // unbounded single grants). Fail closed unless the full profile is set.
+        if args.max_voucher_quota_bytes == 0 || args.user_quota_bytes == 0 {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--require-write-vouchers needs the full quota profile: \
+                 set both --max-voucher-quota-bytes and --user-quota-bytes (nonzero)",
+            )));
+        }
+        state.set_vouchers_required(true);
+        state.set_voucher_max_quota(args.max_voucher_quota_bytes);
+        state.set_user_quota_bytes(args.user_quota_bytes);
+        println!(
+            "  Write vouchers: required (D4) — max single grant {} bytes, user lifetime cap {} bytes",
+            args.max_voucher_quota_bytes, args.user_quota_bytes
+        );
+    } else if args.user_quota_bytes > 0 {
         state.set_user_quota_bytes(args.user_quota_bytes);
         println!(
             "  User quota: {} bytes lifetime per holder",

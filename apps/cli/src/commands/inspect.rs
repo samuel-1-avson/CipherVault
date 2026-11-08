@@ -425,8 +425,10 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
             let full_path = crate::util::get_workspace_root()?.join(&rel_path);
             let exists = full_path.exists();
             let state = if exists {
-                let len = fs::metadata(&full_path)?.len();
-                format!("{} bytes", len).green()
+                match fs::metadata(&full_path) {
+                    Ok(meta) => format!("{} bytes", meta.len()).green(),
+                    Err(error) => format!("unreadable ({error})").red(),
+                }
             } else {
                 "missing on disk".red()
             };
@@ -687,6 +689,35 @@ pub(crate) async fn cmd_doctor(json: bool) -> Result<()> {
         },
         None => checks.push(DoctorCheck {
             name: "anchors",
+            ok: false,
+            detail: "skipped (no vault)".to_string(),
+        }),
+    }
+
+    // 6. Recovery coverage: a recorded passphrase backup or a tested kit.
+    // Lose the paper kit with neither and the vault is unrecoverable (U-M).
+    match store.as_ref() {
+        Some(store) => match store.list_activity(200) {
+            Ok(entries) => {
+                let backed_up = entries.iter().any(|e| e.event_type == "KEYBACKUP_OK");
+                checks.push(DoctorCheck {
+                    name: "recovery",
+                    ok: backed_up,
+                    detail: if backed_up {
+                        "passphrase key-backup recorded (see activity log for locator)".to_string()
+                    } else {
+                        "no passphrase key-backup on record — run 'recovery key-backup --kit <file>' or drill with 'recovery test --kit <file>'".to_string()
+                    },
+                });
+            }
+            Err(error) => checks.push(DoctorCheck {
+                name: "recovery",
+                ok: false,
+                detail: format!("activity read failed: {error}"),
+            }),
+        },
+        None => checks.push(DoctorCheck {
+            name: "recovery",
             ok: false,
             detail: "skipped (no vault)".to_string(),
         }),

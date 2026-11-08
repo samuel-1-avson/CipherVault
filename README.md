@@ -539,15 +539,16 @@ Enforce cryptographic approval receipts before restoring secrets onto untrusted 
 
 ```bash
 # Initiates a 600-second authorization challenge on the operator cluster
-ciphervault recover --kit emergency_recovery_kit.txt --to ./restored_secrets/ --require-approval
+# (--approver-key pins whose receipts are accepted; without it recovery bails)
+cv recover --kit emergency_recovery_kit.txt --to ./restored_secrets/ --require-approval --approver-key <TEAM_LEAD_PUBKEY_HEX>
 ```
 
 An authorized team lead signs and approves the challenge from their enrolled device:
 
 ```bash
 # Team lead inspects and approves the challenge
-ciphervault approve list
-ciphervault approve sign <CHALLENGE_ID>
+cv approve list
+cv approve sign <CHALLENGE_ID>
 ```
 
 ---
@@ -556,45 +557,55 @@ ciphervault approve sign <CHALLENGE_ID>
 
 | Command | Key Arguments & Flags | Description |
 |---|---|---|
-| `ciphervault init` | `[-f/--force] [-o/--operators <URL...>] [--save-kit <PATH>] [--hardware-token] [-i/--import-gitignore]` | Initializes a new vault, derives key hierarchy, prints paper recovery kit, and scans `.gitignore` for secrets. |
-| `ciphervault track` | `[PATH...] [-i/--from-gitignore] [--no-gitignore]` | Registers confidential files for snapshot tracking; automatically appends to `.gitignore` to prevent leaks. |
+| `ciphervault init` | `[-f/--force] [-o/--operators <URL...>] [--save-kit <PATH>] [--hardware-token] [-i/--import-gitignore] [--reader <NAME>] [--pin <PIN>]` | Initializes a new vault, derives key hierarchy, prints paper recovery kit, and scans `.gitignore` for secrets. |
+| `ciphervault track` | `[PATH...] [--from-gitignore] [--no-gitignore] [--allow-planned]` | Registers confidential files for snapshot tracking; automatically appends to `.gitignore` to prevent leaks. Missing paths are an error unless `--allow-planned`. |
 | `ciphervault untrack` | `<PATH...>` | Stops tracking specified confidential files. |
-| `ciphervault status` | `[--json]` | Displays active vault metadata, tracked files, and active epoch. |
-| `ciphervault push` | `[-m/--message <MSG>] [--touch] [--local] [--anchor] [--concurrency <N>] [--replicas <N>]` | Slices files with FastCDC, encrypts, and replicates across operators with mandatory PoS readback verification; hardware touch optional. |
-| `ciphervault pull` | `[--dry-run] [--force]` | Pulls and applies latest verified snapshots from storage operators. |
+| `ciphervault status` | `[--json] [--overview]` | Displays active vault metadata, tracked files, and active epoch. `--overview` adds snapshots, files, leases, anchors, and recent activity. |
+| `ciphervault push` | `[-m/--message <MSG>] [--touch] [--local] [--anchor] [--concurrency <N>] [--replicas <N>] [--reader <NAME>] [--pin <PIN>]` | Slices files with FastCDC, encrypts, and replicates across operators with mandatory PoS readback verification; hardware touch optional. |
+| `ciphervault pull` | `[-d/--dry-run] [-f/--force]` | Pulls and applies latest verified snapshots from storage operators. `--dry-run` checks without modifying local files. |
 | `ciphervault history` | *None* | Displays the snapshot commit DAG history. |
-| `ciphervault run` | `[-s/--snapshot <HEX>] [-e/--env-file <FILE>] [--no-inherit] [--dry-run] [--set <K=V...>] -- <CMD...>` | Injects decrypted secrets directly into child process environment in volatile RAM (zero disk exposure). |
+| `ciphervault run` | `[-s/--snapshot <HEX>] [-e/--env-file <FILE>] [--project <SLUG>] [--env <ENV>] [--revision <64HEX>] [--endpoint <URL>] [--token <TOK>] [--legacy] [--no-inherit] [--dry-run] [-q/--quiet] [--json] [--set <K=V...>] -- <CMD...>` | Injects decrypted secrets directly into child process environment in volatile RAM (zero disk exposure). Scoped mode (`--project/--env`, optional `--revision`) fetches from the account service; `--legacy` keeps snapshot mode explicitly. |
 | `ciphervault diff` | `[<SNAPSHOT_A>] [<SNAPSHOT_B>] [-f/--file <PATH>] [--reveal] [--json]` | Compares confidential file changes with shoulder-surfing masking enabled by default. |
-| `ciphervault restore` | `[-s/--snapshot <HEX>] [--to <DIR>] [--dry-run] [--hardware-token]` | Verifies a historical snapshot, previews without writes or publishes a journaled merge restore. |
-| `ciphervault recover` | `[--kit <PATH>] [--shares <PATH...>] --to <DIR> [--require-approval]` | Reconstructs confidential files on a clean machine using a paper kit or $M$-of-$N$ threshold guardian shares. |
-| `ciphervault recovery split` | `-t/--threshold <M> -s/--shares <N> [--kit <PATH>] [-o/--out-dir <DIR>]` | Splits master recovery secret $R$ into printable Shamir paper guardian sheets. |
-| `ciphervault recovery export` | *None* | Displays public descriptors (signing PK, encryption PK, locator) without exposing secret $R$. |
-| `ciphervault recovery test` | `[--kit <PATH>] --to <DIR>` | Non-destructive dry-run verifying recovery set availability across operators. |
+| `ciphervault restore` | `[-s/--snapshot <HEX>] [-t/--to <DIR>] [--dry-run] [--force] [--hardware-token] [--reader <NAME>] [--pin <PIN>]` | Verifies a historical snapshot, previews without writes or publishes a journaled merge restore. Restoring into the workspace refuses on dirty files unless `--force`. |
+| `ciphervault recover` | `[-k/--kit <PATH>] [--shares <PATH...>] -t/--to <DIR> [--require-approval] [--approver-key <HEX...>] [--force]` | Reconstructs confidential files on a clean machine using a paper kit or $M$-of-$N$ threshold guardian shares. `--approver-key` (repeatable) pins whose receipts are accepted with `--require-approval`. |
+| `ciphervault recovery split` | `-t/--threshold <M> -s/--shares <N> [--kit <PATH>] [-o/--out-dir <DIR>] [--stdout]` | Splits master recovery secret $R$ into printable Shamir paper guardian sheets. Requires `--out-dir` (or explicit `--stdout`); never retypes the secret by hand. |
+| `ciphervault recovery show-descriptors` | *(alias: `export`)* | Displays public descriptors (signing PK, encryption PK, locator) without exposing secret $R$. This is NOT the secret kit — plus a lost-kit triage checklist. |
+| `ciphervault recovery test` | `[-k/--kit <PATH>] -t/--to <DIR>` | Clean-restore drill into an isolated folder. |
+| `ciphervault recovery key-backup` | `[-k/--kit <PATH>] [-s/--share <PATH...>] [--replicas <N>]` | Seals the kit (or threshold shares) with a passphrase and stores it on operators. |
+| `ciphervault recovery key-restore` | `-l/--locator <64HEX> -o/--output <PATH> [--operator <URL...>]` | Fetches a passphrase-sealed kit backup (output must not exist). |
 | `ciphervault prune` | `[--keep-last <N>] [--keep-days <D>] [--dry-run]` | Cleans up historical snapshots and performs chunk garbage collection per retention policy. |
 | `ciphervault rekey` | `[--check] [--warn-days <D>]` | Rotates the vault epoch key and re-encrypts envelopes. |
-| `ciphervault doctor` | `[--json]` | Runs comprehensive local diagnostics across vault state, OS keyring, operators, and quorum health. |
+| `ciphervault doctor` | `[--json]` | Runs comprehensive local diagnostics across vault state, OS keyring, operators, quorum, anchors, and recovery coverage. |
 | `ciphervault tui` | `[--poll-ms <MS>]` | Launches interactive full-screen Terminal User Interface dashboard. |
-| `ciphervault ui` | `[--host <ADDR>] [--port <PORT>] [--no-browser] [--local]` | Launches embedded Web Dashboard and Visual Secrets Explorer. |
+| `ciphervault ui` | `[--host <ADDR>] [-p/--port <PORT>] [--no-browser] [--local] [--serve] [--url <URL>]` | Launches embedded Web Dashboard and Visual Secrets Explorer. `--local` serves the offline inspector; otherwise opens the production dashboard. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
-| `ciphervault anchor` | `[--head <CID>] [--daemon] [--rotate-to <KEYS>]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. `--rotate-to` (comma-separated member pubkeys) proposes a validator-set rotation taking effect next height. |
+| `ciphervault anchor` | `[--head <CID>] [--daemon] [--interval <SECS>] [--rotate-to <KEYS>]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. `--rotate-to` (comma-separated member pubkeys) proposes a validator-set rotation taking effect next height. |
 | `ciphervault verify-anchor` | `[--head <CID>]` | Verifies cryptographic state commitment, Merkle audit path, and operator quorum signatures locally in <1ms. |
-| `ciphervault genesis` | `propose\|sign\|assemble` | Multi-party genesis ceremony: deterministic unsigned proposal, per-member device-key signatures, founder combines quorum into a chain dir. |
+| `ciphervault genesis` | `propose / sign / assemble` *(v1.0.29+; not in 1.0.28 binaries)* | Multi-party genesis ceremony: deterministic unsigned proposal, per-member device-key signatures, founder combines quorum into a chain dir. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
-| `ciphervault audit` | `[-o/--operators <URL...>] [--recovery-drill] [--operator-pin <URL=64hex>]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
+| `ciphervault audit` | `[-o/--operators <URL...>] [--export-inventory <PATH>] [--operator-pin <ENDPOINT=64HEX...>] [--recovery-drill]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
 | `ciphervault repair` | `[-o/--operators <URL...>] [--replicas <N>]` | Detects degraded replicas and self-heals by streaming missing chunks from surviving operators. |
-| `ciphervault peers` | `[--discover] [--mesh]` | Queries operators to inspect active nodes, dynamically discover peers via P2P gossip, or mesh routing tables via announce. |
-| `ciphervault lease create/renew` | `<CLOSURE|LEASE_ID> [--operator <URL>]` | Commits or renews a storage lease on one operator (device session auth). |
-| `ciphervault voucher issue` | `<HOLDER_PK> <QUOTA> [--operator <URL>]` | Issues a write voucher from an operator (service token admin). |
-| `ciphervault invite pubkey/issue/join/refresh` | `<NODE_PK> --fleet-key-file <PATH> [--ttl <S>] [--keys-file <PATH>] [--out <PATH>] [--node <URL>] [--via <URL...>]` | Fleet-signed join tickets: print the fleet pin, issue a ticket offline (single key or batch file, `--out` writes UTF-8 directly), present it to join a fleet (probation), or refresh liveness toward graduation. |
-| `ciphervault node setup/start/stop/status/backup/standing/p2p-info` | `[--data-dir <DIR>]` | Run a storage node: guided first-run wizard, lifecycle, plain-language health and fleet-standing reports, identity backup, and P2P peering info. |
-| `ciphervault approve list/sign/status`| `<CHALLENGE_ID>` | Out-of-band cryptographic push authorization for high-risk operations. |
-| `ciphervault token status/probe/slots`| `[--reader <NAME>]` | Inspects attached PC/SC smartcard readers, PIV slots, and touch policies. |
-| `ciphervault hook install/check` | *None* | Installs or checks Git pre-commit hook to prevent secret leaks. |
-| `ciphervault auth init/login/logout` | `[--name <NAME>]` | Manages optional local account and device identity. |
-| `ciphervault device list/revoke` | `<DEVICE_ID>` | Lists or revokes enrolled devices in the local account registry. |
-| `ciphervault vault link/unlink` | `[--alias <NAME>]` | Binds or removes the local vault from the account registry. |
-| `ciphervault completions` | `<SHELL>` | Emits native shell autocompletion script (bash, zsh, fish, powershell, elvish). |
-| `ciphervault update` | `[--check]` | Checks for and installs latest signed GitHub release. |
+| `ciphervault peers` | `[-d/--discover] [--mesh]` | Queries operators to inspect active nodes, dynamically discover peers via P2P gossip, or mesh routing tables via announce. |
+| `ciphervault lease create` | `<CLOSURE_64HEX> <BYTES> [--term-days <N>] [-o/--operator <URL>]` | Commits a storage lease for a closure digest on one operator (device session auth). |
+| `ciphervault lease renew` | `<LEASE_ID> <DAYS> <BYTES> [-o/--operator <URL>]` | Renews an existing lease for additional days. |
+| `ciphervault lease list` | `[--limit <N>] [-o/--operator <URL>]` | Lists this vault's leases on one operator (merges into the local receipt log). |
+| `ciphervault voucher issue` | `<HOLDER_PK_64HEX> <QUOTA> [--ttl <SECS>] [-o/--operator <URL>]` | Issues a write voucher from an operator (needs `CIPHERVAULT_OPERATOR_SERVICE_TOKEN`). |
+| `ciphervault invite` | `pubkey/issue/join/refresh/request/approve/combine/verify/requests/apply/decide` | Fleet-signed join tickets. Solo: `pubkey --fleet-key-file <SEED>`, `issue --fleet-key-file <SEED> <NODE_PK> [--keys-file <PATH>] [--ttl <S>] [--out <PATH>]`: `join --node <OWN_URL> <TICKET> [--via <URL...>]`, `refresh --node <OWN_URL> [--via <URL...>]`. Quorum: `request <NODE_PK> [--ttl <S>] [--out <PATH>]`, `approve --request <REQ> --fleet-key-file <SEED> [--out <PATH>]`, `combine --request <REQ> --approval <FILE...> [--out <PATH>]`, `verify --fleet-keys <K1,K2...> [--quorum-k <K>] <TICKET>`. Control-plane: `requests [--via <URL...>]`, `decide <REQ_ID> approved/rejected [--via <URL...>]`, `apply --node <OWN_URL> [--contact <STR>] [--via <URL...>]`. |
+| `ciphervault node` | `setup [--name <N>] [--data-dir <DIR>] [--port <P>] [--yes] [--join-ticket <PATH>] [--no-start] [--p2p [--p2p-bootstrap <ADDR>...]]` + `start/stop/status/standing/p2p-info [--data-dir <DIR>]`, `backup --to <DIR> [--data-dir <DIR>]` | Run a storage node: guided first-run wizard, lifecycle, plain-language health and fleet-standing reports, identity backup, and P2P peering info. |
+| `ciphervault approve` | `list` / `sign <CHALLENGE_ID> [-n/--name <ROLE>]` / `status <CHALLENGE_ID>` | Out-of-band cryptographic authorization for high-risk operations. |
+| `ciphervault token` | `status/probe/list/slots [-r/--reader <NAME>]` + `pin [-p/--pin <PIN>] [--test] [--clear]` + `select [-r/--reader <NAME>]` | Inspects attached PC/SC smartcard readers, PIV slots, and touch policies; tests/caches or clears the cached PIN; persists the default reader. |
+| `ciphervault hook install` | `[--force]` | Installs the Git pre-commit hook; refuses to clobber a foreign hook unless `--force` (backed up first). |
+| `ciphervault hook check` | `[-d/--deep] [-f/--fix] [--json]` | Checks staged confidential files, secret sprawl, and unbacked modifications; `--fix` appends discoveries to `.gitignore`. |
+| `ciphervault auth` | `init [--name <NAME>]` / `connect [--endpoint <URL>] [--label <STR>] [--vault-alias <STR>]` / `login` / `logout` / `status` | Manages the optional local account and device identity; `connect` registers with the hosted account service. |
+| `ciphervault device` | `list` / `revoke <DEVICE_ID_32BHEX>` / `export-key <OUT>` (refuses to overwrite) / `import-keys <BUNDLE>` | Lists or revokes enrolled devices; exports/imports a passphrase-sealed device + epoch-key bundle. |
+| `ciphervault vault` | `link [--alias <NAME>]` / `unlink` | Binds or removes the local vault from the account registry. |
+| `ciphervault repo` | `bind --project <SLUG> --provider <github/gitlab/bitbucket/self-hosted> --repo-id <ID> --name <ORG/REPO> --url <URL> [--installation-id <ID>]` / `list --project <SLUG>` / `unbind --project <SLUG> [--binding <ID> or --provider <P> --repo-id <ID>] [--revoke] [--reason <STR>]` | Binds VCS repositories to a project by immutable provider id (suspend default, revoke terminal). |
+| `ciphervault context` | `show` / `set [--project <SLUG>] [--env <ENV>]` / `clear` | Inspects and edits the local scope context file. |
+| `ciphervault project` | `list` / `show <SLUG>` / `use <SLUG>` | Lists and resolves scoped-secret projects; `use` pins the context file (clears the environment). |
+| `ciphervault secret` | `set <NAME> [--value <STR> or --value-stdin] [--type <T>] [--description <STR>] [--tag <T...>] [--repo-binding <ID>] [--service <ID>]` / `get <NAME> [--meta]` / `list [--tag <T...>] [--status <S>] [--limit <N>]` / `find <QUERY>` / `update [NAME] [--id <ID>] [--description <STR>] [--tag <T...>] [--status <S>] [--expires-at <RFC3339>]` / `delete [NAME] [--id <ID>] [--reason <STR>]` / `rotate [NAME] [--id <ID>] [--value <STR> or --value-stdin] [--reason <STR>] [--idempotency-key <KEY>]` (+ `--project/--env/--endpoint/--token` on each) | Manages scoped secrets (values rotate, never patch; `find` searches names only, never values). |
+| `ciphervault migrate` | `plan [--vault <DIR>] --project <SLUG> [--default-env <ENV>] [--ack-production] [--dry-run] [--snapshot <HEX>]` / `apply --migration-id <ID>` / `verify --migration-id <ID>` / `resolve --migration-id <ID> --entry <ID> [--rename <NAME>] [--env <ENV>]` / `shred-legacy --confirm <SLUG>` | Migrates a legacy vault into scoped secrets (ledgered: plan, apply, verify, resolve, shred). |
+| `ciphervault completions` | `<bash/elvish/fish/powershell/zsh>` | Emits native shell autocompletion for the name invoked (`cv` vs `ciphervault` have separate scripts). |
+| `ciphervault update` | `[--check] [--reinstall]` | Checks for and installs the latest signed GitHub release. `--reinstall` repairs even when already current. |
 
 ---
 

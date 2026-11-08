@@ -10,6 +10,15 @@ pub struct OperatorInfo {
     pub identity_signature_hex: String,
     #[serde(default)]
     pub identity_expires_at_utc: u64,
+    /// Binary crate version. Informational only — deliberately NOT covered
+    /// by `identity_signing_bytes` so descriptors stay verifiable across
+    /// releases. Lets clients/dashboards detect fleet version drift.
+    #[serde(default)]
+    pub binary_version: String,
+    /// Build commit SHA (baked at compile time via CIPHERVAULT_BUILD_SHA,
+    /// `"unknown"` for ad-hoc builds). Same verifiability rule as above.
+    #[serde(default)]
+    pub build_sha: String,
 }
 
 impl OperatorInfo {
@@ -459,6 +468,8 @@ mod tests {
             retention_terms: "90-day".into(),
             identity_signature_hex: String::new(),
             identity_expires_at_utc: 1_800_000_000,
+            binary_version: String::new(),
+            build_sha: String::new(),
         };
         let sig = ciphervault_crypto::signatures::sign_with_domain(
             &key,

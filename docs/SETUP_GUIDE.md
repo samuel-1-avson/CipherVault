@@ -105,7 +105,7 @@ ciphervault update --check  # just check
 ```sh
 cd your-project
 ciphervault init            # creates the vault, prints the recovery kit: save it!
-ciphervault track .env      # or: ciphervault track -i   (find secrets via .gitignore)
+ciphervault track .env      # or: ciphervault track --from-gitignore   (find secrets via .gitignore)
 ciphervault hook install    # block accidental secret commits
 ciphervault push -m "first backup"
 ciphervault status
@@ -134,7 +134,7 @@ ciphervault doctor                        # self-check when something feels off
 - `ciphervault restore --snapshot <id> --to ./preview --dry-run` verifies data and previews file actions without writing a target or staging files. Actual restore uses a rollback journal and merge semantics. Historical restore, diff and snapshot run use each snapshot's recorded epoch after rekeying.
 - Scoped execution uses one authorized revision-bound materialization batch; use `run --project <project> --env <environment> --revision <64hex> -- <command>` when an exact revision is required. Dry-run reads metadata only; malformed/partial batches never start the child.
 - `ciphervault recovery split` + `recover` cover clean-machine disaster
-  recovery; rehearse with `ciphervault recovery test --to ./restore-drill`.
+  recovery; rehearse with `cv recovery test --kit <your saved kit> --to ./restore-drill`.
 - CI pipelines: zero-disk injection is covered in
   [CICD_INTEGRATION.md](./CICD_INTEGRATION.md).
 - YubiKey owners: `ciphervault token status`, then `init --hardware-token`.

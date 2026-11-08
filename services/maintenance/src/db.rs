@@ -38,6 +38,10 @@ pub struct OperatorNodeRecord {
     pub last_seen_utc: u64,
     pub latency_ms: u64,
     pub is_healthy: bool,
+    /// Operator binary version from /v1/info (empty = not yet observed).
+    pub binary_version: String,
+    /// Operator build SHA from /v1/info (empty = not yet observed).
+    pub build_sha: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,7 +193,9 @@ impl MaintenanceDb {
                 endpoint TEXT PRIMARY KEY,
                 last_seen_utc INTEGER NOT NULL,
                 latency_ms INTEGER NOT NULL,
-                is_healthy INTEGER NOT NULL
+                is_healthy INTEGER NOT NULL,
+                binary_version TEXT NOT NULL DEFAULT '',
+                build_sha TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS repair_history (
@@ -216,6 +222,26 @@ impl MaintenanceDb {
             );
             "#,
         )?;
+
+        // Lightweight migration: existing fleet.db files predate the version
+        // columns on operator_nodes. ALTER TABLE is idempotent-guarded via
+        // PRAGMA table_info so old and new DBs converge on the same shape.
+        for column in [
+            "binary_version TEXT NOT NULL DEFAULT ''",
+            "build_sha TEXT NOT NULL DEFAULT ''",
+        ] {
+            let name = column.split_whitespace().next().unwrap_or("");
+            let exists: bool = conn
+                .prepare("SELECT 1 FROM pragma_table_info('operator_nodes') WHERE name = ?1")?
+                .query_row([name], |_| Ok(true))
+                .unwrap_or(false);
+            if !exists {
+                conn.execute(
+                    &format!("ALTER TABLE operator_nodes ADD COLUMN {column}"),
+                    [],
+                )?;
+            }
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -457,6 +483,34 @@ impl MaintenanceDb {
         Ok(())
     }
 
+    /// Records the binary identity (/v1/info `binary_version` + `build_sha`)
+    /// observed on a reachable operator. Kept separate from
+    /// [`Self::update_operator_health`] so unreachable operators keep their
+    /// last known version instead of having it blanked, and so existing
+    /// callers/tests are untouched. Unknown/empty values are stored as-is;
+    /// skew detection treats empty as "not yet observed", not as a version.
+    pub fn record_operator_version(
+        &self,
+        endpoint: &str,
+        binary_version: &str,
+        build_sha: &str,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp() as u64;
+        let lock = self.conn.lock().expect("maintenance db mutex poisoned");
+        lock.execute(
+            r#"
+            INSERT INTO operator_nodes (endpoint, last_seen_utc, latency_ms, is_healthy, binary_version, build_sha)
+            VALUES (?1, ?2, 0, 1, ?3, ?4)
+            ON CONFLICT(endpoint) DO UPDATE SET
+                binary_version = excluded.binary_version,
+                build_sha = excluded.build_sha
+            "#,
+            params![endpoint, now, binary_version, build_sha],
+        )?;
+
+        Ok(())
+    }
+
     pub fn get_fleet_summary(&self) -> Result<FleetSummary> {
         let lock = self.conn.lock().expect("maintenance db mutex poisoned");
 
@@ -517,7 +571,7 @@ impl MaintenanceDb {
     pub fn list_operator_nodes(&self) -> Result<Vec<OperatorNodeRecord>> {
         let lock = self.conn.lock().expect("maintenance db mutex poisoned");
         let mut stmt = lock.prepare(
-            "SELECT endpoint, last_seen_utc, latency_ms, is_healthy FROM operator_nodes ORDER BY endpoint ASC",
+            "SELECT endpoint, last_seen_utc, latency_ms, is_healthy, binary_version, build_sha FROM operator_nodes ORDER BY endpoint ASC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -526,6 +580,8 @@ impl MaintenanceDb {
                 last_seen_utc: row.get(1)?,
                 latency_ms: row.get::<_, i64>(2)? as u64,
                 is_healthy: row.get::<_, i32>(3)? == 1,
+                binary_version: row.get(4)?,
+                build_sha: row.get(5)?,
             })
         })?;
 

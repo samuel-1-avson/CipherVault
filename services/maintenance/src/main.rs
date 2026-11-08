@@ -227,12 +227,19 @@ async fn main() -> Result<()> {
                             reachable += 1;
                             let latency = start.elapsed().as_millis() as u64;
                             let _ = db.update_operator_health(client.endpoint(), latency, true);
+                            let _ = db.record_operator_version(
+                                client.endpoint(),
+                                &info.binary_version,
+                                &info.build_sha,
+                            );
                             println!(
-                                "  {} {} ({}) — {}ms — terms: '{}'",
+                                "  {} {} ({}) — {}ms — v{} [{}] — terms: '{}'",
                                 "[REACHABLE]".green(),
                                 info.operator_id.yellow(),
                                 client.endpoint(),
                                 latency,
+                                if info.binary_version.is_empty() { "?" } else { &info.binary_version },
+                                if info.build_sha.is_empty() { "unreported" } else { &info.build_sha },
                                 info.retention_terms
                             );
                         }
@@ -245,6 +252,32 @@ async fn main() -> Result<()> {
                                 e
                             );
                         }
+                    }
+                }
+
+                // Fleet version-skew detection: distinct reported (binary, sha)
+                // pairs beyond one mean nodes run different builds.
+                if let Ok(nodes) = db.list_operator_nodes() {
+                    let mut builds: Vec<String> = nodes
+                        .iter()
+                        .filter(|n| n.is_healthy)
+                        .filter_map(|n| {
+                            if n.binary_version.is_empty() && n.build_sha.is_empty() {
+                                None
+                            } else {
+                                Some(format!("{}@{}", n.binary_version, n.build_sha))
+                            }
+                        })
+                        .collect();
+                    builds.sort();
+                    builds.dedup();
+                    if builds.len() > 1 {
+                        println!(
+                            "{} Fleet version skew detected ({} distinct builds): {}",
+                            "[SKEW]".red().bold(),
+                            builds.len(),
+                            builds.join(", ")
+                        );
                     }
                 }
 

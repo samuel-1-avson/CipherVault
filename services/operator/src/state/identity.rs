@@ -163,6 +163,21 @@ pub struct AdmissionRecord {
     pub ticket_sha256: String,
 }
 
+/// Inbound fleet-join request (`join-requests.json`): a prospective operator
+/// announcing itself. No trust is granted by submitting — the descriptor
+/// must self-verify, and admission still requires the ticket/graduation
+/// flow. One record per operator id (resubmits update in place).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinRequestRecord {
+    pub request_id: String,
+    pub operator_id: String,
+    pub endpoint: String,
+    pub node_pk_hex: String,
+    pub contact: String,
+    pub requested_at_utc: u64,
+    pub status: String,
+}
+
 /// Verified-join authorization mode: legacy single fleet key, or a
 /// quorum key set with threshold.
 pub(crate) enum JoinAuth {

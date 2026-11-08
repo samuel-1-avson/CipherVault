@@ -282,6 +282,8 @@ mod tests {
             retention_terms: "synthetic test fixture".into(),
             identity_signature_hex: String::new(),
             identity_expires_at_utc: chrono::Utc::now().timestamp() as u64 + 3600,
+            binary_version: String::new(),
+            build_sha: String::new(),
         };
         info.identity_signature_hex =
             hex::encode(ciphervault_crypto::signatures::sign_with_domain(

@@ -1093,6 +1093,8 @@ pub(crate) async fn api_fleet_handler() -> impl axum::response::IntoResponse {
                 "status": if n.is_healthy { "Online" } else { "Offline" },
                 "is_healthy": n.is_healthy,
                 "latency_ms": if n.is_healthy { Some(n.latency_ms) } else { None },
+                "binary_version": if n.binary_version.is_empty() { None } else { Some(&n.binary_version) },
+                "build_sha": if n.build_sha.is_empty() { None } else { Some(&n.build_sha) },
                 "last_heartbeat": last_hb,
                 "last_seen_utc": n.last_seen_utc,
             })

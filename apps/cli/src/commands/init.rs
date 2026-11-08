@@ -1,6 +1,6 @@
 //! Vault init command.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use colored::Colorize;
 use rand::RngCore;
@@ -125,6 +125,20 @@ pub(crate) async fn cmd_init(
 
     let db_path = vault_dir.join(DB_FILE);
     if db_path.exists() {
+        // U-C2: never silently destroy a vault. Keep a timestamped copy so
+        // `--force` is recoverable even when the operator fat-fingers it.
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+        let backup = vault_dir.join(format!("{DB_FILE}.bak.{stamp}"));
+        fs::copy(&db_path, &backup).with_context(|| {
+            format!(
+                "backing up existing vault DB to '{}'",
+                backup.display()
+            )
+        })?;
+        println!(
+            "  Previous vault DB backed up to: {}",
+            backup.display().to_string().yellow()
+        );
         fs::remove_file(&db_path)?;
     }
     let store = LocalVaultStore::open(&db_path)?;
@@ -255,17 +269,48 @@ pub(crate) async fn cmd_init(
     println!();
 
     if std::io::stdin().is_terminal() {
-        print!(
+        // U-C1: a bare Enter must never count as "recorded" — the kit is
+        // print-once and unrecoverable. Reprompt until the exact word.
+        loop {
+            print!(
+                "{}",
+                "Type 'yes' once you have recorded your recovery secret to zeroize memory: "
+                    .bold()
+                    .cyan()
+            );
+            let _ = std::io::stdout().flush();
+            let mut confirm = String::new();
+            let _ = std::io::stdin().read_line(&mut confirm);
+            if confirm.trim() == "yes" {
+                break;
+            }
+            eprintln!(
+                "{}",
+                "Please type exactly 'yes' — your kit cannot be re-printed."
+                    .yellow()
+                    .bold()
+            );
+        }
+    } else {
+        eprintln!(
             "{}",
-            "Type 'yes' or press Enter once you have recorded your recovery secret to zeroize memory: "
-                .bold()
-                .cyan()
+            "WARNING: non-interactive init — no kit confirmation was possible. Use --save-kit and guard that file, or re-run interactively.".yellow().bold()
         );
-        let _ = std::io::stdout().flush();
-        let mut confirm = String::new();
-        let _ = std::io::stdin().read_line(&mut confirm);
     }
     println!("{}", "✓ Recovery secret zeroized from memory.".green());
+    println!();
+    println!(
+        "{}",
+        "Laptop-loss safety (do this today, not someday):".bold().yellow()
+    );
+    println!("  • Passphrase key-backup for clean-machine recovery without paper:");
+    println!("      ciphervault recovery key-backup --kit <your saved kit file>");
+    println!("  • Encrypted device + epoch-key bundle (keeps old snapshots readable):");
+    println!("      ciphervault device export-key device-keys.bin");
+    println!(
+        "  {}",
+        "Lose the paper kit without either backup and the vault is unrecoverable.".dimmed()
+    );
 
     // Explicit drop to ensure memory scrubbing
     drop(kit);
@@ -273,7 +318,7 @@ pub(crate) async fn cmd_init(
     drop(recovery_sk);
 
     // Smart .gitignore secret discovery
-    if let Ok(discovered_secrets) = scan_gitignore_for_secrets(Path::new(".")) {
+    if let Ok((discovered_secrets, _files_walked)) = scan_gitignore_for_secrets(Path::new(".")) {
         if !discovered_secrets.is_empty() {
             let should_import = if import_gitignore {
                 true

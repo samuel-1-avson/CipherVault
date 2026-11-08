@@ -9,7 +9,7 @@ use ciphervault_snapshot::{create_snapshot, create_snapshot_with_signer, DeviceS
 
 use crate::cmd_anchor;
 use crate::util::{
-    configured_operator_pool, get_configured_operators, get_vault_store, resolve_hardware_token,
+    configured_operator_pool, get_vault_store, load_configured_operators, resolve_hardware_token,
     resolve_required_replicas,
 };
 
@@ -192,6 +192,14 @@ pub(crate) async fn cmd_push(
     }
 
     if local {
+        if anchor {
+            eprintln!(
+                "{}",
+                "WARNING: --anchor is ignored with --local (offline commit never reaches the ledger). Push without --local to anchor."
+                    .yellow()
+                    .bold()
+            );
+        }
         println!(
             "  Durability:     {} (offline / local-only commit)",
             "LocalOnly".yellow().bold()
@@ -199,8 +207,17 @@ pub(crate) async fn cmd_push(
         return Ok(());
     }
 
-    // Attempt multi-operator replication
-    let operators = get_configured_operators();
+    // Attempt multi-operator replication. Strict operator resolution: a
+    // present-but-broken operators.json is a hard stop here, never a
+    // silent fallback to the default fleet (U-H1).
+    let operators = load_configured_operators()?;
+    let required_replicas = resolve_required_replicas(replicas)?;
+    if required_replicas > operators.len() {
+        bail!(
+            "--replicas {required_replicas} exceeds the {} configured operator(s); lower it or add endpoints (note: --local skips replication entirely)",
+            operators.len()
+        );
+    }
     println!(
         "\nReplicating across {} independent operators...",
         operators.len()
@@ -222,7 +239,6 @@ pub(crate) async fn cmd_push(
     let wire_objects = store.recovery_objects(&recovery_set)?;
     let head_cbor = to_canonical_cbor(&head)?;
     let closure_digest = recovery_set.closure.compute_base_closure_digest()?;
-    let required_replicas = resolve_required_replicas(replicas)?;
     let replication_started = std::time::Instant::now();
     let rep_result = pool
         .replicate_and_verify_with_endpoints(

@@ -52,7 +52,7 @@ pub(crate) async fn api_files_track_handler(
             "error": format!("File '{}' does not exist on disk", p.display())
         }));
     }
-    match cmd_track(vec![p.clone()], false, false) {
+    match cmd_track(vec![p.clone()], false, false, false) {
         Ok(_) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,
@@ -103,6 +103,7 @@ pub(crate) async fn api_snapshots_restore_handler(
         payload.hardware_token.unwrap_or(false),
         payload.reader,
         payload.pin,
+        false,
         false,
     ) {
         Ok(_) => {

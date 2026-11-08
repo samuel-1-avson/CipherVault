@@ -367,6 +367,22 @@ impl OperatorState {
         let mut lock = lock_or_recover(&self.challenges, "challenges");
         // TTL eviction: remove expired challenges
         lock.retain(|_, record| record.expires_at_utc > now);
+        // Per-key cap: one identity may hold at most 64 live challenges, so a
+        // single enrolled key cannot evict the whole fleet's challenges (the
+        // global oldest-eviction below stays as a backstop, not the policy).
+        const MAX_ACTIVE_CHALLENGES_PER_KEY: usize = 64;
+        let same_key_live = lock
+            .values()
+            .filter(|record| {
+                record.vault_id_hex.eq_ignore_ascii_case(vault_id_hex.as_str())
+                    && record
+                        .public_key_hex
+                        .eq_ignore_ascii_case(public_key_hex.as_str())
+            })
+            .count();
+        if same_key_live >= MAX_ACTIVE_CHALLENGES_PER_KEY {
+            return Err("challenge quota exceeded for this identity; retry after expiry".into());
+        }
         // Quota bound: if at capacity, evict oldest
         if lock.len() >= MAX_ACTIVE_CHALLENGES {
             if let Some(oldest_key) = lock

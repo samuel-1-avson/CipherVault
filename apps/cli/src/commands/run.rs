@@ -63,6 +63,16 @@ pub(crate) async fn cmd_run(
         bail!("cannot combine snapshot source (--snapshot/--env-file) with scoped source (--project/--env)");
     }
     if scoped_source {
+        // U-M: a stale CIPHERVAULT_PROJECT/CIPHERVAULT_ENV export silently
+        // flips run into a different mode (different secrets, network
+        // calls). Say so when flags didn't ask for it.
+        if project_opt.is_none() && env_opt.is_none() {
+            eprintln!(
+                "{}",
+                "Scoped mode via $CIPHERVAULT_PROJECT/$CIPHERVAULT_ENV (not flags). Unset them or pass snapshot flags for local-snapshot mode."
+                    .yellow()
+            );
+        }
         return cmd_run_scoped(
             project_opt.as_deref(),
             env_opt.as_deref(),
@@ -313,7 +323,13 @@ fn apply_overrides(
     if let Some(overrides) = set_overrides {
         for item in overrides {
             if let Some((k, v)) = item.split_once('=') {
-                loaded_vars.push((k.trim().to_string(), Zeroizing::new(v.to_string())));
+                let key = k.trim();
+                // U-M: validate --set keys up front (server naming rules),
+                // not after secrets were fetched/materialized.
+                if let Err(error) = ciphervault_format::validate_secret_name(key) {
+                    bail!("Invalid --set '{key}': {error}");
+                }
+                loaded_vars.push((key.to_string(), Zeroizing::new(v.to_string())));
             } else {
                 bail!("Invalid --set format: expected KEY=VALUE, got '{}'", item);
             }
@@ -457,12 +473,33 @@ async fn cmd_run_snapshot(
     let snapshot_id = bundle.snapshot_id;
     let mut decrypted_files = bundle.files;
     // Snapshot mode is the legacy path (§F-§4): it keeps working behind the
-    // `--legacy` compat flag; without it, warn on every invocation.
-    if !legacy && !quiet && !json {
-        eprintln!(
-            "{} LEGACY_PATH_DEPRECATED: snapshot-mode `run` is deprecated; migrate with `ciphervault migrate plan` (pass --legacy to silence this warning)",
-            "[ciphervault]".bold().yellow(),
-        );
+    // `--legacy` compat flag. Warn at most once per day per vault (marker
+    // file) so scripts aren't spammed; CIPHERVAULT_LEGACY_WARN=0 opts out.
+    if !legacy && !quiet && !json && std::env::var("CIPHERVAULT_LEGACY_WARN").as_deref() != Ok("0") {
+        use std::io::Write;
+        let marker = std::env::temp_dir().join(format!(
+            "ciphervault-legacy-warn-{}",
+            hex::encode(&snapshot_id[..8])
+        ));
+        let show = match std::fs::metadata(&marker) {
+            Ok(meta) => match meta.modified() {
+                Ok(modified) => std::time::SystemTime::now()
+                    .duration_since(modified)
+                    .map(|age| age.as_secs() > 86_400)
+                    .unwrap_or(true),
+                Err(_) => true,
+            },
+            Err(_) => true,
+        };
+        if show {
+            eprintln!(
+                "{} LEGACY_PATH_DEPRECATED: snapshot-mode `run` is deprecated; migrate with `ciphervault migrate plan` (pass --legacy to silence, CIPHERVAULT_LEGACY_WARN=0 to disable)",
+                "[ciphervault]".bold().yellow(),
+            );
+            if let Ok(mut file) = std::fs::File::create(&marker) {
+                let _ = writeln!(file, "warned");
+            }
+        }
     }
 
     // Select which file(s) to load environment variables from
@@ -778,5 +815,13 @@ fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
         }
     }
 
-    (exe.to_string(), Vec::new())
+    // Unresolved by PATHEXT (e.g. extensionless MSYS shims like
+    // /mingw64/bin/git, which CreateProcess cannot launch directly):
+    // route through the shell so `cv run` matches what works in the
+    // user's terminal. Genuinely-missing commands still fail, via the
+    // shell's "not recognized" exit instead of a spawn error.
+    (
+        "cmd.exe".to_string(),
+        vec!["/c".to_string(), exe.to_string()],
+    )
 }

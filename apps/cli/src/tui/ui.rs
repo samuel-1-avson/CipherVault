@@ -1107,6 +1107,18 @@ fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
         .iter()
         .filter(|operator| operator.reachable)
         .count();
+    // U-M: surface the first operator error in the card — previously the
+    // table just read "offline" with the reason hidden in the inspector.
+    let first_error = app
+        .explorer_operators
+        .iter()
+        .filter(|operator| !operator.reachable)
+        .filter_map(|operator| operator.last_error.as_ref())
+        .next()
+        .map(|error| match error.char_indices().nth(90) {
+            Some((byte, _)) => format!("{}…", &error[..byte]),
+            None => error.clone(),
+        });
     let health_color = if total > 0 && reachable == total {
         Color::Green
     } else if reachable > 0 {
@@ -1116,7 +1128,7 @@ fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
     };
     let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
 
-    let text = vec![
+    let mut text = vec![
         Line::from(vec![
             Span::styled("Operators:     ", Style::default().fg(Color::Gray)),
             Span::styled(
@@ -1126,6 +1138,14 @@ fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
+    ];
+    if let Some(error) = first_error {
+        text.push(Line::from(vec![
+            Span::styled("First error:   ", Style::default().fg(Color::Gray)),
+            Span::styled(error, Style::default().fg(Color::Red)),
+        ]));
+    }
+    text.extend([
         Line::from(vec![
             Span::styled("Observed:      ", Style::default().fg(Color::Gray)),
             Span::styled(&app.explorer_observed_at, Style::default().fg(Color::White)),
@@ -1143,7 +1163,7 @@ fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
             "Presence-only lookups; bytes never leave operators.",
             Style::default().fg(Color::DarkGray),
         )),
-    ];
+    ]);
 
     let card = Paragraph::new(text).wrap(Wrap { trim: true }).block(
         Block::default()
@@ -2484,6 +2504,7 @@ mod tests {
                 reachable: true,
                 latency_ms: Some(42),
                 identity: "verified".into(),
+                last_error: None,
             },
             ExplorerOperatorRow {
                 display_name: "Operator 2".into(),

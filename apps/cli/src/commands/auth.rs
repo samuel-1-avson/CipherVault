@@ -3,8 +3,11 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use reqwest::Client as HttpClient;
+use std::path::PathBuf;
 use std::time::Duration;
+use zeroize::{Zeroize, Zeroizing};
 
+use ciphervault_crypto::passphrase_backup::{open_passphrase_backup, seal_passphrase_backup};
 use ciphervault_local_store::AccountStore;
 
 use super::dpop::maybe_dpop;
@@ -399,6 +402,188 @@ pub(crate) fn cmd_device_list() -> Result<()> {
             device.public_key_hex
         );
     }
+    Ok(())
+}
+
+/// U-C3: passphrase-sealed device + epoch-key bundle. The device signing key
+/// and every known epoch key, sealed with the same Argon2id envelope as
+/// `recovery key-backup`. Restoring epoch keys keeps old snapshots readable
+/// after a total-loss recovery (which mints a fresh device identity).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DeviceKeyBundle {
+    format: String,
+    vault_id_hex: String,
+    device_id_hex: String,
+    device_pk_hex: String,
+    epoch_keys: Vec<DeviceEpochKeyEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DeviceEpochKeyEntry {
+    epoch: u64,
+    key_hex: String,
+}
+
+/// Exports the local device identity + all epoch keys to a
+/// passphrase-sealed file. Refuses to overwrite. Guard the file: it unlocks
+/// every snapshot this device can read.
+pub(crate) fn cmd_device_export_key(out: PathBuf) -> Result<()> {
+    use crate::util::get_vault_store;
+    if out.exists() {
+        bail!("refusing to overwrite existing '{}'", out.display());
+    }
+    let store = get_vault_store()?;
+    let vault_id = store.get_vault_id()?;
+    let (device_id, device_sk, _, _) = store
+        .get_device_state()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut epoch_keys = Vec::new();
+    for info in store
+        .list_epoch_keys()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+    {
+        let key = store
+            .get_epoch_key(info.epoch)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        epoch_keys.push(DeviceEpochKeyEntry {
+            epoch: info.epoch,
+            key_hex: hex::encode(key.as_bytes()),
+        });
+    }
+    let bundle = DeviceKeyBundle {
+        format: "ciphervault-device-keys-v1".to_string(),
+        vault_id_hex: hex::encode(vault_id),
+        device_id_hex: hex::encode(device_id),
+        device_pk_hex: hex::encode(device_sk.verifying_key().to_bytes()),
+        epoch_keys,
+    };
+    let plaintext =
+        Zeroizing::new(serde_json::to_vec(&bundle).context("encoding device key bundle")?);
+    #[cfg(debug_assertions)]
+    let passphrase: Zeroizing<String> =
+        match std::env::var("CIPHERVAULT_TEST_PASSPHRASE").ok() {
+            Some(pass) if !pass.is_empty() => {
+                eprintln!("WARNING: using TEST-ONLY debug passphrase source (never for real backups)");
+                if pass.len() < 12 {
+                    bail!("test passphrase must be at least 12 characters");
+                }
+                Zeroizing::new(pass)
+            }
+            _ => prompt_bundle_passphrase_pair()?,
+        };
+    #[cfg(not(debug_assertions))]
+    let passphrase: Zeroizing<String> = prompt_bundle_passphrase_pair()?;
+    let envelope = seal_passphrase_backup(passphrase.as_bytes(), &plaintext)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    drop(passphrase);
+    drop(plaintext);
+    std::fs::write(&out, &envelope)
+        .with_context(|| format!("writing bundle to '{}'", out.display()))?;
+    super::recovery_key::restrict_permissions(&out)?;
+    println!("{}", "Device key bundle exported.".green().bold());
+    println!("  Wrote '{}' ({} epoch keys sealed)", out.display(), bundle.epoch_keys.len());
+    println!(
+        "{}",
+        "Guard this file: it unlocks every snapshot this device can read. It does NOT replace your recovery kit.".yellow()
+    );
+    Ok(())
+}
+
+/// Prompts for a new bundle passphrase with confirmation (12-char floor).
+fn prompt_bundle_passphrase_pair() -> Result<Zeroizing<String>> {
+    use anyhow::Context;
+    let first =
+        rpassword::prompt_password("Bundle passphrase: ").context("passphrase input")?;
+    let mut second =
+        rpassword::prompt_password("Confirm passphrase: ").context("passphrase input")?;
+    if first != second {
+        second.zeroize();
+        // first is dropped un-zeroized here; rpassword Strings are short-lived
+        // stack values — the sealed envelope is what persists.
+        anyhow::bail!("passphrases do not match");
+    }
+    if first.len() < 12 {
+        anyhow::bail!("passphrase must be at least 12 characters");
+    }
+    Ok(Zeroizing::new(first))
+}
+
+/// Imports epoch keys from a `device export-key` bundle into the current
+/// vault store (vault ids must match). Skips epochs already present.
+/// The device identity itself is informational — a recovered vault mints a
+/// fresh device certificate; epoch keys are what keep old snapshots readable.
+pub(crate) fn cmd_device_import_keys(bundle_path: PathBuf) -> Result<()> {
+    use crate::util::get_vault_store;
+    let envelope = std::fs::read(&bundle_path)
+        .with_context(|| format!("reading bundle '{}'", bundle_path.display()))?;
+    #[cfg(debug_assertions)]
+    let passphrase: Zeroizing<String> =
+        match std::env::var("CIPHERVAULT_TEST_PASSPHRASE").ok() {
+            Some(pass) if !pass.is_empty() => {
+                eprintln!("WARNING: using TEST-ONLY debug passphrase source (never for real backups)");
+                Zeroizing::new(pass)
+            }
+            _ => Zeroizing::new(
+                rpassword::prompt_password("Bundle passphrase: ")
+                    .context("passphrase input")?,
+            ),
+        };
+    #[cfg(not(debug_assertions))]
+    let passphrase: Zeroizing<String> = Zeroizing::new(
+        rpassword::prompt_password("Bundle passphrase: ").context("passphrase input")?,
+    );
+    let plaintext = open_passphrase_backup(passphrase.as_bytes(), &envelope)
+        .map_err(|_| anyhow::anyhow!("could not open bundle: wrong passphrase or corrupted file"))?;
+    drop(passphrase);
+    let bundle: DeviceKeyBundle =
+        serde_json::from_slice(&plaintext).context("bundle payload is not a device key bundle")?;
+    if bundle.format != "ciphervault-device-keys-v1" {
+        bail!("unsupported bundle format '{}'", bundle.format);
+    }
+    let store = get_vault_store()?;
+    let current_vault = hex::encode(store.get_vault_id()?);
+    if current_vault != bundle.vault_id_hex.to_ascii_lowercase() {
+        bail!(
+            "bundle is for vault {} but this vault is {} — refusing cross-vault import",
+            bundle.vault_id_hex,
+            current_vault
+        );
+    }
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    for entry in &bundle.epoch_keys {
+        let present = store
+            .get_epoch_key(entry.epoch)
+            .map(|_| true)
+            .unwrap_or(false);
+        if present {
+            skipped += 1;
+            continue;
+        }
+        let raw = hex::decode(&entry.key_hex).context("bad epoch key hex in bundle")?;
+        if raw.len() != 32 {
+            bail!("epoch {} key is not 32 bytes", entry.epoch);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&raw);
+        store
+            .save_epoch_key(
+                entry.epoch,
+                &ciphervault_crypto::VaultEpochKey::from_bytes(arr),
+            )
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        imported += 1;
+    }
+    println!(
+        "{}",
+        format!("Imported {imported} epoch keys ({skipped} already present).")
+            .green()
+            .bold()
+    );
+    println!("  Bundle device: {} ({})", bundle.device_id_hex.cyan(), bundle.device_pk_hex);
+    println!(
+        "  Note: device identity is informational only — epoch keys are what keep old snapshots readable."
+    );
     Ok(())
 }
 

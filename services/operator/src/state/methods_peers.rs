@@ -119,6 +119,14 @@ impl OperatorState {
         lock.values().cloned().collect()
     }
 
+    /// Routing-table membership check used by repair election: a peer that is
+    /// live but not a vetted routing member must never win pusher election or
+    /// receive repair pushes (fake provider-record holders).
+    pub fn is_routing_member(&self, operator_id: &str) -> bool {
+        let lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
+        lock.contains_key(operator_id)
+    }
+
     /// Admits a new node into probation on a fleet-signed invite (public
     /// `POST /v1/peers/join`: no service token — the ticket is the
     /// authorization). Two modes: legacy single-key (only
@@ -314,6 +322,131 @@ impl OperatorState {
     /// Clones the admission evidence log (control-plane route).
     pub fn admissions_snapshot(&self) -> Vec<AdmissionRecord> {
         lock_or_recover(&self.admissions, "admissions").clone()
+    }
+
+    /// Maximum inbound join requests held. Oldest-first eviction keeps the
+    /// inbox bounded; resubmits update in place and never count twice.
+    pub const MAX_JOIN_REQUESTS: usize = 512;
+
+    fn join_requests_store_path(&self) -> PathBuf {
+        self.data_dir.join("join-requests.json")
+    }
+
+    pub(crate) fn load_join_requests(&self) {
+        let Ok(bytes) = fs::read(self.join_requests_store_path()) else {
+            return;
+        };
+        let Ok(records) = serde_json::from_slice::<Vec<JoinRequestRecord>>(&bytes) else {
+            return;
+        };
+        *lock_or_recover(&self.join_requests, "join_requests") = records;
+    }
+
+    pub(crate) fn persist_join_requests(&self, records: &[JoinRequestRecord]) -> Result<(), String> {
+        let encoded = serde_json::to_vec_pretty(records).map_err(|error| error.to_string())?;
+        self.persist_atomic(&self.join_requests_store_path(), &encoded)
+    }
+
+    /// Records an inbound fleet-join request. The descriptor must
+    /// self-verify (same bar as announces/joins); contact is free text.
+    /// One record per operator id — resubmits refresh endpoint/contact.
+    /// Grants no trust: admission still requires tickets + graduation.
+    pub fn submit_join_request(
+        &self,
+        descriptor: &ciphervault_storage::PeerDescriptor,
+        contact: &str,
+    ) -> Result<String, String> {
+        Self::validate_peer_descriptor(descriptor)?;
+        if descriptor.operator_id.trim().is_empty() || descriptor.operator_id.len() > 64 {
+            return Err("operator_id must be 1-64 characters".into());
+        }
+        let contact = contact.trim();
+        if contact.len() > 140 {
+            return Err("contact must be at most 140 characters".into());
+        }
+        let now = Utc::now().timestamp() as u64;
+        let mut lock = lock_or_recover(&self.join_requests, "join_requests");
+        if let Some(existing) = lock
+            .iter_mut()
+            .find(|r| r.operator_id == descriptor.operator_id)
+        {
+            existing.endpoint = descriptor.endpoint.clone();
+            existing.node_pk_hex = descriptor.signing_pk_hex.clone();
+            existing.contact = contact.to_string();
+            existing.requested_at_utc = now;
+            let id = existing.request_id.clone();
+            let snapshot = lock.clone();
+            drop(lock);
+            self.persist_join_requests(&snapshot)?;
+            return Ok(id);
+        }
+        let mut id_bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut id_bytes);
+        let id = hex::encode(id_bytes);
+        lock.push(JoinRequestRecord {
+            request_id: id.clone(),
+            operator_id: descriptor.operator_id.clone(),
+            endpoint: descriptor.endpoint.clone(),
+            node_pk_hex: descriptor.signing_pk_hex.clone(),
+            contact: contact.to_string(),
+            requested_at_utc: now,
+            status: "pending".into(),
+        });
+        if lock.len() > Self::MAX_JOIN_REQUESTS {
+            if let Some(oldest) = lock
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.request_id != id)
+                .min_by_key(|(_, r)| r.requested_at_utc)
+                .map(|(i, _)| i)
+            {
+                lock.remove(oldest);
+            }
+        }
+        let snapshot = lock.clone();
+        drop(lock);
+        self.persist_join_requests(&snapshot)?;
+        Ok(id)
+    }
+
+    /// Clones the join-request inbox, oldest first. Control-plane only.
+    pub fn list_join_requests(&self) -> Vec<JoinRequestRecord> {
+        let mut out = lock_or_recover(&self.join_requests, "join_requests").clone();
+        out.sort_by_key(|r| r.requested_at_utc);
+        out
+    }
+
+    /// Resolves one inbox entry: `approved` (hand the node key to the
+    /// offline `invite issue` ceremony) or `rejected` (spam/abuse).
+    /// Pending-only — resolving a consumed entry is a 409, never a silent
+    /// re-mint. Persisted alongside the inbox so restarts can't revive a
+    /// decided request.
+    pub fn resolve_join_request(
+        &self,
+        request_id: &str,
+        decision: &str,
+    ) -> Result<JoinRequestRecord, String> {
+        let decision = decision.trim().to_ascii_lowercase();
+        if decision != "approved" && decision != "rejected" {
+            return Err("decision must be \"approved\" or \"rejected\"".into());
+        }
+        let mut lock = lock_or_recover(&self.join_requests, "join_requests");
+        let record = lock
+            .iter_mut()
+            .find(|r| r.request_id == request_id)
+            .ok_or_else(|| "join request not found".to_string())?;
+        if record.status != "pending" {
+            return Err(format!(
+                "join request already {} (request_id {})",
+                record.status, record.request_id
+            ));
+        }
+        record.status = decision;
+        let resolved = record.clone();
+        let snapshot = lock.clone();
+        drop(lock);
+        self.persist_join_requests(&snapshot)?;
+        Ok(resolved)
     }
 
     /// Restores the routing table after a post-insert failure (membership

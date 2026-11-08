@@ -391,6 +391,40 @@ pub(crate) fn ensure_file_in_gitignore(rel_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// U-H10: removes the `.gitignore` line that `track` appends, so an
+/// untracked file returns to normal git visibility instead of lingering in
+/// the worst of both worlds (git-invisible AND un-backed-up). Only exact
+/// (`path` or `/path`) lines are removed — wildcards and hand-written
+/// rules are left alone precisely because they might cover other files.
+/// Returns true when a line was removed.
+pub(crate) fn remove_file_from_gitignore(rel_path: &Path) -> Result<bool> {
+    let gitignore_path = get_workspace_root()?.join(".gitignore");
+    if !gitignore_path.exists() {
+        return Ok(false);
+    }
+    let norm = rel_path.to_string_lossy().replace('\\', "/");
+    let target = norm.trim_start_matches("./");
+    let existing = read_gitignore_text(&gitignore_path)?;
+    let mut removed = false;
+    let mut kept = Vec::new();
+    for line in existing.lines() {
+        let trimmed = line.trim().replace('\\', "/");
+        if !removed && (trimmed == target || trimmed == format!("/{}", target)) {
+            removed = true;
+            continue;
+        }
+        kept.push(line);
+    }
+    if removed {
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        fs::write(&gitignore_path, out)?;
+    }
+    Ok(removed)
+}
+
 pub(crate) fn is_secret_pattern(pattern: &str) -> bool {
     let lower = pattern.to_lowercase();
     let name = pattern.rsplit('/').next().unwrap_or(pattern).to_lowercase();
@@ -443,10 +477,10 @@ pub(crate) fn is_secret_pattern(pattern: &str) -> bool {
     false
 }
 
-pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<(Vec<PathBuf>, usize)> {
     let gitignore_path = root_dir.join(".gitignore");
     if !gitignore_path.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     }
 
     let content = read_gitignore_text(&gitignore_path)?;
@@ -466,6 +500,7 @@ pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>
     }
 
     let mut discovered = std::collections::BTreeSet::new();
+    let mut files_walked = 0usize;
 
     for pat in &candidate_patterns {
         if !pat.contains('*') {
@@ -485,6 +520,7 @@ pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>
         if entry.file_type().is_dir() {
             continue;
         }
+        files_walked += 1;
         let rel = match entry.path().strip_prefix(root_dir) {
             Ok(r) => r,
             Err(_) => continue,
@@ -519,7 +555,7 @@ pub(crate) fn scan_gitignore_for_secrets(root_dir: &Path) -> Result<Vec<PathBuf>
         }
     }
 
-    Ok(discovered.into_iter().collect())
+    Ok((discovered.into_iter().collect(), files_walked))
 }
 
 pub const DEFAULT_PRODUCTION_OPERATORS: &[&str] = &[
@@ -577,7 +613,11 @@ pub fn mask_operator_endpoint(endpoint: &str) -> String {
     }
 }
 
-pub(crate) fn get_configured_operators() -> Vec<String> {
+/// Strict operator source resolution. Unlike `get_configured_operators`,
+/// a present-but-unreadable operators file is a hard error — silently
+/// falling back to the default fleet has pushed snapshots at the wrong
+/// fleet before (U-H1). Absent file still means defaults.
+pub(crate) fn load_configured_operators() -> Result<Vec<String>> {
     if let Ok(env_ops) = std::env::var("CIPHERVAULT_OPERATORS") {
         let list: Vec<String> = env_ops
             .split([',', ';', ' '])
@@ -585,21 +625,64 @@ pub(crate) fn get_configured_operators() -> Vec<String> {
             .filter(|s| !s.is_empty())
             .collect();
         if !list.is_empty() {
-            return list;
+            return Ok(list);
         }
     }
     let config_path = get_vault_directory().join(OPERATORS_FILE);
     if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(config_path) {
-            if let Ok(ops) = serde_json::from_str::<Vec<String>>(&content) {
-                return ops;
-            }
-        }
+        let content = fs::read_to_string(&config_path).with_context(|| {
+            format!(
+                "reading operator config '{}'",
+                config_path.display()
+            )
+        })?;
+        let ops: Vec<String> = serde_json::from_str(&content).with_context(|| {
+            format!(
+                "parsing operator config '{}' as a JSON array of endpoint strings",
+                config_path.display()
+            )
+        })?;
+        return Ok(ops);
     }
-    DEFAULT_PRODUCTION_OPERATORS
+    Ok(DEFAULT_PRODUCTION_OPERATORS
         .iter()
         .map(|s| s.to_string())
-        .collect()
+        .collect())
+}
+
+pub(crate) fn get_configured_operators() -> Vec<String> {
+    let config_path = get_vault_directory().join(OPERATORS_FILE);
+    // U-H (env shadow): when both sources exist, say which one won — a
+    // stale export otherwise sends pushes somewhere the config file
+    // doesn't show.
+    if std::env::var("CIPHERVAULT_OPERATORS")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+        && config_path.exists()
+    {
+        eprintln!(
+            "{}",
+            "Note: using operators from CIPHERVAULT_OPERATORS, ignoring operators.json."
+                .yellow()
+        );
+    }
+    match load_configured_operators() {
+        Ok(ops) => ops,
+        Err(error) => {
+            eprintln!(
+                "{}",
+                format!(
+                    "WARNING: {error:#}; falling back to the default fleet. Fix operators.json instead of pushing here."
+                )
+                .red()
+                .bold()
+            );
+            DEFAULT_PRODUCTION_OPERATORS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        }
+    }
 }
 
 /// Operators from explicit local configuration only (env var or
@@ -809,7 +892,7 @@ pub(crate) mod tests {
             REQUEST_VAULT_CONTEXT
                 .scope(context.clone(), async {
                     tokio::task::yield_now().await;
-                    crate::cmd_track(vec![PathBuf::from(".env")], false, false).unwrap();
+                    crate::cmd_track(vec![PathBuf::from(".env")], false, false, false).unwrap();
                     assert_eq!(get_workspace_root().unwrap(), context.root_dir);
                     assert_eq!(
                         get_vault_store().unwrap().get_vault_id().unwrap(),
@@ -899,7 +982,7 @@ pub(crate) mod tests {
         .unwrap();
         std::fs::write(dir.join("deploy/docker/.env.example"), "EXAMPLE=1").unwrap();
         std::fs::write(dir.join("secrets.env"), "K=V").unwrap();
-        let found = scan_gitignore_for_secrets(&dir).unwrap();
+        let (found, _walked) = scan_gitignore_for_secrets(&dir).unwrap();
         assert!(
             found.iter().all(|p| !p.to_string_lossy().starts_with('!')),
             "negations excluded: {found:?}"

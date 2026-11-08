@@ -38,6 +38,18 @@ pub(crate) fn cmd_recovery_export() -> Result<()> {
     println!();
     println!(
         "{}",
+        "This is NOT your secret kit: these descriptors alone cannot restore anything.".bold()
+    );
+    println!(
+        "{}",
+        "Lost your paper kit? Work through this triage in order:".yellow().bold()
+    );
+    println!("  1. Paper copy — check the offline location where you stored it at init.");
+    println!("  2. Guardian shares — gather M-of-N sheets and run 'recovery split' in reverse via 'recover --shares'.");
+    println!("  3. Passphrase key-backup — if you ran 'recovery key-backup', restore with 'recovery key-restore --locator <HEX>'.");
+    println!();
+    println!(
+        "{}",
         "In accordance with zero-disk-recovery policy, the emergency recovery secret (R)".yellow()
     );
     println!("is kept offline and is not saved unencrypted on disk.");
@@ -75,6 +87,7 @@ pub(crate) async fn cmd_recovery_split(
     shares: u8,
     kit_opt: Option<PathBuf>,
     out_dir_opt: Option<PathBuf>,
+    stdout: bool,
 ) -> Result<()> {
     if threshold < 2 {
         bail!("Threshold must be at least 2 guardians");
@@ -96,32 +109,11 @@ pub(crate) async fn cmd_recovery_split(
             let text = fs::read_to_string(&legacy)?;
             OfflineRecoveryKit::parse_from_printable(&text)?
         } else {
-            println!(
-                "{}",
-                "Splitting Master Recovery Secret into Guardian Shares".bold()
+            // U-M: never retype the master secret on stdin — it fails often and
+            // teaches pasting R into terminals. Require --kit (a file) instead.
+            bail!(
+                "no kit available: pass --kit <saved kit file> (never retype the master secret by hand)"
             );
-            print!("Enter the 64-character hex master recovery secret (R): ");
-            let _ = std::io::stdout().flush();
-            let mut secret_input = String::new();
-            std::io::stdin()
-                .read_line(&mut secret_input)
-                .context("Failed to read master recovery secret from terminal")?;
-            let clean = secret_input.trim().trim_start_matches("0x");
-            let mut secret_bytes = hex::decode(clean).context("Invalid hex for recovery secret")?;
-            secret_input.zeroize();
-            if secret_bytes.len() != 32 {
-                secret_bytes.zeroize();
-                bail!("Recovery secret must be exactly 32 bytes (64 hex characters)");
-            }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&secret_bytes);
-            secret_bytes.zeroize();
-            let secret = ciphervault_crypto::RecoverySecret::from_bytes(arr);
-
-            let store = get_vault_store()?;
-            let vault_id = store.get_vault_id()?;
-            let operators = get_configured_operators();
-            OfflineRecoveryKit::create(&vault_id, &secret, operators)?
         }
     };
 
@@ -159,6 +151,10 @@ pub(crate) async fn cmd_recovery_split(
         println!(
             "Distribute each share file to a different guardian and delete the directory from this machine."
         );
+    } else if !stdout {
+        // U-M: printing all guardian shares to one terminal defeats M-of-N
+        // separation. Require --out-dir (or explicit --stdout to override).
+        bail!("refusing to print all guardian shares to one terminal: pass --out-dir <DIR> (preferred) or --stdout to override");
     } else {
         println!(
             "\n{}",

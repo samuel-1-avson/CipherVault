@@ -62,6 +62,7 @@ impl OperatorState {
             peer_membership: Mutex::new(HashMap::new()),
             spent_invites: Mutex::new(HashMap::new()),
             admissions: Mutex::new(Vec::new()),
+            join_requests: Mutex::new(Vec::new()),
             approval_challenges: Mutex::new(HashMap::new()),
             voucher_ledger: Mutex::new(VoucherLedger::new(u64::MAX)),
             voucher_ledger_failed: AtomicBool::new(false),
@@ -77,6 +78,7 @@ impl OperatorState {
         state.load_peer_membership();
         state.load_spent_invites();
         state.load_admissions();
+        state.load_join_requests();
         state.load_approval_challenges();
         state.load_voucher_ledger();
         state

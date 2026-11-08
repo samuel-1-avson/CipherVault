@@ -165,6 +165,8 @@ async fn publishes_and_verifies_peer_record() {
 
 #[tokio::test]
 async fn drops_tampered_foreign_and_garbage_records() {
+    // put_raw_record is gated by default; this adversarial test opts in.
+    std::env::set_var("CIPHERVAULT_ENABLE_RAW_DHT_PUT", "1");
     let a = boot_node("dht-c").await;
     let b = boot_node("dht-d").await;
     dial_and_wait(&a, &b).await;
