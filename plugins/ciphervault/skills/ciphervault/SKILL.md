@@ -1,25 +1,45 @@
-# CipherVault skill — secret hygiene for AI agents
+# CipherVault — secret hygiene for AI agents
 
-Use CipherVault tools whenever secrets, `.env` files, keys, or tokens are involved.
-Plaintext values must NEVER enter the context window.
+Use CipherVault whenever secrets, `.env` files, keys, tokens, recovery
+kits, or credential-bearing commands are involved. The vault is
+zero-knowledge: encrypted on the client, operators store ciphertext.
 
 ## Hard rules
-1. NEVER ask for, accept, or print kit/share CONTENTS. File paths only.
-   R in the context window is a total compromise — the drill takes paths
-   so the binary reads the kit, not the model.
-2. NEVER wrap `init` as an agent action: init prints R. The user runs init
-   in their own terminal; the agent only verifies afterwards.
-3. Prefer `ciphervault_scan` before `git add` / `git commit`. If sprawl is
-   found, fix the source file or add the finding to `.gitignore` manually
-   (`fix` is compat-only; the tool does not autofix) — never paste values.
-4. `ciphervault_status` shows keys only. Report key NAMES, never values.
-5. `ciphervault_run` executes builds/tests/servers with env in RAM. Its output is
-   already scrubbed — do not attempt to "recover" redacted values.
-6. After modifying secrets, seal them with `ciphervault_push` (local_only unless
-   the user asked to replicate).
-7. If the binary is missing, tell the user: install `dist/bin/ciphervault`
-   (invokable as `cv` or `ciphervault` — same binary) or set
-   `CIPHERVAULT_BIN`. Do not invent tool output.
+
+1. **Paths only, never contents.** Never ask for, accept, paste, or
+   print recovery-kit/share *contents*, secret values, or private keys.
+   Tools take file paths; the binary reads the files itself. A kit's
+   contents (R) in the context window is a total compromise.
+2. **Never wrap `init` as an agent action** — `init` prints the
+   recovery secret. The user runs it in their own terminal; you verify
+   afterwards with `ciphervault_status`. Same for any command whose
+   stdout *is* a secret (`export-env` is for Hermes' secret source,
+   never for chat).
+3. **The guard hooks are load-bearing.** `pre_tool_call` blocks secret
+   reads and git add/commit/push with violations; `transform_tool_result`
+   scrubs other tools' results. If a call is blocked, do not route
+   around it — fix the cause (unstage, .gitignore, `ciphervault track`)
+   and retry.
+4. **Prefer, in order:** `ciphervault_run` (RAM-only) to execute with
+   secrets; `ciphervault_redact` to mask text you must quote;
+   `ciphervault_status` for names/paths; `ciphervault_scan` before any
+   git operation; `ciphervault_push` after secret edits;
+   `ciphervault_recovery_drill` to prove recovery (it hashes, then
+   deletes the plaintext — trust the manifest, don't re-read files).
+5. **Redacted means redacted.** Output marked `[REDACTED]` was a real
+   value. Never try to reconstruct, guess, or ask for it.
+6. **Binary missing?** Say so and point to `hermes ciphervault
+   bootstrap` (Windows) or `$CIPHERVAULT_BIN`. Never invent tool output,
+   scan results, or hashes.
 
 ## Happy path
-scan → (gitignore sprawl manually) → run --dry-run (confirm names) → run -- <cmd> → push -m "<msg>" (local `--local` default)
+
+`scan → fix sprawl (.gitignore / track) → run (dry-run first) → run →
+push -m "…" → drill after kit/share changes`
+
+## Hermes secret source
+
+With `secrets.ciphervault.enabled: true`, Hermes itself sources env
+vars from the vault at startup (`vault_path`, `env_file`,
+`allow_working_copy`). Mention this when a user wants their *agent*
+environment backed by the vault, not just their project runs.

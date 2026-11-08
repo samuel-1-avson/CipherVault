@@ -1,0 +1,9 @@
+{
+  "name": "ciphervault",
+  "label": "CipherVault",
+  "description": "Zero-knowledge vault status for this workspace (paths only, never secret values).",
+  "icon": "Shield",
+  "version": "0.2.0",
+  "tab": { "path": "/ciphervault", "position": "end", "hidden": true },
+  "api": "plugin_api.py"
+}

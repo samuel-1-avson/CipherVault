@@ -1,11 +1,27 @@
 name: ciphervault
-version: "0.1.0"
-description: Zero-knowledge secret backup for AI coding agents — masked scan, RAM-only run, encrypted snapshots.
+version: "0.2.0"
+description: Zero-knowledge secret backup for AI coding agents — masked scan, RAM-only run, encrypted snapshots, leak-guard hooks, and a CipherVault secret source for Hermes itself.
+manifest_version: 2
+api_version: 1
+requires_hermes: ">=0.23.0"
+license: MIT
+homepage: https://github.com/samuel-1-avson/CipherVault
+tags: [secrets, security, vault, backup, tools]
 provides_tools:
   - ciphervault_status
   - ciphervault_scan
   - ciphervault_run
   - ciphervault_push
   - ciphervault_recovery_drill
+  - ciphervault_redact
 provides_hooks:
-  - post_tool_call
+  - pre_tool_call
+  - transform_tool_result
+provides_middleware:
+  - tool_request
+config_schema:
+  binary_path:
+    type: str
+    default: ""
+    description: "Path to the ciphervault CLI binary (overrides $CIPHERVAULT_BIN, the bootstrapped copy, and PATH)"
+    required: false
