@@ -9,12 +9,16 @@ use colored::Colorize;
 
 pub(crate) async fn cmd_ui(
     host: String,
-    port: u16,
+    port: Option<u16>,
     no_browser: bool,
     local: bool,
     serve: bool,
     cloud_url: String,
 ) -> Result<()> {
+    // An explicit --port means "serve here": honour it as a local
+    // dashboard instead of ignoring it and opening the cloud explorer.
+    let local = local || (port.is_some() && !serve);
+    let port = port.unwrap_or(8080);
     if !local && !serve {
         let target_url = cloud_url.trim_end_matches('/').to_string();
 

@@ -1,5 +1,6 @@
 //! CLI command implementations.
 
+pub(crate) mod agent_bridge;
 pub(crate) mod anchor;
 pub(crate) mod approvals;
 pub(crate) mod audit;
@@ -30,6 +31,7 @@ pub(crate) mod token;
 pub(crate) mod track;
 pub(crate) mod update;
 
+pub(crate) use agent_bridge::*;
 pub(crate) use anchor::*;
 pub(crate) use approvals::*;
 pub(crate) use audit::*;
@@ -71,6 +73,13 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
     use colored::Colorize;
 
     match command {
+        crate::Commands::Redact { json } => cmd_redact(json),
+        crate::Commands::ExportEnv {
+            env_file,
+            snapshot,
+            allow_working_copy,
+            force_tty,
+        } => cmd_export_env(env_file, snapshot, allow_working_copy, force_tty).await,
         crate::Commands::Update { check, reinstall } => cmd_update(check, reinstall).await,
         crate::Commands::Release { sub } => match sub {
             ReleaseSubcommand::Sign {

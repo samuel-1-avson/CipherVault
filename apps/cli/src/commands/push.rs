@@ -306,6 +306,13 @@ pub(crate) async fn cmd_push(
                      failed' or 'timeout', check network access first."
                         .yellow()
                 );
+                println!(
+                    "{}",
+                    "  Next steps:     1) 'ciphervault push --local' saves this snapshot on this machine now. \
+                     2) 'ciphervault doctor' checks operators and enrollment. \
+                     3) To join a fleet, ask its operator to enroll this device (see 'ciphervault invite --help')."
+                        .yellow()
+                );
             }
             println!("  Trace ID:       {trace_id}");
             return Err(e.into());

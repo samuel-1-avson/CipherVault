@@ -712,7 +712,15 @@ async fn spawn_with_env(
     }
 
     if json {
-        // AI Agent Bridge: capture stdout and stderr, scrub outputs via ciphervault_redact
+        // AI Agent Bridge: capture stdout and stderr, scrub outputs.
+        // Exact-value scrubbing first (the child may echo an injected
+        // value bare, in a shape no pattern recognises), then shape
+        // redaction. Values are kept in Zeroizing storage only until
+        // the child has finished and its output is scrubbed.
+        let exact_values: Vec<(String, Zeroizing<String>)> = vars
+            .iter()
+            .map(|(k, v)| (k.clone(), Zeroizing::new(v.as_str().to_string())))
+            .collect();
         drop(vars);
         let output = cmd
             .output()
@@ -722,8 +730,13 @@ async fn spawn_with_env(
         let raw_stdout = String::from_utf8_lossy(&output.stdout);
         let raw_stderr = String::from_utf8_lossy(&output.stderr);
 
-        let redacted_stdout = ciphervault_redact::redact_text(&raw_stdout);
-        let redacted_stderr = ciphervault_redact::redact_text(&raw_stderr);
+        let (exact_stdout, n_out) =
+            ciphervault_redact::scrub_exact_values(&raw_stdout, &exact_values);
+        let (exact_stderr, n_err) =
+            ciphervault_redact::scrub_exact_values(&raw_stderr, &exact_values);
+        let redacted_stdout = ciphervault_redact::redact_text(&exact_stdout);
+        let redacted_stderr = ciphervault_redact::redact_text(&exact_stderr);
+        let redactions = n_out + n_err;
 
         let exit_code = output.status.code().unwrap_or(1);
         let payload = serde_json::json!({
@@ -734,6 +747,7 @@ async fn spawn_with_env(
             "secrets_injected_count": num_secrets,
             "stdout": redacted_stdout,
             "stderr": redacted_stderr,
+            "redactions": redactions,
             "duration_ms": duration_ms
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -789,7 +803,7 @@ fn is_control_credential(name: &str) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
+pub(crate) fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
     let p = Path::new(exe);
     if p.extension().is_some() || exe.contains('\\') || exe.contains('/') {
         return (exe.to_string(), Vec::new());
@@ -800,6 +814,13 @@ fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
 
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
+            // Skip packaged-app payload dirs (e.g. the Hermes desktop
+            // bundle's tools): those executables are ACL-denied to
+            // arbitrary child processes, so resolving to them makes
+            // every spawn fail with "Access is denied".
+            if dir.to_string_lossy().contains("WindowsApps") {
+                continue;
+            }
             for ext in &extensions {
                 let candidate = dir.join(format!("{}{}", exe, ext));
                 if candidate.is_file() {

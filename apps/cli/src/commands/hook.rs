@@ -168,6 +168,27 @@ struct HookViolation {
     remediation: String,
 }
 
+/// Spawn `git` portably: on Windows the PATH git may be an MSYS shim
+/// CreateProcess cannot launch directly, so route through the same
+/// resolver `run` uses. A failed spawn must be visible, not a silent
+/// "clean" result.
+fn git_command(args: &[&str]) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let (bin, prefix) = super::run::resolve_windows_command("git");
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(&prefix);
+        cmd.args(args);
+        return cmd;
+    }
+    #[allow(unreachable_code)]
+    {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(args);
+        cmd
+    }
+}
+
 pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
     let store_res = get_vault_store();
     let tracked: Vec<(PathBuf, [u8; 32])> = store_res
@@ -180,9 +201,7 @@ pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
     let mut fixed_files: Vec<String> = Vec::new();
 
     // 1. Check staged files via git
-    let output = std::process::Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
-        .output();
+    let output = git_command(&["diff", "--cached", "--name-only"]).output();
 
     if let Ok(out) = output {
         let staged_text = String::from_utf8_lossy(&out.stdout);
@@ -226,9 +245,7 @@ pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
 
     // 2. Deep scan: Inspect staged diff contents for leaked secret shapes
     if deep {
-        let diff_output = std::process::Command::new("git")
-            .args(["diff", "--cached", "-U0"])
-            .output();
+        let diff_output = git_command(&["diff", "--cached", "-U0"]).output();
 
         if let Ok(diff_out) = diff_output {
             let diff_text = String::from_utf8_lossy(&diff_out.stdout);

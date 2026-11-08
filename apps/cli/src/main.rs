@@ -63,6 +63,8 @@ Developer: vault & secrets:
 
 Developer: run & automate:
   run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
+  redact               Filter stdin through secret redaction (vault values + credential shapes); for agent/CI pipelines, never prints a secret value
+  export-env           Print decrypted env vars as JSON for secret-manager integrations (PRINTS SECRET VALUES; refuses a terminal without --force-tty)
   watch                Watch tracked confidential files and automatically create snapshots on save
   anchor               Anchor a snapshot head commitment to CipherChain (sovereign PoA ledger)
   verify-anchor        Verify a CipherChain sovereign commitment and Merkle inclusion proof
@@ -550,6 +552,36 @@ enum Commands {
         command: Vec<String>,
     },
 
+    /// Filter stdin through secret redaction (vault values + credential shapes); for agent/CI pipelines, never prints a secret value
+    Redact {
+        #[arg(
+            long,
+            help = "Emit {\"text\", \"redactions\", \"exact_values_loaded\", \"vault\"} JSON instead of raw text"
+        )]
+        json: bool,
+    },
+
+    /// Print decrypted env vars as JSON for secret-manager integrations (PRINTS SECRET VALUES; refuses a terminal without --force-tty)
+    ExportEnv {
+        #[arg(
+            long,
+            help = "Only export this tracked secret file (e.g. .env.production)"
+        )]
+        env_file: Option<String>,
+
+        #[arg(
+            long,
+            help = "Snapshot ID (hex) to source from (defaults to latest head)"
+        )]
+        snapshot: Option<String>,
+
+        #[arg(long, help = "Allow reading working copies instead of a snapshot")]
+        allow_working_copy: bool,
+
+        #[arg(long, help = "Allow printing secret values to a terminal (dangerous)")]
+        force_tty: bool,
+    },
+
     /// Watch tracked confidential files and automatically create snapshots on save
     Watch {
         #[arg(
@@ -754,10 +786,9 @@ enum Commands {
         #[arg(
             short,
             long,
-            default_value = "8080",
-            help = "Port to serve web dashboard on in local mode"
+            help = "Port to serve web dashboard on in local mode (passing --port implies --local)"
         )]
-        port: u16,
+        port: Option<u16>,
 
         #[arg(long, help = "Do not automatically open default web browser")]
         no_browser: bool,

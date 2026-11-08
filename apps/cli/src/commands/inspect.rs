@@ -86,12 +86,22 @@ pub(crate) fn build_sync_health(
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct StatusReport {
+    /// Machine-readable status for agent/CI consumers. Stable fields:
+    /// `vault` (bool), `cli_version`, `tracked_paths` (relative paths,
+    /// never contents), `*_short` truncated identifiers (first 8 hex).
+    /// The full `*_hex` fields are kept for existing consumers.
+    vault: bool,
+    cli_version: String,
     vault_id_hex: String,
+    vault_id_short: String,
     device_id_hex: String,
+    device_id_short: String,
     current_epoch: u64,
     device_counter: u64,
     active_head_hex: Option<String>,
+    active_head_short: Option<String>,
     tracked_files: usize,
+    tracked_paths: Vec<String>,
     operators: Vec<String>,
     pending_uploads: usize,
     sync_health: SyncHealthJson,
@@ -111,6 +121,7 @@ impl StatusReport {
         device_counter: u64,
         active_head: Option<[u8; 32]>,
         tracked_files: usize,
+        tracked_paths: Vec<String>,
         operators: Vec<String>,
         pending_uploads: usize,
         sync_health: SyncHealthJson,
@@ -124,12 +135,18 @@ impl StatusReport {
             None => (None, true),
         };
         Self {
+            vault: true,
+            cli_version: env!("CARGO_PKG_VERSION").to_string(),
             vault_id_hex: hex::encode(vault_id),
+            vault_id_short: short_hex(vault_id, 8),
             device_id_hex: hex::encode(device_id),
+            device_id_short: short_hex(device_id, 8),
             current_epoch,
             device_counter,
             active_head_hex: active_head.map(hex::encode),
+            active_head_short: active_head.as_ref().map(|h| short_hex(h, 8)),
             tracked_files,
+            tracked_paths,
             operators: operators
                 .iter()
                 .map(|op| mask_operator_endpoint(op))
@@ -331,7 +348,27 @@ fn print_overview_report(report: &OverviewReport, now_utc: u64) {
 }
 
 pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
-    let store = get_vault_store()?;
+    let store = match get_vault_store() {
+        Ok(store) => store,
+        Err(err) if json && !overview => {
+            // Machine consumers (agent plugins) need a parseable
+            // "no vault here" answer, not a human error banner.
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "vault": false,
+                    "cli_version": env!("CARGO_PKG_VERSION"),
+                    "tracked_paths": [],
+                    "tracked_files": 0,
+                    "operators": [],
+                    "error": err.to_string(),
+                    "next": "Run 'ciphervault init' in this directory to create a vault."
+                }))?
+            );
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
     if overview {
         let now_utc = Utc::now().timestamp().max(0) as u64;
         let report = build_overview_report(&store, now_utc)?;
@@ -378,6 +415,10 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
             counter,
             head_cid,
             tracked.len(),
+            tracked
+                .iter()
+                .map(|(p, _)| p.to_string_lossy().replace('\\', "/"))
+                .collect(),
             operators,
             pending_uploads,
             sync_health,
@@ -758,6 +799,7 @@ mod tests {
             42,
             Some([0x33u8; 32]),
             2,
+            vec![".env".to_string()],
             vec!["http://192.0.2.10:8101".to_string()],
             1,
             SyncHealthJson {
@@ -810,6 +852,7 @@ mod tests {
             42,
             None,
             0,
+            Vec::new(),
             Vec::new(),
             0,
             SyncHealthJson {
