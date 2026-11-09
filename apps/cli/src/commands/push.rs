@@ -258,6 +258,21 @@ pub(crate) async fn cmd_push(
     match rep_result {
         Ok(issued) => {
             record_replication_receipts(&store, &issued);
+            let snapshot_id: [u8; 32] = output
+                .record
+                .snapshot_id
+                .as_slice()
+                .try_into()
+                .context("Snapshot ID must be 32 bytes")?;
+            match finish_remote_push(&store, &snapshot_id, issued.len(), required_replicas) {
+                Ok(true) => {}
+                Ok(false) => eprintln!(
+                    "warning: verified replicas did not meet the required threshold; snapshot remains queued"
+                ),
+                Err(e) => eprintln!(
+                    "warning: could not clear the completed upload from the pending queue: {e}"
+                ),
+            }
             // Anchor the agent-audit head off-machine with the same
             // replication round (best-effort: never fail a good push).
             match crate::commands::anchor_agent_audit(&operators).await {
@@ -347,6 +362,21 @@ pub(crate) async fn cmd_push(
     Ok(())
 }
 
+/// Clears a snapshot from the pending-upload queue once the required
+/// number of independent operators has verified its replica set.
+fn finish_remote_push(
+    store: &ciphervault_local_store::LocalVaultStore,
+    snapshot_id: &[u8; 32],
+    verified_replicas: usize,
+    required_replicas: usize,
+) -> Result<bool> {
+    if verified_replicas < required_replicas {
+        return Ok(false);
+    }
+    store.mark_upload_completed(snapshot_id)?;
+    Ok(true)
+}
+
 /// Files replication receipts (push, repair) into the local lease receipt
 /// log so `status --overview` shows them without a `lease list` round-trip.
 /// A log failure warns instead of failing the command: the data is safe on
@@ -412,5 +442,30 @@ mod tests {
         assert_eq!(row.issued_at_utc, 1000);
         assert_eq!(row.expires_at_utc, 2000);
         assert_eq!(row.signature_hex, "sig");
+    }
+
+    #[test]
+    fn verified_remote_push_clears_its_pending_upload() {
+        let store = ciphervault_local_store::LocalVaultStore::open(":memory:").unwrap();
+        let snapshot_id = [0x5Au8; 32];
+        let record = ciphervault_format::SnapshotRecord {
+            version: ciphervault_format::PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: snapshot_id.to_vec(),
+            parent_snapshot_ids: Vec::new(),
+            device_id: vec![0x33u8; 32],
+            device_counter: 1,
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![0x22u8; 32],
+            encrypted_manifest_len: 4,
+            advisory_timestamp_utc: 1_700_000_000,
+            signature: Vec::new(),
+        };
+        store.save_snapshot(&record, b"manifest", &[]).unwrap();
+        assert_eq!(store.list_pending_uploads().unwrap().len(), 1);
+
+        assert!(finish_remote_push(&store, &snapshot_id, 3, 3).unwrap());
+        assert!(store.list_pending_uploads().unwrap().is_empty());
     }
 }
