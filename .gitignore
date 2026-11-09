@@ -178,3 +178,4 @@ guardians/guardian_share_4_of_5.txt
 guardians/guardian_share_5_of_5.txt
 secrets/api_keys.json
 tmp/ex-e2e/op-data/operator.key
+secrets/operator_service_token.env
