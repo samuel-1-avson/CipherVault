@@ -232,6 +232,41 @@ def test_post_tool_call_logs_writes(ctx, monkeypatch):
     assert not [c for c in calls if c[:2] == ["agent-log", "record"]]
 
 
+def test_run_approval_triggers_anchor(monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    _capture_audit(monkeypatch)
+    anchored = []
+    monkeypatch.setattr(cv, "_anchor_async", lambda cwd=None: anchored.append(cwd))
+    out = cv.on_pre_tool_call("ciphervault_run", {"command": ["npm", "test"], "cwd": "/proj"})
+    assert out and out["action"] == "approve"
+    assert anchored == ["/proj"]
+
+
+def test_block_does_not_trigger_anchor(monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    _capture_audit(monkeypatch)
+    anchored = []
+    monkeypatch.setattr(cv, "_anchor_async", lambda cwd=None: anchored.append(cwd))
+    out = cv.on_pre_tool_call("terminal", {"command": "cat .env"})
+    assert out and out["action"] == "block"
+    assert anchored == []
+
+
+def test_anchor_async_spawns_detached_cli(monkeypatch):
+    spawned = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            spawned["argv"] = argv
+            spawned["kwargs"] = kwargs
+
+    monkeypatch.setattr(cv, "find_binary", lambda: ("/bin/ciphervault", "test"))
+    monkeypatch.setattr(cv.subprocess, "Popen", FakePopen)
+    cv._anchor_async("/proj")
+    assert spawned["argv"] == ["/bin/ciphervault", "agent-log", "anchor"]
+    assert spawned["kwargs"].get("cwd") == "/proj"
+
+
 # ------------------------------------------------------------ guard
 
 def test_guard_blocks_terminal_cat_env(ctx, monkeypatch):
