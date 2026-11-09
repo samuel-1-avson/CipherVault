@@ -32,6 +32,10 @@ from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 RELEASE_VERSION = "1.0.31"
+# SHA-256 of the release ciphervault.exe, pinned in source (catalog rule
+# 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
+# also cross-checks the release SHA256SUMS.txt against this value.
+RELEASE_BINARY_SHA256 = "d31e7864ca78944f829ee339b9fdd3d3bd8552481e994d2c2f8cef92a0d4a717"
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"
@@ -111,6 +115,15 @@ def bootstrap_binary(progress=print):
             expected = parts[0].lower()
     if not expected:
         return {"success": False, "error": f"{asset} not listed in release SHA256SUMS.txt"}
+    if expected != RELEASE_BINARY_SHA256:
+        return {
+            "success": False,
+            "error": (
+                f"release SHA256SUMS.txt lists {expected} for {asset}, which does not "
+                f"match the checksum pinned in this plugin ({RELEASE_BINARY_SHA256}). "
+                "Refusing to install."
+            ),
+        }
     progress(f"Downloading CipherVault v{RELEASE_VERSION} ({asset})…")
     try:
         with urllib.request.urlopen(f"{RELEASE_BASE}/{asset}", timeout=300) as resp:
