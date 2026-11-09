@@ -32,6 +32,10 @@ from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 RELEASE_VERSION = "1.0.31"
+# SHA-256 of the release ciphervault.exe, pinned in source (catalog rule
+# 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
+# also cross-checks the release SHA256SUMS.txt against this value.
+RELEASE_BINARY_SHA256 = "d31e7864ca78944f829ee339b9fdd3d3bd8552481e994d2c2f8cef92a0d4a717"
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"
@@ -76,7 +80,7 @@ def find_binary():
                      root / "target" / "release" / exe):
             if cand.is_file():
                 return str(cand), "repo checkout"
-    found = shutil.which("ciphervault") or shutil.which("cv")
+    found = shutil.which("ciphervault")
     if found:
         return found, "PATH"
     return None, "missing"
@@ -111,6 +115,15 @@ def bootstrap_binary(progress=print):
             expected = parts[0].lower()
     if not expected:
         return {"success": False, "error": f"{asset} not listed in release SHA256SUMS.txt"}
+    if expected != RELEASE_BINARY_SHA256:
+        return {
+            "success": False,
+            "error": (
+                f"release SHA256SUMS.txt lists {expected} for {asset}, which does not "
+                f"match the checksum pinned in this plugin ({RELEASE_BINARY_SHA256}). "
+                "Refusing to install."
+            ),
+        }
     progress(f"Downloading CipherVault v{RELEASE_VERSION} ({asset})…")
     try:
         with urllib.request.urlopen(f"{RELEASE_BASE}/{asset}", timeout=300) as resp:
@@ -144,9 +157,9 @@ _TOKEN_RE = re.compile(
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
 _PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
 _KV_RE = re.compile(
-    r"(?i)((?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)\s*[=:]\s*)([^\s\"']+)"
+    r"(?i)\b((?:[A-Za-z0-9_-]{0,64}(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]{0,64})\s*[=:]\s*)([^\s\"']+)"
 )
-_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:)[^\s/@]+(@)")
+_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,32}://[^\s:/@]{1,64}:)[^\s/@]{1,1024}(@)")
 
 
 def scrub(text):
@@ -162,6 +175,21 @@ def scrub(text):
 
 
 # ---------------------------------------------------------------- CLI
+
+_ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR",
+             "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+             "APPDATA", "LOCALAPPDATA", "COMSPEC", "PATHEXT")
+
+
+def _minimal_env():
+    """Environment for CLI subprocesses: an allow-list, so Hermes
+    provider keys (OPENAI_API_KEY etc.) never reach the CLI or the
+    children it spawns. CipherVault's own CIPHERVAULT_* config passes."""
+    env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
+    env.update({k: v for k, v in os.environ.items() if k.startswith("CIPHERVAULT_")})
+    env.setdefault("NO_COLOR", "1")
+    return env
+
 
 def _run_cli(args, cwd, timeout=120, input_text=None):
     binary, source = find_binary()
@@ -182,6 +210,7 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            env=_minimal_env(),
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"ciphervault timed out after {timeout}s", "binary": source}
@@ -210,6 +239,21 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
         return {"success": False, "error": "ciphervault returned non-JSON output",
                 "raw": scrub(res["output"])[:2000], "binary": res.get("binary")}
     return {"success": True, "data": payload, "binary": res.get("binary")}
+
+
+def _audit(tool, decision, path="", detail=None, cwd=None):
+    """Append one entry to the vault's tamper-evident agent audit
+    chain via the CLI. Best-effort: auditing must never break a tool
+    call, and it records paths/decisions/counts only, never contents."""
+    try:
+        args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
+        if path:
+            args += ["--path", str(path)[:300]]
+        if detail:
+            args += ["--detail", json.dumps(detail)[:500]]
+        _run_cli(args, cwd, timeout=10)
+    except Exception:
+        pass
 
 
 def cli_redact(text, cwd, timeout=15):
@@ -277,6 +321,22 @@ def _tool_redact(params, **kwargs):
     return json.dumps({"success": True, "text": cleaned, "redactions": n})
 
 
+def _tool_audit(params, **kwargs):
+    params = params or {}
+    cwd = params.get("cwd")
+    limit = str(int(params.get("limit", 50)))
+    show = _run_cli_json(["agent-log", "show", "--json", "--limit", limit], cwd)
+    if not show.get("success"):
+        return json.dumps(show)
+    verify = _run_cli_json(["agent-log", "verify", "--json"], cwd)
+    return json.dumps({
+        "success": True,
+        "entries": show.get("data", []),
+        "verification": verify.get("data"),
+        "binary": show.get("binary"),
+    })
+
+
 def _tool_drill(params, **kwargs):
     params = params or {}
     kit = params.get("kit")
@@ -286,45 +346,45 @@ def _tool_drill(params, **kwargs):
             "success": False,
             "error": "provide kit (path to kit file) or shares (list of share file paths). Paths only — never paste kit contents.",
         })
-    dest = params.get("to") or tempfile.mkdtemp(prefix="cv-drill-")
-    args = ["recover", "--to", dest]
-    if kit:
-        args += ["--kit", kit]
-    if shares:
-        args += ["--shares"] + list(shares)
-    res = _run_cli(args, params.get("cwd"), timeout=300)
-    if not res.get("success"):
-        return json.dumps(res)
-    # Hash-then-delete: prove the restore by manifest (names + sizes +
-    # SHA-256) without the agent reading plaintext, and leave no
-    # standing plaintext copy on disk.
-    manifest = []
-    root = Path(dest)
-    for path in sorted(root.rglob("*")):
-        if path.is_file():
-            manifest.append({
-                "path": str(path.relative_to(root)).replace("\\", "/"),
-                "size": path.stat().st_size,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            })
-    auto_delete = params.get("auto_delete", True)
-    deleted = False
-    if auto_delete:
-        shutil.rmtree(root, ignore_errors=True)
-        deleted = not root.exists()
-    return json.dumps({
-        "success": True,
-        "binary": res.get("binary"),
-        "files_restored": len(manifest),
-        "manifest": manifest,
-        "drill_dir_deleted": deleted,
-        "note": (
-            "Plaintext was hashed, verified into this manifest, and deleted; "
-            "it never entered this chat. Compare hashes against a later restore to re-verify."
-            if deleted else
-            "Plaintext remains in the drill dir — delete it as soon as you have compared hashes."
-        ),
-    })
+    # The restore target is ALWAYS a fresh temp dir created here, and
+    # it is the only directory this tool ever deletes (reviewer rule:
+    # never rmtree a model-chosen path).
+    dest = tempfile.mkdtemp(prefix="cv-drill-")
+    try:
+        args = ["recover", "--to", dest]
+        if kit:
+            args += ["--kit", kit]
+        if shares:
+            args += ["--shares"] + list(shares)
+        res = _run_cli(args, params.get("cwd"), timeout=300)
+        if not res.get("success"):
+            return json.dumps(res)
+        # Hash-then-delete: prove the restore by manifest (names +
+        # sizes + SHA-256) without the agent reading plaintext, and
+        # leave no standing plaintext copy on disk.
+        manifest = []
+        root = Path(dest)
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                manifest.append({
+                    "path": str(path.relative_to(root)).replace("\\", "/"),
+                    "size": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                })
+        return json.dumps({
+            "success": True,
+            "binary": res.get("binary"),
+            "files_restored": len(manifest),
+            "manifest": manifest,
+            "drill_dir_deleted": True,
+            "note": (
+                "Plaintext was hashed, verified into this manifest, and "
+                "the temp drill dir was deleted; it never entered this "
+                "chat. Compare hashes against a later restore to re-verify."
+            ),
+        })
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- hooks
@@ -354,6 +414,20 @@ def on_pre_tool_call(tool_name, args, **kwargs):
     CipherVault hook check reports violations. Fail-open on internal
     errors (Hermes isolates hook exceptions too)."""
     try:
+        if tool_name == "ciphervault_run":
+            # Running an arbitrary command with vault secrets in its
+            # environment must go through Hermes's human-approval gate
+            # (same gate as dangerous shell commands). Output scrubbing
+            # alone cannot stop a command from exfiltrating the values
+            # it was given. Every ciphervault_run call is gated.
+            _audit("ciphervault_run", "approval_requested",
+                   detail={"program": ((args or {}).get("command") or [""])[0]},
+                   cwd=(args or {}).get("cwd") or os.getcwd())
+            return {"action": "approve",
+                    "message": ("CipherVault: run a command with vault secrets "
+                                "injected in RAM? The command receives the values; "
+                                "approve only if you trust it."),
+                    "rule_key": "ciphervault_run"}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
@@ -365,6 +439,8 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                 if _SECRET_FILE_RE.search(text) and (
                     tool_name == "read_file" or _READ_CMD_RE.search(text) or tool_name != "terminal"
                 ):
+                    _audit(tool_name, "blocked", path=text[:300],
+                           detail={"reason": "secret_file_read"}, cwd=cwd)
                     return {"action": "block", "message": (
                         "CipherVault guard: reading a secret/kit file into the chat would leak it. "
                         "Use ciphervault_run (RAM-only injection), ciphervault_redact (masked), or "
@@ -375,6 +451,8 @@ def on_pre_tool_call(tool_name, args, **kwargs):
         if joined:
             cleaned, n = cli_redact(joined, cwd, timeout=10)
             if n > 0 or cleaned != joined:
+                _audit(tool_name, "blocked",
+                       detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=cwd)
                 return {"action": "block", "message": (
                     "CipherVault guard: this call contains secret material "
                     f"({n} exact/shape redaction(s)). Work with paths and names only, "
@@ -386,6 +464,10 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                 if _GIT_DANGER_RE.search(text):
                     res = _run_cli_json(["hook", "check", "--deep", "--json"], cwd, timeout=30)
                     if res.get("success") and res["data"].get("violations_count", 0) > 0:
+                        _audit(tool_name, "blocked",
+                               detail={"reason": "git_sprawl",
+                                       "violations": res["data"].get("violations_count", 0)},
+                               cwd=cwd)
                         paths = ", ".join(
                             v.get("path", "?") for v in res["data"].get("violations", [])[:8]
                         )
@@ -410,10 +492,34 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
             return None
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
         sample = result[:262_144]
-        cleaned, _n = cli_redact(sample, cwd, timeout=10)
+        cleaned, n = cli_redact(sample, cwd, timeout=10)
         if cleaned != sample:
+            _audit(tool_name, "scrubbed_result", detail={"redactions": n}, cwd=cwd)
             suffix = "\n…[truncated by CipherVault scrub]" if len(result) > len(sample) else ""
             return cleaned + suffix
+        return None
+    except Exception:
+        return None
+
+
+_WRITE_TOOLS = {"write_file", "patch", "terminal", "execute_code", "browser_exec"}
+
+
+def on_post_tool_call(tool_name, args=None, result=None, **kwargs):
+    """Audit what executed: write/exec tools are recorded (tool +
+    target path only) so a session can later prove what the agent
+    read, wrote, and ran — and what it never saw."""
+    try:
+        if not tool_name or tool_name not in _WRITE_TOOLS:
+            return None
+        args = args or kwargs.get("params") or {}
+        path = ""
+        for key in ("path", "file_path", "file"):
+            if isinstance(args, dict) and args.get(key):
+                path = str(args[key])
+                break
+        cwd = (args.get("cwd") or args.get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
+        _audit(tool_name, "executed", path=path, cwd=cwd)
         return None
     except Exception:
         return None
@@ -465,11 +571,8 @@ def _make_secret_source():
                     argv += ["--env-file", str(cfg["env_file"])]
                 if cfg.get("allow_working_copy"):
                     argv.append("--allow-working-copy")
-                # run_secret_cli has no cwd knob; replicate its posture
-                # (minimal allowlisted env, stdin closed, timeout).
-                keep = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TEMP", "TMPDIR", "LANG", "LC_ALL")
-                env = {k: os.environ[k] for k in keep if k in os.environ}
-                env.setdefault("NO_COLOR", "1")
+                # Minimal allowlisted env, stdin closed, timeout.
+                env = _minimal_env()
                 try:
                     proc = subprocess.run(
                         argv, cwd=str(vault_path), capture_output=True, text=True,
@@ -547,9 +650,9 @@ def _slash_ciphervault(raw_args, **kwargs):
     )
 
 
-def _cli_setup(subparsers):
-    sub = subparsers.add_parser("ciphervault", help="CipherVault zero-knowledge secrets")
-    sp = sub.add_subparsers(dest="ciphervault_cmd")
+def _cli_setup(parser):
+    # Hermes hands us the `hermes ciphervault` subparser itself.
+    sp = parser.add_subparsers(dest="ciphervault_cmd")
     sp.add_parser("bootstrap", help="Download + verify the pinned CipherVault binary (Windows)")
     sp.add_parser("status", help="Binary resolution + vault status for the cwd")
     sp.add_parser("doctor", help="Check binary, vault, and wiring")
@@ -595,15 +698,16 @@ _TOOLS = [
      {"message": {"type": "string", "default": "Agent snapshot"},
       "local_only": {"type": "boolean", "default": True}, "cwd": {"type": "string"}}),
     ("ciphervault_recovery_drill", _tool_drill,
-     "Prove a recovery kit or guardian shares actually restore: restores into a temp dir, returns a SHA-256 manifest (names+sizes+hashes only), then deletes the plaintext. Takes FILE PATHS only — never accept kit/share contents.",
+     "Prove a recovery kit or guardian shares actually restore: restores into a fresh temp dir created by the tool, returns a SHA-256 manifest (names+sizes+hashes only), then deletes that temp dir. Takes FILE PATHS only — never accept kit/share contents.",
      {"kit": {"type": "string", "description": "Path to kit file on disk"},
       "shares": {"type": "array", "items": {"type": "string"}, "description": "Paths to guardian share files"},
-      "to": {"type": "string", "description": "Restore target dir (default: temp dir)"},
-      "auto_delete": {"type": "boolean", "default": True},
       "cwd": {"type": "string"}}),
     ("ciphervault_redact", _tool_redact,
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",
      {"text": {"type": "string"}, "cwd": {"type": "string"}}),
+    ("ciphervault_audit", _tool_audit,
+     "Show the tamper-evident agent audit log: what tools did around this vault's secrets (blocked reads, approval requests, scrubbed results, writes) plus chain verification. Paths/decisions/counts only.",
+     {"limit": {"type": "integer", "default": 50}, "cwd": {"type": "string"}}),
 ]
 
 _REDACTION_PATTERNS = [
@@ -632,6 +736,7 @@ def register(ctx):
         )
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("transform_tool_result", on_transform_tool_result)
+    ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_middleware("tool_request", on_tool_request)
     for registrar, fn in (
         ("register_redaction_patterns", lambda: ctx.register_redaction_patterns(_REDACTION_PATTERNS)),

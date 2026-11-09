@@ -113,11 +113,12 @@ def test_all_tools_registered(ctx):
     assert set(ctx.tools) == {
         "ciphervault_status", "ciphervault_scan", "ciphervault_run",
         "ciphervault_push", "ciphervault_recovery_drill", "ciphervault_redact",
+        "ciphervault_audit",
     }
 
 
 def test_hooks_middleware_source_commands_registered(ctx):
-    assert set(ctx.hooks) == {"pre_tool_call", "transform_tool_result"}
+    assert set(ctx.hooks) == {"pre_tool_call", "transform_tool_result", "post_tool_call"}
     assert set(ctx.middleware) == {"tool_request"}
     assert ctx.secret_source is not None
     assert ctx.secret_source.name == "ciphervault"
@@ -147,6 +148,86 @@ def test_scrub_passes_clean_text():
     assert cv.scrub("snapshot 9f2c head replicated") == "snapshot 9f2c head replicated"
 
 
+def test_scrub_is_not_quadratic_on_long_tokens():
+    import time
+    for payload in ("a" * 256_000, "x" * 200_000 + "secret", "word " * 40_000):
+        start = time.perf_counter()
+        cv.scrub(payload)
+        assert time.perf_counter() - start < 2.0
+
+
+def test_drill_never_deletes_caller_chosen_dir(ctx, tmp_path, monkeypatch):
+    precious = tmp_path / "precious"
+    precious.mkdir()
+    marker = precious / "keep.txt"
+    marker.write_text("do not delete")
+
+    def fake_run_cli(args, cwd, timeout=300):
+        dest = Path(args[args.index("--to") + 1])
+        (dest / "restored.txt").write_text("fake plaintext")
+        return {"success": True, "binary": "test"}
+
+    monkeypatch.setattr(cv, "_run_cli", fake_run_cli)
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "to": str(precious), "auto_delete": True}))
+    assert out["success"] is True and out["drill_dir_deleted"] is True
+    assert out["files_restored"] == 1
+    assert marker.exists() and marker.read_text() == "do not delete"
+
+
+def test_minimal_env_excludes_provider_keys(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("CIPHERVAULT_OPERATOR_SERVICE_TOKEN", "own-config")
+    env = cv._minimal_env()
+    assert "OPENAI_API_KEY" not in env
+    assert env.get("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") == "own-config"
+
+
+# ------------------------------------------------------------ audit log
+
+def _capture_audit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cv, "_run_cli", lambda args, cwd, timeout=120, input_text=None:
+                        (calls.append(args), {"success": True, "output": "{}", "binary": "test"})[1])
+    return calls
+
+
+def test_guard_block_is_audit_logged(ctx, monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    calls = _capture_audit(monkeypatch)
+    out = cv.on_pre_tool_call("terminal", {"command": "cat .env"})
+    assert out and out["action"] == "block"
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "--decision" in rec[0] and "blocked" in rec[0]
+
+
+def test_run_approval_is_audit_logged(ctx, monkeypatch):
+    calls = _capture_audit(monkeypatch)
+    out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"]})
+    assert out and out["action"] == "approve"
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "approval_requested" in rec[0]
+
+
+def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 2))
+    calls = _capture_audit(monkeypatch)
+    out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer abcdefghijklmnop")
+    assert out is not None
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "scrubbed_result" in rec[0]
+
+
+def test_post_tool_call_logs_writes(ctx, monkeypatch):
+    calls = _capture_audit(monkeypatch)
+    cv.on_post_tool_call("write_file", {"path": "src/app.py"}, "ok")
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "executed" in rec[0]
+    calls.clear()
+    cv.on_post_tool_call("read_file", {"path": "README.md"}, "ok")
+    assert not [c for c in calls if c[:2] == ["agent-log", "record"]]
+
+
 # ------------------------------------------------------------ guard
 
 def test_guard_blocks_terminal_cat_env(ctx, monkeypatch):
@@ -172,8 +253,16 @@ def test_guard_allows_clean_terminal(ctx, monkeypatch):
     assert cv.on_pre_tool_call("terminal", {"command": "git status"}) is None
 
 
-def test_guard_never_blocks_ciphervault_tools(ctx):
-    assert cv.on_pre_tool_call("ciphervault_run", {"command": ["cat", ".env"]}) is None
+def test_guard_gates_ciphervault_run_with_approval(ctx):
+    out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"]})
+    assert out and out["action"] == "approve" and out.get("rule_key")
+    out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"], "dry_run": True})
+    assert out and out["action"] == "approve"
+
+
+def test_guard_never_blocks_other_ciphervault_tools(ctx):
+    assert cv.on_pre_tool_call("ciphervault_status", {}) is None
+    assert cv.on_pre_tool_call("ciphervault_redact", {"text": "API_KEY=x"}) is None
 
 
 def test_transform_scrubs_other_results(ctx, monkeypatch):
@@ -238,6 +327,11 @@ if args[:2] == ["redact", "--json"]:
 if args[:2] == ["run", "--json"]:
     print(json.dumps({"status": "success", "exit_code": 0, "stdout": "KEY=[REDACTED:API_KEY]",
                       "stderr": "", "redactions": 1, "secrets_injected_count": 1})); raise SystemExit(0)
+if args[:2] == ["agent-log", "show"]:
+    print(json.dumps([{"id": 1, "tool": "terminal", "decision": "blocked", "path": ".env",
+                       "entry_hash": "ab12", "prev_hash": "GENESIS"}])); raise SystemExit(0)
+if args[:2] == ["agent-log", "verify"]:
+    print(json.dumps({"ok": True, "entries": 1, "head_hash": "ab12", "first_bad_id": None})); raise SystemExit(0)
 print("unexpected args", args, file=sys.stderr); raise SystemExit(2)
 """
 
@@ -272,3 +366,10 @@ def test_redact_tool_against_fake_cli(ctx, fake_cli):
 def test_run_against_fake_cli(ctx, fake_cli):
     out = json.loads(ctx.tools["ciphervault_run"][1]({"command": ["echo", "hi"]}))
     assert out["success"] is True and out["data"]["redactions"] == 1
+
+
+def test_audit_tool_against_fake_cli(ctx, fake_cli):
+    out = json.loads(ctx.tools["ciphervault_audit"][1]({}))
+    assert out["success"] is True
+    assert out["verification"]["ok"] is True
+    assert out["entries"][0]["decision"] == "blocked"
