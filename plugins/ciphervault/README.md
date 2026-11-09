@@ -16,6 +16,7 @@ machine and never enter the model context.
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; replicates when `local_only=false`) |
 | `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir |
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
+| `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, device-signed): blocked reads, approval requests, scrubbed results, writes — plus chain verification |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file reads, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
 | `transform_tool_result` hook | Scrubs every other tool's result before it enters context |
 | `tool_request` middleware | Defaults the session cwd into `ciphervault_*` calls |
@@ -49,6 +50,13 @@ machine and never enter the model context.
   workspace you point it at (paths/counts only, via `status --json`),
   tracked secret files *inside the CLI process* for exact-value
   redaction (values never enter the plugin process or the model).
+- **Audit log:** guard decisions (blocked reads/payloads/git ops),
+  `ciphervault_run` approval requests, scrubbed results, and
+  write/exec tool completions are appended to a hash-chained,
+  device-signed audit log inside the vault's local store
+  (`ciphervault agent-log show|verify|export`). Entries contain
+  tool/path/decision/counts only — never contents — so a session can
+  later *prove* what the agent touched and what it never saw.
 - **Credentials:** the plugin holds none. The secret source passes the
   CLI's `export-env` JSON output straight to Hermes' orchestrator.
 - **Approvals/unattended:** tools fail with structured JSON errors when

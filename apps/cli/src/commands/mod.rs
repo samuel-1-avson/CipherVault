@@ -1,6 +1,7 @@
 //! CLI command implementations.
 
 pub(crate) mod agent_bridge;
+pub(crate) mod agent_log;
 pub(crate) mod anchor;
 pub(crate) mod approvals;
 pub(crate) mod audit;
@@ -32,6 +33,7 @@ pub(crate) mod track;
 pub(crate) mod update;
 
 pub(crate) use agent_bridge::*;
+pub(crate) use agent_log::*;
 pub(crate) use anchor::*;
 pub(crate) use approvals::*;
 pub(crate) use audit::*;
@@ -211,6 +213,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 output,
             } => cmd_recovery_key_restore(locator, operator, output).await,
         },
+        crate::Commands::AgentLog { sub } => cmd_agent_log(sub).await,
         crate::Commands::Token { sub } => cmd_token(sub).await,
         crate::Commands::Anchor {
             head,

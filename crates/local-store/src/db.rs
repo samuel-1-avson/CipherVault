@@ -98,6 +98,31 @@ pub struct ActivityEntry {
     pub created_at_utc: i64,
 }
 
+/// One entry in the tamper-evident agent-access audit chain. Records
+/// what an AI agent's tools did around secrets (blocked reads, approval
+/// requests, scrubbed results) — paths and decisions, never contents.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AgentAuditEntry {
+    pub id: i64,
+    pub created_at_utc: i64,
+    pub tool: String,
+    pub decision: String,
+    pub path: String,
+    pub detail_json: String,
+    pub prev_hash: String,
+    pub entry_hash: String,
+    pub signature: String,
+}
+
+/// Result of walking the agent-audit chain from genesis.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AgentAuditReport {
+    pub ok: bool,
+    pub entries: usize,
+    pub head_hash: String,
+    pub first_bad_id: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseReceiptRecord {
     pub lease_id: String,
@@ -252,6 +277,18 @@ impl LocalVaultStore {
                 created_at_utc INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at_utc DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at_utc INTEGER NOT NULL,
+                tool TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                path TEXT NOT NULL DEFAULT '',
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                prev_hash TEXT NOT NULL,
+                entry_hash TEXT NOT NULL,
+                signature TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS lease_receipts (
                 lease_id TEXT PRIMARY KEY,
@@ -1226,6 +1263,135 @@ impl LocalVaultStore {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// Appends one entry to the tamper-evident agent-access audit
+    /// chain. The entry hash covers the previous head, so rewriting or
+    /// deleting history breaks verification; each entry is also signed
+    /// with the device key. Only paths/decisions/counts are recorded —
+    /// never secret contents.
+    pub fn append_agent_audit(
+        &self,
+        tool: &str,
+        decision: &str,
+        path: &str,
+        detail_json: &str,
+    ) -> Result<AgentAuditEntry, LocalStoreError> {
+        use ed25519_dalek::Signer;
+        use sha2::Digest;
+        let prev_hash: String = self
+            .conn
+            .query_row(
+                "SELECT entry_hash FROM agent_audit ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "GENESIS".to_string());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let canonical = format!("{prev_hash}\n{now}\n{tool}\n{decision}\n{path}\n{detail_json}");
+        let entry_hash = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
+        let (_, device_sk, _, _) = self.get_device_state()?;
+        let signature = hex::encode(device_sk.sign(entry_hash.as_bytes()).to_bytes());
+        self.conn.execute(
+            "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![now, tool, decision, path, detail_json, prev_hash, entry_hash, signature],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        Ok(AgentAuditEntry {
+            id,
+            created_at_utc: now,
+            tool: tool.to_string(),
+            decision: decision.to_string(),
+            path: path.to_string(),
+            detail_json: detail_json.to_string(),
+            prev_hash,
+            entry_hash,
+            signature,
+        })
+    }
+
+    /// Lists agent-audit entries, newest first.
+    pub fn list_agent_audit(&self, limit: usize) -> Result<Vec<AgentAuditEntry>, LocalStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature FROM agent_audit ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(AgentAuditEntry {
+                id: row.get(0)?,
+                created_at_utc: row.get(1)?,
+                tool: row.get(2)?,
+                decision: row.get(3)?,
+                path: row.get(4)?,
+                detail_json: row.get(5)?,
+                prev_hash: row.get(6)?,
+                entry_hash: row.get(7)?,
+                signature: row.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Walks the chain from genesis recomputing every hash and
+    /// signature. `first_bad_id` is the earliest entry that fails.
+    pub fn verify_agent_audit(&self) -> Result<AgentAuditReport, LocalStoreError> {
+        use ed25519_dalek::Verifier;
+        use sha2::Digest;
+        let (_, device_sk, _, _) = self.get_device_state()?;
+        let vk = device_sk.verifying_key();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature FROM agent_audit ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AgentAuditEntry {
+                id: row.get(0)?,
+                created_at_utc: row.get(1)?,
+                tool: row.get(2)?,
+                decision: row.get(3)?,
+                path: row.get(4)?,
+                detail_json: row.get(5)?,
+                prev_hash: row.get(6)?,
+                entry_hash: row.get(7)?,
+                signature: row.get(8)?,
+            })
+        })?;
+        let mut prev = "GENESIS".to_string();
+        let mut count = 0usize;
+        for r in rows {
+            let e = r?;
+            count += 1;
+            let canonical = format!(
+                "{}\n{}\n{}\n{}\n{}\n{}",
+                e.prev_hash, e.created_at_utc, e.tool, e.decision, e.path, e.detail_json
+            );
+            let expect = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
+            let sig_ok = hex::decode(&e.signature)
+                .ok()
+                .and_then(|b| ed25519_dalek::Signature::from_slice(&b).ok())
+                .map(|sig| vk.verify(e.entry_hash.as_bytes(), &sig).is_ok())
+                .unwrap_or(false);
+            if e.prev_hash != prev || expect != e.entry_hash || !sig_ok {
+                return Ok(AgentAuditReport {
+                    ok: false,
+                    entries: count,
+                    head_hash: prev,
+                    first_bad_id: Some(e.id),
+                });
+            }
+            prev = e.entry_hash.clone();
+        }
+        Ok(AgentAuditReport {
+            ok: true,
+            entries: count,
+            head_hash: prev,
+            first_bad_id: None,
+        })
     }
 
     /// Latest successful replication record (manual push or watcher sync),
@@ -2424,6 +2590,81 @@ mod tests {
         let latest = store.latest_sync_success().unwrap().unwrap();
         assert_eq!(latest.event_type, "WATCH_SYNC_OK");
         assert!(latest.details_json.contains("bb"));
+    }
+
+    fn agent_audit_store() -> LocalVaultStore {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        let r = RecoverySecret::generate();
+        let r_sk = r.derive_recovery_signing_key().unwrap();
+        let (_, r_enc_pk) = r.derive_recovery_encryption_keys().unwrap();
+        let vault_id = [0xAAu8; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: r_sk.verifying_key().as_bytes().to_vec(),
+            recovery_encryption_pk: r_enc_pk.as_bytes().to_vec(),
+            policy_digest: vec![0u8; 32],
+            created_at_utc: 1000,
+            creation_nonce: vec![0u8; 32],
+            signature: Vec::new(),
+        };
+        genesis.sign(&r_sk).unwrap();
+        store
+            .init_vault(
+                &vault_id,
+                &genesis,
+                &generate_signing_key(),
+                &[0xBBu8; 32],
+                &VaultEpochKey::generate(),
+                &r.derive_recovery_locator().unwrap(),
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn test_agent_audit_chain_verifies_and_detects_tamper() {
+        let store = agent_audit_store();
+        let e1 = store
+            .append_agent_audit("terminal", "blocked", ".env", r#"{"reason":"secret_read"}"#)
+            .unwrap();
+        let e2 = store
+            .append_agent_audit("ciphervault_run", "approval_requested", "", "{}")
+            .unwrap();
+        assert_eq!(e2.prev_hash, e1.entry_hash);
+        assert_ne!(e1.signature, e2.signature);
+
+        let report = store.verify_agent_audit().unwrap();
+        assert!(report.ok, "fresh chain must verify: {report:?}");
+        assert_eq!(report.entries, 2);
+        assert_eq!(report.head_hash, e2.entry_hash);
+
+        // Tamper with history: verification must fail at that entry.
+        store
+            .conn
+            .execute(
+                "UPDATE agent_audit SET path = 'innocent.txt' WHERE id = ?1",
+                params![e1.id],
+            )
+            .unwrap();
+        let report = store.verify_agent_audit().unwrap();
+        assert!(!report.ok);
+        assert_eq!(report.first_bad_id, Some(e1.id));
+    }
+
+    #[test]
+    fn test_agent_audit_list_newest_first() {
+        let store = agent_audit_store();
+        store
+            .append_agent_audit("read_file", "blocked", "id_rsa", "{}")
+            .unwrap();
+        store
+            .append_agent_audit("terminal", "scrubbed_result", "", r#"{"redactions":2}"#)
+            .unwrap();
+        let entries = store.list_agent_audit(10).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].tool, "terminal");
+        assert_eq!(entries[1].decision, "blocked");
     }
 
     #[test]

@@ -241,6 +241,21 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
     return {"success": True, "data": payload, "binary": res.get("binary")}
 
 
+def _audit(tool, decision, path="", detail=None, cwd=None):
+    """Append one entry to the vault's tamper-evident agent audit
+    chain via the CLI. Best-effort: auditing must never break a tool
+    call, and it records paths/decisions/counts only, never contents."""
+    try:
+        args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
+        if path:
+            args += ["--path", str(path)[:300]]
+        if detail:
+            args += ["--detail", json.dumps(detail)[:500]]
+        _run_cli(args, cwd, timeout=10)
+    except Exception:
+        pass
+
+
 def cli_redact(text, cwd, timeout=15):
     """Exact+shape redaction via the CLI (vault values are matched
     inside the CLI process; they never enter this process). Falls back
@@ -304,6 +319,22 @@ def _tool_redact(params, **kwargs):
     params = params or {}
     cleaned, n = cli_redact(params.get("text") or "", params.get("cwd"))
     return json.dumps({"success": True, "text": cleaned, "redactions": n})
+
+
+def _tool_audit(params, **kwargs):
+    params = params or {}
+    cwd = params.get("cwd")
+    limit = str(int(params.get("limit", 50)))
+    show = _run_cli_json(["agent-log", "show", "--json", "--limit", limit], cwd)
+    if not show.get("success"):
+        return json.dumps(show)
+    verify = _run_cli_json(["agent-log", "verify", "--json"], cwd)
+    return json.dumps({
+        "success": True,
+        "entries": show.get("data", []),
+        "verification": verify.get("data"),
+        "binary": show.get("binary"),
+    })
 
 
 def _tool_drill(params, **kwargs):
@@ -389,6 +420,9 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # (same gate as dangerous shell commands). Output scrubbing
             # alone cannot stop a command from exfiltrating the values
             # it was given. Every ciphervault_run call is gated.
+            _audit("ciphervault_run", "approval_requested",
+                   detail={"program": ((args or {}).get("command") or [""])[0]},
+                   cwd=(args or {}).get("cwd") or os.getcwd())
             return {"action": "approve",
                     "message": ("CipherVault: run a command with vault secrets "
                                 "injected in RAM? The command receives the values; "
@@ -405,6 +439,8 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                 if _SECRET_FILE_RE.search(text) and (
                     tool_name == "read_file" or _READ_CMD_RE.search(text) or tool_name != "terminal"
                 ):
+                    _audit(tool_name, "blocked", path=text[:300],
+                           detail={"reason": "secret_file_read"}, cwd=cwd)
                     return {"action": "block", "message": (
                         "CipherVault guard: reading a secret/kit file into the chat would leak it. "
                         "Use ciphervault_run (RAM-only injection), ciphervault_redact (masked), or "
@@ -415,6 +451,8 @@ def on_pre_tool_call(tool_name, args, **kwargs):
         if joined:
             cleaned, n = cli_redact(joined, cwd, timeout=10)
             if n > 0 or cleaned != joined:
+                _audit(tool_name, "blocked",
+                       detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=cwd)
                 return {"action": "block", "message": (
                     "CipherVault guard: this call contains secret material "
                     f"({n} exact/shape redaction(s)). Work with paths and names only, "
@@ -426,6 +464,10 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                 if _GIT_DANGER_RE.search(text):
                     res = _run_cli_json(["hook", "check", "--deep", "--json"], cwd, timeout=30)
                     if res.get("success") and res["data"].get("violations_count", 0) > 0:
+                        _audit(tool_name, "blocked",
+                               detail={"reason": "git_sprawl",
+                                       "violations": res["data"].get("violations_count", 0)},
+                               cwd=cwd)
                         paths = ", ".join(
                             v.get("path", "?") for v in res["data"].get("violations", [])[:8]
                         )
@@ -450,10 +492,34 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
             return None
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
         sample = result[:262_144]
-        cleaned, _n = cli_redact(sample, cwd, timeout=10)
+        cleaned, n = cli_redact(sample, cwd, timeout=10)
         if cleaned != sample:
+            _audit(tool_name, "scrubbed_result", detail={"redactions": n}, cwd=cwd)
             suffix = "\n…[truncated by CipherVault scrub]" if len(result) > len(sample) else ""
             return cleaned + suffix
+        return None
+    except Exception:
+        return None
+
+
+_WRITE_TOOLS = {"write_file", "patch", "terminal", "execute_code", "browser_exec"}
+
+
+def on_post_tool_call(tool_name, args=None, result=None, **kwargs):
+    """Audit what executed: write/exec tools are recorded (tool +
+    target path only) so a session can later prove what the agent
+    read, wrote, and ran — and what it never saw."""
+    try:
+        if not tool_name or tool_name not in _WRITE_TOOLS:
+            return None
+        args = args or kwargs.get("params") or {}
+        path = ""
+        for key in ("path", "file_path", "file"):
+            if isinstance(args, dict) and args.get(key):
+                path = str(args[key])
+                break
+        cwd = (args.get("cwd") or args.get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
+        _audit(tool_name, "executed", path=path, cwd=cwd)
         return None
     except Exception:
         return None
@@ -639,6 +705,9 @@ _TOOLS = [
     ("ciphervault_redact", _tool_redact,
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",
      {"text": {"type": "string"}, "cwd": {"type": "string"}}),
+    ("ciphervault_audit", _tool_audit,
+     "Show the tamper-evident agent audit log: what tools did around this vault's secrets (blocked reads, approval requests, scrubbed results, writes) plus chain verification. Paths/decisions/counts only.",
+     {"limit": {"type": "integer", "default": 50}, "cwd": {"type": "string"}}),
 ]
 
 _REDACTION_PATTERNS = [
@@ -667,6 +736,7 @@ def register(ctx):
         )
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("transform_tool_result", on_transform_tool_result)
+    ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_middleware("tool_request", on_tool_request)
     for registrar, fn in (
         ("register_redaction_patterns", lambda: ctx.register_redaction_patterns(_REDACTION_PATTERNS)),

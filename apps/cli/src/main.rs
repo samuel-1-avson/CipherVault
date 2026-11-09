@@ -64,6 +64,7 @@ Developer: vault & secrets:
 Developer: run & automate:
   run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
   redact               Filter stdin through secret redaction (vault values + credential shapes); for agent/CI pipelines, never prints a secret value
+  agent-log            Tamper-evident log of what agent tools did around this vault's secrets
   export-env           Print decrypted env vars as JSON for secret-manager integrations (PRINTS SECRET VALUES; refuses a terminal without --force-tty)
   watch                Watch tracked confidential files and automatically create snapshots on save
   anchor               Anchor a snapshot head commitment to CipherChain (sovereign PoA ledger)
@@ -402,6 +403,12 @@ enum Commands {
     Recovery {
         #[command(subcommand)]
         sub: RecoverySubcommand,
+    },
+
+    /// Tamper-evident log of what agent tools did around this vault's secrets
+    AgentLog {
+        #[command(subcommand)]
+        sub: AgentLogSubcommand,
     },
 
     /// Compare changes in confidential files across snapshots or against working tree
@@ -1928,6 +1935,41 @@ enum HookSubcommand {
             help = "Emit machine-readable JSON output for AI coding agents and CI scanners"
         )]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentLogSubcommand {
+    /// Append one audit entry (used by agent plugins/hooks)
+    Record {
+        #[arg(long, help = "Tool that acted, e.g. terminal")]
+        tool: String,
+        #[arg(
+            long,
+            help = "Decision, e.g. blocked / approval_requested / scrubbed_result"
+        )]
+        decision: String,
+        #[arg(long, default_value = "", help = "File path involved (never contents)")]
+        path: String,
+        #[arg(long, default_value = "{}", help = "JSON detail (counts/reasons only)")]
+        detail: String,
+    },
+    /// List audit entries, newest first
+    Show {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the hash chain and device signatures
+    Verify {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export the whole chain as JSON lines
+    Export {
+        #[arg(long, help = "Output file (default: stdout)")]
+        out: Option<PathBuf>,
     },
 }
 
