@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CipherVault Operator Architecture (post-audit)</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'JetBrains Mono',monospace;background:#020617;min-height:100vh;padding:2rem;color:#fff}
+.container{max-width:1200px;margin:0 auto}
+.header{margin-bottom:1.5rem}
+.header-row{display:flex;align-items:center;gap:1rem;margin-bottom:.5rem}
+.pulse-dot{width:12px;height:12px;background:#34d399;border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+h1{font-size:1.4rem;font-weight:700;letter-spacing:-.025em}
+.subtitle{color:#94a3b8;font-size:.82rem;margin-left:1.75rem}
+.subtitle b{color:#e2e8f0}
+.diagram-container{background:rgba(15,23,42,.5);border-radius:1rem;border:1px solid #1e293b;padding:1.5rem;overflow-x:auto;margin-bottom:1.5rem}
+.diagram-container h2{font-size:.9rem;font-weight:600;margin-bottom:.25rem}
+.diagram-container p.desc{color:#94a3b8;font-size:.75rem;margin-bottom:1rem}
+svg{width:100%;min-width:920px;display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:1rem}
+.card{background:rgba(15,23,42,.5);border-radius:.75rem;border:1px solid #1e293b;padding:1.25rem}
+.card-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem}
+.card-dot{width:8px;height:8px;border-radius:50%}
+.card-dot.cyan{background:#22d3ee}.card-dot.emerald{background:#34d399}.card-dot.violet{background:#a78bfa}.card-dot.amber{background:#fbbf24}.card-dot.rose{background:#fb7185}.card-dot.orange{background:#fb923c}
+.card h3{font-size:.85rem;font-weight:600}
+.card ul{list-style:none;color:#94a3b8;font-size:.72rem;line-height:1.55}
+.card li{margin-bottom:.375rem}
+.card li b{color:#e2e8f0}
+.footer{text-align:center;margin-top:1.5rem;color:#475569;font-size:.72rem}
+.new{fill:#34d399}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<div class="header-row"><div class="pulse-dot"></div><h1>CipherVault Operator — Hardened Architecture</h1></div>
+<p class="subtitle"><b>post-audit 2026-11-08</b> • Axum :PORT • strict_auth default-on • green = this audit's additions • R1–R13 all closed, suite green</p>
+</div>
+
+<div class="diagram-container">
+<h2>Request path: wire → middleware → route → state → disk/swarm</h2>
+<p class="desc">Top to bottom. Anonymous capability reads are isolated on their own 60/min tier; the control plane needs the service token; enrollment can no longer mint fleet admins by default.</p>
+<svg viewBox="0 0 1000 860">
+<defs>
+<marker id="ah" markerWidth="10" markerHeight="7" refX="9" ry="0" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+<marker id="ah-e" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#34d399"/></marker>
+<marker id="ah-r" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#fb7185"/></marker>
+<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+</defs>
+<rect width="100%" height="100%" fill="url(#grid)"/>
+
+<!-- client -->
+<rect x="360" y="8" width="280" height="52" rx="6" fill="#0f172a" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="500" y="30" fill="white" font-size="11" font-weight="600" text-anchor="middle">Clients: CLI / dashboard / peers</text>
+<text x="500" y="47" fill="#94a3b8" font-size="9" text-anchor="middle">Bearer session • service token • anonymous reads</text>
+<line x1="500" y1="60" x2="500" y2="84" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+
+<!-- middleware stack -->
+<rect x="180" y="88" width="640" height="150" rx="12" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="192" y="106" fill="#34d399" font-size="10" font-weight="600">MIDDLEWARE (outermost → inner)</text>
+<rect x="200" y="114" width="600" height="30" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+<text x="500" y="133" fill="white" font-size="10" font-weight="600" text-anchor="middle">CatchPanic → CORS → BodyLimit (4 MiB) → trace + trace-id echo</text>
+<rect x="200" y="148" width="600" height="30" rx="6" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="500" y="167" fill="white" font-size="10" font-weight="600" text-anchor="middle">Global rate limit 600/min/key (fail-closed past 4096 keys)</text>
+<rect x="200" y="182" width="600" height="44" rx="6" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+<text x="500" y="199" fill="white" font-size="10" font-weight="600" text-anchor="middle">✱ Recovery-GET tier: 60/min <tspan fill="#94a3b8" font-size="9">CIPHERVAULT_RECOVERY_READ_LIMIT_PER_MIN</tspan></text>
+<text x="500" y="215" fill="#34d399" font-size="8" text-anchor="middle">NEW (R9) — anonymous capability reads isolated from the global bucket</text>
+<line x1="500" y1="238" x2="500" y2="262" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+
+<!-- router columns -->
+<rect x="16" y="266" width="310" height="252" rx="12" fill="rgba(34,211,238,0.05)" stroke="#22d3ee" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="28" y="284" fill="#22d3ee" font-size="10" font-weight="600">PUBLIC (no auth)</text>
+<text x="28" y="304" fill="white" font-size="9" font-weight="600">GET /v1/info • /healthz</text>
+<text x="28" y="320" fill="#94a3b8" font-size="8">signed descriptor • readiness</text>
+<text x="28" y="340" fill="white" font-size="9" font-weight="600">GET /metrics <tspan class="new">◦ loopback-gated</tspan></text>
+<text x="28" y="356" fill="#94a3b8" font-size="8">403 off-loopback unless PUBLIC=1 (R10)</text>
+<text x="28" y="376" fill="white" font-size="9" font-weight="600">POST /v1/challenges • /sessions</text>
+<text x="28" y="392" fill="#94a3b8" font-size="8">Ed25519 challenge, 5-min TTL</text>
+<text x="28" y="404" fill="#94a3b8" font-size="8">64/live-key cap (R13) • 5k evict</text>
+<text x="28" y="424" fill="white" font-size="9" font-weight="600">POST /v1/chain/publish</text>
+<text x="28" y="440" fill="#94a3b8" font-size="8">envelope self-authenticates</text>
+<text x="28" y="460" fill="white" font-size="9" font-weight="600">GET /v1/recovery/…/records</text>
+<text x="28" y="476" fill="#94a3b8" font-size="8">anonymous by design • 60/min tier</text>
+<text x="28" y="492" fill="#94a3b8" font-size="8">paged 1 MiB • ?cursor= required</text>
+
+<rect x="346" y="266" width="308" height="252" rx="12" fill="rgba(6,78,59,0.15)" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="358" y="284" fill="#34d399" font-size="10" font-weight="600">SESSION (Bearer + vault scope)</text>
+<text x="358" y="304" fill="white" font-size="9" font-weight="600">PUT/GET /v1/objects/:cid</text>
+<text x="358" y="320" fill="#94a3b8" font-size="8">4 MiB cap • SHA-256 bind • PoS proof</text>
+<text x="358" y="340" fill="white" font-size="9" font-weight="600">POST /v1/leases • /:id/renew</text>
+<text x="358" y="356" fill="#94a3b8" font-size="8">term ≤ 36500d, checked_add (R8)</text>
+<text x="358" y="372" fill="#94a3b8" font-size="8">owner sidecar, case-insensitive</text>
+<text x="358" y="392" fill="white" font-size="9" font-weight="600">POST /v1/recovery/…/records</text>
+<text x="358" y="408" fill="#94a3b8" font-size="8">sig-checked append • writes only</text>
+<text x="358" y="428" fill="white" font-size="9" font-weight="600">POST /v1/sessions/revoke</text>
+<text x="358" y="444" fill="#94a3b8" font-size="8">per-request enrollment recheck</text>
+<text x="358" y="464" fill="white" font-size="9" font-weight="600">approval planes (/v1/auth/*)</text>
+<text x="358" y="480" fill="#94a3b8" font-size="8">fleet-admin OR vault scope</text>
+<text x="358" y="500" fill="#34d399" font-size="8">✱ bypass now LOUD (R3) • "bearer" ok (R4)</text>
+
+<rect x="674" y="266" width="310" height="252" rx="12" fill="rgba(136,19,55,0.2)" stroke="#fb7185" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="686" y="284" fill="#fb7185" font-size="10" font-weight="600">CONTROL (service token)</text>
+<text x="686" y="304" fill="white" font-size="9" font-weight="600">POST /v1/identities (enroll)</text>
+<text x="686" y="320" fill="#94a3b8" font-size="8">✱ strips FLEET_ADMIN w/o opt-in (R6)</text>
+<text x="686" y="336" fill="#94a3b8" font-size="8">ALLOW_FLEET_ADMIN_GRANT=1 to grant</text>
+<text x="686" y="356" fill="white" font-size="9" font-weight="600">GET / revoke identities</text>
+<text x="686" y="372" fill="#94a3b8" font-size="8">revoke cascades to sessions</text>
+<text x="686" y="392" fill="white" font-size="9" font-weight="600">POST /v1/vouchers (mint)</text>
+<text x="686" y="408" fill="#94a3b8" font-size="8">✱ fail-closed profile (R7):</text>
+<text x="686" y="422" fill="#94a3b8" font-size="8">flag + max-quota + user-quota</text>
+<text x="686" y="442" fill="white" font-size="9" font-weight="600">peers admin • membership</text>
+<text x="686" y="458" fill="#94a3b8" font-size="8">constant-time token compare</text>
+<text x="686" y="478" fill="#94a3b8" font-size="8">✱ &lt;32ch boot warning (R5)</text>
+<text x="686" y="498" fill="#fb7185" font-size="8">non-strict bypass → stderr alarm</text>
+
+<!-- arrows down to state -->
+<line x1="171" y1="518" x2="171" y2="548" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="500" y1="518" x2="500" y2="548" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="829" y1="518" x2="829" y2="548" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+
+<!-- state row -->
+<rect x="16" y="552" width="470" height="140" rx="12" fill="transparent" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="28" y="570" fill="#a78bfa" font-size="10" font-weight="600">STATE — OperatorState (fsync'd, file-backed)</text>
+<text x="28" y="590" fill="white" font-size="9">sessions.json (5k, 1h) • challenges (5-min, 64/key)</text>
+<text x="28" y="606" fill="white" font-size="9">leases/ + .owner sidecars • ledger (vouchers, fail-closed 503)</text>
+<text x="28" y="622" fill="white" font-size="9">objects/:cid (content-addressed) • recovery/:locator.log</text>
+<text x="28" y="638" fill="white" font-size="9">identities.json • operator.key (0600, rotate→.previous-*)</text>
+<text x="28" y="656" fill="#94a3b8" font-size="8">10k records / 64 MiB per log • 64 KiB/record • discovery readback</text>
+<text x="28" y="674" fill="#94a3b8" font-size="8">no delete/prune/GC paths — retention is caps-only</text>
+
+<rect x="498" y="552" width="486" height="140" rx="12" fill="transparent" stroke="#fb923c" stroke-width="1" stroke-dasharray="8,4"/>
+<text x="510" y="570" fill="#fb923c" font-size="10" font-weight="600">P2P SWARM — libp2p (dual-stack QUIC+TCP)</text>
+<text x="510" y="590" fill="white" font-size="9">RPC: objects • leases • recovery • peers (Noise, per-peer 50/s)</text>
+<text x="510" y="606" fill="white" font-size="9">gossip: heartbeats • chain envelopes (Strict validation)</text>
+<text x="510" y="622" fill="white" font-size="9">Kademlia: signed peer records (7d age / 1h skew cap)</text>
+<text x="510" y="638" fill="#34d399" font-size="8">✱ repair: holders must be routing members (R12)</text>
+<text x="510" y="654" fill="#34d399" font-size="8">✱ put_raw_record env-gated (R12) • trusted-keys boot warn</text>
+<text x="510" y="674" fill="#94a3b8" font-size="8">RepairPush sender-verified • budgets both directions</text>
+
+<!-- boot line -->
+<rect x="16" y="706" width="968" height="58" rx="8" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+<text x="28" y="724" fill="#fb7185" font-size="9" font-weight="600">BOOT CONTRACT — strict default-on • service token required in strict mode (+ &lt;32ch warning) • voucher profile all-or-nothing • P2P-without-allowlist warns • non-strict = loopback/dev only</text>
+<text x="28" y="744" fill="#94a3b8" font-size="8">data dir: objects/ • recovery/ • leases/ • sessions.json • identities.json • operator.key • swarm.key — healthz requires all present</text>
+
+<text x="16" y="786" fill="white" font-size="10" font-weight="600">Legend</text>
+<rect x="80" y="778" width="16" height="10" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee"/><text x="100" y="786" fill="#94a3b8" font-size="8">Public</text>
+<rect x="155" y="778" width="16" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399"/><text x="175" y="786" fill="#94a3b8" font-size="8">Session</text>
+<rect x="240" y="778" width="16" height="10" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185"/><text x="260" y="786" fill="#94a3b8" font-size="8">Control</text>
+<rect x="325" y="778" width="16" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa"/><text x="345" y="786" fill="#94a3b8" font-size="8">State</text>
+<rect x="395" y="778" width="16" height="10" rx="2" fill="rgba(251,146,60,0.3)" stroke="#fb923c"/><text x="415" y="786" fill="#94a3b8" font-size="8">Swarm</text>
+<text x="480" y="786" fill="#34d399" font-size="8">✱ = added or hardened in this audit (R1–R13)</text>
+<text x="16" y="806" fill="#475569" font-size="8">Sources: services/operator/{lib,handlers,main,state/*,swarm/*} @ 2026-11-08 • dist 1.0.0 binaries lack: identities routes, cursor pagination, rate limiter, health/metrics, join plane, --bind/--rotate/quota flags — rebuild dist before demo</text>
+<text x="16" y="822" fill="#475569" font-size="8">Conscious deferrals: native TLS (needs product decision) • PoS nonce freshness (wire compat) • ownerless-lease renew (back-compat) • per-locator read counters (cardinality) • key-backup shredding (SSD theater)</text>
+</svg>
+</div>
+
+<div class="cards">
+<div class="card"><div class="card-header"><div class="card-dot rose"></div><h3>Auth model</h3></div>
+<ul><li>• <b>Service token:</b> sole root for enroll/revoke/mint; constant-time compare; can't mint admins by default</li><li>• <b>Sessions:</b> Ed25519 challenge, single-use, 1h TTL, per-request enrollment + scope recheck</li><li>• <b>Strict:</b> default-on; any non-strict bypass now logs a loud warning</li><li>• <b>Anonymous:</b> recovery reads + PoS oracle by design, tier-isolated at 60/min</li></ul></div>
+<div class="card"><div class="card-header"><div class="card-dot emerald"></div><h3>What changed (R1–R13)</h3></div>
+<ul><li>• <b>Rebuilt</b> from source: enroll, pagination, limiter, health, join plane all present</li><li>• <b>Fail-closed:</b> voucher profile, FLEET_ADMIN grant, retention cap 36500d</li><li>• <b>Isolated:</b> recovery reads 60/min tier; metrics loopback-only</li><li>• <b>Hardened:</b> per-key challenge cap, routing-member repair, gated raw DHT puts</li></ul></div>
+<div class="card"><div class="card-header"><div class="card-dot amber"></div><h3>Still open (decisions)</h3></div>
+<ul><li>• <b>TLS:</b> plaintext HTTP on 0.0.0.0 — needs reverse-proxy story or native TLS</li><li>• <b>PoS freshness:</b> caller-supplied nonces — next protocol version</li><li>• <b>Retention:</b> caps enforced, but no expiry/GC; "90-day" copy still aspirational</li><li>• <b>dist/bin:</b> copy fresh builds in before the demo</li></ul></div>
+</div>
+<p class="footer">CipherVault operator audit • 2026-11-08 • full findings: report/OPERATOR_AUDIT_2026-11-08.md • remediation: report/OPERATOR_REMEDIATION_PLAN_2026-11-08.md</p>
+</div>
+</body>
+</html>
