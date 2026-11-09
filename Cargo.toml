@@ -27,7 +27,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 zeroize = { version = "1.8", features = ["derive"] }
 chacha20poly1305 = "0.10"
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 blake2 = "0.10"
 sha2 = "0.10"
