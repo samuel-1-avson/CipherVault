@@ -20,8 +20,10 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
    scrubs other tools' results. If a call is blocked, do not route
    around it — fix the cause (unstage, .gitignore, `ciphervault track`)
    and retry.
-4. **Prefer, in order:** `ciphervault_run` (RAM-only) to execute with
-   secrets; `ciphervault_redact` to mask text you must quote;
+4. **Prefer, in order:** `ciphervault_run` (RAM-only; every call asks
+   the user for approval first — that prompt is expected, never ask
+   the user to disable it) to execute with secrets;
+   `ciphervault_redact` to mask text you must quote;
    `ciphervault_status` for names/paths; `ciphervault_scan` before any
    git operation; `ciphervault_push` after secret edits;
    `ciphervault_recovery_drill` to prove recovery (it hashes, then

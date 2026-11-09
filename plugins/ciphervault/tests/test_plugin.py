@@ -147,6 +147,41 @@ def test_scrub_passes_clean_text():
     assert cv.scrub("snapshot 9f2c head replicated") == "snapshot 9f2c head replicated"
 
 
+def test_scrub_is_not_quadratic_on_long_tokens():
+    import time
+    for payload in ("a" * 256_000, "x" * 200_000 + "secret", "word " * 40_000):
+        start = time.perf_counter()
+        cv.scrub(payload)
+        assert time.perf_counter() - start < 2.0
+
+
+def test_drill_never_deletes_caller_chosen_dir(ctx, tmp_path, monkeypatch):
+    precious = tmp_path / "precious"
+    precious.mkdir()
+    marker = precious / "keep.txt"
+    marker.write_text("do not delete")
+
+    def fake_run_cli(args, cwd, timeout=300):
+        dest = Path(args[args.index("--to") + 1])
+        (dest / "restored.txt").write_text("fake plaintext")
+        return {"success": True, "binary": "test"}
+
+    monkeypatch.setattr(cv, "_run_cli", fake_run_cli)
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "to": str(precious), "auto_delete": True}))
+    assert out["success"] is True and out["drill_dir_deleted"] is True
+    assert out["files_restored"] == 1
+    assert marker.exists() and marker.read_text() == "do not delete"
+
+
+def test_minimal_env_excludes_provider_keys(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("CIPHERVAULT_OPERATOR_SERVICE_TOKEN", "own-config")
+    env = cv._minimal_env()
+    assert "OPENAI_API_KEY" not in env
+    assert env.get("CIPHERVAULT_OPERATOR_SERVICE_TOKEN") == "own-config"
+
+
 # ------------------------------------------------------------ guard
 
 def test_guard_blocks_terminal_cat_env(ctx, monkeypatch):
@@ -172,8 +207,16 @@ def test_guard_allows_clean_terminal(ctx, monkeypatch):
     assert cv.on_pre_tool_call("terminal", {"command": "git status"}) is None
 
 
-def test_guard_never_blocks_ciphervault_tools(ctx):
-    assert cv.on_pre_tool_call("ciphervault_run", {"command": ["cat", ".env"]}) is None
+def test_guard_gates_ciphervault_run_with_approval(ctx):
+    out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"]})
+    assert out and out["action"] == "approve" and out.get("rule_key")
+    out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"], "dry_run": True})
+    assert out and out["action"] == "approve"
+
+
+def test_guard_never_blocks_other_ciphervault_tools(ctx):
+    assert cv.on_pre_tool_call("ciphervault_status", {}) is None
+    assert cv.on_pre_tool_call("ciphervault_redact", {"text": "API_KEY=x"}) is None
 
 
 def test_transform_scrubs_other_results(ctx, monkeypatch):

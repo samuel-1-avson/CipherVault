@@ -80,7 +80,7 @@ def find_binary():
                      root / "target" / "release" / exe):
             if cand.is_file():
                 return str(cand), "repo checkout"
-    found = shutil.which("ciphervault") or shutil.which("cv")
+    found = shutil.which("ciphervault")
     if found:
         return found, "PATH"
     return None, "missing"
@@ -157,9 +157,9 @@ _TOKEN_RE = re.compile(
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
 _PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
 _KV_RE = re.compile(
-    r"(?i)((?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)\s*[=:]\s*)([^\s\"']+)"
+    r"(?i)\b((?:[A-Za-z0-9_-]{0,64}(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]{0,64})\s*[=:]\s*)([^\s\"']+)"
 )
-_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:)[^\s/@]+(@)")
+_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,32}://[^\s:/@]{1,64}:)[^\s/@]{1,1024}(@)")
 
 
 def scrub(text):
@@ -175,6 +175,21 @@ def scrub(text):
 
 
 # ---------------------------------------------------------------- CLI
+
+_ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR",
+             "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+             "APPDATA", "LOCALAPPDATA", "COMSPEC", "PATHEXT")
+
+
+def _minimal_env():
+    """Environment for CLI subprocesses: an allow-list, so Hermes
+    provider keys (OPENAI_API_KEY etc.) never reach the CLI or the
+    children it spawns. CipherVault's own CIPHERVAULT_* config passes."""
+    env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
+    env.update({k: v for k, v in os.environ.items() if k.startswith("CIPHERVAULT_")})
+    env.setdefault("NO_COLOR", "1")
+    return env
+
 
 def _run_cli(args, cwd, timeout=120, input_text=None):
     binary, source = find_binary()
@@ -195,6 +210,7 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            env=_minimal_env(),
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"ciphervault timed out after {timeout}s", "binary": source}
@@ -299,45 +315,45 @@ def _tool_drill(params, **kwargs):
             "success": False,
             "error": "provide kit (path to kit file) or shares (list of share file paths). Paths only — never paste kit contents.",
         })
-    dest = params.get("to") or tempfile.mkdtemp(prefix="cv-drill-")
-    args = ["recover", "--to", dest]
-    if kit:
-        args += ["--kit", kit]
-    if shares:
-        args += ["--shares"] + list(shares)
-    res = _run_cli(args, params.get("cwd"), timeout=300)
-    if not res.get("success"):
-        return json.dumps(res)
-    # Hash-then-delete: prove the restore by manifest (names + sizes +
-    # SHA-256) without the agent reading plaintext, and leave no
-    # standing plaintext copy on disk.
-    manifest = []
-    root = Path(dest)
-    for path in sorted(root.rglob("*")):
-        if path.is_file():
-            manifest.append({
-                "path": str(path.relative_to(root)).replace("\\", "/"),
-                "size": path.stat().st_size,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            })
-    auto_delete = params.get("auto_delete", True)
-    deleted = False
-    if auto_delete:
-        shutil.rmtree(root, ignore_errors=True)
-        deleted = not root.exists()
-    return json.dumps({
-        "success": True,
-        "binary": res.get("binary"),
-        "files_restored": len(manifest),
-        "manifest": manifest,
-        "drill_dir_deleted": deleted,
-        "note": (
-            "Plaintext was hashed, verified into this manifest, and deleted; "
-            "it never entered this chat. Compare hashes against a later restore to re-verify."
-            if deleted else
-            "Plaintext remains in the drill dir — delete it as soon as you have compared hashes."
-        ),
-    })
+    # The restore target is ALWAYS a fresh temp dir created here, and
+    # it is the only directory this tool ever deletes (reviewer rule:
+    # never rmtree a model-chosen path).
+    dest = tempfile.mkdtemp(prefix="cv-drill-")
+    try:
+        args = ["recover", "--to", dest]
+        if kit:
+            args += ["--kit", kit]
+        if shares:
+            args += ["--shares"] + list(shares)
+        res = _run_cli(args, params.get("cwd"), timeout=300)
+        if not res.get("success"):
+            return json.dumps(res)
+        # Hash-then-delete: prove the restore by manifest (names +
+        # sizes + SHA-256) without the agent reading plaintext, and
+        # leave no standing plaintext copy on disk.
+        manifest = []
+        root = Path(dest)
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                manifest.append({
+                    "path": str(path.relative_to(root)).replace("\\", "/"),
+                    "size": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                })
+        return json.dumps({
+            "success": True,
+            "binary": res.get("binary"),
+            "files_restored": len(manifest),
+            "manifest": manifest,
+            "drill_dir_deleted": True,
+            "note": (
+                "Plaintext was hashed, verified into this manifest, and "
+                "the temp drill dir was deleted; it never entered this "
+                "chat. Compare hashes against a later restore to re-verify."
+            ),
+        })
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- hooks
@@ -367,6 +383,17 @@ def on_pre_tool_call(tool_name, args, **kwargs):
     CipherVault hook check reports violations. Fail-open on internal
     errors (Hermes isolates hook exceptions too)."""
     try:
+        if tool_name == "ciphervault_run":
+            # Running an arbitrary command with vault secrets in its
+            # environment must go through Hermes's human-approval gate
+            # (same gate as dangerous shell commands). Output scrubbing
+            # alone cannot stop a command from exfiltrating the values
+            # it was given. Every ciphervault_run call is gated.
+            return {"action": "approve",
+                    "message": ("CipherVault: run a command with vault secrets "
+                                "injected in RAM? The command receives the values; "
+                                "approve only if you trust it."),
+                    "rule_key": "ciphervault_run"}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
@@ -478,11 +505,8 @@ def _make_secret_source():
                     argv += ["--env-file", str(cfg["env_file"])]
                 if cfg.get("allow_working_copy"):
                     argv.append("--allow-working-copy")
-                # run_secret_cli has no cwd knob; replicate its posture
-                # (minimal allowlisted env, stdin closed, timeout).
-                keep = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TEMP", "TMPDIR", "LANG", "LC_ALL")
-                env = {k: os.environ[k] for k in keep if k in os.environ}
-                env.setdefault("NO_COLOR", "1")
+                # Minimal allowlisted env, stdin closed, timeout.
+                env = _minimal_env()
                 try:
                     proc = subprocess.run(
                         argv, cwd=str(vault_path), capture_output=True, text=True,
@@ -608,11 +632,9 @@ _TOOLS = [
      {"message": {"type": "string", "default": "Agent snapshot"},
       "local_only": {"type": "boolean", "default": True}, "cwd": {"type": "string"}}),
     ("ciphervault_recovery_drill", _tool_drill,
-     "Prove a recovery kit or guardian shares actually restore: restores into a temp dir, returns a SHA-256 manifest (names+sizes+hashes only), then deletes the plaintext. Takes FILE PATHS only — never accept kit/share contents.",
+     "Prove a recovery kit or guardian shares actually restore: restores into a fresh temp dir created by the tool, returns a SHA-256 manifest (names+sizes+hashes only), then deletes that temp dir. Takes FILE PATHS only — never accept kit/share contents.",
      {"kit": {"type": "string", "description": "Path to kit file on disk"},
       "shares": {"type": "array", "items": {"type": "string"}, "description": "Paths to guardian share files"},
-      "to": {"type": "string", "description": "Restore target dir (default: temp dir)"},
-      "auto_delete": {"type": "boolean", "default": True},
       "cwd": {"type": "string"}}),
     ("ciphervault_redact", _tool_redact,
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",

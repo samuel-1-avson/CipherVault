@@ -12,9 +12,9 @@ machine and never enter the model context.
 |---|---|
 | `ciphervault_status` | Vault status as JSON: tracked file **paths**, head, operator count, CLI version (from `status --json`) |
 | `ciphervault_scan` | Secret-sprawl scan of workspace + staged diffs, masked (`hook check --deep --json`; `fix` appends to `.gitignore`) |
-| `ciphervault_run` | Run any command with secrets injected in RAM only; output exact-value + shape scrubbed (`run --json`) |
+| `ciphervault_run` | Run any command with secrets injected in RAM only; output exact-value + shape scrubbed (`run --json`). **Every call passes Hermes's human-approval gate** (see Disclosure) |
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; replicates when `local_only=false`) |
-| `ciphervault_recovery_drill` | Restore kit/shares to a temp dir, return a **SHA-256 manifest**, then delete the plaintext |
+| `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir |
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file reads, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
 | `transform_tool_result` hook | Scrubs every other tool's result before it enters context |
@@ -26,10 +26,19 @@ machine and never enter the model context.
 
 ## Disclosure (catalog rule 13)
 
-- **Shell commands:** the plugin runs the `ciphervault` CLI as a local
-  subprocess (status/scan/run/push/recover/redact/export-env). No other
-  shell-outs. It never spawns Hermes itself and never touches the
-  approval system.
+- **Shell commands:** the only process the plugin spawns is the
+  `ciphervault` CLI (status/scan/run/push/recover/redact/export-env).
+  `ciphervault_run` asks that CLI to execute the command you approve,
+  with vault secrets injected into its environment. **Approval:**
+  every `ciphervault_run` call returns Hermes's `approve` directive
+  from `pre_tool_call`, so it passes the same human-approval gate as
+  dangerous shell commands — the plugin never routes around it.
+  CLI subprocesses get a minimal allow-listed environment (Hermes
+  provider keys are not passed down). Tool results scrubbed by the
+  `transform_tool_result` hook are capped at 256 KB; anything beyond
+  that is truncated, not scanned. The recovery drill restores only
+  into a fresh temp dir it creates itself and deletes only that dir.
+  The plugin never spawns Hermes itself.
 - **Network:** none, except `bootstrap`, which — only when *you* run
   `hermes ciphervault bootstrap` or `/ciphervault setup` — downloads
   `ciphervault.exe` and `SHA256SUMS.txt` from the pinned GitHub release
@@ -55,8 +64,8 @@ hermes ciphervault bootstrap         # Windows: pinned, checksum-verified CLI
 ```
 
 Binary resolution: plugin setting `binary_path` → `$CIPHERVAULT_BIN` →
-bootstrapped copy → repo checkout (dev) → `PATH` (`ciphervault`/`cv`,
-the same binary).
+bootstrapped copy → repo checkout (dev) → `PATH` (`ciphervault` only;
+an unrelated `cv` binary is never used).
 
 Hermes secret source (optional):
 
