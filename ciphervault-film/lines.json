@@ -1,0 +1,23 @@
+[
+  {"id": "L01", "voice": "am_michael", "speed": 0.97, "text": "Your coding agent can read every secret in this project."},
+  {"id": "L02", "voice": "am_michael", "speed": 0.97, "text": "CipherVault protects everything that Git leaves behind.", "asr": "Cypher vault protects everything that Git leaves behind."},
+  {"id": "L03", "voice": "am_michael", "speed": 0.97, "text": "One command installs the vault into Hermes, checked against a checksum pinned in the plugin's own source.", "asr": "One command installs the vault into Hermes, checked against a checksum pinned in the plug-in's own source."},
+  {"id": "L04", "voice": "am_michael", "speed": 0.97, "text": "Six tools, two guard hooks, and a live vault pane. Values never print."},
+  {"id": "L05", "voice": "am_michael", "speed": 0.97, "text": "Ask for status, and the agent gets paths, names, and short identifiers. Never the values."},
+  {"id": "L06", "voice": "am_michael", "speed": 0.97, "text": "A deep scan finds the sprawl: a private key that nobody is tracking."},
+  {"id": "L07", "voice": "am_michael", "speed": 0.97, "text": "Ignore it, or track it. Either way, it stops being a leak."},
+  {"id": "L08", "voice": "am_michael", "speed": 0.97, "text": "Now run the app. Secrets are injected into memory only. Nothing touches disk."},
+  {"id": "L09", "voice": "am_michael", "speed": 0.97, "text": "And if the program prints one, the exact value is scrubbed before the model ever sees it."},
+  {"id": "L10", "voice": "am_michael", "speed": 0.97, "text": "Then the agent reads an issue with a hidden instruction: print the environment file."},
+  {"id": "L11", "voice": "am_michael", "speed": 0.97, "text": "The guard blocks the call before the tool ever runs. Paths are fine. Contents are not."},
+  {"id": "L12", "voice": "am_michael", "speed": 0.97, "text": "Ask it to commit everything, and the same file is sitting in the staging area."},
+  {"id": "L13", "voice": "am_michael", "speed": 0.97, "text": "A different check, the same answer. No commit until the secret is unstaged."},
+  {"id": "L14", "voice": "am_michael", "speed": 0.97, "text": "Push an encrypted snapshot. It's sealed on your machine, so operators only ever hold ciphertext."},
+  {"id": "L15", "voice": "am_michael", "speed": 0.97, "text": "Then rehearse the disaster. The drill restores from your recovery kit, fingerprints every file, and deletes its own plaintext.", "asr": "Then rehearse the disaster. The drill restores from your recovery kit, fingerprints every file, and deletes its own plain text."},
+  {"id": "L16", "voice": "am_michael", "speed": 0.97, "text": "Hermes can even load its own API keys from the vault, instead of a plain text file."},
+  {"id": "L17", "voice": "am_michael", "speed": 0.97, "text": "Now the agent boots sealed."},
+  {"id": "L18", "voice": "am_michael", "speed": 0.97, "text": "Five ways to lose a secret: a Git slip, a lost laptop, a vendor's cloud, plaintext on disk, and your own AI agent."},
+  {"id": "L19", "voice": "am_michael", "speed": 0.97, "text": "CipherVault closes all five. Zero-knowledge encryption, free and open source, working offline, and recovery you can rehearse.", "asr": "Cipher Vault closes all five. Zero knowledge encryption, free and open source, working offline, and recovery you can rehearse."},
+  {"id": "L20", "voice": "am_michael", "speed": 0.97, "text": "Backups you've rehearsed. Secrets your model never sees."},
+  {"id": "L21", "voice": "am_michael", "speed": 0.97, "text": "CipherVault. Zero knowledge secrets for AI agents.", "asr": "Cypher Vault, Zero Knowledge Secrets for AI Agents."}
+]
