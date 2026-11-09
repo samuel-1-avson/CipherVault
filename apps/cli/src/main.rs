@@ -1966,6 +1966,23 @@ enum AgentLogSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Check whether a scrubbed-output hash is in the chain
+    Check {
+        #[arg(long, help = "SHA-256 (hex) of the exact output text to look up")]
+        output_sha256: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Anchor the audit head to the operator fleet (signed checkpoint)
+    Anchor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the chain locally and against the fleet-anchored checkpoint
+    VerifyRemote {
+        #[arg(long)]
+        json: bool,
+    },
     /// Export the whole chain as JSON lines
     Export {
         #[arg(long, help = "Output file (default: stdout)")]

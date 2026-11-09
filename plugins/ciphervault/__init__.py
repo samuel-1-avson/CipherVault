@@ -329,12 +329,18 @@ def _tool_audit(params, **kwargs):
     if not show.get("success"):
         return json.dumps(show)
     verify = _run_cli_json(["agent-log", "verify", "--json"], cwd)
-    return json.dumps({
+    out = {
         "success": True,
         "entries": show.get("data", []),
         "verification": verify.get("data"),
         "binary": show.get("binary"),
-    })
+    }
+    if params.get("check_text") is not None:
+        digest = hashlib.sha256(str(params["check_text"]).encode()).hexdigest()
+        check = _run_cli_json(
+            ["agent-log", "check", "--json", "--output-sha256", digest], cwd)
+        out["check"] = check.get("data") if check.get("success") else check
+    return json.dumps(out)
 
 
 def _tool_drill(params, **kwargs):
@@ -423,11 +429,15 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             _audit("ciphervault_run", "approval_requested",
                    detail={"program": ((args or {}).get("command") or [""])[0]},
                    cwd=(args or {}).get("cwd") or os.getcwd())
+            # Narrow grant grain: the rule key names the program, so a
+            # session/always grant in Hermes's approval UI covers that
+            # program only — never every command the model may run.
+            program = str(((args or {}).get("command") or ["run"])[0])
             return {"action": "approve",
                     "message": ("CipherVault: run a command with vault secrets "
                                 "injected in RAM? The command receives the values; "
                                 "approve only if you trust it."),
-                    "rule_key": "ciphervault_run"}
+                    "rule_key": f"ciphervault_run:{program}"}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
@@ -494,9 +504,14 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
         sample = result[:262_144]
         cleaned, n = cli_redact(sample, cwd, timeout=10)
         if cleaned != sample:
-            _audit(tool_name, "scrubbed_result", detail={"redactions": n}, cwd=cwd)
             suffix = "\n…[truncated by CipherVault scrub]" if len(result) > len(sample) else ""
-            return cleaned + suffix
+            final = cleaned + suffix
+            _audit(tool_name, "scrubbed_result",
+                   detail={"redactions": n,
+                           "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
+                           "output_bytes": len(final)},
+                   cwd=cwd)
+            return final
         return None
     except Exception:
         return None
@@ -706,8 +721,10 @@ _TOOLS = [
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",
      {"text": {"type": "string"}, "cwd": {"type": "string"}}),
     ("ciphervault_audit", _tool_audit,
-     "Show the tamper-evident agent audit log: what tools did around this vault's secrets (blocked reads, approval requests, scrubbed results, writes) plus chain verification. Paths/decisions/counts only.",
-     {"limit": {"type": "integer", "default": 50}, "cwd": {"type": "string"}}),
+     "Show the tamper-evident agent audit log: what tools did around this vault's secrets (blocked reads, approval requests, scrubbed results, writes) plus chain verification. With check_text, proves whether that exact output passed the scrub (hash lookup). Paths/decisions/counts only.",
+     {"limit": {"type": "integer", "default": 50},
+      "check_text": {"type": "string", "description": "Output text to check against the scrub log (hashed locally)"},
+      "cwd": {"type": "string"}}),
 ]
 
 _REDACTION_PATTERNS = [
