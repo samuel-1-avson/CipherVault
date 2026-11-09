@@ -60,7 +60,10 @@ machine and never enter the model context.
   hash means it never passed the scrub. On every replicated push the
   chain head is anchored to the operator fleet as a signed,
   content-addressed checkpoint (`agent-log verify-remote`), moving
-  the receipt outside the agent's control. Entries contain
+  the receipt outside the agent's control. Anchoring fires on every
+  replicated push AND at the moment a `ciphervault_run` approval is
+  requested (detached, best-effort), so the grant itself is
+  checkpointed before the command runs. Entries contain
   tool/path/decision/counts/hashes only — never contents — so a
   session can later *prove* what the agent touched and what it
   never saw. Approval grants are per-program: the approval rule key

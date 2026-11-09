@@ -256,6 +256,32 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
         pass
 
 
+def _anchor_async(cwd=None):
+    """Fire-and-forget fleet anchor of the audit head. Runs detached
+    so a slow/unreachable fleet can never delay or break the guarded
+    call; failures are silent (the next push re-anchors)."""
+    try:
+        binary, _src = find_binary()
+        if not binary:
+            return
+        kwargs = {
+            "cwd": cwd or os.getcwd(),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([binary, "agent-log", "anchor"], **kwargs)
+    except Exception:
+        pass
+
+
 def cli_redact(text, cwd, timeout=15):
     """Exact+shape redaction via the CLI (vault values are matched
     inside the CLI process; they never enter this process). Falls back
@@ -429,6 +455,10 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             _audit("ciphervault_run", "approval_requested",
                    detail={"program": ((args or {}).get("command") or [""])[0]},
                    cwd=(args or {}).get("cwd") or os.getcwd())
+            # Cadence: checkpoint the chain head — this grant included —
+            # to the fleet BEFORE the approved command can run, so a
+            # run that goes badly cannot rewrite the grant away.
+            _anchor_async((args or {}).get("cwd") or os.getcwd())
             # Narrow grant grain: the rule key names the program, so a
             # session/always grant in Hermes's approval UI covers that
             # program only — never every command the model may run.
