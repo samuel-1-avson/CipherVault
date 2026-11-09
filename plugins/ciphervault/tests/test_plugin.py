@@ -216,6 +216,10 @@ def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
     assert out is not None
     rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
     assert rec and "scrubbed_result" in rec[0]
+    import hashlib as _hl
+    detail = json.loads(rec[0][rec[0].index("--detail") + 1])
+    assert detail["output_sha256"] == _hl.sha256(out.encode()).hexdigest()
+    assert detail["redactions"] == 2
 
 
 def test_post_tool_call_logs_writes(ctx, monkeypatch):
@@ -255,7 +259,7 @@ def test_guard_allows_clean_terminal(ctx, monkeypatch):
 
 def test_guard_gates_ciphervault_run_with_approval(ctx):
     out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"]})
-    assert out and out["action"] == "approve" and out.get("rule_key")
+    assert out and out["action"] == "approve" and out.get("rule_key") == "ciphervault_run:echo"
     out = cv.on_pre_tool_call("ciphervault_run", {"command": ["echo", "hi"], "dry_run": True})
     assert out and out["action"] == "approve"
 
@@ -332,6 +336,8 @@ if args[:2] == ["agent-log", "show"]:
                        "entry_hash": "ab12", "prev_hash": "GENESIS"}])); raise SystemExit(0)
 if args[:2] == ["agent-log", "verify"]:
     print(json.dumps({"ok": True, "entries": 1, "head_hash": "ab12", "first_bad_id": None})); raise SystemExit(0)
+if args[:2] == ["agent-log", "check"]:
+    print(json.dumps({"found": True, "entry_id": 1, "tool": "terminal", "decision": "scrubbed_result"})); raise SystemExit(0)
 print("unexpected args", args, file=sys.stderr); raise SystemExit(2)
 """
 
@@ -373,3 +379,9 @@ def test_audit_tool_against_fake_cli(ctx, fake_cli):
     assert out["success"] is True
     assert out["verification"]["ok"] is True
     assert out["entries"][0]["decision"] == "blocked"
+
+
+def test_audit_tool_check_text_against_fake_cli(ctx, fake_cli):
+    out = json.loads(ctx.tools["ciphervault_audit"][1]({"check_text": "anything"}))
+    assert out["success"] is True
+    assert out["check"]["found"] is True

@@ -258,6 +258,21 @@ pub(crate) async fn cmd_push(
     match rep_result {
         Ok(issued) => {
             record_replication_receipts(&store, &issued);
+            // Anchor the agent-audit head off-machine with the same
+            // replication round (best-effort: never fail a good push).
+            match crate::commands::anchor_agent_audit(&operators).await {
+                Ok((confirmed, _cid, entries, head)) => {
+                    println!(
+                        "  Audit anchor:   {} entries, head {}… confirmed by {} operator(s)",
+                        entries,
+                        &head[..head.len().min(8)],
+                        confirmed
+                    );
+                }
+                Err(e) => {
+                    println!("  Audit anchor:   skipped ({e})");
+                }
+            }
             let snapshot_hex = hex::encode(&output.record.snapshot_id);
             let _ = store.record_activity(
                 "PUSH_OK",

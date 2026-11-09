@@ -1338,6 +1338,18 @@ impl LocalVaultStore {
         Ok(out)
     }
 
+    /// Finds the newest audit entry whose detail records the given
+    /// scrubbed-output SHA-256 (proof an output passed the scrub).
+    pub fn find_agent_audit_by_output_hash(
+        &self,
+        output_sha256: &str,
+    ) -> Result<Option<AgentAuditEntry>, LocalStoreError> {
+        let entries = self.list_agent_audit(usize::MAX)?;
+        Ok(entries
+            .into_iter()
+            .find(|e| e.detail_json.contains(output_sha256)))
+    }
+
     /// Walks the chain from genesis recomputing every hash and
     /// signature. `first_bad_id` is the earliest entry that fails.
     pub fn verify_agent_audit(&self) -> Result<AgentAuditReport, LocalStoreError> {
@@ -2665,6 +2677,26 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].tool, "terminal");
         assert_eq!(entries[1].decision, "blocked");
+    }
+
+    #[test]
+    fn test_agent_audit_find_by_output_hash() {
+        let store = agent_audit_store();
+        store
+            .append_agent_audit(
+                "terminal",
+                "scrubbed_result",
+                "",
+                r#"{"redactions":1,"output_sha256":"abc123"}"#,
+            )
+            .unwrap();
+        let hit = store.find_agent_audit_by_output_hash("abc123").unwrap();
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().decision, "scrubbed_result");
+        assert!(store
+            .find_agent_audit_by_output_hash("missing0")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
