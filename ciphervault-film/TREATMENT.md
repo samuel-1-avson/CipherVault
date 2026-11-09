@@ -163,6 +163,15 @@ developer should choose it. Changes (all from `cipherv.online`, `README.md`, `do
 - The 90 s cut is unchanged apart from the new hook line: the hackathon rule (< 90 s) leaves no room for a sixth
   chapter, so it keeps the agent-safety story and the full film carries the product case.
 
+## 9c. Revision 3 — the approval gate
+
+Plugin commit `3964115` made every `ciphervault_run` pass Hermes's human-approval gate and restricted the recovery
+drill to a tool-owned temp dir. Chapter 03 Run now shows it: after the tool row, Hermes Desktop's approval card
+(redrawn from `apps/desktop/.../tool/approval.tsx` and its i18n strings) asks the user to approve, the **cursor clicks
+Run** (the cursor is the user: the approval is the one place the human acts), then the RAM-only run proceeds. A new
+narration line (L08, plus L08b) explains why, and the 20 s chapter length is unchanged, so both cuts keep their
+runtimes (175 s and 87.5 s). Chapter 06's drill result shows the new note text.
+
 ## 10. Subtitles and titles
 
 - Caption pill: frosted glass, bottom-centre, Inter 34 px, never over the

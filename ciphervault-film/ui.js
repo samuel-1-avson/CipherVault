@@ -104,6 +104,11 @@ function msg(m) {
     return `<div class="tool ${m.st || ''}"${a} style="${op}${tf}"><span class="g">${ic(m.icon || 'term', 14, 1.8)}</span><b>${esc(m.name)}</b><code>${m.arg || ''}</code><span class="st">${s}</span></div>`;
   }
   if (m.k === 'card') return `<div class="card ${m.cls || ''}"${a} style="${op}${tf}${m.h !== undefined ? `max-height:${m.h}px;` : ''}">${m.html}</div>`;
+  // Hermes Desktop's real approval card (apps/desktop/.../tool/approval.tsx): "Approval needed" activity row, then a card with
+  // "Command details" (a plugin approve rule shows its description), and Reject · Always allow… ▾ · Run ↵
+  if (m.k === 'approval') return `<div class="apvw"${a} style="${op}${tf}"><div class="apvs"><i class="spin"></i>Approval needed</div><div class="apv">` +
+    `<div class="apvh">${ic('term', 14, 1.8)}<span>Command details</span></div><pre class="apvt">${m.html}</pre>` +
+    `<div class="apva"><span class="apvb txt">Reject</span><span class="apvb sec">Always allow… <b>▾</b></span><span class="apvb pri ${m.hot ? 'hot' : ''}" data-a="ap-run">Run <i>↵</i></span></div></div></div>`;
   if (m.k === 'block') return `<div class="card block"${a} style="${op}${tf}"><div class="bh">${ic('shield', 16, 1.9)}<b>Blocked by CipherVault guard</b><span class="hk">pre_tool_call</span></div><div class="bm">${m.html}</div></div>`;
   return '';
 }
