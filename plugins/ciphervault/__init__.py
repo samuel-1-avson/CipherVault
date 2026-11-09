@@ -547,9 +547,9 @@ def _slash_ciphervault(raw_args, **kwargs):
     )
 
 
-def _cli_setup(subparsers):
-    sub = subparsers.add_parser("ciphervault", help="CipherVault zero-knowledge secrets")
-    sp = sub.add_subparsers(dest="ciphervault_cmd")
+def _cli_setup(parser):
+    # Hermes hands us the `hermes ciphervault` subparser itself.
+    sp = parser.add_subparsers(dest="ciphervault_cmd")
     sp.add_parser("bootstrap", help="Download + verify the pinned CipherVault binary (Windows)")
     sp.add_parser("status", help="Binary resolution + vault status for the cwd")
     sp.add_parser("doctor", help="Check binary, vault, and wiring")
