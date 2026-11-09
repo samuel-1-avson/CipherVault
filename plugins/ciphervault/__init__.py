@@ -31,11 +31,11 @@ import urllib.request
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-RELEASE_VERSION = "1.0.31"
+RELEASE_VERSION = "1.0.32"
 # SHA-256 of the release ciphervault.exe, pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against this value.
-RELEASE_BINARY_SHA256 = "d31e7864ca78944f829ee339b9fdd3d3bd8552481e994d2c2f8cef92a0d4a717"
+RELEASE_BINARY_SHA256 = "d0cc7b371a904348bd99af5dca758455f141cba818ea1a8febeeeafe1d20938c"
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"

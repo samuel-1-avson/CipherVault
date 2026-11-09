@@ -1,5 +1,5 @@
 name: ciphervault
-version: "0.4.1"
+version: "0.4.2"
 description: Zero-knowledge secret backup for AI coding agents — masked scan, RAM-only run, encrypted snapshots, leak-guard hooks, and a CipherVault secret source for Hermes itself.
 manifest_version: 2
 api_version: 1

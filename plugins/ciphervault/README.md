@@ -43,7 +43,7 @@ machine and never enter the model context.
 - **Network:** none, except `bootstrap`, which — only when *you* run
   `hermes ciphervault bootstrap` or `/ciphervault setup` — downloads
   `ciphervault.exe` and `SHA256SUMS.txt` from the pinned GitHub release
-  (`v1.0.31`) of `samuel-1-avson/CipherVault`, verifies the SHA-256,
+  (`v1.0.32`) of `samuel-1-avson/CipherVault`, verifies the SHA-256,
   and installs into `$HERMES_HOME/plugins/ciphervault/bin/`. No binary
   is bundled in this repo (rule 17); no telemetry anywhere.
 - **Reads outside its data:** vault metadata via the CLI in the
