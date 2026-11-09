@@ -33,6 +33,10 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
 6. **Binary missing?** Say so and point to `hermes ciphervault
    bootstrap` (Windows) or `$CIPHERVAULT_BIN`. Never invent tool output,
    scan results, or hashes.
+7. **The audit log is the receipt.** Blocks, approvals, scrubs, and
+   your writes are hash-chained and device-signed in the vault. When
+   a user asks what you touched, answer from `ciphervault_audit` —
+   and note its verification result; don't summarize from memory.
 
 ## Happy path
 
