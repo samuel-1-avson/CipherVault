@@ -93,8 +93,7 @@ pub struct SoftwareHsmSimulator {
 impl SoftwareHsmSimulator {
     /// Generates a new software HSM simulator with cryptographically random keys.
     pub fn generate() -> Self {
-        let mut rng = rand::thread_rng();
-        let sig_key = SigningKey::generate(&mut rng);
+        let sig_key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
         let ecdh_key = X25519StaticSecret::random_from_rng(rand::thread_rng());
         Self { sig_key, ecdh_key }
     }

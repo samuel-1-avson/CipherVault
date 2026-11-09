@@ -1,5 +1,4 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
 
 use crate::error::CryptoError;
 
@@ -7,7 +6,7 @@ pub const SIGNATURE_DOMAIN_PREFIX: &[u8] = b"CipherVault-Ed25519-v1:";
 
 /// Generates a new random Ed25519 signing key.
 pub fn generate_signing_key() -> SigningKey {
-    SigningKey::generate(&mut OsRng)
+    SigningKey::from_bytes(&rand::random::<[u8; 32]>())
 }
 
 /// Signs a message with a mandatory domain separation prefix.

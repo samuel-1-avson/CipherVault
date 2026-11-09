@@ -3,7 +3,6 @@ use std::fs;
 use std::path::Path;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
 
 use crate::error::ChainError;
 use crate::types::{BlockHeader, BlockSignature, CommitmentTx};
@@ -172,8 +171,7 @@ pub struct ConsensusSigner {
 impl ConsensusSigner {
     /// Generates a new random Ed25519 consensus signing identity.
     pub fn generate() -> Self {
-        let mut csprng = OsRng;
-        let signing_key = SigningKey::generate(&mut csprng);
+        let signing_key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
         let public_key = signing_key.verifying_key().to_bytes();
         Self {
             signing_key,
