@@ -2,3 +2,4 @@
 0463c00ccbd1f45fe45ef80a4b9899d9c544792f4d0fe7dafb17954406338124 *bin/ciphervault-agent.exe
 df7f65497139222e512ffe680a4b1c91f23630829f5bbf5961fdf8d576ca5164 *bin/ciphervault-maintenance.exe
 c94f7757723208e1e7985b52b93df3bcd772d673ce4a9699bd05cb4de00861a8 *bin/ciphervault-operator.exe
+3c55e412dab0f8b126aa17f524020d0e55b44107388dad7df434a699fea282f1 *bin/cv.exe
