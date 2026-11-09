@@ -3930,6 +3930,22 @@ html[data-theme="light"] .flashcard-flip-prompt {
   font-weight: 500;
 }
 
+/* Honesty note: historical / category-level figures, not guarantees */
+.bench-caveat {
+  display: block;
+  flex-basis: 100%;
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--term-gold);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.tui-table-box > .bench-caveat {
+  margin: 0 0 10px;
+}
+
 .bench-actions-bar {
   display: flex;
   align-items: center;
@@ -9359,6 +9375,11 @@ html[data-theme="light"] .bench-title-main {
 
 html[data-theme="light"] .bench-harness-tag {
   color: #64748B;
+}
+
+html[data-theme="light"] .bench-caveat {
+  color: #475569;
+  border-left-color: #B45309;
 }
 
 html[data-theme="light"] .bench-pill {

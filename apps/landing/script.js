@@ -1197,7 +1197,7 @@ const PIPELINE_STAGES = {
     kicker: 'STAGE [01] DEEP-DIVE SPECIFICATION',
     heading: 'Developer Working Tree Secret Enrollment',
     mechanics: 'CipherVault tracks confidential files out-of-band from Git. During enrollment via `cv track .env`, the path is registered in the local SQLite WAL ledger (`track_file`), and the path is appended to `.gitignore` (skip with `--no-gitignore`) so `git add .` can never stage it. Content digests bind at snapshot time, not at enrollment.',
-    security: 'Guarantees zero accidental staging into Git commits. Host OS keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R, with Argon2id-wrapped machine-entropy fallback off-Windows.',
+    security: 'Guarantees zero accidental staging into Git commits. Local device and epoch keys use Windows DPAPI, or an authenticated envelope over a master key or private key file on other platforms (not Keychain, Secret Service or TPM binding). The master secret R is printed once and never stored.',
     statVal: 'Out-of-band',
     statDesc: 'SQLite WAL ledger + `.gitignore` guard (skip with `--no-gitignore`)',
     code: `// apps/cli/src/commands/track.rs — cmd_track (real flow)
@@ -1210,9 +1210,9 @@ if !no_gitignore {
     kicker: 'STAGE [02] DEEP-DIVE SPECIFICATION',
     heading: 'FastCDC Content-Defined Chunk Slicing',
     mechanics: 'Unlike fixed-size blocking (which causes catastrophic cascade re-chunking on 1-byte insertions), the hand-rolled FastCDC uses a SplitMix64 Gear rolling hash table with dual-mask normalization to discover content-defined cut boundaries between 4 KiB and 64 KiB (avg 16 KiB). Chunk identities are SHA-256 CIDs.',
-    security: 'Ensures localized byte edits only disturb nearby chunks while the rest retain identical SHA-256 hashes across versions, enabling extreme sub-file deduplication (measured 96.15% on a middle-insertion edit).',
-    statVal: '96.15% Deduplication',
-    statDesc: '25 of 26 chunks reused on middle-insertion (measured, throughput_benchmark)',
+    security: 'Ensures localized byte edits only disturb nearby chunks while the rest retain identical SHA-256 hashes across versions, enabling sub-file deduplication. Reuse depends on the edit and chunk boundaries (the demo fixture reused 25 of 26 chunks on a middle insertion); no fixed percentage is promised.',
+    statVal: 'Changed chunks only',
+    statDesc: 'Demo fixture: 25 of 26 chunks reused on a middle insertion (historical throughput_benchmark)',
     code: `// crates/snapshot/src/fastcdc.rs — fastcdc_chunk (real core)
 hash = (hash << 1) + GEAR_MATRIX[byte];  // SplitMix64 gear table
 if (hash & mask_s) == 0 { cut_point = i + 1; }  // 4/16/64 KiB dual-mask
@@ -1842,7 +1842,7 @@ const REPL_RESPONSES = {
     '    status               - Probe fleet + explorer reachability & round-trip ms',
     '    testnet              - Same live probe with endpoint inventory',
     '    bench                - Published reference benchmark measurements (sourced)',
-    '    compare              - Architectural matrix vs AWS / Vault / 1Password / SOPS',
+    '    compare              - How CipherVault differs from common approaches (categories, not products)',
     '    donate               - Community crypto donation addresses (repo-sourced)',
     '    clear                - Clear terminal log drawer'
   ],
@@ -1904,10 +1904,10 @@ const REPL_RESPONSES = {
   init: [
     'Runs on your machine — this console cannot initialize a vault for you.',
     '  cv init [--save-kit <PATH>]',
-    '  What it really does: generates the 256-bit master secret R, seals vault',
-    '  keys with the OS keyring (DPAPI / Keychain / Secret Service, Argon2id-',
-    '  wrapped fallback off-Windows), prints the paper kit to stdout ONLY, then',
-    '  zeroizes secret buffers. Install the CLI to run it (see Install pane).'
+    '  What it really does: generates the 256-bit master secret R, protects local',
+    '  keys (Windows DPAPI, or an authenticated envelope over a master key / private',
+    '  key file elsewhere), prints the paper kit to stdout ONLY, then zeroizes',
+    '  secret buffers. Install the CLI to run it (see Install pane).'
   ],
   track: [
     'Runs on your machine against your vault.',
@@ -1922,7 +1922,7 @@ const REPL_RESPONSES = {
     '  Automated sync backstops: Linux systemd (ciphervault-push.timer) or Windows Task Scheduler',
     '  (register-push-task.ps1) run background push cycles; `watch` replicates file deltas continuously.',
     '  What it really does: FastCDC-chunks tracked files (4/16/64 KiB), encrypts each chunk with',
-    '  XChaCha20-Poly1305 + AAD, and replicates to quorum. Reference dedup: 96.15% (25/26 chunks).'
+    '  XChaCha20-Poly1305 + AAD, and replicates to quorum. Demo fixture: 25/26 chunks reused; real reuse depends on the edit.'
   ],
   pull: [
     'Runs on your machine against your vault + operators.',
@@ -1990,20 +1990,21 @@ const REPL_RESPONSES = {
     '  Zero plaintext is written to disk; nothing here is executed by the browser.'
   ],
   bench: [
-    'Reference measurements (repo benchmarks, x86_64 Windows, release mode):',
+    'Historical reference measurements (repo benchmarks, x86_64 Windows, release mode, fixed workloads):',
     '  Chunk+Encrypt Pipeline : 362.21 MiB/s end-to-end (FastCDC + XChaCha20-Poly1305)',
     '  Decrypt+Reassemble     : 669.74 MiB/s (streaming in-memory)',
-    '  FastCDC Deduplication  : 96.15% (25/26 chunks reused on middle-insert)',
+    '  FastCDC chunk reuse    : 25 of 26 chunks on the demo middle-insert (depends on the edit)',
     '  PoS Wire Savings       : 99.9560% (1 MiB -> 461 B: 32 B nonce + 429 B receipt)',
     '  Concurrent Push        : 3.17x speedup, c=8 vs sequential (48 x 16 KiB, 3 loopback ops)',
     '  Sources: throughput_benchmark + push_bench. Your machine will differ — that is normal.'
   ],
   compare: [
-    'Architectural Comparison Summary (see the Benchmarks pane table):',
-    '  CipherVault vs Cloud Secrets : Zero-knowledge client encryption vs Custodial KMS',
-    '  CipherVault vs HashiCorp     : 96.15% FastCDC deduplication vs Full-blob storage',
-    '  CipherVault vs 1Password     : Zero-disk RAM execution vs Plaintext local .env',
-    '  CipherVault vs SOPS          : Quorum replication & CipherChain PoA vs Git commit hash only'
+    'How CipherVault differs from common approaches (categories, not products; see the Benchmarks pane table):',
+    '  vs a cloud secrets manager   : client-side encryption, free and local-first, vs provider-managed keys',
+    '  vs a self-hosted secrets server : no server that decrypts for you, vs a service you run and unseal',
+    '  vs plain .env + .gitignore   : encrypted, versioned, recoverable, memory-only run, vs one plaintext file',
+    '  vs encrypted-in-Git tools    : replicated snapshots and recovery kits, vs your Git history and your key',
+    '  Real products differ: check each vendor\'s documentation before relying on a comparison.'
   ],
   recover: [
     'Runs on a clean machine with your offline kit (Recover-then-Rebuild):',
