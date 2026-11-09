@@ -1,32 +1,53 @@
-# 📊 CipherVault System Evaluation & Audit Reports
+# 📊 CipherVault Evidence & Design Specs
 
-This directory contains empirical verification reports, production readiness reviews, live network audits, and progressive rating scorecards conducted across the CipherVault ecosystem.
+This directory publishes the curated evidence that current CipherVault documents, code comments and tooling cite: audit and remediation ledgers, deployment and capacity evidence, release test evidence, and the scoped-secrets design specs.
+
+Dated working notes (ratings, status reports, plans, outreach drafts, rollout logs) are kept locally by the maintainers and are not published here. `.gitignore` allow-lists exactly the files below; to publish another report, add an explicit `!/report/<name>` line and list it in this index.
+
+For current behavior and guarantees, start with [`docs/CURRENT_SECURITY_GUARANTEES.md`](../docs/CURRENT_SECURITY_GUARANTEES.md). Reports describe the version and date they record and do not override it.
 
 ---
 
-## 📑 Reports Index
+## 🔎 Audit, Remediation & Deployment Evidence
 
-| Report | Date | Scope & Key Findings |
+| Report | Date | Scope |
 |---|---|---|
-| [**`DEPLOYMENT_2026-10-02.md`**](./DEPLOYMENT_2026-10-02.md) | 2026-10-02 | v1.0.28 production rollout, live digest/health verification, recovery evidence, capacity results and remaining assurance gaps. |
+| [**`PROJECT_AUDIT_2026-09-30.md`**](./PROJECT_AUDIT_2026-09-30.md) | 2026-09-30 | Whole-project audit: authorization and recovery findings, bottlenecks, recommendations and local verification. |
+| [**`AUDIT_REMEDIATION_2026-09-30.md`**](./AUDIT_REMEDIATION_2026-09-30.md) | 2026-09-30 | Implementation and verification ledger for audit fixes, added features, rollout requirements and outstanding assurance. |
 | [**`DEPLOYMENT_2026-09-30.md`**](./DEPLOYMENT_2026-09-30.md) | 2026-09-30 | 1.0.26 release, deployment evidence, backups, rollout gates and remaining limitations. |
-| [**`AUDIT_REMEDIATION_2026-09-30.md`**](./AUDIT_REMEDIATION_2026-09-30.md) | 2026-09-30 | Implementation and verification ledger for audit fixes, added features, rollout requirements, and outstanding assurance. |
-| [**`PROJECT_AUDIT_2026-09-30.md`**](./PROJECT_AUDIT_2026-09-30.md) | 2026-09-30 | Current whole-project audit: 6.3/10 engineering score, authorization/recovery findings, bottlenecks, feature recommendations, and local verification. |
-| [**`CIPHERVAULT_DEEP_DIVE_REPORT.md`**](./CIPHERVAULT_DEEP_DIVE_REPORT.md) | 2026-09-17 | Comprehensive architectural deep dive, trust boundaries, crate-by-crate audit, and cryptographic invariants. |
-| [**`SYSTEM_AUDIT_RATING_2026-09-18.md`**](./SYSTEM_AUDIT_RATING_2026-09-18.md) | 2026-09-18 | System audit rating (7.5/10), threat model review, transport conformance evaluation, and remediation roadmap. |
-| [**`SYSTEM_AUDIT_RATING_2026-09-19.md`**](./SYSTEM_AUDIT_RATING_2026-09-19.md) | 2026-09-19 | Follow-up system rating (8/10), verifying libp2p transport, capability vouchers, and redb selection. |
-| [**`EXTERNAL_REHEARSAL_PROOF_2026-09-20.md`**](./EXTERNAL_REHEARSAL_PROOF_2026-09-20.md) | 2026-09-20 | Live-fire testnet proof: fleet seed rotation and 3/3 probation join ceremony executed from a clean external host. |
-| [**`TESTNET_READINESS_2026-09-20.md`**](./TESTNET_READINESS_2026-09-20.md) | 2026-09-20 | Public testnet genesis readiness scorecard, operational checklists, and known issues. |
-| [**`EXPLORER_DEEP_ANALYSIS_2026-09-21.md`**](./EXPLORER_DEEP_ANALYSIS_2026-09-21.md) | 2026-09-21 | Deep security and UX analysis of the Web Dashboard and Explorer backend (`ciphervault-ui`). |
-| [**`PROJECT_RATING_2026-09-23.md`**](./PROJECT_RATING_2026-09-23.md) | 2026-09-23 | Comprehensive whole-project rating (8/10), identifying top-5 operational and security risks. |
-| [**`PROGRESS_RATING_2026-09-24.md`**](./PROGRESS_RATING_2026-09-24.md) | 2026-09-24 | Updated progress rating (9/10), verifying closure of all top-5 risks (rate limiting, quotas, GHCR promotion, release automation). |
-| [**`PRODUCTION_READINESS_2026-09-24.md`**](./PRODUCTION_READINESS_2026-09-24.md) | 2026-09-24 | Production readiness scorecard (10.0/10.0) across multi-region quorum, Caddy TLS, and automated rollback. |
-| [**`OPERATOR_NETWORK_2026-09-24.md`**](./OPERATOR_NETWORK_2026-09-24.md) | 2026-09-24 | Live snapshot of the federated operator cluster, latency metrics, and version distribution. |
-| [**`SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md`**](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) | 2026-09-27 | **Scoped-secret audit v2.5.0 (Deliverable B):** current-state verdict (no project/repo/env scoping), target architecture, 10 Mermaid diagrams, supplements S1–S7. |
-| [**`SCOPED_SECRETS_EXECUTIVE_FINDINGS.md`**](./SCOPED_SECRETS_EXECUTIVE_FINDINGS.md) | 2026-09-27 | Deliverable A: concise executive findings. |
-| [**`SCOPED_SECRETS_TARGET_ARCHITECTURE.md`**](./SCOPED_SECRETS_TARGET_ARCHITECTURE.md) | 2026-09-27 | Deliverable C: standalone target architecture specification. |
-| [**`SCOPED_SECRETS_DATABASE_SPEC.md`**](./SCOPED_SECRETS_DATABASE_SPEC.md) | 2026-09-27 | Deliverable D: schema, constraints, indexes, transactions. |
-| [**`SCOPED_SECRETS_API_SPEC.md`**](./SCOPED_SECRETS_API_SPEC.md) | 2026-09-27 | Deliverable E: REST endpoints, auth matrix, rate limits. |
-| [**`SCOPED_SECRETS_MIGRATION_PLAN.md`**](./SCOPED_SECRETS_MIGRATION_PLAN.md) | 2026-09-27 | Deliverable F: 7-stage migration with loss-prevention gates. |
-| [**`SCOPED_SECRETS_SECURITY_THREAT_MODEL.md`**](./SCOPED_SECRETS_SECURITY_THREAT_MODEL.md) | 2026-09-27 | Deliverable G: 20-threat catalogue, 12 invariants, test gates. |
-| [**`SCOPED_SECRETS_IMPLEMENTATION_TASKS.md`**](./SCOPED_SECRETS_IMPLEMENTATION_TASKS.md) | 2026-09-27 | Deliverable H: file-mapped implementation task breakdown. |
+| [**`PROJECT_REASSESSMENT_2026-10-01.md`**](./PROJECT_REASSESSMENT_2026-10-01.md) | 2026-10-01 | Post-remediation project report (assessed release v1.0.26). |
+| [**`SECURITY_REVIEW_READINESS_2026-10-01.md`**](./SECURITY_REVIEW_READINESS_2026-10-01.md) | 2026-10-01 | Internal security audit: scope, outcome and handoff readiness. |
+| [**`ASSURANCE_IMPLEMENTATION_2026-10-01.md`**](./ASSURANCE_IMPLEMENTATION_2026-10-01.md) | 2026-10-01 | Assurance improvements: account MFA enforcement and corrected defects. |
+| [**`RECOVERY_CUSTODY_2026-10-01.md`**](./RECOVERY_CUSTODY_2026-10-01.md) | 2026-10-01 | Recovery custody implementation and remaining evidence. |
+| [**`CAPACITY_VALIDATION_2026-10-01.md`**](./CAPACITY_VALIDATION_2026-10-01.md) | 2026-10-01 | Capacity validation assessment and gate results. Raw runs: [`capacity-final`](./capacity-final-2026-10-01.json), [`capacity-fresh-mfa`](./capacity-fresh-mfa-2026-10-01.json), [`capacity-http-admission`](./capacity-http-admission-2026-10-01.json), [`capacity-legacy-baseline`](./capacity-legacy-baseline-2026-10-01.json). |
+| [**`EXTERNAL_REHEARSAL_PROOF_2026-09-20.md`**](./EXTERNAL_REHEARSAL_PROOF_2026-09-20.md) | 2026-09-20 | Testnet proof: fleet seed rotation and 3/3 probation join ceremony from a clean external host. |
+| [**`CIPHERCHAIN_ROTATION_DRILL_EVIDENCE_2026-11-08.md`**](./CIPHERCHAIN_ROTATION_DRILL_EVIDENCE_2026-11-08.md) | 2026-11-08 | CipherChain genesis ceremony and validator rotation drill evidence. |
+| [**`CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html`**](./CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html) | 2026-11-07 | Architecture page for the sovereign CipherChain ledger (v1.0.29; open in a browser). |
+| [**`TEST_EVIDENCE_v1.0.31.md`**](./TEST_EVIDENCE_v1.0.31.md) | 2026-11-08/09 | Test evidence for the v1.0.31 release. |
+| [**`OPERATOR_AUDIT_2026-11-08.md`**](./OPERATOR_AUDIT_2026-11-08.md) | 2026-11-08 | Operator service audit (`services/operator` source plus `dist/` drift). See also the [operator architecture page](../operator-architecture.html). |
+| [**`OPERATOR_REMEDIATION_PLAN_2026-11-08.md`**](./OPERATOR_REMEDIATION_PLAN_2026-11-08.md) | 2026-11-08 | Remediation plan and status for the operator audit. |
+
+`scripts/security/build_review_pack.py` bundles the 2026-09-30 and 2026-10-01 reports and the four capacity JSON files above into the external review pack; do not rename them without updating that script.
+
+---
+
+## 🔐 Scoped-Secrets Design Specs (v2.5.0, dated 2026-09-27)
+
+These are the design specifications written for the scoped-secrets feature. Their content is marked `[Proposed design]`; the shipped behavior is described in [`docs/CURRENT_SECURITY_GUARANTEES.md`](../docs/CURRENT_SECURITY_GUARANTEES.md) and [`services/account/README.md`](../services/account/README.md).
+
+| Specification | Scope |
+|---|---|
+| [**`SCOPED_SECRETS_TARGET_ARCHITECTURE.md`**](./SCOPED_SECRETS_TARGET_ARCHITECTURE.md) | Target architecture for hierarchical, resource-scoped secrets. |
+| [**`SCOPED_SECRETS_DATABASE_SPEC.md`**](./SCOPED_SECRETS_DATABASE_SPEC.md) | Database schema, constraints, indexes and transactions. |
+| [**`SCOPED_SECRETS_API_SPEC.md`**](./SCOPED_SECRETS_API_SPEC.md) | REST endpoints, auth matrix and rate limits. |
+| [**`SCOPED_SECRETS_SECURITY_THREAT_MODEL.md`**](./SCOPED_SECRETS_SECURITY_THREAT_MODEL.md) | Trust boundaries, threat catalogue, invariants and test gates. |
+| [**`SCOPED_SECRETS_IMPLEMENTATION_TASKS.md`**](./SCOPED_SECRETS_IMPLEMENTATION_TASKS.md) | Implementation task breakdown mapped to repository paths (referenced from `crates/format` and `services/account`). |
+
+---
+
+## 🎬 Submission & Distribution
+
+| File | Purpose |
+|---|---|
+| [**`HACKATHON_VIDEO_SCRIPT.md`**](./HACKATHON_VIDEO_SCRIPT.md) | Script for the hackathon film "Sealed" (two cuts, one source) and the claims it makes and deliberately does not make. Film source: [`ciphervault-film/`](../ciphervault-film/). |
+| [**`plugin-catalog-ciphervault.yaml`**](./plugin-catalog-ciphervault.yaml) | Plugin catalog entry for CipherVault (repository and pinned commit). |

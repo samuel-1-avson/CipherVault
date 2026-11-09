@@ -1,6 +1,6 @@
 # Deliverable G — Security & Threat Model: Scoped Secrets
 
-**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** [SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) (§7, §15, §16, S1, S3, §27)
+**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md (internal research report, not published) (§7, §15, §16, S1, S3, §27)
 
 ## 1. Trust boundaries
 

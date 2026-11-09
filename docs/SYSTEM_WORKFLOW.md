@@ -776,8 +776,8 @@ ciphervault init --operators https://op1.cipherv.online https://op2.cipherv.onli
 ### Overall Verdict: **SECURITY-FOCUSED BETA (7.4 / 10.0)** - see note
 
 > **2026-09-16 correction:** the prior "10.0 / 10.0 PRODUCTION READY" verdict overstated
-> production evidence. Per `PROJECT_AUDIT_2026-09-16.md` and the deep-dive report
-> (`report/CIPHERVAULT_DEEP_DIVE_REPORT.md`), the public explorer is operational but
+> production evidence. Per the 2026-09-16 project audit and the deep-dive report
+> (internal, not published), the public explorer is operational but
 > operator identity pinning, the signed checkpoint feed, secret-manager rotation, and
 > signed-digest promotion are still open. The dimension scores below describe design
 > quality, not live production proof. Do not restore a production verdict until the

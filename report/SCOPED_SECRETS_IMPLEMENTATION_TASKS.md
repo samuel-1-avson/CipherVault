@@ -1,6 +1,6 @@
 # Deliverable H — Implementation Task Breakdown (mapped to repository paths)
 
-**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** [SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) (§25, §26, S5)
+**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md (internal research report, not published) (§25, §26, S5)
 
 All `EXISTS` paths verified in the worktree; `NEW` files are to be created. Phase mapping: S5.
 

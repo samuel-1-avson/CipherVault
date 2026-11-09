@@ -1,6 +1,6 @@
 # Deliverable E — API Specification: Scoped Secrets (REST)
 
-**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** [SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) (§12, §24)
+**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md (internal research report, not published) (§12, §24)
 
 All content below is `[Proposed design]`. All tokens, values, and connection strings are synthetic placeholders. Value-bearing responses require TLS 1.2+.
 

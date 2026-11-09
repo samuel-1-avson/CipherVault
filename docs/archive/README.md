@@ -1,9 +1,9 @@
 # 🏛️ CipherVault Documentation Archive
 
-This directory permanently preserves historical Requests for Comments (RFCs), early engineering milestones, completed exploratory spikes, point-in-time security audits, and prior rollout notes for full architectural and cryptographic provenance.
+This directory preserves the historical Requests for Comments (RFCs), completed exploratory spikes and decision packets behind CipherVault's architecture, for design and cryptographic provenance.
 
 > [!NOTE]
-> The documents in this directory are preserved strictly for historical context. For current, authoritative system documentation, refer to the [**Master Documentation Hub**](../README.md).
+> The documents in this directory are preserved strictly for historical context. For current, authoritative system documentation, refer to the [**Master Documentation Hub**](../README.md). Dated audits, rollout logs, status reports and finished plans are working notes: they are kept by the maintainers locally and are not published in this repository.
 
 ---
 
@@ -36,32 +36,12 @@ Exploratory engineering investigations whose outcomes are codified in current Ar
 | [`D7_ERASURE_SPIKE.md`](./D7_ERASURE_SPIKE.md) | Reed-Solomon erasure coding spike measuring `reed-solomon-simd`. **Verdict: Decline erasure coding for 3-node fleet; retain 3x full replication** (codified in [ADR-005](../adr/005-decline-erasure.md)). |
 | [`DON_ECONOMICS_DECISION.md`](./DON_ECONOMICS_DECISION.md) | Barter-economics vs token staking evaluation. **Verdict: Self-issued barter write vouchers** (codified in [ADR-002](../adr/002-voucher-barter.md)). |
 | [`DON_SPEC_CORRECTIONS.md`](./DON_SPEC_CORRECTIONS.md) | Dated corrections to parent DON architecture (folded into [DON v2.0 Spec](../DECENTRALIZED_ARCHITECTURE_SPEC.md)). |
-| [`SPLIT_PLAN.md`](./SPLIT_PLAN.md) | Crate and service separation roadmap (completed across 11 workspace crates). |
 
 ---
 
-### 3. Historical Drills & Failure Injection Logs
-Live-fire drills and failure injection runs:
+### 3. Historical Drills
+Live-fire drill procedure and evidence:
 
 | Document | Historical Subject |
 |---|---|
 | [`NAT_HOLEPUNCH_DRILL.md`](./NAT_HOLEPUNCH_DRILL.md) | Containerized NAT traversal and DCUtR relay hole-punch drill evidence. |
-| [`CHAOS_LOG.md`](./CHAOS_LOG.md) | Failure injection execution log across multi-node test harnesses. |
-| [`CONFIRM_FIRST_VERDICTS_2026-09-18.md`](./CONFIRM_FIRST_VERDICTS_2026-09-18.md) | Transport-conformance and naming drift audit resolution memo. |
-
----
-
-### 4. Historical Security Audits & Rollout Snapshots
-Point-in-time security evaluations and release transition logs:
-
-| Document | Date | Scope & Subject |
-|---|---|---|
-| [`CIPHERVAULT_AUDIT_2026-09-12.md`](./CIPHERVAULT_AUDIT_2026-09-12.md) | 2026-09-12 | Pre-production security audit (all findings remediated in v1.0.0). |
-| [`RELEASE_READINESS_2026-09-13.md`](./RELEASE_READINESS_2026-09-13.md) | 2026-09-13 | Release readiness evaluation snapshot. |
-| [`WEB_DASHBOARD_EXPLORER_AUDIT_2026-09-13.md`](./WEB_DASHBOARD_EXPLORER_AUDIT_2026-09-13.md) | 2026-09-13 | Web dashboard and secrets explorer security audit. |
-| [`OPERATORS_AUDIT_2026-09-14.md`](./OPERATORS_AUDIT_2026-09-14.md) | 2026-09-14 | Storage operator service security audit. |
-| [`WEB_DASHBOARD_EXPLORER_IMPLEMENTATION_PROGRESS_2026-09-14.md`](./WEB_DASHBOARD_EXPLORER_IMPLEMENTATION_PROGRESS_2026-09-14.md) | 2026-09-14 | Web UI implementation progress snapshot. |
-| [`PRODUCTION_ROLLOUT_2026-09-15.md`](./PRODUCTION_ROLLOUT_2026-09-15.md) | 2026-09-15 | Production rollout and package staging notes. |
-| [`PROJECT_AUDIT_2026-09-16.md`](./PROJECT_AUDIT_2026-09-16.md) | 2026-09-16 | Whole-project audit review snapshot. |
-| [`PROJECT_REPORT.md`](./PROJECT_REPORT.md) | 2026-09-12 | Initial consolidation report (unified into `SYSTEM_WORKFLOW.md`). |
-| [`LANDING_PAGE_PLAN_AND_REPORT.md`](./LANDING_PAGE_PLAN_AND_REPORT.md) | 2026-09-24 | Landing page strategic architecture and benchmark report. |

@@ -1,6 +1,6 @@
 # Deliverable D — Database Specification: Scoped Secrets
 
-**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** [SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) (§11, S5-Phase 2)
+**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md (internal research report, not published) (§11, S5-Phase 2)
 
 All content below is `[Proposed design]`. Extends — never breaks — the existing schemas (`services/account/src/state.rs`, `crates/local-store/src/db.rs`).
 

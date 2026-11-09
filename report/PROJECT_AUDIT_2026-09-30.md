@@ -24,7 +24,7 @@ An additional privacy finding was reproduced with synthetic data: an operator-vi
 
 My recommendation is to treat the current release as a **controlled beta with explicit limits**. Prioritize authorization, snapshot capture, recovery correctness, and honest health reporting before expanding the network, adding economic features, or presenting the system as enterprise-ready.
 
-Earlier internal reports include 9+/10 ratings and production-ready language. Those are historical assessments, not proof of current correctness or independent certification. In particular, docs/SECURITY_AUDIT_READINESS.md explicitly says no external security audit has occurred, and docs/MAINNET_READINESS.md still lists external gates. The findings below explain why this review gives a lower score.
+Earlier internal reports include 9+/10 ratings and production-ready language. Those are historical assessments, not proof of current correctness or independent certification. In particular, docs/SECURITY_AUDIT_READINESS.md explicitly says no external security audit has occurred, and the (since retired) mainnet readiness note still listed external gates. The findings below explain why this review gives a lower score.
 
 ## 2. Scope, method, and limitations
 
