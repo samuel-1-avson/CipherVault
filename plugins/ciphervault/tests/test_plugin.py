@@ -233,7 +233,14 @@ def test_release_asset_selection(monkeypatch):
     assert asset == "ciphervault-linux-amd64" and dest == "ciphervault"
     assert sha == cv.RELEASE_ASSETS["linux-amd64"][1]
     monkeypatch.setattr(cv.sys, "platform", "darwin")
-    assert cv._release_asset() is None
+    monkeypatch.setattr(cv.platform, "machine", lambda: "arm64")
+    asset, sha, dest = cv._release_asset()
+    assert asset == "ciphervault-macos-arm64" and dest == "ciphervault"
+    assert sha == cv.RELEASE_ASSETS["macos-arm64"][1]
+    monkeypatch.setattr(cv.platform, "machine", lambda: "x86_64")
+    asset, sha, dest = cv._release_asset()
+    assert asset == "ciphervault-macos-amd64" and dest == "ciphervault"
+    assert sha == cv.RELEASE_ASSETS["macos-amd64"][1]
 
 
 def test_quickstart_walks_the_demo(monkeypatch, tmp_path):

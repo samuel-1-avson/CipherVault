@@ -45,6 +45,14 @@ RELEASE_ASSETS = {
         "ciphervault-linux-amd64",
         "105c3ac598249d01d16e50a6e8e1e45cc32bcfdede6c585a0b9fd44b67e4a5b3",
     ),
+    "macos-arm64": (
+        "ciphervault-macos-arm64",
+        "b7d9c48671cb9bc81d2f420e3b9aa3fae13991cc340cb50955234f2566bbf630",
+    ),
+    "macos-amd64": (
+        "ciphervault-macos-amd64",
+        "6b0e678dad7abd3f1a58435dfc3e774adbb590ade2be42c912c65e686fea4f31",
+    ),
 }
 # Backward-compatible alias for the Windows pin.
 RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
@@ -107,6 +115,10 @@ def _release_asset():
     if sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64"):
         asset, sha = RELEASE_ASSETS["linux-amd64"]
         return asset, sha, "ciphervault"
+    if sys.platform == "darwin":
+        key = "macos-arm64" if platform.machine() == "arm64" else "macos-amd64"
+        asset, sha = RELEASE_ASSETS[key]
+        return asset, sha, "ciphervault"
     return None
 
 
@@ -121,7 +133,7 @@ def bootstrap_binary(progress=print):
             "success": False,
             "error": (
                 "No prebuilt CipherVault binary is published for this platform yet "
-                "(Windows x64 and Linux x64 have prebuilt assets). Build from source "
+                "(Windows x64, Linux x64, and macOS arm64/Intel have prebuilt assets). "
                 "(cargo install --path apps/cli from "
                 "https://github.com/samuel-1-avson/CipherVault) or set "
                 "CIPHERVAULT_BIN / the binary_path plugin setting."
