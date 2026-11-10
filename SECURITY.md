@@ -6,6 +6,27 @@ We actively welcome and value vulnerability reports from independent security re
 
 ---
 
+## Audit status
+
+**CipherVault has not yet had an independent external audit.**
+Stated plainly, because overstating this would be worse than the
+gap itself:
+
+| Review | Status |
+| :--- | :--- |
+| External cryptographic audit (firm or independent reviewer) | **Not yet performed.** Engagement pack published at [`docs/audit/`](docs/audit/README.md); outreach in progress (Nov 2026). |
+| Internal security audits + remediation | Performed (see `report/` audit history and `docs/CURRENT_SECURITY_GUARANTEES.md` for the current guarantee set and open items). |
+| Independent reviewer pass (fresh reviewers, crypto core) | **Completed 2026-11-10** against v1.0.32: [`docs/audit/INDEPENDENT_REVIEW_2026-11-10.md`](docs/audit/INDEPENDENT_REVIEW_2026-11-10.md) — 2 HIGH findings found and fixed; the rest dispositioned openly. This is an independent *internal* review, not the external audit. |
+| Automated dependency scanning | `cargo audit` (pinned, time-limited documented exceptions) + gitleaks in CI. |
+
+The largest open cryptographic question is the legacy custom
+Blake2b KDF (audit-pack item C1); the v2 chunk protocol ships
+opt-in until it has had external review (item C3). If you are an
+auditor or firm: the pack in `docs/audit/` has scope, invariants,
+and reproduction commands, and asks for a quote.
+
+---
+
 ## Supported Versions
 
 Only the latest release on the primary development branch and explicitly tagged stable releases receive security patches:

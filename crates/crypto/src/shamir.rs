@@ -14,7 +14,10 @@ use crate::error::CryptoError;
 
 /// Multiplication in GF(2^8) with Rijndael polynomial x^8 + x^4 + x^3 + x + 1 (0x11B).
 ///
-/// Implemented using strictly branchless bitwise operations to eliminate timing side channels.
+/// Written branchlessly at source level (fixed iterations, mask
+/// arithmetic, no secret-dependent indexing). That is a source-level
+/// property, not a platform-wide constant-time proof; see the audit
+/// specification §4 for the scoped claim.
 #[inline(always)]
 pub fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut p = 0u8;

@@ -2,7 +2,7 @@
 //! All derivations use HKDF-SHA256 with independent domains and fixed-width inputs.
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 const SALT: &[u8] = b"CipherVault-ChunkWire-v2/HKDF-SHA256";
 
@@ -23,11 +23,11 @@ fn expand<const N: usize>(
     let mut result = [0u8; N];
     // N is always 24 or 32, well within HKDF-SHA256's 255*32 output
     // limit; expand can only fail on an oversized request, which the
-    // fixed N makes unreachable. On that unreachable error, fail closed
-    // with a zero key rather than panicking in production code.
-    if hkdf.expand(&info, &mut result).is_err() {
-        result.zeroize();
-    }
+    // fixed N makes unreachable. Abort on that unreachable error:
+    // returning a zeroed buffer here would silently turn it into a
+    // predictable key/nonce, which is the opposite of failing closed.
+    hkdf.expand(&info, &mut result)
+        .expect("HKDF-SHA256 expand within its documented output limit");
     result
 }
 

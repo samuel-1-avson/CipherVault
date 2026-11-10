@@ -1279,8 +1279,10 @@ impl LocalVaultStore {
     ) -> Result<AgentAuditEntry, LocalStoreError> {
         use ed25519_dalek::Signer;
         use sha2::Digest;
-        let prev_hash: String = self
-            .conn
+        // Single transaction: reading the previous head and inserting
+        // must be atomic, or two concurrent appenders fork the chain.
+        let tx = self.conn.unchecked_transaction()?;
+        let prev_hash: String = tx
             .query_row(
                 "SELECT entry_hash FROM agent_audit ORDER BY id DESC LIMIT 1",
                 [],
@@ -1295,11 +1297,12 @@ impl LocalVaultStore {
         let entry_hash = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
         let (_, device_sk, _, _) = self.get_device_state()?;
         let signature = hex::encode(device_sk.sign(entry_hash.as_bytes()).to_bytes());
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![now, tool, decision, path, detail_json, prev_hash, entry_hash, signature],
         )?;
-        let id = self.conn.last_insert_rowid();
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
         Ok(AgentAuditEntry {
             id,
             created_at_utc: now,
@@ -1339,15 +1342,46 @@ impl LocalVaultStore {
     }
 
     /// Finds the newest audit entry whose detail records the given
-    /// scrubbed-output SHA-256 (proof an output passed the scrub).
+    /// scrubbed-output SHA-256 as its `output_sha256` field — exact
+    /// field equality, never substring matching, so a forged or
+    /// unrelated row containing the digest proves nothing.
     pub fn find_agent_audit_by_output_hash(
         &self,
         output_sha256: &str,
     ) -> Result<Option<AgentAuditEntry>, LocalStoreError> {
         let entries = self.list_agent_audit(usize::MAX)?;
-        Ok(entries
-            .into_iter()
-            .find(|e| e.detail_json.contains(output_sha256)))
+        Ok(entries.into_iter().find(|e| {
+            serde_json::from_str::<serde_json::Value>(&e.detail_json)
+                .ok()
+                .and_then(|v| {
+                    v.get("output_sha256")
+                        .and_then(|h| h.as_str())
+                        .map(|h| h == output_sha256)
+                })
+                .unwrap_or(false)
+        }))
+    }
+
+    /// Entry hash at a 1-based position in chain order (position 1 is
+    /// the genesis entry), or None when the chain is shorter. Used to
+    /// check that a fleet-anchored head is an ancestor of the local
+    /// chain rather than merely equal in count.
+    pub fn agent_audit_entry_hash_at(
+        &self,
+        position: usize,
+    ) -> Result<Option<String>, LocalStoreError> {
+        if position == 0 {
+            return Ok(None);
+        }
+        let hash = self
+            .conn
+            .query_row(
+                "SELECT entry_hash FROM agent_audit ORDER BY id ASC LIMIT 1 OFFSET ?1",
+                params![(position - 1) as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(hash)
     }
 
     /// Walks the chain from genesis recomputing every hash and
@@ -2697,6 +2731,62 @@ mod tests {
             .find_agent_audit_by_output_hash("missing0")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_agent_audit_find_requires_exact_output_field() {
+        let store = agent_audit_store();
+        // A forged/irrelevant row that merely CONTAINS the digest in
+        // another field must not count as scrub proof.
+        store
+            .conn
+            .execute(
+                "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (1, 'terminal', 'executed', '', '{\"note\":\"deadbeef\"}', 'x', 'y', 'z')",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .find_agent_audit_by_output_hash("deadbeef")
+            .unwrap()
+            .is_none());
+        // Prefix/substring of a real field must not match either.
+        store
+            .append_agent_audit(
+                "terminal",
+                "scrubbed_result",
+                "",
+                r#"{"output_sha256":"deadbeefcafe"}"#,
+            )
+            .unwrap();
+        assert!(store
+            .find_agent_audit_by_output_hash("deadbeef")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_agent_audit_by_output_hash("deadbeefcafe")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn test_agent_audit_entry_hash_at_position() {
+        let store = agent_audit_store();
+        let e1 = store
+            .append_agent_audit("terminal", "executed", "a", "{}")
+            .unwrap();
+        let e2 = store
+            .append_agent_audit("terminal", "executed", "b", "{}")
+            .unwrap();
+        assert_eq!(
+            store.agent_audit_entry_hash_at(1).unwrap().as_deref(),
+            Some(e1.entry_hash.as_str())
+        );
+        assert_eq!(
+            store.agent_audit_entry_hash_at(2).unwrap().as_deref(),
+            Some(e2.entry_hash.as_str())
+        );
+        assert!(store.agent_audit_entry_hash_at(3).unwrap().is_none());
+        assert!(store.agent_audit_entry_hash_at(0).unwrap().is_none());
     }
 
     #[test]

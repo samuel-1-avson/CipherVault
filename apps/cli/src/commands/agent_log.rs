@@ -149,6 +149,14 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
             output_sha256,
             json,
         } => {
+            // A lookup is only proof if the chain itself verifies —
+            // otherwise a forged row could "prove" anything.
+            let report = store.verify_agent_audit()?;
+            ensure!(
+                report.ok,
+                "audit chain is broken at entry {:?}; refusing to treat a lookup as proof",
+                report.first_bad_id
+            );
             let hit = store.find_agent_audit_by_output_hash(&output_sha256)?;
             let (found, entry_id, tool, decision) = match &hit {
                 Some(e) => (
@@ -252,6 +260,26 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
                 }
             }
             let local = store.verify_agent_audit()?;
+            ensure!(
+                local.ok,
+                "local audit chain is BROKEN at entry {:?}; refusing remote comparison",
+                local.first_bad_id
+            );
+            ensure!(confirmed > 0, "no operator holds the anchored checkpoint");
+            ensure!(
+                local.entries >= anchored_entries,
+                "local chain has {} entries but the fleet anchor has {} — local history was truncated or rolled back",
+                local.entries,
+                anchored_entries
+            );
+            if anchored_entries > 0 {
+                let at_anchor = store.agent_audit_entry_hash_at(anchored_entries)?;
+                ensure!(
+                    at_anchor.as_deref() == Some(anchored_head.as_str()),
+                    "local chain DIVERGES from the fleet anchor at entry #{} — local history was rewritten after anchoring",
+                    anchored_entries
+                );
+            }
             let matches = anchored_entries == local.entries && anchored_head == local.head_hash;
             if json {
                 println!(
@@ -271,10 +299,9 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
                     local.entries,
                     anchored_entries,
                     confirmed,
-                    if matches { "local head matches anchor" } else { "local chain has moved past the anchor (re-run push/anchor)" }
+                    if matches { "local head matches anchor" } else { "local chain is ahead of the anchor (re-run push/anchor to close the gap)" }
                 );
             }
-            ensure!(confirmed > 0, "no operator holds the anchored checkpoint");
         }
         AgentLogSubcommand::Export { out } => {
             let mut entries = store.list_agent_audit(usize::MAX)?;

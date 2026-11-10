@@ -6,7 +6,7 @@
 ## 1. Executive Summary & Security Objectives
 
 **CipherVault** provides client-encrypted secret backup and disaster recovery. This is an audit specification, not a completed external audit or formal proof. The cryptographic protocol is designed to provide:
-1. **Confidentiality against Untrusted Operators**: Encrypted manifests hide paths and whole-file metadata; encrypted CBOR objects use SHA-256 CIDs. Deterministic equality, lengths, vault/epoch and access patterns remain observable. Default v1 exposes public candidate-file confirmation; opt-in v2 uses keyed opaque identifiers. Do not claim full IND-CCA2 security for deterministic deduplicated storage without a precise leakage model.
+1. **Confidentiality against Untrusted Operators**: Encrypted manifests hide paths and whole-file metadata; encrypted CBOR objects use SHA-256 CIDs. Deterministic equality, lengths, vault/epoch and access patterns remain observable. Legacy v1 (explicit opt-out or historical objects) exposes public candidate-file confirmation; the default v2 uses keyed opaque identifiers. Do not claim full IND-CCA2 security for deterministic deduplicated storage without a precise leakage model.
 2. **Side-Channel Resistance & Constant-Time Arithmetic**: Galois Field $\text{GF}(2^8)$ multiplication (`gf_mul`) executes in strictly branchless, constant-time operations; the branchless claim is scoped to `gf_mul` only, not to the surrounding share-evaluation loops.
 3. **Hardware-Anchored Device Identity**: Hardware-bound signing uses the configured PIV token key. Touch requirements depend on token provisioning and policy; simulation and subsystem tests do not establish a physical-presence ceremony. Validate the actual supported device/platform before asserting touch enforcement.
 4. **Memory Hygiene and Injection**: Owned secret buffers use zeroizing containers in covered paths. Runtime secret injection uses process environments without writing a secrets file. This does not guarantee erasure of every copy or protection from swap/dumps/child behavior; restore intentionally publishes plaintext with restrictive permissions.
@@ -30,7 +30,7 @@
 
 ## 3. Key Derivation Hierarchy & Domain Separation Registry
 
-The diagram below describes the retained v1 hierarchy. Epoch and device keys are random; recovery envelopes carry sealed epoch keys. V2 chunk derivations are separately specified in [CHUNK_PROTOCOL_V2.md](../crates/snapshot/CHUNK_PROTOCOL_V2.md), including exact salt/info bytes, AEAD bindings and compatibility limits. Default captures remain v1 pending independent review; only `CIPHERVAULT_CHUNK_V2_WRITE=1` opts into v2. Readers support both versions without changing old addresses.
+The diagram below describes the retained v1 hierarchy. Epoch and device keys are random; recovery envelopes carry sealed epoch keys. V2 chunk derivations are separately specified in [CHUNK_PROTOCOL_V2.md](../crates/snapshot/CHUNK_PROTOCOL_V2.md), including exact salt/info bytes, AEAD bindings and compatibility limits. Default captures are v2; `CIPHERVAULT_CHUNK_V2_WRITE=0` forces legacy v1 (independent review of v2 remains open — it is the subject of this audit, not a precondition discharged by shipping). Readers support both versions without changing old addresses.
 
 ```mermaid
 graph TD
@@ -44,7 +44,7 @@ graph TD
     ENV --> VEK["Vault Epoch Key (32 bytes)"]
     
     VEK -->|Blake2b-KDF b'CV_MANIF'| MK["Manifest Key (Epoch-bound)"]
-    VEK -->|Blake2b-KDF b'CV_FVERS'| FVK["File Version Key (Vault & Plaintext bound)"]
+    VEK -->|Blake2b-KDF b'CV_FVERS'| FVK["File Version Key (Epoch & Plaintext bound; v1 has no vault input — v2 binds vault)"]
     FVK -->|Blake2b-KDF b'CV_CNONC'| NONCE["Chunk Nonce (24 bytes deterministic)"]
 
     classDef root fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
