@@ -289,17 +289,20 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
 
 def _audit(tool, decision, path="", detail=None, cwd=None):
     """Append one entry to the vault's tamper-evident agent audit
-    chain via the CLI. Best-effort: auditing must never break a tool
-    call, and it records paths/decisions/counts only, never contents."""
+    chain via the CLI. Records paths/decisions/counts only, never
+    contents. Returns True when the entry landed: callers whose
+    correctness depends on the receipt (scrub proofs) must fail
+    closed on False instead of letting absence go ambiguous."""
     try:
         args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
         if path:
             args += ["--path", str(path)[:300]]
         if detail:
             args += ["--detail", json.dumps(detail)[:500]]
-        _run_cli(args, cwd, timeout=10)
+        res = _run_cli(args, cwd, timeout=10)
+        return bool(res and res.get("success"))
     except Exception:
-        pass
+        return False
 
 
 def _anchor_async(cwd=None):
@@ -330,15 +333,19 @@ def _anchor_async(cwd=None):
 
 def cli_redact(text, cwd, timeout=15):
     """Exact+shape redaction via the CLI (vault values are matched
-    inside the CLI process; they never enter this process). Falls back
-    to local shape scrubbing when the CLI is unavailable."""
+    inside the CLI process; they never enter this process). Returns
+    (text, redactions, exact_ok): exact_ok False means the CLI could
+    not answer and only local shape scrubbing ran — callers that
+    would hand text to the model must fail closed on that, because a
+    shape-blind vault value (database URL, internal token) would
+    pass through unlogged."""
     if not text:
-        return text, 0
+        return text, 0, True
     res = _run_cli_json(["redact", "--json"], cwd, timeout=timeout, input_text=text)
     if res.get("success"):
         data = res["data"]
-        return data.get("text", scrub(text)), int(data.get("redactions", 0))
-    return scrub(text), 0
+        return data.get("text", scrub(text)), int(data.get("redactions", 0)), True
+    return scrub(text), 0, False
 
 
 # ---------------------------------------------------------------- tools
@@ -389,8 +396,9 @@ def _tool_push(params, **kwargs):
 
 def _tool_redact(params, **kwargs):
     params = params or {}
-    cleaned, n = cli_redact(params.get("text") or "", params.get("cwd"))
-    return json.dumps({"success": True, "text": cleaned, "redactions": n})
+    cleaned, n, exact = cli_redact(params.get("text") or "", params.get("cwd"))
+    return json.dumps({"success": True, "text": cleaned, "redactions": n,
+                       "exact_value_check": exact})
 
 
 def _tool_audit(params, **kwargs):
@@ -535,7 +543,7 @@ def on_pre_tool_call(tool_name, args, **kwargs):
 
         joined = "\n".join(texts)
         if joined:
-            cleaned, n = cli_redact(joined, cwd, timeout=10)
+            cleaned, n, _exact = cli_redact(joined, cwd, timeout=10)
             if n > 0 or cleaned != joined:
                 _audit(tool_name, "blocked",
                        detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=cwd)
@@ -570,23 +578,40 @@ def on_pre_tool_call(tool_name, args, **kwargs):
 
 def on_transform_tool_result(tool_name, args, result, **kwargs):
     """Scrub every non-CipherVault tool result before it enters model
-    context (exact vault values via the CLI, shapes locally)."""
+    context. Fails CLOSED: if the exact-value scrub cannot run, or
+    the audit receipt cannot be written, the result is withheld
+    rather than passed on trust — a silent pass would make the
+    audit log's absence meaningless."""
     try:
         if not isinstance(result, str) or not result:
             return None
         if tool_name and tool_name.startswith("ciphervault_"):
             return None
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
-        sample = result[:262_144]
-        cleaned, n = cli_redact(sample, cwd, timeout=10)
-        if cleaned != sample:
-            suffix = "\n…[truncated by CipherVault scrub]" if len(result) > len(sample) else ""
-            final = cleaned + suffix
-            _audit(tool_name, "scrubbed_result",
-                   detail={"redactions": n,
-                           "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
-                           "output_bytes": len(final)},
-                   cwd=cwd)
+        oversized = len(result) > 262_144
+        sample = result[:262_144] if oversized else result
+        cleaned, n, exact = cli_redact(sample, cwd, timeout=10)
+        if not exact:
+            _audit(tool_name, "scrub_unavailable",
+                   detail={"withheld_bytes": len(result)}, cwd=cwd)
+            return ("[CipherVault] tool result withheld: the exact-value scrub "
+                    "could not run (CipherVault CLI missing or timed out), so "
+                    "this output was not shown. A shape-only pass could miss a "
+                    "vault value entirely; failing loudly instead.")
+        final = cleaned
+        if oversized:
+            # The window is never conditional: an untouched tail must
+            # not pass just because the scrubbed head was clean.
+            final = cleaned + "\n…[truncated by CipherVault scrub]"
+        if not _audit(tool_name, "scrubbed_result",
+                      detail={"redactions": n,
+                              "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
+                              "output_bytes": len(final)},
+                      cwd=cwd):
+            return ("[CipherVault] tool result withheld: the audit-log write "
+                    "failed, so there is no receipt for this output. Withholding "
+                    "it keeps 'no hash in the chain' unambiguous.")
+        if final != result:
             return final
         return None
     except Exception:

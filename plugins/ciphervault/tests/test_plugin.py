@@ -193,7 +193,7 @@ def _capture_audit(monkeypatch):
 
 
 def test_guard_block_is_audit_logged(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     calls = _capture_audit(monkeypatch)
     out = cv.on_pre_tool_call("terminal", {"command": "cat .env"})
     assert out and out["action"] == "block"
@@ -210,7 +210,7 @@ def test_run_approval_is_audit_logged(ctx, monkeypatch):
 
 
 def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 2))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 2, True))
     calls = _capture_audit(monkeypatch)
     out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer abcdefghijklmnop")
     assert out is not None
@@ -220,6 +220,40 @@ def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
     detail = json.loads(rec[0][rec[0].index("--detail") + 1])
     assert detail["output_sha256"] == _hl.sha256(out.encode()).hexdigest()
     assert detail["redactions"] == 2
+
+
+def test_transform_fails_closed_without_exact_scrub(monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, False))
+    _capture_audit(monkeypatch)
+    out = cv.on_transform_tool_result("terminal", {}, "postgres://u:p@h/db")
+    assert out is not None and "withheld" in out and "postgres" not in out
+
+
+def test_transform_logs_clean_results_too(monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    calls = _capture_audit(monkeypatch)
+    out = cv.on_transform_tool_result("terminal", {}, "all clean output")
+    assert out is None  # unchanged: original passes through
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "scrubbed_result" in rec[0]
+    import hashlib as _hl
+    detail = json.loads(rec[0][rec[0].index("--detail") + 1])
+    assert detail["redactions"] == 0
+    assert detail["output_sha256"] == _hl.sha256(b"all clean output").hexdigest()
+
+
+def test_transform_truncates_oversized_when_head_is_clean(monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    _capture_audit(monkeypatch)
+    out = cv.on_transform_tool_result("terminal", {}, "A" * 300_000)
+    assert out is not None and len(out) < 300_000 and "truncated" in out
+
+
+def test_transform_withholds_when_audit_write_fails(monkeypatch):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    monkeypatch.setattr(cv, "_audit", lambda *a, **k: False)
+    out = cv.on_transform_tool_result("terminal", {}, "some output")
+    assert out is not None and "withheld" in out and "audit" in out
 
 
 def test_release_asset_selection(monkeypatch):
@@ -273,7 +307,7 @@ def test_post_tool_call_logs_writes(ctx, monkeypatch):
 
 
 def test_run_approval_triggers_anchor(monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     _capture_audit(monkeypatch)
     anchored = []
     monkeypatch.setattr(cv, "_anchor_async", lambda cwd=None: anchored.append(cwd))
@@ -283,7 +317,7 @@ def test_run_approval_triggers_anchor(monkeypatch):
 
 
 def test_block_does_not_trigger_anchor(monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     _capture_audit(monkeypatch)
     anchored = []
     monkeypatch.setattr(cv, "_anchor_async", lambda cwd=None: anchored.append(cwd))
@@ -310,25 +344,25 @@ def test_anchor_async_spawns_detached_cli(monkeypatch):
 # ------------------------------------------------------------ guard
 
 def test_guard_blocks_terminal_cat_env(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     out = cv.on_pre_tool_call("terminal", {"command": "cat .env"})
     assert out and out["action"] == "block"
 
 
 def test_guard_blocks_read_file_on_key(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     out = cv.on_pre_tool_call("read_file", {"path": "/proj/id_ed25519"})
     assert out and out["action"] == "block"
 
 
 def test_guard_blocks_secret_shaped_payload(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 1))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 1, True))
     out = cv.on_pre_tool_call("write_file", {"path": "notes.txt", "content": "API_KEY=supersecretvalue123"})
     assert out and out["action"] == "block"
 
 
 def test_guard_allows_clean_terminal(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     assert cv.on_pre_tool_call("terminal", {"command": "git status"}) is None
 
 
@@ -345,13 +379,14 @@ def test_guard_never_blocks_other_ciphervault_tools(ctx):
 
 
 def test_transform_scrubs_other_results(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 1))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 1, True))
     out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer abcdefghijklmnop")
     assert out is not None and "abcdefghijklmnop" not in out
 
 
 def test_transform_leaves_clean_and_own_results(ctx, monkeypatch):
-    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0))
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    _capture_audit(monkeypatch)
     assert cv.on_transform_tool_result("terminal", {}, "all good") is None
     assert cv.on_transform_tool_result("ciphervault_run", {}, "Bearer abcdefghijklmnop") is None
 
