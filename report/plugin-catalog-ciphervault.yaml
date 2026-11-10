@@ -1,6 +1,6 @@
 name: ciphervault
 repo: https://github.com/samuel-1-avson/CipherVault
-sha: PLACEHOLDER
+sha: a1746aeaad7e8f71e7efd47e085be82d62a9e6d8
 subdir: "plugins/ciphervault"
 description: Zero-knowledge secret backup for AI coding agents — masked sprawl scan, RAM-only run with exact-value output scrubbing, encrypted snapshots, pre_tool_call leak guard, and a secret source for Hermes itself.
 maintainer: samuel-1-avson
