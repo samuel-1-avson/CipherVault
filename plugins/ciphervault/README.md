@@ -1,10 +1,18 @@
 # CipherVault Hermes plugin
 
-Zero-knowledge secret backup, native inside Hermes. The plugin wraps
-the CipherVault CLI (a 14-crate Rust workspace: XChaCha20-Poly1305,
-content-defined chunking, threshold recovery, YubiKey PIV, sovereign
-operator chain) with agent-safe surfaces — values are encrypted on your
-machine and never enter the model context.
+**Prove the model never saw it.** CipherVault is zero-knowledge secret
+backup, native inside Hermes — and every guarded action lands in a
+hash-chained, device-signed audit log (with the SHA-256 of each
+scrubbed output, anchored to the operator fleet), so after a run you
+don't have to trust that secrets stayed out of the model: you can
+check. The plugin wraps the CipherVault CLI (a 14-crate Rust
+workspace: XChaCha20-Poly1305, content-defined chunking, threshold
+recovery, YubiKey PIV, sovereign operator chain) with agent-safe
+surfaces — values are encrypted on your machine and never enter the
+model context.
+
+New here? `hermes ciphervault quickstart` runs the whole loop in a
+throwaway vault in about two minutes.
 
 ## What registers
 

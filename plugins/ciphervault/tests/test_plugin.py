@@ -222,6 +222,39 @@ def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
     assert detail["redactions"] == 2
 
 
+def test_release_asset_selection(monkeypatch):
+    monkeypatch.setattr(cv.sys, "platform", "win32")
+    asset, sha, dest = cv._release_asset()
+    assert asset == "ciphervault.exe" and dest == "ciphervault.exe"
+    assert sha == cv.RELEASE_ASSETS["windows-amd64"][1]
+    monkeypatch.setattr(cv.sys, "platform", "linux")
+    monkeypatch.setattr(cv.platform, "machine", lambda: "x86_64")
+    asset, sha, dest = cv._release_asset()
+    assert asset == "ciphervault-linux-amd64" and dest == "ciphervault"
+    assert sha == cv.RELEASE_ASSETS["linux-amd64"][1]
+    monkeypatch.setattr(cv.sys, "platform", "darwin")
+    assert cv._release_asset() is None
+
+
+def test_quickstart_walks_the_demo(monkeypatch, tmp_path):
+    monkeypatch.setattr(cv, "find_binary", lambda: ("/bin/ciphervault", "test"))
+    calls = []
+
+    def fake_run(binary, args, cwd):
+        calls.append((args, cwd))
+        return 0, "ok"
+
+    monkeypatch.setattr(cv, "_qs_run", fake_run)
+    monkeypatch.setattr(cv.tempfile, "mkdtemp", lambda prefix: str(tmp_path / "demo"))
+    (tmp_path / "demo").mkdir(exist_ok=True)
+    result = cv.quickstart(progress=lambda *a: None, keep=True)
+    assert result["success"] is True
+    seq = [c[0][0] for c in calls]
+    assert seq[:4] == ["init", "track", "push", "run"]
+    assert (tmp_path / "demo" / ".env").is_file()
+    assert "DEMO_API_KEY" in (tmp_path / "demo" / ".env").read_text()
+
+
 def test_post_tool_call_logs_writes(ctx, monkeypatch):
     calls = _capture_audit(monkeypatch)
     cv.on_post_tool_call("write_file", {"path": "src/app.py"}, "ok")

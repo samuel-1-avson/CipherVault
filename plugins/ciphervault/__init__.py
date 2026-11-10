@@ -22,6 +22,7 @@ Design rules (also in skills/ciphervault/SKILL.md):
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -32,10 +33,21 @@ from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 RELEASE_VERSION = "1.0.32"
-# SHA-256 of the release ciphervault.exe, pinned in source (catalog rule
+# Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
-# also cross-checks the release SHA256SUMS.txt against this value.
-RELEASE_BINARY_SHA256 = "d0cc7b371a904348bd99af5dca758455f141cba818ea1a8febeeeafe1d20938c"
+# also cross-checks the release SHA256SUMS.txt against these values.
+RELEASE_ASSETS = {
+    "windows-amd64": (
+        "ciphervault.exe",
+        "d0cc7b371a904348bd99af5dca758455f141cba818ea1a8febeeeafe1d20938c",
+    ),
+    "linux-amd64": (
+        "ciphervault-linux-amd64",
+        "105c3ac598249d01d16e50a6e8e1e45cc32bcfdede6c585a0b9fd44b67e4a5b3",
+    ),
+}
+# Backward-compatible alias for the Windows pin.
+RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"
@@ -86,22 +98,36 @@ def find_binary():
     return None, "missing"
 
 
+def _release_asset():
+    """(asset_name, pinned_sha256, dest_name) for this platform, or
+    None when no prebuilt binary is published for it."""
+    if sys.platform == "win32":
+        asset, sha = RELEASE_ASSETS["windows-amd64"]
+        return asset, sha, "ciphervault.exe"
+    if sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64"):
+        asset, sha = RELEASE_ASSETS["linux-amd64"]
+        return asset, sha, "ciphervault"
+    return None
+
+
 def bootstrap_binary(progress=print):
     """Download the pinned upstream release binary and verify it
     against the release SHA256SUMS.txt before installing it into the
     plugin data dir. User-invoked setup action (CLI/slash command);
     never runs automatically at plugin load (catalog rule 3/17)."""
-    if sys.platform != "win32":
+    selected = _release_asset()
+    if selected is None:
         return {
             "success": False,
             "error": (
-                "Prebuilt CipherVault binaries are published for Windows only. "
-                "On Linux/macOS build from source (cargo install --path apps/cli "
-                "from https://github.com/samuel-1-avson/CipherVault) or set "
+                "No prebuilt CipherVault binary is published for this platform yet "
+                "(Windows x64 and Linux x64 have prebuilt assets). Build from source "
+                "(cargo install --path apps/cli from "
+                "https://github.com/samuel-1-avson/CipherVault) or set "
                 "CIPHERVAULT_BIN / the binary_path plugin setting."
             ),
         }
-    asset = "ciphervault.exe"
+    asset, pinned_sha, dest_name = selected
     sums_url = f"{RELEASE_BASE}/SHA256SUMS.txt"
     try:
         with urllib.request.urlopen(sums_url, timeout=60) as resp:
@@ -115,12 +141,12 @@ def bootstrap_binary(progress=print):
             expected = parts[0].lower()
     if not expected:
         return {"success": False, "error": f"{asset} not listed in release SHA256SUMS.txt"}
-    if expected != RELEASE_BINARY_SHA256:
+    if expected != pinned_sha:
         return {
             "success": False,
             "error": (
                 f"release SHA256SUMS.txt lists {expected} for {asset}, which does not "
-                f"match the checksum pinned in this plugin ({RELEASE_BINARY_SHA256}). "
+                f"match the checksum pinned in this plugin ({pinned_sha}). "
                 "Refusing to install."
             ),
         }
@@ -138,10 +164,18 @@ def bootstrap_binary(progress=print):
         }
     dest_dir = _data_bin_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / asset
+    dest = dest_dir / dest_name
     dest.write_bytes(data)
+    if os.name != "nt":
+        try:
+            dest.chmod(0o755)
+        except Exception:
+            pass
     try:
-        (dest_dir / "cv.exe").write_bytes(data)
+        alias = dest_dir / ("cv.exe" if os.name == "nt" else "cv")
+        alias.write_bytes(data)
+        if os.name != "nt":
+            alias.chmod(0o755)
     except Exception:
         pass
     progress(f"Verified SHA-256 {actual[:16]}… and installed to {dest}")
@@ -695,18 +729,78 @@ def _slash_ciphervault(raw_args, **kwargs):
     )
 
 
+def _qs_run(binary, args, cwd):
+    proc = subprocess.run(
+        [binary, *args], cwd=cwd, capture_output=True, text=True, timeout=300,
+        env=_minimal_env(),
+    )
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def quickstart(progress=print, keep=False):
+    """Two-minute guided demo: throwaway vault, fake secrets, sealed
+    snapshot, RAM-only run dry-run, audit verify — then cleanup."""
+    binary, _src = find_binary()
+    if not binary:
+        result = bootstrap_binary(progress=progress)
+        if not result.get("success"):
+            return result
+        binary = result["binary"]
+    demo = Path(tempfile.mkdtemp(prefix="cv-quickstart-"))
+    try:
+        (demo / ".env").write_text(
+            "DEMO_API_KEY=sk-demo-0000000000000000000000000000fake\n"
+            "DEMO_DB_URL=postgres://demo:demo-password-fake@localhost:5432/demo\n",
+            encoding="utf-8",
+        )
+        steps = [
+            ("1/5  Create a throwaway vault (kit saved inside the demo dir)",
+             ["init", "--save-kit", str(demo / "recovery-kit.txt")]),
+            ("2/5  Track the fake .env (it is git-ignored automatically)",
+             ["track", ".env"]),
+            ("3/5  Seal an encrypted snapshot (local only)",
+             ["push", "--local", "-m", "quickstart demo"]),
+            ("4/5  RAM-only run, dry-run: names only, values never printed",
+             ["run", "--dry-run", "--", "echo", "demo"]),
+            ("5/5  Verify the tamper-evident audit chain",
+             ["agent-log", "verify"]),
+        ]
+        for label, args in steps:
+            progress(f"\n== {label}\n$ ciphervault {' '.join(args)}")
+            rc, out = _qs_run(binary, args, str(demo))
+            progress(out.strip()[-1200:] or "(no output)")
+            if rc != 0:
+                return {"success": False, "error": f"step failed ({args[0]}): rc={rc}",
+                        "demo_dir": str(demo)}
+        progress(
+            "\nThat's the loop: sealed snapshots, RAM-only injection, and an\n"
+            "audit chain that proves what an agent touched. Real vault next:\n"
+            "  cd your-project && ciphervault init && ciphervault track .env"
+        )
+        return {"success": True, "demo_dir": str(demo) if keep else None}
+    finally:
+        if not keep:
+            shutil.rmtree(demo, ignore_errors=True)
+
+
 def _cli_setup(parser):
     # Hermes hands us the `hermes ciphervault` subparser itself.
     sp = parser.add_subparsers(dest="ciphervault_cmd")
-    sp.add_parser("bootstrap", help="Download + verify the pinned CipherVault binary (Windows)")
+    sp.add_parser("bootstrap", help="Download + verify the pinned CipherVault binary")
     sp.add_parser("status", help="Binary resolution + vault status for the cwd")
     sp.add_parser("doctor", help="Check binary, vault, and wiring")
+    qs = sp.add_parser("quickstart", help="Two-minute guided demo in a throwaway vault")
+    qs.add_argument("--keep", action="store_true", help="Keep the demo directory")
 
 
 def _cli_handler(args):
     cmd = getattr(args, "ciphervault_cmd", None) or "status"
     if cmd == "bootstrap":
         result = bootstrap_binary()
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("success") else 1
+    if cmd == "quickstart":
+        result = quickstart(keep=bool(getattr(args, "keep", False)))
         print(json.dumps(result, indent=2))
         return 0 if result.get("success") else 1
     binary, source = find_binary()
