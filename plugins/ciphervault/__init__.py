@@ -201,7 +201,7 @@ _TOKEN_RE = re.compile(
     r"xox[bpas]-[\w-]+|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.?[A-Za-z0-9_-]*)"
 )
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
-_PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
+_PEM_RE = re.compile(r"-----BEGIN [^\n]{0,64}PRIVATE KEY-----[\s\S]{0,16384}?-----END [^\n]{0,64}-----")
 _KV_RE = re.compile(
     r"(?i)\b((?:[A-Za-z0-9_-]{0,64}(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]{0,64})\s*[=:]\s*)([^\s\"']+)"
 )
@@ -213,7 +213,11 @@ def scrub(text):
     exact-value scrubbing (`run --json` / `redact`) is primary."""
     if not text:
         return text
-    text = _PEM_RE.sub("[REDACTED] PRIVATE KEY", text)
+    # Fast path: a PEM block needs both markers; without an END
+    # anywhere there is nothing to redact, and scanning a long run
+    # of BEGIN headers for one is the quadratic case.
+    if "-----END" in text:
+        text = _PEM_RE.sub("[REDACTED] PRIVATE KEY", text)
     text = _BEARER_RE.sub(r"\1[REDACTED]", text)
     text = _URL_RE.sub(r"\1[REDACTED]\2", text)
     text = _TOKEN_RE.sub("[REDACTED]", text)
@@ -576,6 +580,19 @@ def on_pre_tool_call(tool_name, args, **kwargs):
         return None
 
 
+def _vault_present(cwd):
+    """True when a CipherVault vault exists in the cwd or any parent
+    (mirrors the CLI's vault discovery for the guard's purposes)."""
+    try:
+        p = Path(cwd or os.getcwd())
+        for parent in (p, *p.parents):
+            if (parent / ".ciphervault" / "vault.db").is_file():
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def on_transform_tool_result(tool_name, args, result, **kwargs):
     """Scrub every non-CipherVault tool result before it enters model
     context. Fails CLOSED: if the exact-value scrub cannot run, or
@@ -590,6 +607,18 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
         oversized = len(result) > 262_144
         sample = result[:262_144] if oversized else result
+        binary, _src = find_binary()
+        if not binary or not _vault_present(cwd):
+            # No vault here (fresh install, gateway, unrelated
+            # project): there are no vault values to protect, and
+            # withholding every result Hermes-wide would punish
+            # users who never opted into a vault. Pass through with
+            # the local shape scrub; fail-closed applies only where
+            # a vault is actually present (below).
+            cleaned = scrub(sample)
+            if cleaned != sample or oversized:
+                return cleaned + ("\n…[truncated by CipherVault scrub]" if oversized else "")
+            return None
         cleaned, n, exact = cli_redact(sample, cwd, timeout=10)
         if not exact:
             _audit(tool_name, "scrub_unavailable",

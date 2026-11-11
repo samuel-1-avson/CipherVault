@@ -150,7 +150,8 @@ def test_scrub_passes_clean_text():
 
 def test_scrub_is_not_quadratic_on_long_tokens():
     import time
-    for payload in ("a" * 256_000, "x" * 200_000 + "secret", "word " * 40_000):
+    for payload in ("a" * 256_000, "x" * 200_000 + "secret", "word " * 40_000,
+                    "-----BEGIN FOO PRIVATE KEY-----" * 8_500):
         start = time.perf_counter()
         cv.scrub(payload)
         assert time.perf_counter() - start < 2.0
@@ -210,6 +211,7 @@ def test_run_approval_is_audit_logged(ctx, monkeypatch):
 
 
 def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 2, True))
     calls = _capture_audit(monkeypatch)
     out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer abcdefghijklmnop")
@@ -222,7 +224,28 @@ def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
     assert detail["redactions"] == 2
 
 
+def test_transform_passes_through_without_vault(monkeypatch, tmp_path):
+    # No binary (fresh install, pre-bootstrap): results must come
+    # back — locally shape-scrubbed — never withheld Hermes-wide.
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    out = cv.on_transform_tool_result(
+        "terminal", {"cwd": str(tmp_path)}, "token: Bearer abcdefghijklmnop")
+    assert out is not None and "withheld" not in out and "REDACTED" in out
+    out = cv.on_transform_tool_result(
+        "terminal", {"cwd": str(tmp_path)}, "perfectly plain output")
+    assert out is None
+
+
+def test_transform_passes_through_in_vaultless_project(monkeypatch, tmp_path):
+    # Binary present but no .ciphervault/vault.db in the cwd tree.
+    monkeypatch.setattr(cv, "find_binary", lambda: ("/bin/ciphervault", "test"))
+    out = cv.on_transform_tool_result(
+        "terminal", {"cwd": str(tmp_path)}, "perfectly plain output")
+    assert out is None
+
+
 def test_transform_fails_closed_without_exact_scrub(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, False))
     _capture_audit(monkeypatch)
     out = cv.on_transform_tool_result("terminal", {}, "postgres://u:p@h/db")
@@ -230,6 +253,7 @@ def test_transform_fails_closed_without_exact_scrub(monkeypatch):
 
 
 def test_transform_logs_clean_results_too(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     calls = _capture_audit(monkeypatch)
     out = cv.on_transform_tool_result("terminal", {}, "all clean output")
@@ -243,6 +267,7 @@ def test_transform_logs_clean_results_too(monkeypatch):
 
 
 def test_transform_truncates_oversized_when_head_is_clean(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     _capture_audit(monkeypatch)
     out = cv.on_transform_tool_result("terminal", {}, "A" * 300_000)
@@ -250,6 +275,7 @@ def test_transform_truncates_oversized_when_head_is_clean(monkeypatch):
 
 
 def test_transform_withholds_when_audit_write_fails(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     monkeypatch.setattr(cv, "_audit", lambda *a, **k: False)
     out = cv.on_transform_tool_result("terminal", {}, "some output")
@@ -385,6 +411,7 @@ def test_transform_scrubs_other_results(ctx, monkeypatch):
 
 
 def test_transform_leaves_clean_and_own_results(ctx, monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     _capture_audit(monkeypatch)
     assert cv.on_transform_tool_result("terminal", {}, "all good") is None

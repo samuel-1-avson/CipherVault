@@ -45,15 +45,27 @@ throwaway vault in about two minutes.
   CLI subprocesses get a minimal allow-listed environment (Hermes
   provider keys are not passed down). Tool results scrubbed by the
   `transform_tool_result` hook are capped at 256 KB; anything beyond
-  that is truncated, not scanned. The recovery drill restores only
+  that is truncated, not scanned. Fail-closed withholding applies
+  only where a vault is present in the workspace: with no vault (or
+  no binary yet), results pass through with the local shape scrub
+  so the plugin never eats unrelated output Hermes-wide. The
+  recovery drill restores only
   into a fresh temp dir it creates itself and deletes only that dir.
   The plugin never spawns Hermes itself.
-- **Network:** none, except `bootstrap`, which — only when *you* run
-  `hermes ciphervault bootstrap` or `/ciphervault setup` — downloads
-  `ciphervault.exe` and `SHA256SUMS.txt` from the pinned GitHub release
-  (`v1.0.32`) of `samuel-1-avson/CipherVault`, verifies the SHA-256,
-  and installs into `$HERMES_HOME/plugins/ciphervault/bin/`. No binary
-  is bundled in this repo (rule 17); no telemetry anywhere.
+- **Network:** none, except two user-initiated flows. (1)
+  `bootstrap` — only when *you* run `hermes ciphervault bootstrap`
+  or `/ciphervault setup` — downloads the platform asset
+  (`ciphervault.exe` on Windows, `ciphervault-linux-amd64`,
+  `ciphervault-macos-arm64`/`-amd64`) and `SHA256SUMS.txt` from the
+  pinned GitHub release (`v1.0.32`) of
+  `samuel-1-avson/CipherVault`, verifies the SHA-256 against the
+  per-platform pin in this source, and installs into
+  `$HERMES_HOME/plugins/ciphervault/bin/`. No binary is bundled in
+  this repo (rule 17); no telemetry anywhere. (2) The audit anchor:
+  on `ciphervault_run` approval requests and replicated pushes, the
+  CLI sends a signed audit checkpoint (entry count + head hash
+  only — no contents) to *your own configured operator fleet*, so
+  the log's head exists outside the agent's machine.
 - **Reads outside its data:** vault metadata via the CLI in the
   workspace you point it at (paths/counts only, via `status --json`),
   tracked secret files *inside the CLI process* for exact-value
