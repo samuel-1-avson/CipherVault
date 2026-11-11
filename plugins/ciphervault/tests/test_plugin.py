@@ -130,7 +130,7 @@ def test_hooks_middleware_source_commands_registered(ctx):
 # ------------------------------------------------------------ scrub
 
 @pytest.mark.parametrize("raw", [
-    "Bearer abcdefghijklmnop",
+    "Bearer fake-test-token",
     "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----",
     "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG",
     "DATABASE_URL=postgres://user:hunter2@db.internal/app",
@@ -140,7 +140,7 @@ def test_hooks_middleware_source_commands_registered(ctx):
 ])
 def test_scrub_redacts(raw):
     out = cv.scrub(raw)
-    for leaked in ("abcdefghijklmnop", "wJalr", "hunter2", "supersecretvalue123", "eyJhbGciOiJIUzI1NiJ9"):
+    for leaked in ("fake-test-token", "wJalr", "hunter2", "supersecretvalue123", "eyJhbGciOiJIUzI1NiJ9"):
         assert leaked not in out
 
 
@@ -214,7 +214,7 @@ def test_scrubbed_result_is_audit_logged(ctx, monkeypatch):
     monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 2, True))
     calls = _capture_audit(monkeypatch)
-    out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer abcdefghijklmnop")
+    out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer fake-test-token")
     assert out is not None
     rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
     assert rec and "scrubbed_result" in rec[0]
@@ -229,7 +229,7 @@ def test_transform_passes_through_without_vault(monkeypatch, tmp_path):
     # back — locally shape-scrubbed — never withheld Hermes-wide.
     monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
     out = cv.on_transform_tool_result(
-        "terminal", {"cwd": str(tmp_path)}, "token: Bearer abcdefghijklmnop")
+        "terminal", {"cwd": str(tmp_path)}, "token: Bearer fake-test-token")
     assert out is not None and "withheld" not in out and "REDACTED" in out
     out = cv.on_transform_tool_result(
         "terminal", {"cwd": str(tmp_path)}, "perfectly plain output")
@@ -406,8 +406,8 @@ def test_guard_never_blocks_other_ciphervault_tools(ctx):
 
 def test_transform_scrubs_other_results(ctx, monkeypatch):
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (cv.scrub(text), 1, True))
-    out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer abcdefghijklmnop")
-    assert out is not None and "abcdefghijklmnop" not in out
+    out = cv.on_transform_tool_result("terminal", {}, "leak: Bearer fake-test-token")
+    assert out is not None and "fake-test-token" not in out
 
 
 def test_transform_leaves_clean_and_own_results(ctx, monkeypatch):
@@ -415,7 +415,7 @@ def test_transform_leaves_clean_and_own_results(ctx, monkeypatch):
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     _capture_audit(monkeypatch)
     assert cv.on_transform_tool_result("terminal", {}, "all good") is None
-    assert cv.on_transform_tool_result("ciphervault_run", {}, "Bearer abcdefghijklmnop") is None
+    assert cv.on_transform_tool_result("ciphervault_run", {}, "Bearer fake-test-token") is None
 
 
 def test_middleware_defaults_cwd(ctx):

@@ -1,5 +1,5 @@
 name: ciphervault
-version: "0.5.3"
+version: "0.5.4"
 description: "Prove the model never saw it: zero-knowledge secret backup for AI coding agents — masked scan, approval-gated RAM-only run, leak-guard hooks, and a hash-chained, fleet-anchored audit log of every guarded action."
 manifest_version: 2
 api_version: 1
