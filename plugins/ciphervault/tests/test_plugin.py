@@ -176,6 +176,36 @@ def test_drill_never_deletes_caller_chosen_dir(ctx, tmp_path, monkeypatch):
     assert marker.exists() and marker.read_text() == "do not delete"
 
 
+@pytest.mark.parametrize("via, expected", [
+    (["https://op1.example.test", "https://op2.example.test"],
+     ["https://op1.example.test", "https://op2.example.test"]),
+    ("https://op1.example.test", ["https://op1.example.test"]),
+])
+def test_drill_queries_the_current_fleet_with_via(ctx, monkeypatch, via, expected):
+    # A kit keeps the operators from when it was printed; a vault that
+    # moved fleets must be drillable through its current operators.
+    seen = []
+
+    def fake_run_cli(args, cwd, timeout=300):
+        seen.append(list(args))
+        return {"success": True, "binary": "test"}
+
+    monkeypatch.setattr(cv, "_run_cli", fake_run_cli)
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1]({"kit": "kit.txt", "via": via}))
+    assert out["success"] is True
+    args = seen[0]
+    start = args.index("--via") + 1
+    assert args[start:start + len(expected)] == expected
+
+
+def test_drill_without_via_keeps_the_kit_endpoints(ctx, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cv, "_run_cli",
+                        lambda args, cwd, timeout=300: seen.append(list(args)) or {"success": True})
+    ctx.tools["ciphervault_recovery_drill"][1]({"kit": "kit.txt"})
+    assert "--via" not in seen[0]
+
+
 def test_minimal_env_excludes_provider_keys(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak")
     monkeypatch.setenv("CIPHERVAULT_OPERATOR_SERVICE_TOKEN", "own-config")
@@ -500,6 +530,30 @@ def test_guard_blocks_secret_shaped_payload(ctx, monkeypatch):
 def test_guard_allows_clean_terminal(ctx, monkeypatch):
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
     assert cv.on_pre_tool_call("terminal", {"command": "git status"}) is None
+
+
+@pytest.mark.parametrize("path", [
+    "apps/cli/src/commands/recovery_kit.rs",
+    "docs/recovery_kit.md",
+    "tests/recovery_kit_test.py",
+])
+def test_guard_allows_source_files_named_like_kits(ctx, monkeypatch, path):
+    # Source and docs about kits are not kits; blocking them makes the
+    # CipherVault codebase itself uneditable through Hermes.
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    assert cv.on_pre_tool_call("read_file", {"path": path}) is None
+    assert cv.on_pre_tool_call("terminal", {"command": "head -n 5 " + path}) is None
+
+
+@pytest.mark.parametrize("path", [
+    "C:/Users/me/CipherVault-Recovery/recovery_kit.txt",
+    ".ciphervault/recovery_kit_backup.txt",
+    "backup/recovery_kit",
+])
+def test_guard_still_blocks_kit_files(ctx, monkeypatch, path):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    out = cv.on_pre_tool_call("read_file", {"path": path})
+    assert out and out["action"] == "block"
 
 
 def test_guard_gates_ciphervault_run_with_approval(ctx):

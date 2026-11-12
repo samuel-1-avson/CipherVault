@@ -22,7 +22,7 @@ throwaway vault in about two minutes.
 | `ciphervault_scan` | Secret-sprawl scan of workspace + staged diffs, masked (`hook check --deep --json`; `fix` appends to `.gitignore`) |
 | `ciphervault_run` | Run any command with secrets injected in RAM only; output exact-value + shape scrubbed (`run --json`). **Every call passes Hermes's human-approval gate** (see Disclosure) |
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; replicates when `local_only=false`) |
-| `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir |
+| `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir. Pass `via` (current operator URLs) when the vault moved fleets after the kit was printed |
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
 | `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, device-signed): blocked reads, approval requests, scrubbed results (with the scrubbed output's SHA-256), writes — plus chain verification and output-hash lookup |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file reads, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
@@ -126,7 +126,7 @@ Run `hermes ciphervault doctor` if a tool is withheld or an installed CLI
 is older than the plugin. It reports the resolved executable and source,
 actual versus pinned version, every wrapped command/flag capability, and
 a live redact-completeness probe; an incompatible CLI exits nonzero.
-Status alone is not a compatibility check. Plugin v0.5.5 also preserves
+Status alone is not a compatibility check. Since v0.5.5 the plugin preserves
 exact LF/CRLF bytes on Windows and
 reports failed commands, redaction, and audit verification as failures.
 

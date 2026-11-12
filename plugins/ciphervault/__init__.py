@@ -581,6 +581,14 @@ def _tool_drill(params, **kwargs):
             args += ["--kit", kit]
         if shares:
             args += ["--shares"] + list(shares)
+        via = params.get("via") or []
+        if isinstance(via, str):
+            via = [via]
+        if via:
+            # The kit keeps the operators from when it was printed; a vault
+            # that moved fleets is recovered through its current operators.
+            # Records stay authenticated by the kit's recovery key.
+            args += ["--via"] + [str(endpoint) for endpoint in via]
         res = _run_cli(args, params.get("cwd"), timeout=300)
         if not res.get("success"):
             return json.dumps(res)
@@ -616,7 +624,10 @@ def _tool_drill(params, **kwargs):
 
 _SECRET_FILE_RE = re.compile(
     r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|[\w.-]+\.(pem|key)|id_rsa|id_ed25519|"
-    r"credentials\.json|secrets\.json|recovery_kit[\w.-]*|[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
+    r"credentials\.json|secrets\.json|"
+    # Source/docs about kits (recovery_kit.rs, recovery_kit.md) are not kits.
+    r"recovery_kit(?![\w-]*\.(?:rs|py|pyi|js|jsx|ts|tsx|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|md|toml|ya?ml|lock)\b)[\w.-]*|"
+    r"[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
 )
 _READ_CMD_RE = re.compile(r"(?i)\b(cat|type|get-content|gc|more|head|tail|less|bat)\b")
 _GIT_DANGER_RE = re.compile(r"(?i)\bgit\s+(commit|push|add)\b")
@@ -1071,6 +1082,8 @@ _TOOLS = [
      "Prove a recovery kit or guardian shares actually restore: restores into a fresh temp dir created by the tool, returns a SHA-256 manifest (names+sizes+hashes only), then deletes that temp dir. Takes FILE PATHS only — never accept kit/share contents.",
      {"kit": {"type": "string", "description": "Path to kit file on disk"},
       "shares": {"type": "array", "items": {"type": "string"}, "description": "Paths to guardian share files"},
+      "via": {"type": "array", "items": {"type": "string"},
+              "description": "Current operator URLs to query instead of the endpoints printed in the kit (use when the vault moved fleets after the kit was made)"},
       "cwd": {"type": "string"}}),
     ("ciphervault_redact", _tool_redact,
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",
