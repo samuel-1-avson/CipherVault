@@ -427,6 +427,14 @@ def test_pinned_release_is_guard_compatible_and_hash_pinned():
     assert "windows-amd64" in cv.RELEASE_ASSETS
 
 
+def test_every_supported_platform_has_a_pinned_v1033_asset():
+    # v1.0.33 publishes Windows x64, Linux x64, and macOS arm64/Intel CLIs.
+    assert set(cv.RELEASE_ASSETS) == {"windows-amd64", "linux-amd64", "macos-arm64", "macos-amd64"}
+    assert cv.RELEASE_ASSETS["macos-arm64"][0] == "ciphervault-macos-arm64"
+    assert cv.RELEASE_ASSETS["macos-amd64"][0] == "ciphervault-macos-amd64"
+    assert len({sha for _asset, sha in cv.RELEASE_ASSETS.values()}) == 4
+
+
 def test_bootstrap_names_published_platforms_when_none_fits(monkeypatch, tmp_path):
     monkeypatch.setattr(cv, "_data_bin_dir", lambda: tmp_path / "bin")
     monkeypatch.setattr(cv, "_release_asset", lambda: None)

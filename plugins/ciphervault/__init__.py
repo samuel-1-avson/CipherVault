@@ -37,8 +37,10 @@ RELEASE_VERSION = "1.0.33"
 # Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against these values.
-# A platform absent here has no prebuilt asset in the pinned release
-# (v1.0.33 ships Windows x64 and Linux x64; macOS builds come later).
+# A platform absent here has no prebuilt asset in the pinned release.
+# The macOS binaries are cross-built (minimum macOS 13); arm64 carries an
+# ad-hoc signature, Intel is unsigned, as in v1.0.32. Neither is notarized:
+# bootstrap's urllib download is not quarantined, so Gatekeeper allows it.
 RELEASE_ASSETS = {
     "windows-amd64": (
         "ciphervault.exe",
@@ -47,6 +49,14 @@ RELEASE_ASSETS = {
     "linux-amd64": (
         "ciphervault-linux-amd64",
         "b6f2f6de72c1d1271de47e83bf5fba61154de82db5c40be625fa3339a16c9873",
+    ),
+    "macos-arm64": (
+        "ciphervault-macos-arm64",
+        "612edba4b7f5cbaf659077830e9f4273060a6c21af29a220a1b4929b01f0752b",
+    ),
+    "macos-amd64": (
+        "ciphervault-macos-amd64",
+        "979a41a4ddf9c0048045c1e88e9e86aaa6c23a6702efbc34c56549489f10c2d7",
     ),
 }
 # Backward-compatible alias for the Windows pin.
