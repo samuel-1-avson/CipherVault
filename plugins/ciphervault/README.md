@@ -56,9 +56,10 @@ throwaway vault in about two minutes.
 - **Network:** none, except two user-initiated flows. (1)
   `bootstrap` — only when *you* run `hermes ciphervault bootstrap`
   or `/ciphervault setup` — downloads the platform asset
-  (`ciphervault.exe` on Windows, `ciphervault-linux-amd64`,
-  `ciphervault-macos-arm64`/`-amd64`) and `SHA256SUMS.txt` from the
-  pinned GitHub release (`v1.0.32`) of
+  (`ciphervault.exe` on Windows x64, `ciphervault-linux-amd64` on
+  Linux x64) and `SHA256SUMS.txt` from the pinned GitHub release
+  (`v1.0.33`, published as a pre-release; macOS assets are not in it
+  yet, so on macOS bootstrap refuses and points at a source build) of
   `samuel-1-avson/CipherVault`, verifies the SHA-256 against the
   per-platform pin in this source, and installs into
   `$HERMES_HOME/plugins/ciphervault/bin/`. No binary is bundled in
@@ -108,10 +109,11 @@ hermes ciphervault doctor
 This plugin version requires a CLI whose `redact --json` attests
 `exact_values_complete` — every tracked working copy was loaded, so a
 shape-blind vault value cannot slip through an unreadable file. The
-pinned v1.0.32 release predates that attestation, so
-`hermes ciphervault bootstrap` refuses (nothing is downloaded or replaced)
-until the pin moves to a release that ships it. Until then build the CLI
-from source (`cargo build --release -p ciphervault-cli`) and set
+pinned v1.0.33 release ships that attestation, so
+`hermes ciphervault bootstrap` installs it on Windows x64 and Linux x64.
+Older CLIs (v1.0.32 and earlier) lack it: the plugin withholds
+vault-scoped output with them, so upgrade, or build the CLI from source
+(`cargo build --release -p ciphervault-cli`) and set
 `$CIPHERVAULT_BIN` or the `binary_path` setting to it. Vault
 detection follows the CLI: the nearest `.ciphervault/vault.db` in the
 working directory or a parent; a bare `.ciphervault/` (such as the
@@ -134,8 +136,8 @@ For required-MFA accounts, use a CLI build containing hosted MFA step-up
 support: `ciphervault auth connect` authenticates the account first and
 asks for a fresh unused authenticator code in your own terminal, with
 input hidden. Local `auth login` and browser MFA do not authorize that
-CLI session. The pinned v1.0.32 release predates this connection fix;
-build current source until a newer release is published. Never send codes
+CLI session. The pinned v1.0.33 release includes this connection fix;
+v1.0.32 and earlier do not. Never send codes
 or session credentials through agent tools, chat, arguments, or environment
 variables. Keep MFA enabled. Account linking is not proof of fleet backup;
 only a verified replicated push and recovery drill prove recoverability.

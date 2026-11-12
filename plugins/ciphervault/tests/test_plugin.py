@@ -406,14 +406,41 @@ def test_release_asset_selection(monkeypatch):
     assert asset == "ciphervault-linux-amd64" and dest == "ciphervault"
     assert sha == cv.RELEASE_ASSETS["linux-amd64"][1]
     monkeypatch.setattr(cv.sys, "platform", "darwin")
-    monkeypatch.setattr(cv.platform, "machine", lambda: "arm64")
-    asset, sha, dest = cv._release_asset()
-    assert asset == "ciphervault-macos-arm64" and dest == "ciphervault"
-    assert sha == cv.RELEASE_ASSETS["macos-arm64"][1]
-    monkeypatch.setattr(cv.platform, "machine", lambda: "x86_64")
-    asset, sha, dest = cv._release_asset()
-    assert asset == "ciphervault-macos-amd64" and dest == "ciphervault"
-    assert sha == cv.RELEASE_ASSETS["macos-amd64"][1]
+    for machine, key in (("arm64", "macos-arm64"), ("x86_64", "macos-amd64")):
+        monkeypatch.setattr(cv.platform, "machine", lambda m=machine: m)
+        selected = cv._release_asset()
+        if key in cv.RELEASE_ASSETS:
+            assert selected == (cv.RELEASE_ASSETS[key][0], cv.RELEASE_ASSETS[key][1], "ciphervault")
+        else:
+            # A platform without a pinned asset for this release is
+            # "not published", never a KeyError at bootstrap time.
+            assert selected is None
+
+
+def test_pinned_release_is_guard_compatible_and_hash_pinned():
+    # v1.0.33 ships redact --json's exact_values_complete attestation.
+    assert cv.RELEASE_VERSION == "1.0.33"
+    assert cv.RELEASE_SUPPORTS_GUARD is True
+    assert cv.RELEASE_BASE.endswith("/v1.0.33")
+    for name, (asset, sha) in cv.RELEASE_ASSETS.items():
+        assert asset and len(sha) == 64 and int(sha, 16) >= 0, name
+    assert "windows-amd64" in cv.RELEASE_ASSETS
+
+
+def test_bootstrap_names_published_platforms_when_none_fits(monkeypatch, tmp_path):
+    monkeypatch.setattr(cv, "_data_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr(cv, "_release_asset", lambda: None)
+
+    def unexpected_download(*args, **kwargs):
+        raise AssertionError("no download without a pinned asset")
+
+    monkeypatch.setattr(cv.urllib.request, "urlopen", unexpected_download)
+    out = cv.bootstrap_binary(progress=lambda *args: None)
+    assert out["success"] is False
+    assert "No prebuilt" in out["error"] and "Build from source" in out["error"]
+    assert "Windows x64" in out["error"]
+    assert ("macOS" in out["error"]) == any(k.startswith("macos") for k in cv.RELEASE_ASSETS)
+    assert not (tmp_path / "bin").exists()
 
 
 @pytest.mark.parametrize("existing_binary", [False, True])
@@ -431,10 +458,12 @@ def test_bootstrap_refuses_incompatible_pin_without_shadowing(monkeypatch, tmp_p
         raise AssertionError("an incompatible pinned CLI must not be downloaded")
 
     monkeypatch.setattr(cv.urllib.request, "urlopen", unexpected_download)
+    # Keep the fail-closed path covered while the shipped pin is compatible.
+    monkeypatch.setattr(cv, "RELEASE_SUPPORTS_GUARD", False)
     out = cv.bootstrap_binary(progress=lambda *args: None)
     assert out["success"] is False
     assert not network_calls
-    assert "1.0.32" in out["error"] and "incompatible" in out["error"]
+    assert cv.RELEASE_VERSION in out["error"] and "incompatible" in out["error"]
     assert "source" in out["next"] and "CIPHERVAULT_BIN" in out["next"]
     assert "bootstrap" not in out["next"]
     if existing_binary:
@@ -895,7 +924,9 @@ def test_doctor_rejects_old_official_cli_with_all_flags(fake_cli, tmp_path, monk
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is False
     assert out["installed_version"] == "1.0.32"
-    assert out["version_matches_target"] is True
+    # The real v1.0.32 has every flag but no completeness attestation;
+    # it is older than the pin, and rejected for completeness, not version.
+    assert out["version_matches_target"] is False
     assert all(out["capabilities"][" ".join(command)]["supported"]
                for command, _flags in cv._CLI_CAPABILITIES)
     assert "redact completeness" in out["missing_capabilities"]

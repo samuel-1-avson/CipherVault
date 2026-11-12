@@ -32,34 +32,29 @@ import urllib.request
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-RELEASE_VERSION = "1.0.32"
+RELEASE_VERSION = "1.0.33"
 # Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against these values.
+# A platform absent here has no prebuilt asset in the pinned release
+# (v1.0.33 ships Windows x64 and Linux x64; macOS builds come later).
 RELEASE_ASSETS = {
     "windows-amd64": (
         "ciphervault.exe",
-        "d0cc7b371a904348bd99af5dca758455f141cba818ea1a8febeeeafe1d20938c",
+        "54cc1886148bdd4619dc6680d7c79badc1444f2db86f40b99389a72b8b180f28",
     ),
     "linux-amd64": (
         "ciphervault-linux-amd64",
-        "105c3ac598249d01d16e50a6e8e1e45cc32bcfdede6c585a0b9fd44b67e4a5b3",
-    ),
-    "macos-arm64": (
-        "ciphervault-macos-arm64",
-        "b7d9c48671cb9bc81d2f420e3b9aa3fae13991cc340cb50955234f2566bbf630",
-    ),
-    "macos-amd64": (
-        "ciphervault-macos-amd64",
-        "6b0e678dad7abd3f1a58435dfc3e774adbb590ade2be42c912c65e686fea4f31",
+        "b6f2f6de72c1d1271de47e83bf5fba61154de82db5c40be625fa3339a16c9873",
     ),
 }
 # Backward-compatible alias for the Windows pin.
 RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
-# The pinned release predates `redact --json`'s `exact_values_complete`
-# attestation, which this plugin requires before releasing vault-scoped
-# output. Flip this only when re-pinning to a release that ships it.
-RELEASE_SUPPORTS_GUARD = False
+# Whether the pinned release ships `redact --json`'s
+# `exact_values_complete` attestation, which this plugin requires before
+# releasing vault-scoped output. v1.0.33 does; bootstrap refuses any pin
+# where this is False rather than install a CLI whose output it withholds.
+RELEASE_SUPPORTS_GUARD = True
 _COMPATIBLE_CLI_HINT = (
     "Build the CLI from current source (cargo build --release -p ciphervault-cli "
     "in https://github.com/samuel-1-avson/CipherVault) or install a newer release "
@@ -116,20 +111,30 @@ def find_binary():
     return None, "missing"
 
 
+_PLATFORM_LABELS = {
+    "windows-amd64": "Windows x64",
+    "linux-amd64": "Linux x64",
+    "macos-arm64": "macOS arm64",
+    "macos-amd64": "macOS Intel",
+}
+
+
 def _release_asset():
     """(asset_name, pinned_sha256, dest_name) for this platform, or
-    None when no prebuilt binary is published for it."""
+    None when the pinned release publishes no binary for it."""
     if sys.platform == "win32":
-        asset, sha = RELEASE_ASSETS["windows-amd64"]
-        return asset, sha, "ciphervault.exe"
-    if sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64"):
-        asset, sha = RELEASE_ASSETS["linux-amd64"]
-        return asset, sha, "ciphervault"
-    if sys.platform == "darwin":
+        key, dest = "windows-amd64", "ciphervault.exe"
+    elif sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64"):
+        key, dest = "linux-amd64", "ciphervault"
+    elif sys.platform == "darwin":
         key = "macos-arm64" if platform.machine() == "arm64" else "macos-amd64"
-        asset, sha = RELEASE_ASSETS[key]
-        return asset, sha, "ciphervault"
-    return None
+        dest = "ciphervault"
+    else:
+        return None
+    pinned = RELEASE_ASSETS.get(key)
+    if pinned is None:
+        return None
+    return pinned[0], pinned[1], dest
 
 
 def bootstrap_binary(progress=print):
@@ -152,11 +157,12 @@ def bootstrap_binary(progress=print):
         }
     selected = _release_asset()
     if selected is None:
+        published = ", ".join(_PLATFORM_LABELS.get(k, k) for k in RELEASE_ASSETS)
         return {
             "success": False,
             "error": (
-                "No prebuilt CipherVault binary is published for this platform yet "
-                "(Windows x64, Linux x64, and macOS arm64/Intel have prebuilt assets). "
+                f"No prebuilt CipherVault v{RELEASE_VERSION} binary is published for this "
+                f"platform yet (prebuilt: {published}). Build from source "
                 "(cargo install --path apps/cli from "
                 "https://github.com/samuel-1-avson/CipherVault) or set "
                 "CIPHERVAULT_BIN / the binary_path plugin setting."
