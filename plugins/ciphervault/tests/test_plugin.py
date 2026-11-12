@@ -5,6 +5,7 @@ scrub/guard contracts are the security-critical parts, so they get the
 most coverage. Set CV_TEST_BINARY to also run against a real CLI.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -393,6 +394,198 @@ def test_transform_withholds_when_audit_write_fails(monkeypatch):
     monkeypatch.setattr(cv, "_audit", lambda *a, **k: False)
     out = cv.on_transform_tool_result("terminal", {}, "some output")
     assert out is not None and "withheld" in out and "audit" in out
+
+
+def _marker_vault(root):
+    # Discovery marker only; not a real vault or credential store.
+    (root / ".ciphervault").mkdir(parents=True)
+    (root / ".ciphervault" / "vault.db").write_bytes(b"discovery marker only")
+    return root
+
+
+def _recording_cli(monkeypatch, redacted_text="[REDACTED] tail"):
+    seen = []
+
+    def run_json(args, cwd, **kwargs):
+        seen.append(("json", args[0], cwd))
+        return {"success": True, "data": {
+            "text": redacted_text, "redactions": 1, "exact_values_loaded": 1,
+            "exact_values_complete": True, "vault": True}}
+
+    def run(args, cwd, **kwargs):
+        seen.append(("run", args[0], cwd))
+        return {"success": True, "output": ""}
+
+    monkeypatch.setattr(cv, "_run_cli_json", run_json)
+    monkeypatch.setattr(cv, "_run_cli", run)
+    return seen
+
+
+@pytest.mark.parametrize("tool, make_args", [
+    ("terminal", lambda base, demo: {"command": "cat demo/notes.txt", "workdir": str(base)}),
+    ("terminal", lambda base, demo: {"command": f"cat {demo / 'notes.txt'}", "workdir": str(base)}),
+    ("terminal", lambda base, demo: {"command": "cd demo && cat notes.txt", "workdir": str(base)}),
+    ("read_file", lambda base, demo: {"path": str(demo / "sub" / "notes.txt")}),
+])
+def test_transform_exact_scrubs_with_the_vault_a_path_argument_names(
+        monkeypatch, tmp_path, tool, make_args):
+    # Tour finding: the workdir sat outside the vault while the command
+    # read a file inside it, and the exact-value pass never ran.
+    base = tmp_path / "outside"
+    base.mkdir()
+    demo = _marker_vault(base / "demo")
+    seen = _recording_cli(monkeypatch)
+    out = cv.on_transform_tool_result(tool, make_args(base, demo), "fake-value tail")
+    assert out == "[REDACTED] tail"
+    assert ("json", "redact", str(demo)) in seen, seen
+    assert ("run", "agent-log", str(demo)) in seen, seen
+
+
+def test_transform_withholds_when_a_path_points_into_a_vault_it_cannot_scrub(monkeypatch, tmp_path):
+    base = tmp_path / "outside"
+    base.mkdir()
+    _marker_vault(base / "demo")
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    fake_value = "obviously-fake-shape-blind-value"
+    out = cv.on_transform_tool_result(
+        "terminal", {"command": "cat demo/notes.txt", "workdir": str(base)}, fake_value)
+    assert out and "withheld" in out and fake_value not in out
+
+
+def test_transform_path_tokens_outside_any_vault_stay_vaultless(monkeypatch, tmp_path):
+    (tmp_path / "plain" / "dir").mkdir(parents=True)
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    args = {"command": "ls plain/dir ../elsewhere https://example.invalid/a/b *.txt",
+            "workdir": str(tmp_path)}
+    assert cv.on_transform_tool_result("terminal", args, "plain output") is None
+
+
+def test_transform_scrubs_against_every_vault_a_call_touches(monkeypatch, tmp_path):
+    home = _marker_vault(tmp_path / "home")
+    other = _marker_vault(tmp_path / "other")
+    seen = _recording_cli(monkeypatch)
+    args = {"command": f"diff notes.txt {other / 'notes.txt'}", "workdir": str(home)}
+    out = cv.on_transform_tool_result("terminal", args, "fake-value tail")
+    assert out == "[REDACTED] tail"
+    redacts = [cwd for kind, cmd, cwd in seen if (kind, cmd) == ("json", "redact")]
+    assert redacts == [str(home), str(other)]
+    receipts = [cwd for kind, cmd, cwd in seen if (kind, cmd) == ("run", "agent-log")]
+    assert receipts == [str(home), str(other)]
+
+
+def test_guard_checks_arguments_against_the_vault_a_path_names(monkeypatch, tmp_path):
+    base = tmp_path / "outside"
+    base.mkdir()
+    demo = _marker_vault(base / "demo")
+    seen = []
+    monkeypatch.setattr(cv, "cli_redact",
+                        lambda text, cwd, timeout=10: (seen.append(cwd), (text, 0, True))[1])
+    out = cv.on_pre_tool_call(
+        "terminal", {"command": "echo hello > demo/out.txt", "workdir": str(base)})
+    assert out is None
+    assert str(demo) in seen, seen
+
+
+def test_post_tool_call_receipts_writes_into_a_vault_named_by_path(monkeypatch, tmp_path):
+    base = tmp_path / "outside"
+    base.mkdir()
+    demo = _marker_vault(base / "demo")
+    seen = _recording_cli(monkeypatch)
+    cv.on_post_tool_call("write_file", {"path": str(demo / "notes.txt"), "content": "x"})
+    assert ("run", "agent-log", str(demo)) in seen, seen
+
+
+def test_scrubbed_result_receipt_hashes_the_visible_output(monkeypatch):
+    # A person checks the text they saw (the terminal `output` field),
+    # not the JSON envelope Hermes wraps around it.
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    calls = _capture_audit(monkeypatch)
+    envelope = json.dumps({"output": "hello visible\n", "exit_code": 0, "error": None})
+    assert cv.on_transform_tool_result("terminal", {}, envelope) is None
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    detail = json.loads(rec[0][rec[0].index("--detail") + 1])
+    assert detail["output_sha256"] == hashlib.sha256(envelope.encode()).hexdigest()
+    assert detail["content_sha256"] == hashlib.sha256(b"hello visible").hexdigest()
+
+
+def test_audit_check_text_matches_visible_output_with_trailing_newline(ctx, monkeypatch):
+    wanted = hashlib.sha256(b"hello visible").hexdigest()
+    looked_up = []
+
+    def run_json(args, cwd):
+        if args[1] == "show":
+            return {"success": True, "data": []}
+        if args[1] == "verify":
+            return {"success": True, "data": {"ok": True}}
+        digest = args[args.index("--output-sha256") + 1]
+        looked_up.append(digest)
+        return {"success": True, "data": {"found": digest == wanted}}
+
+    monkeypatch.setattr(cv, "_run_cli_json", run_json)
+    out = json.loads(ctx.tools["ciphervault_audit"][1]({"check_text": "hello visible\n"}))
+    assert out["success"] is True and out["check"]["found"] is True
+    assert looked_up == [hashlib.sha256(b"hello visible\n").hexdigest(), wanted]
+
+
+def _fake_run_result(stdout="build ok\n"):
+    return {"success": True, "binary": "test", "data": {
+        "exit_code": 0, "stdout": stdout, "stderr": "", "redactions": 1}}
+
+
+def test_run_output_is_receipted(ctx, monkeypatch):
+    calls = _capture_audit(monkeypatch)
+    monkeypatch.setattr(cv, "_run_cli_json", lambda args, cwd, timeout=120: _fake_run_result())
+    raw = ctx.tools["ciphervault_run"][1]({"command": ["make", "build"]})
+    assert json.loads(raw)["data"]["stdout"] == "build ok\n"
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "ciphervault_run" in rec[0] and "scrubbed_result" in rec[0]
+    detail = json.loads(rec[0][rec[0].index("--detail") + 1])
+    assert detail["output_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert detail["content_sha256"] == hashlib.sha256(b"build ok").hexdigest()
+    assert detail["redactions"] == 1 and detail["program"] == "make"
+
+
+def test_run_dry_run_writes_no_output_receipt(ctx, monkeypatch):
+    calls = _capture_audit(monkeypatch)
+    monkeypatch.setattr(cv, "_run_cli_json",
+                        lambda args, cwd, timeout=120: {"success": True, "data": {"secrets": []}})
+    ctx.tools["ciphervault_run"][1]({"command": ["make"], "dry_run": True})
+    assert not [c for c in calls if c[:2] == ["agent-log", "record"]]
+
+
+def test_run_output_is_withheld_when_its_receipt_fails(ctx, monkeypatch):
+    monkeypatch.setattr(cv, "_run_cli_json",
+                        lambda args, cwd, timeout=120: _fake_run_result("build ok\n"))
+    monkeypatch.setattr(cv, "_audit", lambda *a, **k: False)
+    out = json.loads(ctx.tools["ciphervault_run"][1]({"command": ["make"]}))
+    assert "build ok" not in json.dumps(out)
+    assert out["data"]["exit_code"] == 0
+    assert "withheld" in out["data"]["stdout"] and out["audit_receipt"] is False
+
+
+def test_failed_run_keeps_its_structured_report_and_receipt(ctx, monkeypatch):
+    # `run --json` exits with the child's status after printing its
+    # report; a failing test suite must stay readable as stdout/stderr.
+    report = {"status": "failed", "exit_code": 3, "stdout": "2 tests failed\n",
+              "stderr": "", "redactions": 0}
+    monkeypatch.setattr(cv, "_run_cli_json", lambda args, cwd, timeout=120: {
+        "success": False, "error": json.dumps(report, indent=2), "exit_code": 3,
+        "binary": "test"})
+    calls = _capture_audit(monkeypatch)
+    out = json.loads(ctx.tools["ciphervault_run"][1]({"command": ["make", "test"]}))
+    assert out["success"] is False
+    assert out["data"]["stdout"] == "2 tests failed\n" and out["data"]["exit_code"] == 3
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "scrubbed_result" in rec[0]
+
+
+def test_run_that_never_started_is_not_withheld(ctx, monkeypatch):
+    monkeypatch.setattr(cv, "_run_cli_json", lambda args, cwd, timeout=120: {
+        "success": False, "error": "No vault in this directory", "exit_code": 1})
+    monkeypatch.setattr(cv, "_audit", lambda *a, **k: False)
+    out = json.loads(ctx.tools["ciphervault_run"][1]({"command": ["make"]}))
+    assert out["error"] == "No vault in this directory"
 
 
 def test_release_asset_selection(monkeypatch):

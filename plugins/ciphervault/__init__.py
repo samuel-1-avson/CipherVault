@@ -576,7 +576,69 @@ def _tool_run(params, **kwargs):
         args += ["--env", params["env"]]
     args.append("--")
     args += list(cmd)
-    return json.dumps(_run_cli_json(args, params.get("cwd"), timeout=300))
+    res = _run_cli_json(args, params.get("cwd"), timeout=300)
+    if params.get("dry_run"):
+        return json.dumps(res)
+    res = _structured_run_failure(res)
+    data = res.get("data")
+    if not (isinstance(data, dict)
+            and any(isinstance(data.get(k), str) for k in ("stdout", "stderr"))):
+        # Nothing ran (no vault, bad flags, missing CLI): no output to receipt.
+        return json.dumps(res)
+    # ciphervault_* results skip transform_tool_result, so the run output
+    # gets its receipt here: the exact string handed to the model, plus
+    # the stdout a person reads (see ciphervault_audit check_text).
+    raw = json.dumps(res)
+    detail = {"program": str(cmd[0])[:64],
+              "exit_code": data.get("exit_code"),
+              "redactions": data.get("redactions"),
+              "output_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+              "content_sha256": _content_sha256(data.get("stdout") or ""),
+              "output_bytes": len(raw)}
+    if _audit("ciphervault_run", "scrubbed_result", detail=detail, cwd=params.get("cwd")):
+        return raw
+    withheld = ("[CipherVault] run output withheld: the audit-log write failed, so "
+                "there is no receipt for it. Exit code and counts are kept.")
+    return json.dumps(dict(res, data=dict(data, stdout=withheld, stderr=""),
+                           audit_receipt=False))
+
+
+def _structured_run_failure(res):
+    """`run --json` exits with the child's status after printing its
+    report, which _run_cli turns into an error string. Keep a failing
+    command's report structured (stdout/stderr/exit_code) instead."""
+    if res.get("success") or "data" in res or not isinstance(res.get("error"), str):
+        return res
+    try:
+        payload = json.loads(res["error"])
+    except Exception:
+        return res
+    if isinstance(payload, dict) and "exit_code" in payload and "stdout" in payload:
+        return {"success": False, "data": payload, "exit_code": res.get("exit_code"),
+                "binary": res.get("binary")}
+    return res
+
+
+def _content_sha256(text):
+    """Hash of the text a person reads, ignoring surrounding whitespace
+    (terminals and copy/paste rarely keep the trailing newline)."""
+    return hashlib.sha256(text.strip().encode()).hexdigest()
+
+
+def _visible_text(result):
+    """The part of a tool result a person actually reads: Hermes wraps
+    terminal and file results in a JSON envelope (`output`, `content`)."""
+    if result[:1] != "{":
+        return result
+    try:
+        data = json.loads(result)
+    except Exception:
+        return result
+    if isinstance(data, dict):
+        for key in ("output", "content", "stdout"):
+            if isinstance(data.get(key), str):
+                return data[key]
+    return result
 
 
 def _tool_push(params, **kwargs):
@@ -624,16 +686,25 @@ def _tool_audit(params, **kwargs):
         out["error"] = "Audit chain verification failed or was unavailable; no hash lookup is proof."
         return json.dumps(out)
     if params.get("check_text") is not None:
-        digest = hashlib.sha256(str(params["check_text"]).encode()).hexdigest()
-        check = _run_cli_json(
-            ["agent-log", "check", "--json", "--output-sha256", digest], cwd)
-        check_data = check.get("data")
-        if (check.get("success") and isinstance(check_data, dict)
-                and isinstance(check_data.get("found"), bool)):
+        # Exact text first (matches the stored tool-result hash), then the
+        # whitespace-trimmed text (matches the stored visible-content hash).
+        text = str(params["check_text"])
+        digests = [hashlib.sha256(text.encode()).hexdigest()]
+        if text.strip() != text:
+            digests.append(_content_sha256(text))
+        for digest in digests:
+            check = _run_cli_json(
+                ["agent-log", "check", "--json", "--output-sha256", digest], cwd)
+            check_data = check.get("data")
+            if not (check.get("success") and isinstance(check_data, dict)
+                    and isinstance(check_data.get("found"), bool)):
+                out.pop("check", None)
+                out.update(success=False, check=check,
+                           error="Audit output-hash lookup failed or returned an invalid response.")
+                break
             out["check"] = check_data
-        else:
-            out.update(success=False, check=check,
-                       error="Audit output-hash lookup failed or returned an invalid response.")
+            if check_data["found"]:
+                break
     return json.dumps(out)
 
 
@@ -768,15 +839,18 @@ def on_pre_tool_call(tool_name, args, **kwargs):
 
         joined = "\n".join(texts)
         if joined:
-            cleaned, n, _exact = cli_redact(joined, cwd, timeout=10)
-            if n > 0 or cleaned != joined:
-                _audit(tool_name, "blocked",
-                       detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=cwd)
-                return {"action": "block", "message": (
-                    "CipherVault guard: this call contains secret material "
-                    f"({n} exact/shape redaction(s)). Work with paths and names only, "
-                    "seal values with ciphervault_push, run workloads via ciphervault_run."
-                )}
+            # Check against every vault the call touches, not only the
+            # cwd's (vaultless calls still get the CLI's shape pass).
+            for root in _scrub_roots(args, cwd) or [cwd]:
+                cleaned, n, _exact = cli_redact(joined, root, timeout=10)
+                if n > 0 or cleaned != joined:
+                    _audit(tool_name, "blocked",
+                           detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=root)
+                    return {"action": "block", "message": (
+                        "CipherVault guard: this call contains secret material "
+                        f"({n} exact/shape redaction(s)). Work with paths and names only, "
+                        "seal values with ciphervault_push, run workloads via ciphervault_run."
+                    )}
 
         if tool_name == "terminal":
             for text in texts:
@@ -839,6 +913,74 @@ def _vault_cwd(cwd):
     return str(root) if root is not None else cwd
 
 
+# Tool arguments name paths the cwd does not cover (`cat demo/notes.txt`
+# from a parent directory, read_file on an absolute path). Tokens are
+# split on shell punctuation; scans are bounded per call.
+_ARG_TOKEN_RE = re.compile(r"[^\s\"'`;|&<>(){}\[\]=,]+")
+_ARG_SCAN_CHARS = 16_384
+_ARG_MAX_TOKENS = 256
+
+
+def _same_dir(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _nearest_vault_lenient(path, cache):
+    """_vault_root for argument paths: a level that cannot be inspected
+    (glob, invalid name, permission wall) counts as "no store here" and
+    the walk continues upward, so one odd token cannot hide the vault
+    above it. `cache` maps walked directories to their nearest vault."""
+    walked, found = [], None
+    for parent in (path, *path.parents):
+        key = str(parent)
+        if key in cache:
+            found = cache[key]
+            break
+        walked.append(key)
+        try:
+            (parent / ".ciphervault" / "vault.db").lstat()
+        except (OSError, ValueError):
+            continue
+        found = key
+        break
+    for key in walked:
+        cache[key] = found
+    return found
+
+
+def _arg_vault_roots(args, cwd):
+    """Vault roots that path-like tokens in a call's arguments point into."""
+    base = os.path.abspath(cwd or os.getcwd())
+    cache, roots, tokens = {}, [], 0
+    for text in _iter_strings(args or {}):
+        for token in _ARG_TOKEN_RE.findall(text[:_ARG_SCAN_CHARS]):
+            if tokens >= _ARG_MAX_TOKENS:
+                return roots
+            if "://" in token or token.startswith("-") or len(token) > 1024:
+                continue
+            tokens += 1
+            try:
+                path = Path(os.path.abspath(os.path.join(base, os.path.expanduser(token))))
+                root = _nearest_vault_lenient(path, cache)
+            except Exception:
+                continue
+            if root and not any(_same_dir(root, r) for r in roots):
+                roots.append(root)
+    return roots
+
+
+def _scrub_roots(args, cwd):
+    """Every vault whose exact values a call's input or output must be
+    checked against: the cwd's vault (an uninspectable one stays
+    guarded, see _vault_present) plus each vault a path argument points
+    into. Empty means the call touches no vault."""
+    roots = [_vault_cwd(cwd)] if _vault_present(cwd) else []
+    for root in _arg_vault_roots(args, cwd):
+        if not any(_same_dir(root, r) for r in roots):
+            roots.append(root)
+    return roots
+
+
 def on_transform_tool_result(tool_name, args, result, **kwargs):
     """Scrub every non-CipherVault tool result before it enters model
     context. Fails CLOSED: if the exact-value scrub cannot run, or
@@ -853,7 +995,8 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
         oversized = len(result) > 262_144
         sample = result[:262_144] if oversized else result
-        if not _vault_present(cwd):
+        roots = _scrub_roots(args, cwd)
+        if not roots:
             # No vault here (fresh install, gateway, unrelated
             # project): there are no vault values to protect, and
             # withholding every result Hermes-wide would punish
@@ -864,28 +1007,36 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
             if cleaned != sample or oversized:
                 return cleaned + ("\n…[truncated by CipherVault scrub]" if oversized else "")
             return None
-        cleaned, n, exact = cli_redact(sample, cwd, timeout=10)
-        if not exact:
-            _audit(tool_name, "scrub_unavailable",
-                   detail={"withheld_bytes": len(result)}, cwd=cwd)
-            return ("[CipherVault] tool result withheld: the exact-value scrub "
-                    "could not run (CLI missing, incompatible, or timed out), so "
-                    "this output was not shown. A shape-only pass could miss a "
-                    "vault value entirely; failing loudly instead. Run "
-                    "`hermes ciphervault doctor` to inspect the resolved CLI.")
+        # Each vault the call touches scrubs its own exact values; the
+        # passes chain, and any one failing withholds the result.
+        cleaned, n = sample, 0
+        for root in roots:
+            cleaned, n_root, exact = cli_redact(cleaned, root, timeout=10)
+            n += n_root
+            if not exact:
+                _audit(tool_name, "scrub_unavailable",
+                       detail={"withheld_bytes": len(result)}, cwd=root)
+                return ("[CipherVault] tool result withheld: the exact-value scrub "
+                        "could not run (CLI missing, incompatible, or timed out), so "
+                        "this output was not shown. A shape-only pass could miss a "
+                        "vault value entirely; failing loudly instead. Run "
+                        "`hermes ciphervault doctor` to inspect the resolved CLI.")
         final = cleaned
         if oversized:
             # The window is never conditional: an untouched tail must
             # not pass just because the scrubbed head was clean.
             final = cleaned + "\n…[truncated by CipherVault scrub]"
-        if not _audit(tool_name, "scrubbed_result",
-                      detail={"redactions": n,
-                              "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
-                              "output_bytes": len(final)},
-                      cwd=cwd):
-            return ("[CipherVault] tool result withheld: the audit-log write "
-                    "failed, so there is no receipt for this output. Withholding "
-                    "it keeps 'no hash in the chain' unambiguous.")
+        detail = {"redactions": n,
+                  "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
+                  "content_sha256": _content_sha256(_visible_text(final)),
+                  "output_bytes": len(final)}
+        if len(roots) > 1:
+            detail["vaults"] = len(roots)
+        for root in roots:
+            if not _audit(tool_name, "scrubbed_result", detail=detail, cwd=root):
+                return ("[CipherVault] tool result withheld: the audit-log write "
+                        "failed, so there is no receipt for this output. Withholding "
+                        "it keeps 'no hash in the chain' unambiguous.")
         if final != result:
             return final
         return None
@@ -913,7 +1064,10 @@ def on_post_tool_call(tool_name, args=None, result=None, **kwargs):
                 path = str(args[key])
                 break
         cwd = (args.get("cwd") or args.get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
-        _audit(tool_name, "executed", path=path, cwd=cwd)
+        # Receipt every vault the call touched, not only the cwd's.
+        roots = _scrub_roots(args, cwd) if isinstance(args, dict) else []
+        for root in roots or [cwd]:
+            _audit(tool_name, "executed", path=path, cwd=root)
         return None
     except Exception:
         return None

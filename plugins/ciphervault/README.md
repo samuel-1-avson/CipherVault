@@ -24,9 +24,9 @@ throwaway vault in about two minutes.
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; replicates when `local_only=false`) |
 | `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir. Pass `via` (current operator URLs) when the vault moved fleets after the kit was printed |
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
-| `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, device-signed): blocked reads, approval requests, scrubbed results (with the scrubbed output's SHA-256), writes — plus chain verification and output-hash lookup |
+| `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, device-signed): blocked reads, approval requests, scrubbed results (hash of the whole result plus a whitespace-trimmed hash of the visible text: terminal `output`, file `content`, run `stdout`), writes — plus chain verification and output-hash lookup (`check_text` accepts the text exactly as you saw it) |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file reads, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
-| `transform_tool_result` hook | Scrubs every other tool's result before it enters context |
+| `transform_tool_result` hook | Scrubs every other tool's result before it enters context, against every vault the call touches (see Vault detection) |
 | `tool_request` middleware | Defaults the session cwd into `ciphervault_*` calls |
 | Secret source `ciphervault` | Hermes' own env vars sourced from a vault at startup (`secrets.ciphervault.*`) |
 | `/ciphervault`, `hermes ciphervault` | Chat slash command; terminal bootstrap/status/doctor |
@@ -124,6 +124,23 @@ detection follows the CLI: the nearest `.ciphervault/vault.db` in the
 working directory or a parent; a bare `.ciphervault/` (such as the
 installer's `~/.ciphervault/bin`) is not a vault. Commands run in a
 vault subdirectory are scrubbed and receipted at the vault root.
+Since v0.6.3 the hooks also follow path arguments: a call whose working
+directory is outside a vault but whose arguments name a path inside one
+(`cat demo/settings.txt` from the parent directory, `read_file` on an
+absolute path, `cd demo && …`) is exact-scrubbed, guarded, and receipted
+against that vault, and fails closed like any vault-scoped call. A call
+touching several vaults is checked against each in turn. Argument scans
+are bounded (first 16 KB of each string, 256 tokens); URLs and `-flags`
+are skipped.
+
+`ciphervault_run` output is receipted as `scrubbed_result` too (since
+v0.6.3; it bypasses `transform_tool_result`), and a failing command keeps
+its structured `stdout`/`stderr`/`exit_code`. If the receipt cannot be
+written, stdout/stderr are withheld; exit code and counts are kept.
+Visible-text lookups (`check_text` on a terminal output, not the whole
+result envelope) need a CLI whose `agent-log check` matches
+`content_sha256`: built from `main` after v1.0.33. With the pinned
+v1.0.33, exact whole-result lookups still work.
 
 Binary resolution: plugin setting `binary_path` → `$CIPHERVAULT_BIN` →
 bootstrapped copy → repo checkout (dev) → `PATH` (`ciphervault` only;
