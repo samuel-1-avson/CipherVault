@@ -1593,9 +1593,11 @@
         <p class="cv-layout-f8e033cbe6">
           Production account enrollment is signed by the account key and the current vault device. The key stays in your OS keystore; the browser never receives it.
         </p>
-        <p class="form-help">Run this from the CipherVault repository that contains your vault. The command signs a short-lived browser handoff locally and prints a one-time production link; open that link to finish sign-in and enroll your passkey or authenticator:</p>
+        <p class="form-help">Run this from the CipherVault repository that contains your vault. The CLI signs the hosted login challenge locally, then prints a one-time browser handoff link. Open it to sign in and enroll your passkey or authenticator in Manage account:</p>
         <pre class="terminal-output cv-layout-869fedccfa"><code>cv auth connect --endpoint https://vault.cipherv.online/api/account</code></pre>
-        <p class="form-help cv-layout-63b04ba9d1">You can run either <code>cv auth connect</code> or <code>ciphervault auth connect</code>. If the command is unavailable, upgrade to v1.0.32 with <code>cv update</code> / <code>ciphervault update</code> or <button type="button" class="btn-inline-link" data-click-target="btn-open-cli-downloads">download the v1.0.32 binaries</button>.</p>
+        <p class="form-help" id="account-connect-mfa-help"><strong>Keep MFA enabled.</strong> Required MFA also protects hosted device enrollment. If connect reports <code>MFA_STEP_UP_REQUIRED</code> or “Required MFA also protects account-signed device enrollment”, use a CLI build with hosted MFA step-up support. <code>cv auth login</code> creates only a local session. Enrollment needs a fresh account-key sign-in and a new authenticator code verified for the CLI session through its protected MFA flow; signing in or verifying MFA in this browser does not authorize that CLI session. Older builds without hosted MFA step-up support cannot complete required-MFA enrollment.</p>
+        <p class="form-help" id="account-connect-handoff-help">The browser handoff does not transfer MFA verification. For sensitive browser actions, open Manage account, refresh key or passkey sign-in, then verify a new authenticator code within five minutes. Never paste authenticator codes or session tokens into URLs, chat, or command-line arguments.</p>
+        <p class="form-help cv-layout-63b04ba9d1" id="account-connect-build-help">You can run either <code>cv auth connect</code> or <code>ciphervault auth connect</code>. The published v1.0.32 binaries do not include this required-MFA connection fix. Use a source build containing the hosted MFA step-up fix, or a newer release whose notes confirm it. <code>cv update</code> / <code>ciphervault update</code> alone does not guarantee this fix; the <button type="button" class="btn-inline-link" data-click-target="btn-open-cli-downloads">v1.0.32 release downloads</button> are not a fixed build.</p>
       </div>
       <div class="modal-footer">
         <button class="btn-action secondary" id="btn-cancel-modal-account-connect">Close</button>
@@ -1891,6 +1893,7 @@
         <p class="cv-layout-f8e033cbe6">
           Every installation ships both <code>cv</code> (short alias) and <code>ciphervault</code> (canonical binary). Release artifacts are verified against <code>SHA256SUMS.txt</code> and Ed25519 signature <code>SHA256SUMS.txt.sig</code> (key ID <code>c34d6bb1a158184d</code>).
         </p>
+        <p class="form-help" id="cli-download-mfa-help"><strong>Required-MFA account connection:</strong> These published v1.0.32 binaries do not include the hosted MFA step-up fix for <code>auth connect</code>. Use a source build containing the fix, or a newer release whose notes confirm it. Keep MFA enabled.</p>
 
         <div class="cli-install-section">
           <span class="drawer-sec-title">One-Line Verified Terminal Installers &amp; Self-Update</span>

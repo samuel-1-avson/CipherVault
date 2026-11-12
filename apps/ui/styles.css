@@ -103,6 +103,11 @@ html[data-theme="light"] {
   box-sizing: border-box;
 }
 
+/* Layout display rules must not override authentication/context visibility. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
 }

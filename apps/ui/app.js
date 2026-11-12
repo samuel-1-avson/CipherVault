@@ -2886,6 +2886,7 @@ function openModal(modal, triggerElement) {
   if (!modal) return;
   lastFocusedElement = triggerElement || document.activeElement;
   activeModal = modal;
+  modal.hidden = false;
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
   trapModalFocus(modal);
@@ -2894,6 +2895,7 @@ function openModal(modal, triggerElement) {
 function closeModal(modal) {
   if (!modal) return;
   modal.classList.remove('open');
+  modal.hidden = true;
   modal.setAttribute('aria-hidden', 'true');
   if (activeModal === modal) {
     activeModal = null;
