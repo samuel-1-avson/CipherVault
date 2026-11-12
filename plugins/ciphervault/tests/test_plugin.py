@@ -611,17 +611,17 @@ def test_release_asset_selection(monkeypatch):
 
 
 def test_pinned_release_is_guard_compatible_and_hash_pinned():
-    # v1.0.33 ships redact --json's exact_values_complete attestation.
-    assert cv.RELEASE_VERSION == "1.0.33"
+    # v1.0.34 ships redact --json's exact_values_complete attestation.
+    assert cv.RELEASE_VERSION == "1.0.34"
     assert cv.RELEASE_SUPPORTS_GUARD is True
-    assert cv.RELEASE_BASE.endswith("/v1.0.33")
+    assert cv.RELEASE_BASE.endswith("/v1.0.34")
     for name, (asset, sha) in cv.RELEASE_ASSETS.items():
         assert asset and len(sha) == 64 and int(sha, 16) >= 0, name
     assert "windows-amd64" in cv.RELEASE_ASSETS
 
 
-def test_every_supported_platform_has_a_pinned_v1033_asset():
-    # v1.0.33 publishes Windows x64, Linux x64, and macOS arm64/Intel CLIs.
+def test_every_supported_platform_has_a_pinned_release_asset():
+    # v1.0.34 publishes Windows x64, Linux x64, and macOS arm64/Intel CLIs.
     assert set(cv.RELEASE_ASSETS) == {"windows-amd64", "linux-amd64", "macos-arm64", "macos-amd64"}
     assert cv.RELEASE_ASSETS["macos-arm64"][0] == "ciphervault-macos-arm64"
     assert cv.RELEASE_ASSETS["macos-amd64"][0] == "ciphervault-macos-amd64"

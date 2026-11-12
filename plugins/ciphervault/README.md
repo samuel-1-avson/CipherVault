@@ -58,7 +58,7 @@ throwaway vault in about two minutes.
   or `/ciphervault setup` — downloads the platform asset
   (`ciphervault.exe` on Windows x64, `ciphervault-linux-amd64` on
   Linux x64, `ciphervault-macos-arm64`/`-amd64` on macOS 13+) and
-  `SHA256SUMS.txt` from the pinned GitHub release (`v1.0.33`, published
+  `SHA256SUMS.txt` from the pinned GitHub release (`v1.0.34`, published
   as a pre-release; the macOS binaries are ad-hoc signed on Apple
   Silicon but not notarized, which is fine for this download because
   it is not quarantined) of
@@ -113,7 +113,7 @@ hermes ciphervault doctor
 This plugin version requires a CLI whose `redact --json` attests
 `exact_values_complete` — every tracked working copy was loaded, so a
 shape-blind vault value cannot slip through an unreadable file. The
-pinned v1.0.33 release ships that attestation, so
+pinned v1.0.34 release ships that attestation, so
 `hermes ciphervault bootstrap` installs it on Windows x64, Linux x64, and
 macOS 13+ (Apple Silicon and Intel).
 Older CLIs (v1.0.32 and earlier) lack it: the plugin withholds
@@ -139,8 +139,8 @@ its structured `stdout`/`stderr`/`exit_code`. If the receipt cannot be
 written, stdout/stderr are withheld; exit code and counts are kept.
 Visible-text lookups (`check_text` on a terminal output, not the whole
 result envelope) need a CLI whose `agent-log check` matches
-`content_sha256`: built from `main` after v1.0.33. With the pinned
-v1.0.33, exact whole-result lookups still work.
+`content_sha256`: v1.0.34 (pinned) or later. With v1.0.33, exact
+whole-result lookups still work.
 
 Binary resolution: plugin setting `binary_path` → `$CIPHERVAULT_BIN` →
 bootstrapped copy → repo checkout (dev) → `PATH` (`ciphervault` only;
@@ -158,7 +158,7 @@ For required-MFA accounts, use a CLI build containing hosted MFA step-up
 support: `ciphervault auth connect` authenticates the account first and
 asks for a fresh unused authenticator code in your own terminal, with
 input hidden. Local `auth login` and browser MFA do not authorize that
-CLI session. The pinned v1.0.33 release includes this connection fix;
+CLI session. The pinned v1.0.34 release (and v1.0.33) includes this connection fix;
 v1.0.32 and earlier do not. Never send codes
 or session credentials through agent tools, chat, arguments, or environment
 variables. Keep MFA enabled. Account linking is not proof of fleet backup;

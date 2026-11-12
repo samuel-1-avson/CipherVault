@@ -33,7 +33,7 @@ import urllib.request
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-RELEASE_VERSION = "1.0.33"
+RELEASE_VERSION = "1.0.34"
 # Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against these values.
@@ -44,26 +44,26 @@ RELEASE_VERSION = "1.0.33"
 RELEASE_ASSETS = {
     "windows-amd64": (
         "ciphervault.exe",
-        "54cc1886148bdd4619dc6680d7c79badc1444f2db86f40b99389a72b8b180f28",
+        "25aaf9851eb94737bdd53c33992e8c16af276e11d9b340a484292feeab1f7865",
     ),
     "linux-amd64": (
         "ciphervault-linux-amd64",
-        "b6f2f6de72c1d1271de47e83bf5fba61154de82db5c40be625fa3339a16c9873",
+        "86b407373f46edc91411d35d6348f10cc47c63a500ce96c0beaa4bc479caa6ae",
     ),
     "macos-arm64": (
         "ciphervault-macos-arm64",
-        "612edba4b7f5cbaf659077830e9f4273060a6c21af29a220a1b4929b01f0752b",
+        "7f6a1e66d87dd3bfaaa1ef9dacd94920b9acaad3e2f4ceb2ae1331fa77489a42",
     ),
     "macos-amd64": (
         "ciphervault-macos-amd64",
-        "979a41a4ddf9c0048045c1e88e9e86aaa6c23a6702efbc34c56549489f10c2d7",
+        "e5109defc338a9e5120ef5dd8d3e9beb039db8ef13e89657f12252459ae1089a",
     ),
 }
 # Backward-compatible alias for the Windows pin.
 RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
 # Whether the pinned release ships `redact --json`'s
 # `exact_values_complete` attestation, which this plugin requires before
-# releasing vault-scoped output. v1.0.33 does; bootstrap refuses any pin
+# releasing vault-scoped output. v1.0.34 does; bootstrap refuses any pin
 # where this is False rather than install a CLI whose output it withholds.
 RELEASE_SUPPORTS_GUARD = True
 _COMPATIBLE_CLI_HINT = (
