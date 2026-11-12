@@ -58,7 +58,11 @@ pub(crate) fn cmd_recovery_export() -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn cmd_recovery_test(kit_opt: Option<PathBuf>, target_dir: PathBuf) -> Result<()> {
+pub(crate) async fn cmd_recovery_test(
+    kit_opt: Option<PathBuf>,
+    target_dir: PathBuf,
+    via: Vec<String>,
+) -> Result<()> {
     let kit_path = match kit_opt {
         Some(p) => p,
         None => {
@@ -79,7 +83,16 @@ pub(crate) async fn cmd_recovery_test(kit_opt: Option<PathBuf>, target_dir: Path
         "Running offline clean-machine recovery test into '{}'...",
         target_dir.display()
     );
-    cmd_recover(Some(kit_path), None, target_dir, false, Vec::new(), false).await
+    cmd_recover(
+        Some(kit_path),
+        None,
+        target_dir,
+        false,
+        Vec::new(),
+        false,
+        via,
+    )
+    .await
 }
 
 pub(crate) async fn cmd_recovery_split(

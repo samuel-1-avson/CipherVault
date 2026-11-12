@@ -509,6 +509,15 @@ ciphervault recover --kit emergency_recovery_kit.txt --to ./restored_secrets/
 
 CipherVault contacts the storage operators, downloads the encrypted chunks, reconstructs the key hierarchy in memory, decrypts each file, and restores them with bit-for-bit fidelity.
 
+The kit records the operator endpoints that existed when it was printed. If the vault later moved to another fleet (for example from local test operators to the public fleet), name the current operators with `--via`; the kit's recovery key still authenticates every record, so the endpoint list only changes where to look:
+
+```bash
+ciphervault recover --kit emergency_recovery_kit.txt --to ./restored_secrets/ \
+  --via https://op1.cipherv.online https://op2.cipherv.online https://op3.cipherv.online
+```
+
+The rebuilt vault's `operators.json` uses the fleet given with `--via`. `ciphervault recovery test` accepts the same flag, so a drill exercises the exact command a disaster would need.
+
 ---
 
 ### Method B: Threshold Guardian Reconstruction ($M$-of-$N$ Shamir)

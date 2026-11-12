@@ -397,6 +397,14 @@ enum Commands {
             help = "Rebuild the local store even when one already exists in the target directory"
         )]
         force: bool,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            value_name = "URL",
+            help = "Query these operators instead of the endpoints printed in the kit (repeatable; use when the vault moved fleets after the kit was made). Records stay authenticated by the kit's recovery key"
+        )]
+        via: Vec<String>,
     },
 
     /// Emergency offline recovery commands
@@ -2046,6 +2054,14 @@ enum RecoverySubcommand {
 
         #[arg(short, long, help = "Test directory to restore into")]
         to: PathBuf,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            value_name = "URL",
+            help = "Query these operators instead of the endpoints printed in the kit (repeatable; use when the vault moved fleets after the kit was made)"
+        )]
+        via: Vec<String>,
     },
 
     /// Seal the recovery kit with a passphrase and store it on operators

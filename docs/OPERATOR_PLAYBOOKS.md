@@ -143,7 +143,15 @@ only the paper kit is required):
 ```sh
 ciphervault recover --kit <kit> --to <dir>
 # or: ciphervault recover --shares g1.txt g2.txt --to <dir>
+# fleet moved since the kit was printed? name the current operators:
+# ciphervault recover --kit <kit> --to <dir> --via <url1> <url2> <url3>
 ```
+
+A kit (and every guardian share split from it) keeps the operator
+endpoints from when it was printed. After a fleet move, drill with
+`ciphervault recovery test --kit <kit> --to <dir> --via <current URLs>`;
+run inside the vault, a failed drill without `--via` prints the exact
+current endpoints to retry with.
 
 Team restores add `--require-approval`: the command prints an
 `EmergencyRecovery` challenge ID (600 s TTL) and broadcasts it to the
