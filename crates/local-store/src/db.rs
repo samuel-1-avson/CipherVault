@@ -1342,8 +1342,10 @@ impl LocalVaultStore {
     }
 
     /// Finds the newest audit entry whose detail records the given
-    /// scrubbed-output SHA-256 as its `output_sha256` field — exact
-    /// field equality, never substring matching, so a forged or
+    /// scrubbed-output SHA-256 as its `output_sha256` field, or as its
+    /// `content_sha256` field (the hash of the text a person sees, such
+    /// as a terminal result's `output`, inside the tool-result envelope).
+    /// Exact field equality, never substring matching, so a forged or
     /// unrelated row containing the digest proves nothing.
     pub fn find_agent_audit_by_output_hash(
         &self,
@@ -1353,10 +1355,10 @@ impl LocalVaultStore {
         Ok(entries.into_iter().find(|e| {
             serde_json::from_str::<serde_json::Value>(&e.detail_json)
                 .ok()
-                .and_then(|v| {
-                    v.get("output_sha256")
-                        .and_then(|h| h.as_str())
-                        .map(|h| h == output_sha256)
+                .map(|v| {
+                    ["output_sha256", "content_sha256"]
+                        .iter()
+                        .any(|field| v.get(field).and_then(|h| h.as_str()) == Some(output_sha256))
                 })
                 .unwrap_or(false)
         }))
@@ -1712,6 +1714,69 @@ impl LocalVaultStore {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// After `snapshot_id` has been replicated, drops the queued uploads
+    /// of its ancestors: the fleet now holds a newer complete state, and
+    /// replicating an older snapshot afterwards would republish a stale
+    /// head. The superseded snapshots keep their rows (and their state:
+    /// they were never replicated); only the upload debt is cleared, so
+    /// `prune` may later remove them. Snapshots on other branches stay
+    /// queued. Returns how many queued uploads were cleared.
+    pub fn supersede_pending_ancestors(
+        &self,
+        snapshot_id: &[u8; 32],
+    ) -> Result<usize, LocalStoreError> {
+        use std::collections::{HashMap, HashSet};
+
+        let records = self.list_snapshots()?;
+        // Parents may name a snapshot by id or by record CID (both are
+        // stored as aliases), so index every record under both keys.
+        let mut by_key: HashMap<Vec<u8>, usize> = HashMap::new();
+        for (index, record) in records.iter().enumerate() {
+            by_key.insert(record.snapshot_id.clone(), index);
+            if let Ok(cid) = record.compute_record_cid() {
+                by_key.insert(cid.to_vec(), index);
+            }
+        }
+        let Some(&head) = by_key.get(snapshot_id.as_slice()) else {
+            return Ok(0);
+        };
+        let mut ancestors: HashSet<Vec<u8>> = HashSet::new();
+        let mut seen: HashSet<usize> = HashSet::from([head]);
+        let mut frontier: Vec<Vec<u8>> = records[head].parent_snapshot_ids.clone();
+        while let Some(parent) = frontier.pop() {
+            ancestors.insert(parent.clone());
+            if let Some(&index) = by_key.get(&parent) {
+                if seen.insert(index) {
+                    let record = &records[index];
+                    ancestors.insert(record.snapshot_id.clone());
+                    if let Ok(cid) = record.compute_record_cid() {
+                        ancestors.insert(cid.to_vec());
+                    }
+                    frontier.extend(record.parent_snapshot_ids.iter().cloned());
+                }
+            }
+        }
+        let superseded: Vec<[u8; 32]> = self
+            .list_pending_uploads()?
+            .into_iter()
+            .filter(|p| {
+                p.snapshot_id != *snapshot_id
+                    && (ancestors.contains(p.snapshot_id.as_slice())
+                        || ancestors.contains(p.record_cid.as_slice()))
+            })
+            .map(|p| p.snapshot_id)
+            .collect();
+        let tx = self.conn.unchecked_transaction()?;
+        for id in &superseded {
+            tx.execute(
+                "DELETE FROM pending_uploads WHERE snapshot_id = ?1",
+                params![id.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(superseded.len())
     }
 
     /// Deletes the given snapshots (by record CID) with fail-closed guards:
@@ -2714,6 +2779,32 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_audit_find_by_visible_content_hash() {
+        // Receipts also carry the hash of the text a person actually
+        // sees (a terminal result's `output` field), so a lookup works
+        // without reconstructing the tool-result JSON envelope.
+        let store = agent_audit_store();
+        store
+            .append_agent_audit(
+                "terminal",
+                "scrubbed_result",
+                "",
+                r#"{"redactions":0,"output_sha256":"envelope01","content_sha256":"visible01"}"#,
+            )
+            .unwrap();
+        let hit = store.find_agent_audit_by_output_hash("visible01").unwrap();
+        assert_eq!(hit.map(|e| e.decision), Some("scrubbed_result".to_string()));
+        assert!(store
+            .find_agent_audit_by_output_hash("envelope01")
+            .unwrap()
+            .is_some());
+        assert!(store
+            .find_agent_audit_by_output_hash("visible0")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn test_agent_audit_find_by_output_hash() {
         let store = agent_audit_store();
         store
@@ -2881,6 +2972,48 @@ mod tests {
         store.mark_upload_completed(&snap_id).unwrap();
         let pending_after_complete = store.list_pending_uploads().unwrap();
         assert!(pending_after_complete.is_empty());
+    }
+
+    fn queued_snapshot(store: &LocalVaultStore, id: u8, parents: &[u8], at: u64) {
+        let record = SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: vec![id; 32],
+            parent_snapshot_ids: parents.iter().map(|p| vec![*p; 32]).collect(),
+            device_id: vec![0x33u8; 32],
+            device_counter: u64::from(id),
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![0x22u8; 32],
+            encrypted_manifest_len: 4,
+            advisory_timestamp_utc: at,
+            signature: Vec::new(),
+        };
+        store.save_snapshot(&record, b"manifest", &[]).unwrap();
+    }
+
+    #[test]
+    fn replicated_head_supersedes_queued_ancestors_only() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        // 0xA1 <- 0xA2 <- 0xA3 (replicated); 0xB1 is an unrelated branch.
+        queued_snapshot(&store, 0xA1, &[], 1000);
+        queued_snapshot(&store, 0xA2, &[0xA1], 1001);
+        queued_snapshot(&store, 0xB1, &[], 1002);
+        queued_snapshot(&store, 0xA3, &[0xA2], 1003);
+        store.mark_upload_completed(&[0xA3; 32]).unwrap();
+
+        let cleared = store.supersede_pending_ancestors(&[0xA3; 32]).unwrap();
+        assert_eq!(cleared, 2);
+        let left: Vec<[u8; 32]> = store
+            .list_pending_uploads()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.snapshot_id)
+            .collect();
+        assert_eq!(left, vec![[0xB1; 32]], "non-ancestors stay queued");
+        // Superseded snapshots keep their rows; only the upload debt goes.
+        assert!(store.get_snapshot(&[0xA1; 32]).is_ok());
+        assert_eq!(store.supersede_pending_ancestors(&[0xA3; 32]).unwrap(), 0);
     }
 
     #[test]

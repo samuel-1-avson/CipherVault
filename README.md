@@ -493,6 +493,10 @@ Run an automated self-diagnostic check on your local vault configuration, OS key
 ciphervault doctor
 ```
 
+The `recovery` check passes when the activity log holds either a passphrase key backup (`recovery key-backup`) or a kit drill that restored this vault (`recovery test --kit <file>` run inside the vault). A drill run elsewhere, or with another vault's kit, is not recorded. Re-run the drill after changing operators.
+
+A replicated push (`push` without `--local`, all required operators verified) also clears queued uploads of older local-only snapshots that the new head supersedes, so the pending count reflects real upload debt. Snapshots on other branches stay queued.
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery

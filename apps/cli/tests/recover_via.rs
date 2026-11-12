@@ -32,6 +32,19 @@ fn run(dir: &Path, args: &[&str]) -> Output {
         .expect("failed to run ciphervault")
 }
 
+/// `doctor --json` prints its report even when other checks fail; this
+/// reads only the recovery-coverage check.
+fn doctor_recovery_ok(dir: &Path) -> bool {
+    let out = run(dir, &["doctor", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("doctor --json is not JSON ({e})\n{}", text(&out)));
+    report["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .iter()
+        .any(|check| check["name"] == "recovery" && check["ok"] == true)
+}
+
 fn text(output: &Output) -> String {
     format!(
         "STDOUT:\n{}\nSTDERR:\n{}",
@@ -126,6 +139,10 @@ async fn kit_from_a_retired_fleet_recovers_via_the_current_fleet() {
     assert!(stale_text.contains("No recovery records"), "{stale_text}");
     assert!(stale_text.contains("--via"), "{stale_text}");
     assert!(stale_text.contains(&current_1), "{stale_text}");
+    assert!(
+        !doctor_recovery_ok(&laptop),
+        "a failed drill is not recovery coverage"
+    );
 
     // The same kit recovers through the current fleet.
     let drill_dir = base.join("drill_via");
@@ -151,6 +168,12 @@ async fn kit_from_a_retired_fleet_recovers_via_the_current_fleet() {
     assert_eq!(
         sha256_file(&drill_dir.join(".env")),
         sha256_file(&laptop.join(".env"))
+    );
+    // A passing drill run inside the vault is recorded as recovery
+    // coverage, so `doctor` stops reporting the vault as unrecoverable.
+    assert!(
+        doctor_recovery_ok(&laptop),
+        "a passing kit drill must count as recovery coverage"
     );
 
     // A clean machine rebuilds a store that points at the fleet it used,

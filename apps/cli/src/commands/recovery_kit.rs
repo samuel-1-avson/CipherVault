@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use ciphervault_recovery::OfflineRecoveryKit;
 
 use crate::cmd_recover;
-use crate::util::{get_configured_operators, get_vault_store, RECOVERY_FILE, VAULT_DIR};
+use crate::util::{get_configured_operators, get_vault_store, DB_FILE, RECOVERY_FILE, VAULT_DIR};
 
 pub(crate) fn cmd_recovery_export() -> Result<()> {
     let kit_path = Path::new(VAULT_DIR).join(RECOVERY_FILE);
@@ -83,6 +83,11 @@ pub(crate) async fn cmd_recovery_test(
         "Running offline clean-machine recovery test into '{}'...",
         target_dir.display()
     );
+    let kit_vault_id = fs::read_to_string(&kit_path)
+        .ok()
+        .and_then(|text| OfflineRecoveryKit::parse_from_printable(&text).ok())
+        .map(|kit| kit.vault_id_hex.to_ascii_lowercase());
+    let used_via = !via.is_empty();
     cmd_recover(
         Some(kit_path),
         None,
@@ -92,7 +97,38 @@ pub(crate) async fn cmd_recovery_test(
         false,
         via,
     )
-    .await
+    .await?;
+    record_passed_drill(kit_vault_id.as_deref(), used_via);
+    Ok(())
+}
+
+/// A drill run inside the vault it restored is recovery coverage: record
+/// it so `doctor` stops reporting the vault as unrecoverable. Best effort:
+/// the drill itself already passed, so a log failure only warns.
+fn record_passed_drill(kit_vault_id: Option<&str>, used_via: bool) {
+    if !Path::new(VAULT_DIR).join(DB_FILE).exists() {
+        return;
+    }
+    let recorded = (|| -> Result<bool> {
+        let store = get_vault_store()?;
+        let vault_id = hex::encode(store.get_vault_id()?);
+        if kit_vault_id != Some(vault_id.as_str()) {
+            return Ok(false);
+        }
+        store.record_activity(
+            "RECOVERY_TEST_OK",
+            "Recovery kit drill restored this vault",
+            &serde_json::json!({ "vault_id_short": &vault_id[..8], "via": used_via }).to_string(),
+        )?;
+        Ok(true)
+    })();
+    match recorded {
+        Ok(true) => println!("  Recorded in this vault's activity log as recovery coverage."),
+        Ok(false) => println!(
+            "  Not recorded: the kit belongs to a different vault than the one in this directory."
+        ),
+        Err(error) => eprintln!("warning: could not record the passed drill: {error}"),
+    }
 }
 
 pub(crate) async fn cmd_recovery_split(
