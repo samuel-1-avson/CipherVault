@@ -123,6 +123,21 @@ pub fn redact_text_counted(input: &str) -> (String, usize) {
             out.push_str(&input[idx..key_end]);
             out.push_str(REDACTED);
             idx = value_end;
+        } else if let Some((key_end, value_end)) = match_generic_credential(bytes, idx) {
+            count += usize::from(!is_redaction_marker(&input[key_end..value_end]));
+            out.push_str(&input[idx..key_end]);
+            out.push_str(REDACTED);
+            idx = value_end;
+        } else if let Some((keep_end, value_end)) = match_vendor_token(bytes, idx) {
+            // Keep the vendor prefix so the sink still says what leaked.
+            count += 1;
+            out.push_str(&input[idx..keep_end]);
+            out.push_str(REDACTED);
+            idx = value_end;
+        } else if let Some(end) = match_jwt(bytes, idx) {
+            count += 1;
+            out.push_str(REDACTED);
+            idx = end;
         } else {
             // Copy one scalar value (inputs are &str, always a boundary).
             let ch = input[idx..].chars().next().unwrap_or('\u{FFFD}');
@@ -159,6 +174,9 @@ pub fn contains_secret_shaped(input: &str) -> bool {
             || match_private_pem(bytes, idx).is_some()
             || match_credential_url(bytes, idx).is_some()
             || match_credential_assignment(bytes, idx).is_some()
+            || match_generic_credential(bytes, idx).is_some()
+            || match_vendor_token(bytes, idx).is_some()
+            || match_jwt(bytes, idx).is_some()
         {
             return true;
         }
@@ -213,10 +231,187 @@ fn match_bearer(bytes: &[u8], start: usize) -> Option<usize> {
         idx += 1;
     }
     let value_start = idx;
-    while idx < bytes.len() && is_token_char(bytes[idx]) {
+    // Dotted (JWT-style) and standard-base64 tokens are one value; a
+    // trailing `.` is sentence punctuation and stays.
+    while idx < bytes.len()
+        && (is_token_char(bytes[idx]) || matches!(bytes[idx], b'.' | b'+' | b'/'))
+    {
         idx += 1;
     }
+    while idx > value_start && bytes[idx - 1] == b'.' {
+        idx -= 1;
+    }
     (idx > value_start).then_some(idx)
+}
+
+/// Vendor credential formats recognised without any surrounding key:
+/// `(prefix, body byte class, minimum body length, exact length?, body
+/// must mix letters and digits?)`. Formats are deliberately narrow (fixed
+/// prefixes plus length rules) so digests, UUIDs and prose pass through.
+type BodyClass = fn(u8) -> bool;
+const VENDOR_FORMATS: &[(&[u8], BodyClass, usize, bool, bool)] = &[
+    (b"ghp_", is_alnum, 30, false, false),
+    (b"gho_", is_alnum, 30, false, false),
+    (b"ghu_", is_alnum, 30, false, false),
+    (b"ghs_", is_alnum, 30, false, false),
+    (b"ghr_", is_alnum, 30, false, false),
+    (b"github_pat_", is_word_char, 22, false, false),
+    (b"AKIA", is_upper_or_digit, 16, true, false),
+    (b"ASIA", is_upper_or_digit, 16, true, false),
+    (b"sk_live_", is_alnum, 10, false, false),
+    (b"sk_test_", is_alnum, 10, false, false),
+    (b"rk_live_", is_alnum, 10, false, false),
+    (b"rk_test_", is_alnum, 10, false, false),
+    (b"xoxa-", is_alnum_or_dash, 10, false, true),
+    (b"xoxb-", is_alnum_or_dash, 10, false, true),
+    (b"xoxp-", is_alnum_or_dash, 10, false, true),
+    (b"xoxr-", is_alnum_or_dash, 10, false, true),
+    (b"xoxs-", is_alnum_or_dash, 10, false, true),
+    (b"sk-", is_base64url, 20, false, true),
+    (b"AIza", is_base64url, 35, true, false),
+];
+
+/// A vendor token at `start`; returns `(prefix_end, token_end)`. Both
+/// edges are bounded: `task-force-…` does not match `sk-`, and a
+/// 17-character AWS-looking run is not an access key id.
+fn match_vendor_token(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    if start > 0 && (is_word_char(bytes[start - 1]) || bytes[start - 1] == b'-') {
+        return None;
+    }
+    for (prefix, body_class, min_len, exact, needs_mix) in VENDOR_FORMATS {
+        if !bytes[start..].starts_with(prefix) {
+            continue;
+        }
+        let body_start = start + prefix.len();
+        let mut end = body_start;
+        while end < bytes.len() && body_class(bytes[end]) {
+            end += 1;
+        }
+        let body = &bytes[body_start..end];
+        let length_ok = if *exact {
+            body.len() == *min_len
+        } else {
+            body.len() >= *min_len
+        };
+        let bounded = end >= bytes.len() || !is_word_char(bytes[end]);
+        let mixed = !needs_mix
+            || (body.iter().any(u8::is_ascii_digit) && body.iter().any(u8::is_ascii_alphabetic));
+        if length_ok && bounded && mixed {
+            return Some((body_start, end));
+        }
+    }
+    None
+}
+
+/// `eyJ<header>.<payload>.<signature>` (base64url JSON web token).
+fn match_jwt(bytes: &[u8], start: usize) -> Option<usize> {
+    if start > 0 && (is_base64url(bytes[start - 1]) || bytes[start - 1] == b'.') {
+        return None;
+    }
+    if !bytes[start..].starts_with(b"eyJ") {
+        return None;
+    }
+    let mut idx = start;
+    for segment in 0..3 {
+        let seg_start = idx;
+        while idx < bytes.len() && is_base64url(bytes[idx]) {
+            idx += 1;
+        }
+        if idx - seg_start < 8 {
+            return None;
+        }
+        if segment < 2 {
+            if idx >= bytes.len() || bytes[idx] != b'.' {
+                return None;
+            }
+            idx += 1;
+        }
+    }
+    Some(idx)
+}
+
+/// Keys that only count when their value also looks like a credential:
+/// bare `token`, `SECRET_KEY` / `ACCESS_KEY`, and hyphenated header-style
+/// names (`x-api-key`, `X-Auth-Token`) whose underscore form is a
+/// credential key. The value test keeps code (`token = tokens[i]`,
+/// `secret_key=settings.SECRET_KEY`) and `$VAR` references untouched.
+fn match_generic_credential(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    if start > 0 && (is_word_char(bytes[start - 1]) || bytes[start - 1] == b'-') {
+        return None;
+    }
+    let mut key_end = start;
+    while key_end < bytes.len() && (is_word_char(bytes[key_end]) || bytes[key_end] == b'-') {
+        key_end += 1;
+    }
+    if key_end == start {
+        return None;
+    }
+    let ident = std::str::from_utf8(&bytes[start..key_end]).ok()?;
+    let normalized = ident.to_ascii_uppercase().replace('-', "_");
+    let generic = matches!(normalized.as_str(), "TOKEN" | "SECRET_KEY" | "ACCESS_KEY")
+        || (ident.contains('-')
+            && (CREDENTIAL_KEYS
+                .iter()
+                .any(|key| key.eq_ignore_ascii_case(&normalized))
+                || CREDENTIAL_KEY_SUFFIXES
+                    .iter()
+                    .any(|sfx| normalized.len() > sfx.len() && normalized.ends_with(sfx))));
+    if !generic {
+        return None;
+    }
+    let (value_start, value_end) = match_assignment_value(bytes, key_end)?;
+    let inner = bytes[value_start..value_end]
+        .strip_prefix(b"\"")
+        .or_else(|| bytes[value_start..value_end].strip_prefix(b"'"))
+        .map(|rest| {
+            rest.strip_suffix(b"\"")
+                .or_else(|| rest.strip_suffix(b"'"))
+                .unwrap_or(rest)
+        })
+        .unwrap_or(&bytes[value_start..value_end]);
+    looks_like_credential(inner).then_some((value_start, value_end))
+}
+
+/// Credential-like value: 12+ chars of token alphabet mixing letters and
+/// digits, and not a dotted identifier path (`config.v2.access_key`).
+fn looks_like_credential(value: &[u8]) -> bool {
+    if value.len() < 12
+        || !value.iter().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'-' | b'_' | b'.' | b'~' | b'+' | b'/' | b'=' | b':' | b'@'
+                )
+        })
+        || !value.iter().any(u8::is_ascii_digit)
+        || !value.iter().any(u8::is_ascii_alphabetic)
+    {
+        return false;
+    }
+    let identifier_path = value.contains(&b'.')
+        && value.split(|b| *b == b'.').all(|segment| {
+            segment
+                .first()
+                .is_some_and(|first| first.is_ascii_alphabetic() || *first == b'_')
+                && segment.iter().all(|b| is_word_char(*b))
+        });
+    !identifier_path
+}
+
+fn is_alnum(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+}
+
+fn is_upper_or_digit(byte: u8) -> bool {
+    byte.is_ascii_uppercase() || byte.is_ascii_digit()
+}
+
+fn is_alnum_or_dash(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-'
+}
+
+fn is_base64url(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
 /// `-----BEGIN <label>----- … -----END …-----` with `PRIVATE` in the label.
@@ -526,6 +721,143 @@ fn is_value_char(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fixture bodies: obviously fake, assembled at runtime so this file
+    /// never contains a contiguous credential-shaped literal.
+    fn fake_alnum(len: usize) -> String {
+        "Fx7Ab3Cd9Ef1Gh5Jk2Lm8Np4Qr6St0Uv"
+            .chars()
+            .cycle()
+            .take(len)
+            .collect()
+    }
+
+    fn scheme() -> String {
+        ["Bear", "er"].concat()
+    }
+
+    #[test]
+    fn vendor_token_formats_redact_and_keep_their_prefix() {
+        let cases: Vec<(String, String)> = vec![
+            (["gh", "p_"].concat(), fake_alnum(36)),
+            (["gh", "s_"].concat(), fake_alnum(36)),
+            (
+                ["github", "_pat_"].concat(),
+                format!("{}_{}", fake_alnum(22), fake_alnum(59)),
+            ),
+            (["AK", "IA"].concat(), "FIXTURE000000011".to_string()),
+            (["sk", "_live_"].concat(), fake_alnum(24)),
+            (["sk", "_test_"].concat(), fake_alnum(24)),
+            (["rk", "_live_"].concat(), fake_alnum(24)),
+            (
+                ["xo", "xb-"].concat(),
+                format!("1234567890-{}", fake_alnum(24)),
+            ),
+            (["sk", "-"].concat(), format!("proj-{}", fake_alnum(40))),
+            (["AI", "za"].concat(), fake_alnum(35)),
+        ];
+        for (prefix, body) in cases {
+            let line = format!("value {prefix}{body} end");
+            let (out, n) = redact_text_counted(&line);
+            assert_eq!(out, format!("value {prefix}{REDACTED} end"), "{prefix}");
+            assert_eq!(n, 1, "{prefix}");
+            assert!(contains_secret_shaped(&line), "{prefix}");
+        }
+    }
+
+    #[test]
+    fn json_web_tokens_redact_whole() {
+        let jwt = format!(
+            "{}{}.{}{}.{}",
+            ["ey", "J"].concat(),
+            "hbGciOiJIUzI1NiJ9",
+            ["ey", "J"].concat(),
+            "zdWIiOiJmaXh0dXJlIn0",
+            "c2lnbmF0dXJlLWZpeHR1cmU"
+        );
+        assert_eq!(
+            redact_text(&format!("jwt {jwt} ok")),
+            format!("jwt {REDACTED} ok")
+        );
+    }
+
+    #[test]
+    fn vendor_lookalikes_and_digests_stay_untouched() {
+        let near_misses = [
+            // `sk-` inside a word, too short, or without any digit.
+            format!("task-force-{}", fake_alnum(24)),
+            "sk-learn-compatible-estimator-module".to_string(),
+            format!("{}{}", ["AK", "IA"].concat(), "FIXTURE00000001"), // 15 chars
+            format!("{}{}", ["AK", "IA"].concat(), "FIXTURE0000000112"), // 17 chars
+            format!("{}notatokenatall", ["xo", "xb-"].concat()),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            "123e4567-e89b-12d3-a456-426614174000".to_string(),
+        ];
+        for text in near_misses {
+            assert_eq!(redact_text(&text), text, "{text}");
+            assert!(!contains_secret_shaped(&text), "{text}");
+        }
+    }
+
+    #[test]
+    fn dotted_bearer_tokens_redact_every_segment() {
+        let s = scheme();
+        assert_eq!(
+            redact_text(&format!(
+                "Authorization: {s} aaaafixture.bbbbfixture.ccccfixture"
+            )),
+            format!("Authorization: {s} {REDACTED}")
+        );
+        assert_eq!(
+            redact_text(&format!("got {s} abc123fixture/x+y=. done")),
+            format!("got {s} {REDACTED}. done")
+        );
+    }
+
+    #[test]
+    fn generic_credential_keys_redact_credential_like_values() {
+        let value = ["fixture", "-sec-", "0012"].concat();
+        for key in [
+            "SECRET_KEY",
+            "secret_key",
+            "ACCESS_KEY",
+            "x-api-key",
+            "X-Auth-Token",
+            "token",
+        ] {
+            assert_eq!(
+                redact_text(&format!("{key}={value}")),
+                format!("{key}={REDACTED}"),
+                "{key}"
+            );
+            assert_eq!(
+                redact_text(&format!("{key}: {value}")),
+                format!("{key}: {REDACTED}"),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            redact_text(&format!("{{\"token\": \"{value}\"}}")),
+            format!("{{\"token\": {REDACTED}}}")
+        );
+    }
+
+    #[test]
+    fn generic_keys_leave_code_and_short_values_alone() {
+        for code in [
+            "token = tokens[i]",
+            "token: Token",
+            "token=next()",
+            "token: u32",
+            "token=abc",
+            "let token = self.token_value;",
+            "secret_key=settings.SECRET_KEY",
+            "x-api-key: $API_KEY",
+            "access_key = config.v2.access_key",
+        ] {
+            assert_eq!(redact_text(code), code, "{code}");
+        }
+    }
 
     #[test]
     fn counted_redaction_reports_each_rewrite_once() {
