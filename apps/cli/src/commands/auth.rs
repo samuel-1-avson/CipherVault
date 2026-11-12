@@ -3,6 +3,8 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use reqwest::Client as HttpClient;
+use rpassword as hidden_input;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
@@ -82,6 +84,121 @@ pub(crate) fn hosted_endpoint_value(raw: &str) -> Result<String> {
     Ok(endpoint.to_string())
 }
 
+/// Establish hosted primary proof before a new device can be enrolled.
+/// The account key stays local; session credentials are never printed or saved.
+async fn hosted_account_login<F>(
+    client: &HttpClient,
+    endpoint: &str,
+    account: &AccountStore,
+    read_code: F,
+) -> Result<(Zeroizing<String>, bool)>
+where
+    F: FnOnce() -> Result<Zeroizing<String>>,
+{
+    let response = client
+        .post(format!("{endpoint}/sessions/challenge"))
+        .json(&serde_json::json!({
+            "account_id": account.account_id(),
+            "device_id_hex": null,
+        }))
+        .send()
+        .await
+        .context("requesting hosted account-login challenge")?;
+    let status = response.status();
+    let challenge: serde_json::Value = response
+        .json()
+        .await
+        .context("decoding hosted account-login challenge")?;
+    if !status.is_success() {
+        bail!(
+            "hosted account-login challenge failed ({status}): {}",
+            challenge
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    let challenge_id = challenge
+        .get("challenge_id")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted account-login challenge did not include challenge_id")?;
+    let nonce_hex = challenge
+        .get("nonce_hex")
+        .and_then(serde_json::Value::as_str)
+        .context("hosted account-login challenge did not include nonce_hex")?;
+    let signing_bytes = serde_json::to_vec(&(
+        account.account_id(),
+        Option::<&str>::None,
+        Option::<&str>::None,
+        challenge_id,
+        nonce_hex,
+    ))?;
+    let signature = account
+        .sign_challenge(b"account_login", &signing_bytes)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let response = client
+        .post(format!("{endpoint}/sessions/login"))
+        .json(&serde_json::json!({
+            "challenge_id": challenge_id,
+            "signature_hex": hex::encode(signature),
+        }))
+        .send()
+        .await
+        .context("creating hosted account-login session")?;
+    let status = response.status();
+    let mut login: serde_json::Value = response
+        .json()
+        .await
+        .context("decoding hosted account-login session")?;
+    if !status.is_success() {
+        bail!(
+            "hosted account-login failed ({status}): {}",
+            login
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error")
+        );
+    }
+    let required = login
+        .get("session")
+        .and_then(|session| session.get("mfa_required"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let credential = match login.get_mut("token").map(serde_json::Value::take) {
+        Some(serde_json::Value::String(value)) if !value.is_empty() => Zeroizing::new(value),
+        _ => bail!("hosted account-login response did not include a session credential"),
+    };
+    if required {
+        let code = read_code()?;
+        if code.trim().len() != 6 || !code.trim().bytes().all(|byte| byte.is_ascii_digit()) {
+            bail!("Authenticator code must contain six digits; no enrollment was attempted");
+        }
+        let response = maybe_dpop(
+            client.post(format!("{endpoint}/session/mfa/totp")),
+            &credential,
+        )?
+        .bearer_auth(&*credential)
+        .json(&serde_json::json!({"code": code.trim()}))
+        .send()
+        .await
+        .context("verifying the authenticator for the hosted CLI session")?;
+        let status = response.status();
+        if !status.is_success() {
+            // Never echo the response body: an intermediary could include
+            // the submitted code. There is no automatic retry or downgrade.
+            bail!("hosted MFA verification failed ({status}). Use a fresh unused authenticator code and retry auth connect in your own terminal. Keep MFA enabled; no enrollment was attempted");
+        }
+        let verified: serde_json::Value = response
+            .json()
+            .await
+            .context("decoding hosted MFA verification")?;
+        if verified.get("status").and_then(serde_json::Value::as_str) != Some("verified") {
+            bail!("hosted MFA response did not confirm verification; no enrollment was attempted");
+        }
+    }
+    Ok((credential, required))
+}
+
 pub(crate) async fn cmd_auth_connect(
     endpoint_raw: &str,
     label: &str,
@@ -99,6 +216,7 @@ pub(crate) async fn cmd_auth_connect(
     )?;
     let client = HttpClient::builder()
         .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("ciphervault/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
@@ -118,6 +236,19 @@ pub(crate) async fn cmd_auth_connect(
         let body = register.text().await.unwrap_or_default();
         bail!("hosted account registration failed ({status}): {body}");
     }
+
+    // Prove the account key without binding a not-yet-enrolled device.
+    let (session_credential, _mfa_required) =
+        hosted_account_login(&client, &endpoint, &account, || {
+            // rpassword opens the console directly, bypassing redirected stdin.
+            // Refuse before prompting so automation cannot hang on an inherited console.
+            if !std::io::stdin().is_terminal() {
+                bail!("Required MFA needs an interactive terminal (no interactive prompt available); run auth connect in your own terminal with a fresh authenticator code. Keep MFA enabled; no enrollment was attempted");
+            }
+            let code = hidden_input::prompt_password("Authenticator code (hidden): ")
+                .context("Required MFA needs a fresh authenticator code; run auth connect in your own interactive terminal")?;
+            Ok(Zeroizing::new(code))
+        }).await?;
 
     let challenge_response = client
         .post(format!(
@@ -165,18 +296,21 @@ pub(crate) async fn cmd_auth_connect(
     let signature = account
         .sign_challenge(b"account_device_enrollment", &signing_bytes)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let enrollment = client
-        .post(format!("{endpoint}/{}/devices", account.account_id()))
-        .json(&serde_json::json!({
-            "device_id_hex": device_id,
-            "public_key_hex": device_pk,
-            "label": label,
-            "challenge_id": challenge_id,
-            "proof_signature_hex": hex::encode(signature),
-        }))
-        .send()
-        .await
-        .context("enrolling the device with the hosted CipherVault service")?;
+    let enrollment = maybe_dpop(
+        client.post(format!("{endpoint}/{}/devices", account.account_id())),
+        &session_credential,
+    )?
+    .bearer_auth(&*session_credential)
+    .json(&serde_json::json!({
+        "device_id_hex": device_id,
+        "public_key_hex": device_pk,
+        "label": label,
+        "challenge_id": challenge_id,
+        "proof_signature_hex": hex::encode(signature),
+    }))
+    .send()
+    .await
+    .context("enrolling the device with the hosted CipherVault service")?;
     let enrollment_status = enrollment.status();
     let enrollment_body: serde_json::Value = enrollment
         .json()
@@ -196,7 +330,30 @@ pub(crate) async fn cmd_auth_connect(
         .set_hosted_endpoint(Some(&endpoint))
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-    // Finish the bootstrap with a short-lived browser handoff. The account
+    // Keep the bootstrap session (and any session-bound MFA proof) until
+    // both protected operations finish. A later login has a different proof.
+    let vault_link_response = maybe_dpop(
+        client.post(format!("{endpoint}/{}/vaults", account.account_id())),
+        &session_credential,
+    )?
+    .bearer_auth(&*session_credential)
+    .json(&serde_json::json!({
+        "vault_id_hex": vault_id,
+        "alias": vault_alias,
+        "role": "owner",
+    }))
+    .send()
+    .await
+    .context("linking the vault to the hosted account")?;
+    if !vault_link_response.status().is_success()
+        && vault_link_response.status() != reqwest::StatusCode::CONFLICT
+    {
+        let status = vault_link_response.status();
+        let body = vault_link_response.text().await.unwrap_or_default();
+        bail!("hosted vault link failed ({status}): {body}");
+    }
+
+    // Finish the bootstrap with a device-bound browser handoff. The account
     // key signs the normal hosted login challenge locally; only the resulting
     // one-time handoff URL is shown to the user, never the private key or the
     // managed session token.
@@ -270,26 +427,6 @@ pub(crate) async fn cmd_auth_connect(
         .get("token")
         .and_then(serde_json::Value::as_str)
         .context("hosted browser-login response did not include a session token")?;
-    let vault_link_response = maybe_dpop(
-        client.post(format!("{endpoint}/{}/vaults", account.account_id())),
-        login_token,
-    )?
-    .bearer_auth(login_token)
-    .json(&serde_json::json!({
-        "vault_id_hex": vault_id,
-        "alias": vault_alias,
-        "role": "owner",
-    }))
-    .send()
-    .await
-    .context("linking the vault to the hosted account")?;
-    if !vault_link_response.status().is_success()
-        && vault_link_response.status() != reqwest::StatusCode::CONFLICT
-    {
-        let status = vault_link_response.status();
-        let body = vault_link_response.text().await.unwrap_or_default();
-        bail!("hosted vault link failed ({status}): {body}");
-    }
     let handoff_response = maybe_dpop(
         client.post(format!("{endpoint}/sessions/handoff")),
         login_token,
@@ -743,3 +880,7 @@ pub(crate) fn cmd_vault_unlink() -> Result<()> {
     println!("{}", "Vault unlinked from CipherVault account.".green());
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "auth_tests.rs"]
+mod tests;

@@ -46,6 +46,27 @@ independent second factor was checked.
 
 ## Enrollment and activation
 
+### CLI connection
+
+Current-source `ciphervault auth connect --label "My device" --vault-alias "My vault"`
+establishes account-key hosted authentication before enrolling a new device.
+When the account requires MFA, the command requests a fresh unused six-digit
+authenticator code using hidden input in the user's own terminal, verifies
+it for that exact hosted session, then uses the same session for device
+enrollment and vault linking. Invalid input or verification failure stops
+before enrollment; there is no MFA downgrade or automatic code retry.
+
+`ciphervault auth login` creates a local account session, not hosted MFA
+proof. Browser verification cannot authorize the CLI's separate session.
+After protected setup, connect creates a device-bound browser handoff;
+the browser still needs its own fresh MFA proof for sensitive actions.
+Codes and managed session credentials must not be passed in command-line
+arguments, environment variables, agent tool inputs, or chat. The published
+v1.0.32 CLI predates this connection fix; use a source build until a newer
+release containing it is available.
+
+### Account policy
+
 1. Authenticate using an enrolled key or passkey. Preserve usable primary keys
    and protected recovery material before changing authentication.
 2. Enroll and confirm the authenticator through the existing setup flow.
