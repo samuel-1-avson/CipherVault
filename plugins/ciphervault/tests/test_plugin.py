@@ -244,6 +244,89 @@ def test_transform_passes_through_in_vaultless_project(monkeypatch, tmp_path):
     assert out is None
 
 
+def test_transform_missing_binary_still_withholds_in_existing_vault(monkeypatch, tmp_path):
+    store = tmp_path / ".ciphervault"
+    store.mkdir()
+    (store / "vault.db").touch()  # discovery marker only; not a real vault or credential
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    fake_value = "obviously-fake-shape-blind-value"
+    out = cv.on_transform_tool_result("terminal", {"cwd": str(tmp_path)}, fake_value)
+    assert out is not None and "withheld" in out
+    assert fake_value not in out
+    assert "doctor" in out
+
+
+@pytest.mark.parametrize("store_state", ["directory", "file"])
+def test_transform_expected_vault_never_downgrades_to_vaultless(monkeypatch, tmp_path, store_state):
+    vault = tmp_path / ".ciphervault"
+    vault.mkdir()
+    if store_state == "directory":
+        (vault / "vault.db").mkdir()
+    else:
+        (vault / "vault.db").write_bytes(b"invalid fixture store")
+    child = tmp_path / "nested"
+    child.mkdir()
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    fake_value = "obviously-fake-shape-blind-value"
+    assert cv._vault_present(str(child)) is True
+    out = cv.on_transform_tool_result("terminal", {"cwd": str(child)}, fake_value)
+    assert out and "withheld" in out
+    assert fake_value not in out
+
+
+def test_cli_install_dir_without_store_is_not_a_vault(monkeypatch, tmp_path):
+    # The installer keeps binaries in ~/.ciphervault/bin. That layout
+    # holds no vault store and must not guard every directory below it.
+    (tmp_path / ".ciphervault" / "bin").mkdir(parents=True)
+    child = tmp_path / "project"
+    child.mkdir()
+    assert cv._vault_root(str(child)) is None
+    assert cv._vault_present(str(child)) is False
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    assert cv.on_transform_tool_result("terminal", {"cwd": str(child)}, "plain output") is None
+
+
+def test_subdirectory_routes_redact_and_audit_to_vault_root(monkeypatch, tmp_path):
+    # The CLI opens ./.ciphervault/vault.db relative to its cwd, so a
+    # command run in a subdirectory must be scrubbed and receipted at
+    # the workspace root, not reported as vaultless.
+    (tmp_path / ".ciphervault").mkdir()
+    (tmp_path / ".ciphervault" / "vault.db").write_bytes(b"discovery marker only")
+    child = tmp_path / "apps" / "web"
+    child.mkdir(parents=True)
+    seen = []
+
+    def run_json(args, cwd, **kwargs):
+        seen.append(("json", args[0], cwd))
+        return {"success": True, "data": {
+            "text": "[REDACTED] tail", "redactions": 1, "exact_values_loaded": 1,
+            "exact_values_complete": True, "vault": True}}
+
+    def run(args, cwd, **kwargs):
+        seen.append(("run", args[0], cwd))
+        return {"success": True, "output": ""}
+
+    monkeypatch.setattr(cv, "_run_cli_json", run_json)
+    monkeypatch.setattr(cv, "_run_cli", run)
+    out = cv.on_transform_tool_result("terminal", {"workdir": str(child)}, "fake-value tail")
+    assert out == "[REDACTED] tail"
+    assert seen and all(cwd == str(tmp_path) for _kind, _cmd, cwd in seen), seen
+    assert ("json", "redact", str(tmp_path)) in seen
+    assert ("run", "agent-log", str(tmp_path)) in seen
+
+
+def test_transform_unexpected_scrub_error_is_fail_closed(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("fake backend failure")
+
+    monkeypatch.setattr(cv, "cli_redact", fail)
+    out = cv.on_transform_tool_result("terminal", {}, "obviously-fake-shape-blind-value")
+    assert out is not None and "withheld" in out
+    assert "obviously-fake-shape-blind-value" not in out
+
+
 def test_transform_fails_closed_without_exact_scrub(monkeypatch):
     monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
     monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, False))
@@ -301,6 +384,33 @@ def test_release_asset_selection(monkeypatch):
     asset, sha, dest = cv._release_asset()
     assert asset == "ciphervault-macos-amd64" and dest == "ciphervault"
     assert sha == cv.RELEASE_ASSETS["macos-amd64"][1]
+
+
+@pytest.mark.parametrize("existing_binary", [False, True])
+def test_bootstrap_refuses_incompatible_pin_without_shadowing(monkeypatch, tmp_path, existing_binary):
+    dest_dir = tmp_path / "bin"
+    dest = dest_dir / ("ciphervault.exe" if os.name == "nt" else "ciphervault")
+    if existing_binary:
+        dest_dir.mkdir()
+        dest.write_bytes(b"working-source-fixture")
+    monkeypatch.setattr(cv, "_data_bin_dir", lambda: dest_dir)
+    network_calls = []
+
+    def unexpected_download(*args, **kwargs):
+        network_calls.append(args)
+        raise AssertionError("an incompatible pinned CLI must not be downloaded")
+
+    monkeypatch.setattr(cv.urllib.request, "urlopen", unexpected_download)
+    out = cv.bootstrap_binary(progress=lambda *args: None)
+    assert out["success"] is False
+    assert not network_calls
+    assert "1.0.32" in out["error"] and "incompatible" in out["error"]
+    assert "source" in out["next"] and "CIPHERVAULT_BIN" in out["next"]
+    assert "bootstrap" not in out["next"]
+    if existing_binary:
+        assert dest.read_bytes() == b"working-source-fixture"
+    else:
+        assert not dest_dir.exists()
 
 
 def test_quickstart_walks_the_demo(monkeypatch, tmp_path):
@@ -443,6 +553,109 @@ def test_missing_binary_is_structured(ctx, monkeypatch):
     assert out["success"] is False and out["binary"] == "missing" and "next" in out
 
 
+def test_redact_tool_withholds_shape_only_fallback(ctx, monkeypatch):
+    fake_value = "obviously-fake-shape-blind-value"
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd: (text, 0, False))
+    out = json.loads(ctx.tools["ciphervault_redact"][1]({"text": fake_value}))
+    assert out["success"] is False
+    assert out["exact_value_check"] is False
+    assert fake_value not in json.dumps(out)
+    assert "doctor" in out["next"]
+
+
+@pytest.mark.parametrize("payload", [
+    {}, [], {"text": None, "redactions": 0},
+    {"text": "fake text", "redactions": "not-a-count"},
+    {"text": "fake text", "redactions": -1},
+])
+def test_redact_invalid_backend_response_is_not_exact(monkeypatch, payload):
+    monkeypatch.setattr(cv, "_run_cli_json", lambda *a, **k: {"success": True, "data": payload})
+    _cleaned, _count, exact = cv.cli_redact("obviously-fake-value", None)
+    assert exact is False
+
+
+@pytest.mark.parametrize("completion", [None, False, "true", 1])
+def test_guarded_redact_requires_explicit_complete_loading(monkeypatch, completion):
+    fake_value = "obviously-fake-shape-blind-fixture"
+    payload = {"text": fake_value, "redactions": 0,
+               "exact_values_loaded": 0, "vault": True}
+    if completion is not None:
+        payload["exact_values_complete"] = completion
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
+    monkeypatch.setattr(cv, "_run_cli_json", lambda *a, **k: {"success": True, "data": payload})
+    decisions = []
+    monkeypatch.setattr(cv, "_audit", lambda tool, decision, **k: decisions.append(decision) or True)
+
+    assert cv.cli_redact(fake_value, None)[2] is False
+    redacted = json.loads(cv._tool_redact({"text": fake_value}))
+    assert redacted["success"] is False
+    assert fake_value not in json.dumps(redacted)
+    transformed = cv.on_transform_tool_result("terminal", {}, fake_value)
+    assert transformed and "withheld" in transformed
+    assert fake_value not in transformed
+    assert "scrubbed_result" not in decisions
+
+
+def test_guarded_redact_rejects_complete_but_vaultless_response(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
+    payload = {"text": "fake output", "redactions": 0,
+               "exact_values_loaded": 0, "exact_values_complete": True, "vault": False}
+    monkeypatch.setattr(cv, "_run_cli_json", lambda *a, **k: {"success": True, "data": payload})
+    assert cv.cli_redact("fake output", None)[2] is False
+
+
+def test_redact_accepts_explicit_complete_empty_vault(monkeypatch):
+    monkeypatch.setattr(cv, "_vault_present", lambda cwd: True)
+    payload = {"text": "fake output", "redactions": 0,
+               "exact_values_loaded": 0, "exact_values_complete": True, "vault": True}
+    monkeypatch.setattr(cv, "_run_cli_json", lambda *a, **k: {"success": True, "data": payload})
+    assert cv.cli_redact("fake output", None) == ("fake output", 0, True)
+
+
+@pytest.mark.parametrize("verification", [
+    {"success": False, "error": "fake verification command failed", "exit_code": 1},
+    {"success": True, "data": {"ok": False, "entries": 0, "first_bad_id": 1}},
+    {"success": True, "data": {}},
+    {"success": True, "data": []},
+])
+def test_audit_never_claims_success_without_verified_chain(ctx, monkeypatch, verification):
+    calls = []
+
+    def run_json(args, cwd):
+        calls.append(args[1])
+        if args[1] == "show":
+            return {"success": True, "data": [{"id": 1, "decision": "scrubbed_result"}]}
+        if args[1] == "verify":
+            return verification
+        return {"success": True, "data": {"found": True}}
+
+    monkeypatch.setattr(cv, "_run_cli_json", run_json)
+    out = json.loads(ctx.tools["ciphervault_audit"][1]({"check_text": "fake output"}))
+    assert out["success"] is False
+    assert out["error"]
+    assert "verification" in out
+    assert "check" not in calls  # never present a hash hit from an unverified chain as proof
+
+
+@pytest.mark.parametrize("check", [
+    {"success": False, "error": "fake lookup failed", "exit_code": 1},
+    {"success": True, "data": {}},
+    {"success": True, "data": []},
+])
+def test_audit_lookup_failure_is_not_success(ctx, monkeypatch, check):
+    def run_json(args, cwd):
+        if args[1] == "show":
+            return {"success": True, "data": []}
+        if args[1] == "verify":
+            return {"success": True, "data": {"ok": True}}
+        return check
+
+    monkeypatch.setattr(cv, "_run_cli_json", run_json)
+    out = json.loads(ctx.tools["ciphervault_audit"][1]({"check_text": "fake output"}))
+    assert out["success"] is False
+    assert out["error"]
+
+
 def test_secret_source_fetch_missing_binary(ctx, monkeypatch):
     monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
     result = ctx.secret_source.fetch({"enabled": True}, Path("."))
@@ -452,19 +665,44 @@ def test_secret_source_fetch_missing_binary(ctx, monkeypatch):
 # ------------------------------------------------------------ fake CLI
 
 FAKE_CLI = r"""
-import json, sys
+import json, os, sys
 args = sys.argv[1:]
 if args[:1] == ["--version"]:
-    print("ciphervault 1.0.31"); raise SystemExit(0)
+    if os.environ.get("CIPHERVAULT_TEST_INCOMPLETE"):
+        print("ciphervault 1.0.32"); raise SystemExit(0)
+    print("ciphervault 1.0.28" if os.environ.get("CIPHERVAULT_TEST_LEGACY") else "ciphervault 1.0.31")
+    raise SystemExit(0)
+if args[-1:] == ["--help"]:
+    command = " ".join(args[:-1])
+    help_flags = {
+        "status": "--json", "hook check": "--json --deep --fix",
+        "run": "--json --dry-run --env-file --project --env",
+        "push": "--local", "recover": "--to --kit --shares",
+        "redact": "--json", "export-env": "--env-file --allow-working-copy",
+        "agent-log record": "--tool --decision --path --detail",
+        "agent-log show": "--json --limit", "agent-log verify": "--json",
+        "agent-log check": "--json --output-sha256", "agent-log anchor": "--json",
+    }
+    if os.environ.get("CIPHERVAULT_TEST_LEGACY"):
+        help_flags.pop("redact", None)
+        help_flags = {k: v for k, v in help_flags.items() if not k.startswith("agent-log")}
+        help_flags["run"] = "--dry-run --env-file --project --env"
+    if command in help_flags:
+        print("Usage: ciphervault " + command + " [OPTIONS]\nOptions: " + help_flags[command])
+        raise SystemExit(0)
+    print("error: unrecognized subcommand", file=sys.stderr); raise SystemExit(2)
 if args[:2] == ["status", "--json"]:
     print(json.dumps({"vault": True, "cli_version": "1.0.31", "tracked_paths": [".env"],
                       "vault_id_short": "abcd1234", "active_head_short": "beef5678",
                       "tracked_files": 1, "operators": []})); raise SystemExit(0)
 if args[:2] == ["redact", "--json"]:
-    text = sys.stdin.read()
-    print(json.dumps({"text": text.replace("test_value_123456", "[REDACTED:API_KEY]"),
-                      "redactions": text.count("test_value_123456"),
-                      "exact_values_loaded": 1, "vault": True})); raise SystemExit(0)
+    text = sys.stdin.buffer.read().decode("utf-8")
+    payload = {"text": text.replace("test_value_123456", "[REDACTED:API_KEY]"),
+               "redactions": text.count("test_value_123456"),
+               "exact_values_loaded": 1, "exact_values_complete": True, "vault": True}
+    if os.environ.get("CIPHERVAULT_TEST_INCOMPLETE"):
+        payload.pop("exact_values_complete")
+    print(json.dumps(payload)); raise SystemExit(0)
 if args[:2] == ["run", "--json"]:
     print(json.dumps({"status": "success", "exit_code": 0, "stdout": "KEY=[REDACTED:API_KEY]",
                       "stderr": "", "redactions": 1, "secrets_injected_count": 1})); raise SystemExit(0)
@@ -475,6 +713,9 @@ if args[:2] == ["agent-log", "verify"]:
     print(json.dumps({"ok": True, "entries": 1, "head_hash": "ab12", "first_bad_id": None})); raise SystemExit(0)
 if args[:2] == ["agent-log", "check"]:
     print(json.dumps({"found": True, "entry_id": 1, "tool": "terminal", "decision": "scrubbed_result"})); raise SystemExit(0)
+if args[:1] == ["failure-with-json"]:
+    print(json.dumps({"status": "failed", "exit_code": 7, "stdout": "fake progress"}))
+    print("child exited 7", file=sys.stderr); raise SystemExit(7)
 print("unexpected args", args, file=sys.stderr); raise SystemExit(2)
 """
 
@@ -489,7 +730,11 @@ def fake_cli(tmp_path, monkeypatch):
         exe = tmp_path / "ciphervault.bat"
         exe.write_text(f'@echo off\n"{sys.executable}" "{script}" %*\n')
     else:
-        exe.write_text("#!/bin/sh\nexec python3 - \"$@\" <<'EOF'\n" + FAKE_CLI + "\nEOF\n")
+        # Run a script file: a `python3 - <<EOF` launcher would consume
+        # stdin for the program text, hiding the redaction payload.
+        script = tmp_path / "fake_cli.py"
+        script.write_text(FAKE_CLI)
+        exe.write_text(f"#!/bin/sh\nexec \"{sys.executable}\" \"{script}\" \"$@\"\n")
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setattr(cv, "find_binary", lambda: (str(exe), "test"))
     return exe
@@ -504,6 +749,41 @@ def test_status_against_fake_cli(ctx, fake_cli):
 def test_redact_tool_against_fake_cli(ctx, fake_cli):
     out = json.loads(ctx.tools["ciphervault_redact"][1]({"text": "x test_value_123456 y"}))
     assert out["redactions"] == 1 and "test_value_123456" not in out["text"]
+
+
+@pytest.mark.parametrize("text", [
+    "plain" + chr(10) + "text" + chr(10),
+    "plain" + chr(13) + chr(10) + "text" + chr(13) + chr(10),
+    "mixed" + chr(10) + "text" + chr(13) + chr(10) + "end",
+    "unicode snowman " + chr(0x2603) + chr(10) + "next line" + chr(13) + chr(10),
+])
+def test_redact_preserves_input_bytes_and_line_endings(fake_cli, text):
+    cleaned, count, exact = cv.cli_redact(text, None)
+    assert cleaned.encode("utf-8") == text.encode("utf-8")
+    assert count == 0 and exact is True
+
+
+@pytest.mark.parametrize("text", [
+    "plain" + chr(10) + "text" + chr(10),
+    "plain" + chr(13) + chr(10) + "text" + chr(13) + chr(10),
+    "mixed" + chr(10) + "text" + chr(13) + chr(10) + "end",
+    "unicode snowman " + chr(0x2603) + chr(10) + "next line" + chr(13) + chr(10),
+])
+def test_real_cli_preserves_input_bytes_and_line_endings(monkeypatch, tmp_path, text):
+    binary = os.environ.get("CV_TEST_BINARY")
+    if not binary:
+        pytest.skip("set CV_TEST_BINARY for real CLI byte-preservation checks")
+    assert Path(binary).is_file()
+    monkeypatch.setattr(cv, "find_binary", lambda: (binary, "integration test"))
+    cleaned, count, exact = cv.cli_redact(text, str(tmp_path))
+    assert exact is True, "real CLI must provide compatible exact redaction"
+    assert cleaned.encode("utf-8") == text.encode("utf-8")
+    assert count == 0
+
+
+def test_guard_clean_multistring_args_are_not_false_secret(fake_cli, tmp_path):
+    args = {"command": "pwd", "workdir": str(tmp_path)}
+    assert cv.on_pre_tool_call("terminal", args) is None
 
 
 def test_run_against_fake_cli(ctx, fake_cli):
@@ -522,3 +802,61 @@ def test_audit_tool_check_text_against_fake_cli(ctx, fake_cli):
     out = json.loads(ctx.tools["ciphervault_audit"][1]({"check_text": "anything"}))
     assert out["success"] is True
     assert out["check"]["found"] is True
+
+
+def test_cli_nonzero_exit_is_failure_even_with_json_stdout(fake_cli, tmp_path):
+    out = cv._run_cli_json(["failure-with-json"], str(tmp_path))
+    assert out["success"] is False
+    assert out["exit_code"] == 7
+    assert "child exited 7" in out["error"]
+
+
+def test_doctor_rejects_legacy_cli_despite_working_status(fake_cli, tmp_path, monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CIPHERVAULT_TEST_LEGACY", "1")
+    rc = cv._cli_handler(argparse.Namespace(ciphervault_cmd="doctor"))
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert out["installed_version"] == "1.0.28"
+    assert out["target_cli_version"] == cv.RELEASE_VERSION
+    assert out["binary"] == str(fake_cli)
+    assert out["binary_source"] == "test"
+    assert "redact" in out["missing_capabilities"]
+    assert "run" in out["missing_capabilities"]
+    assert "agent-log verify" in out["missing_capabilities"]
+    assert "source" in out["next"] and "CIPHERVAULT_BIN" in out["next"]
+    assert "bootstrap" not in out["next"]
+
+
+def test_doctor_rejects_old_official_cli_with_all_flags(fake_cli, tmp_path, monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CIPHERVAULT_TEST_INCOMPLETE", "1")
+    rc = cv._cli_handler(argparse.Namespace(ciphervault_cmd="doctor"))
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is False
+    assert out["installed_version"] == "1.0.32"
+    assert out["version_matches_target"] is True
+    assert all(out["capabilities"][" ".join(command)]["supported"]
+               for command, _flags in cv._CLI_CAPABILITIES)
+    assert "redact completeness" in out["missing_capabilities"]
+    assert "source" in out["next"] and "bootstrap" not in out["next"]
+
+
+def test_doctor_accepts_capable_cli_but_reports_version_drift(fake_cli, tmp_path, monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.chdir(tmp_path)
+    rc = cv._cli_handler(argparse.Namespace(ciphervault_cmd="doctor"))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["installed_version"] == "1.0.31"
+    assert out["version_matches_target"] is False
+    assert out["missing_capabilities"] == []
+    assert "warning" in out

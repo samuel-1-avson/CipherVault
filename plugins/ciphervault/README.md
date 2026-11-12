@@ -46,9 +46,10 @@ throwaway vault in about two minutes.
   provider keys are not passed down). Tool results scrubbed by the
   `transform_tool_result` hook are capped at 256 KB; anything beyond
   that is truncated, not scanned. Fail-closed withholding applies
-  only where a vault is present in the workspace: with no vault (or
-  no binary yet), results pass through with the local shape scrub
-  so the plugin never eats unrelated output Hermes-wide. The
+  only where a vault is present in the workspace: with no vault,
+  results pass through with the local shape scrub so the plugin
+  never eats unrelated output Hermes-wide. A vault with a missing,
+  incompatible, or timed-out CLI still fails closed. The
   recovery drill restores only
   into a fresh temp dir it creates itself and deletes only that dir.
   The plugin never spawns Hermes itself.
@@ -99,13 +100,45 @@ throwaway vault in about two minutes.
 ```bash
 hermes plugins install ciphervault   # from the catalog
 hermes plugins enable ciphervault
-hermes ciphervault bootstrap         # Windows: pinned, checksum-verified CLI
+# Point the plugin at a compatible CLI (see below), then:
+hermes ciphervault doctor
 # restart Hermes — ciphervault_* tools appear
 ```
+
+This plugin version requires a CLI whose `redact --json` attests
+`exact_values_complete` — every tracked working copy was loaded, so a
+shape-blind vault value cannot slip through an unreadable file. The
+pinned v1.0.32 release predates that attestation, so
+`hermes ciphervault bootstrap` refuses (nothing is downloaded or replaced)
+until the pin moves to a release that ships it. Until then build the CLI
+from source (`cargo build --release -p ciphervault-cli`) and set
+`$CIPHERVAULT_BIN` or the `binary_path` setting to it. Vault
+detection follows the CLI: the nearest `.ciphervault/vault.db` in the
+working directory or a parent; a bare `.ciphervault/` (such as the
+installer's `~/.ciphervault/bin`) is not a vault. Commands run in a
+vault subdirectory are scrubbed and receipted at the vault root.
 
 Binary resolution: plugin setting `binary_path` → `$CIPHERVAULT_BIN` →
 bootstrapped copy → repo checkout (dev) → `PATH` (`ciphervault` only;
 an unrelated `cv` binary is never used).
+
+Run `hermes ciphervault doctor` if a tool is withheld or an installed CLI
+is older than the plugin. It reports the resolved executable and source,
+actual versus pinned version, every wrapped command/flag capability, and
+a live redact-completeness probe; an incompatible CLI exits nonzero.
+Status alone is not a compatibility check. Plugin v0.5.5 also preserves
+exact LF/CRLF bytes on Windows and
+reports failed commands, redaction, and audit verification as failures.
+
+For required-MFA accounts, use a CLI build containing hosted MFA step-up
+support: `ciphervault auth connect` authenticates the account first and
+asks for a fresh unused authenticator code in your own terminal, with
+input hidden. Local `auth login` and browser MFA do not authorize that
+CLI session. The pinned v1.0.32 release predates this connection fix;
+build current source until a newer release is published. Never send codes
+or session credentials through agent tools, chat, arguments, or environment
+variables. Keep MFA enabled. Account linking is not proof of fleet backup;
+only a verified replicated push and recovery drill prove recoverability.
 
 Hermes secret source (optional):
 

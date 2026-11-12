@@ -56,6 +56,16 @@ RELEASE_ASSETS = {
 }
 # Backward-compatible alias for the Windows pin.
 RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
+# The pinned release predates `redact --json`'s `exact_values_complete`
+# attestation, which this plugin requires before releasing vault-scoped
+# output. Flip this only when re-pinning to a release that ships it.
+RELEASE_SUPPORTS_GUARD = False
+_COMPATIBLE_CLI_HINT = (
+    "Build the CLI from current source (cargo build --release -p ciphervault-cli "
+    "in https://github.com/samuel-1-avson/CipherVault) or install a newer release "
+    "whose notes confirm exact_values_complete, then point CIPHERVAULT_BIN or the "
+    "binary_path plugin setting at it and rerun `hermes ciphervault doctor`."
+)
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"
@@ -127,6 +137,19 @@ def bootstrap_binary(progress=print):
     against the release SHA256SUMS.txt before installing it into the
     plugin data dir. User-invoked setup action (CLI/slash command);
     never runs automatically at plugin load (catalog rule 3/17)."""
+    if not RELEASE_SUPPORTS_GUARD:
+        # Refuse before any download: installing the pinned binary would
+        # shadow a working configured/PATH CLI and then withhold every
+        # vault-scoped result, while reporting setup as successful.
+        return {
+            "success": False,
+            "error": (
+                f"The pinned CipherVault v{RELEASE_VERSION} release is incompatible with "
+                "this plugin: it predates the complete exact-value redaction attestation. "
+                "Nothing was downloaded or replaced."
+            ),
+            "next": _COMPATIBLE_CLI_HINT,
+        }
     selected = _release_asset()
     if selected is None:
         return {
@@ -248,17 +271,17 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
             "success": False,
             "error": "ciphervault binary not found",
             "binary": "missing",
-            "next": "Run `hermes ciphervault bootstrap` (Windows) or set CIPHERVAULT_BIN / the binary_path plugin setting.",
+            "next": _COMPATIBLE_CLI_HINT,
         }
     try:
         proc = subprocess.run(
             [binary] + args,
             cwd=cwd or os.getcwd(),
-            input=input_text,
+            # Text-mode stdin rewrites LF to CRLF on Windows (and
+            # CRLF to CRCRLF). Exact scrub comparisons and receipt
+            # hashes must use the caller's original UTF-8 bytes.
+            input=input_text.encode("utf-8") if input_text is not None else None,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
             env=_minimal_env(),
         )
@@ -266,14 +289,14 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
         return {"success": False, "error": f"ciphervault timed out after {timeout}s", "binary": source}
     except OSError as exc:
         return {"success": False, "error": f"could not run ciphervault: {exc}", "binary": source}
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
+    out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+    err = (proc.stderr or b"").decode("utf-8", "replace").strip()
     # Some commands print "Error: …" yet exit 0, on either stream.
     if re.search(r"(?m)^Error:", out) or re.search(r"(?m)^Error:", err):
         return {"success": False, "error": scrub(out + ("\n" + err if err else "")),
                 "binary": source, "exit_code": proc.returncode}
-    if proc.returncode != 0 and not out:
-        return {"success": False, "error": scrub(err or f"exit {proc.returncode}"),
+    if proc.returncode != 0:
+        return {"success": False, "error": scrub(err or out or f"exit {proc.returncode}"),
                 "binary": source, "exit_code": proc.returncode}
     return {"success": True, "output": out, "stderr": scrub(err),
             "exit_code": proc.returncode, "binary": source}
@@ -291,6 +314,88 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
     return {"success": True, "data": payload, "binary": res.get("binary")}
 
 
+_CLI_CAPABILITIES = (
+    (("status",), ("--json",)),
+    (("hook", "check"), ("--json", "--deep", "--fix")),
+    (("run",), ("--json", "--dry-run", "--env-file", "--project", "--env")),
+    (("push",), ("--local",)),
+    (("recover",), ("--to", "--kit", "--shares")),
+    (("redact",), ("--json",)),
+    (("export-env",), ("--env-file", "--allow-working-copy")),
+    (("agent-log", "record"), ("--tool", "--decision", "--path", "--detail")),
+    (("agent-log", "show"), ("--json", "--limit")),
+    (("agent-log", "verify"), ("--json",)),
+    (("agent-log", "check"), ("--json", "--output-sha256")),
+    (("agent-log", "anchor"), ()),
+)
+
+
+def binary_diagnostics(cwd=None):
+    """Read-only version/help probes of the binary actually resolved.
+
+    A working `status --json` alone is insufficient: older CLIs lack
+    the exact scrub, JSON run, and signed-audit commands. Version drift
+    is reported separately; capabilities, not a version guess, gate
+    compatibility. This never bootstraps or changes the active binary.
+    """
+    binary, source = find_binary()
+    out = {"success": False, "binary": binary, "binary_source": source,
+           "target_cli_version": RELEASE_VERSION, "installed_version": None,
+           "version_matches_target": False, "capabilities": {},
+           "missing_capabilities": []}
+    remediation = (
+        _COMPATIBLE_CLI_HINT
+        + " Vault outputs remain withheld until exact scrubbing and audit receipts work."
+    )
+    if not binary:
+        out.update(error="ciphervault binary not found", next=remediation)
+        return out
+    version = _run_cli(["--version"], cwd, timeout=10)
+    if version.get("success"):
+        match = re.search(r"(?m)^ciphervault(?:\.exe)?\s+(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)\s*$",
+                          version.get("output", ""))
+        if match:
+            out["installed_version"] = match.group(1)
+    out["version_matches_target"] = out["installed_version"] == RELEASE_VERSION
+    for command, flags in _CLI_CAPABILITIES:
+        name = " ".join(command)
+        probe = _run_cli([*command, "--help"], cwd, timeout=10)
+        help_text = probe.get("output", "")
+        missing = [flag for flag in flags if not re.search(
+            r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)]
+        supported = bool(probe.get("success") and not missing)
+        capability = {"supported": supported, "missing_flags": missing}
+        if not probe.get("success"):
+            capability["error"] = probe.get("error", "help probe failed")
+        out["capabilities"][name] = capability
+        if not supported:
+            out["missing_capabilities"].append(name)
+    # Flags alone cannot tell a CLI that attests complete exact-value
+    # loading from one that silently skips unreadable tracked files.
+    # Probe in an empty directory so workspace state cannot mask it.
+    complete = False
+    if out["capabilities"].get("redact", {}).get("supported"):
+        with tempfile.TemporaryDirectory(prefix="cv-doctor-") as empty:
+            probe = _run_cli_json(["redact", "--json"], empty, timeout=10,
+                                  input_text="cv doctor probe")
+        complete = bool(probe.get("success")
+                        and _complete_redact_response(probe.get("data")))
+    out["capabilities"]["redact completeness"] = {"supported": complete,
+                                                  "missing_flags": []}
+    if not complete:
+        out["missing_capabilities"].append("redact completeness")
+    out["success"] = bool(out["installed_version"] and not out["missing_capabilities"])
+    if not out["version_matches_target"]:
+        out["warning"] = (
+            f"Resolved CLI version {out['installed_version'] or 'unknown'} differs "
+            f"from the plugin's pinned CLI target {RELEASE_VERSION}."
+        )
+    if not out["success"]:
+        out.update(error="resolved CipherVault CLI is incompatible or could not be inspected",
+                   next=remediation)
+    return out
+
+
 def _audit(tool, decision, path="", detail=None, cwd=None):
     """Append one entry to the vault's tamper-evident agent audit
     chain via the CLI. Records paths/decisions/counts only, never
@@ -303,7 +408,7 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
             args += ["--path", str(path)[:300]]
         if detail:
             args += ["--detail", json.dumps(detail)[:500]]
-        res = _run_cli(args, cwd, timeout=10)
+        res = _run_cli(args, _vault_cwd(cwd), timeout=10)
         return bool(res and res.get("success"))
     except Exception:
         return False
@@ -318,7 +423,7 @@ def _anchor_async(cwd=None):
         if not binary:
             return
         kwargs = {
-            "cwd": cwd or os.getcwd(),
+            "cwd": _vault_cwd(cwd) or os.getcwd(),
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -335,20 +440,32 @@ def _anchor_async(cwd=None):
         pass
 
 
+def _complete_redact_response(data, require_vault=False):
+    """A well-shaped response is not proof that all tracked files loaded."""
+    return (isinstance(data, dict) and isinstance(data.get("text"), str)
+            and type(data.get("redactions")) is int and data["redactions"] >= 0
+            and type(data.get("exact_values_loaded")) is int and data["exact_values_loaded"] >= 0
+            and data.get("exact_values_complete") is True
+            and type(data.get("vault")) is bool
+            and (not require_vault or data["vault"] is True))
+
+
 def cli_redact(text, cwd, timeout=15):
     """Exact+shape redaction via the CLI (vault values are matched
     inside the CLI process; they never enter this process). Returns
     (text, redactions, exact_ok): exact_ok False means the CLI could
-    not answer and only local shape scrubbing ran — callers that
+    not prove complete loading and only local shape scrubbing ran — callers that
     would hand text to the model must fail closed on that, because a
     shape-blind vault value (database URL, internal token) would
     pass through unlogged."""
     if not text:
         return text, 0, True
-    res = _run_cli_json(["redact", "--json"], cwd, timeout=timeout, input_text=text)
+    res = _run_cli_json(["redact", "--json"], _vault_cwd(cwd), timeout=timeout,
+                        input_text=text)
     if res.get("success"):
-        data = res["data"]
-        return data.get("text", scrub(text)), int(data.get("redactions", 0)), True
+        data = res.get("data")
+        if _complete_redact_response(data, require_vault=_vault_present(cwd)):
+            return data["text"], data["redactions"], True
     return scrub(text), 0, False
 
 
@@ -401,6 +518,12 @@ def _tool_push(params, **kwargs):
 def _tool_redact(params, **kwargs):
     params = params or {}
     cleaned, n, exact = cli_redact(params.get("text") or "", params.get("cwd"))
+    if not exact:
+        return json.dumps({
+            "success": False, "exact_value_check": False,
+            "error": "Exact-value redaction unavailable; text withheld, not safe to quote.",
+            "next": "Run `hermes ciphervault doctor` to check the resolved CLI version and capabilities.",
+        })
     return json.dumps({"success": True, "text": cleaned, "redactions": n,
                        "exact_value_check": exact})
 
@@ -413,17 +536,29 @@ def _tool_audit(params, **kwargs):
     if not show.get("success"):
         return json.dumps(show)
     verify = _run_cli_json(["agent-log", "verify", "--json"], cwd)
+    report = verify.get("data")
+    verified = bool(verify.get("success") and isinstance(report, dict)
+                    and report.get("ok") is True)
     out = {
-        "success": True,
+        "success": verified,
         "entries": show.get("data", []),
-        "verification": verify.get("data"),
+        "verification": report if isinstance(report, dict) else verify,
         "binary": show.get("binary"),
     }
+    if not verified:
+        out["error"] = "Audit chain verification failed or was unavailable; no hash lookup is proof."
+        return json.dumps(out)
     if params.get("check_text") is not None:
         digest = hashlib.sha256(str(params["check_text"]).encode()).hexdigest()
         check = _run_cli_json(
             ["agent-log", "check", "--json", "--output-sha256", digest], cwd)
-        out["check"] = check.get("data") if check.get("success") else check
+        check_data = check.get("data")
+        if (check.get("success") and isinstance(check_data, dict)
+                and isinstance(check_data.get("found"), bool)):
+            out["check"] = check_data
+        else:
+            out.update(success=False, check=check,
+                       error="Audit output-hash lookup failed or returned an invalid response.")
     return json.dumps(out)
 
 
@@ -580,17 +715,42 @@ def on_pre_tool_call(tool_name, args, **kwargs):
         return None
 
 
+def _vault_root(cwd):
+    """Nearest cwd/ancestor holding a vault store entry, else None.
+
+    The store entry itself defines a vault: any `.ciphervault/vault.db`
+    (even a directory or a corrupt file) stays guarded, while a bare
+    `.ciphervault/` such as the installer's `~/.ciphervault/bin` does
+    not. Inspection errors other than absence propagate to the caller.
+    """
+    p = Path(cwd or os.getcwd()).absolute()
+    for parent in (p, *p.parents):
+        try:
+            (parent / ".ciphervault" / "vault.db").lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        return parent
+    return None
+
+
 def _vault_present(cwd):
-    """True when a CipherVault vault exists in the cwd or any parent
-    (mirrors the CLI's vault discovery for the guard's purposes)."""
+    """An expected vault stays guarded even if its store is unreadable."""
     try:
-        p = Path(cwd or os.getcwd())
-        for parent in (p, *p.parents):
-            if (parent / ".ciphervault" / "vault.db").is_file():
-                return True
-        return False
+        return _vault_root(cwd) is not None
     except Exception:
-        return False
+        # An inspection failure is not evidence of a vaultless workspace.
+        return True
+
+
+def _vault_cwd(cwd):
+    """Run vault-scoped CLI calls at the workspace root: the CLI opens
+    ./.ciphervault/vault.db relative to its cwd, so a subdirectory
+    would otherwise look vaultless and lose its exact values/receipts."""
+    try:
+        root = _vault_root(cwd)
+    except Exception:
+        root = None
+    return str(root) if root is not None else cwd
 
 
 def on_transform_tool_result(tool_name, args, result, **kwargs):
@@ -607,8 +767,7 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
         oversized = len(result) > 262_144
         sample = result[:262_144] if oversized else result
-        binary, _src = find_binary()
-        if not binary or not _vault_present(cwd):
+        if not _vault_present(cwd):
             # No vault here (fresh install, gateway, unrelated
             # project): there are no vault values to protect, and
             # withholding every result Hermes-wide would punish
@@ -624,9 +783,10 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
             _audit(tool_name, "scrub_unavailable",
                    detail={"withheld_bytes": len(result)}, cwd=cwd)
             return ("[CipherVault] tool result withheld: the exact-value scrub "
-                    "could not run (CipherVault CLI missing or timed out), so "
+                    "could not run (CLI missing, incompatible, or timed out), so "
                     "this output was not shown. A shape-only pass could miss a "
-                    "vault value entirely; failing loudly instead.")
+                    "vault value entirely; failing loudly instead. Run "
+                    "`hermes ciphervault doctor` to inspect the resolved CLI.")
         final = cleaned
         if oversized:
             # The window is never conditional: an untouched tail must
@@ -644,7 +804,10 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
             return final
         return None
     except Exception:
-        return None
+        # Returning None means "release the original" to Hermes. An
+        # unexpected scrub/receipt error must never take that path.
+        return ("[CipherVault] tool result withheld: an unexpected scrub or "
+                "audit error prevented safe release. Run `hermes ciphervault doctor`.")
 
 
 _WRITE_TOOLS = {"write_file", "patch", "terminal", "execute_code", "browser_exec"}
@@ -708,7 +871,7 @@ def _make_secret_source():
                 vault_path = cfg.get("vault_path") or os.getcwd()
                 binary, _src = find_binary()
                 if not binary:
-                    result.error = "ciphervault binary not found; run `hermes ciphervault bootstrap`."
+                    result.error = "ciphervault binary not found. " + _COMPATIBLE_CLI_HINT
                     result.error_kind = ErrorKind.BINARY_MISSING
                     return result
                 argv = [binary, "export-env"]
@@ -762,7 +925,7 @@ def _make_secret_source():
             }
 
         def remediation(self, kind, cfg):
-            return ("Run `hermes ciphervault bootstrap`, then `ciphervault init` in your "
+            return (_COMPATIBLE_CLI_HINT + " Then run `ciphervault init` in your "
                     "project (or set secrets.ciphervault.vault_path).")
 
     return CipherVaultSecretSource()
@@ -869,16 +1032,18 @@ def _cli_handler(args):
         result = quickstart(keep=bool(getattr(args, "keep", False)))
         print(json.dumps(result, indent=2))
         return 0 if result.get("success") else 1
+    if cmd == "doctor":
+        result = binary_diagnostics(os.getcwd())
+        status = _run_cli_json(["status", "--json"], os.getcwd())
+        result["status"] = status
+        result["success"] = bool(result["success"] and status.get("success"))
+        print(json.dumps(result, indent=2))
+        return 0 if result["success"] else 1
     binary, source = find_binary()
     print(f"binary: {binary or 'missing'} ({source})")
-    if cmd == "doctor":
-        if not binary:
-            print("next: hermes ciphervault bootstrap")
-            return 1
-        proc = subprocess.run([binary, "--version"], capture_output=True, text=True)
-        print((proc.stdout or proc.stderr).strip())
-    print(json.dumps(_run_cli_json(["status", "--json"], os.getcwd()), indent=2))
-    return 0
+    result = _run_cli_json(["status", "--json"], os.getcwd())
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("success") else 1
 
 
 # ---------------------------------------------------------------- register
