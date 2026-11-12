@@ -63,9 +63,9 @@ fn ensure_no_uncommitted_changes(
                 })?;
                 use sha2::Digest;
                 let cur_hash = sha2::Sha256::digest(&bytes);
-                if !captured
+                if captured
                     .get(&rel_path.to_string_lossy().replace('\\', "/"))
-                    .is_some_and(|hash| cur_hash.as_slice() == hash.as_slice())
+                    .is_none_or(|hash| cur_hash.as_slice() != hash.as_slice())
                 {
                     dirty_files.push(rel_path.display().to_string());
                 }
