@@ -82,29 +82,44 @@ const CREDENTIAL_KEY_SUFFIXES: &[&str] = &[
 /// ```
 #[must_use]
 pub fn redact_text(input: &str) -> String {
+    redact_text_counted(input).0
+}
+
+/// [`redact_text`] plus the number of spans it rewrote, so callers can
+/// report honest counts. A value that is already a `[REDACTED…]` marker
+/// (for example from exact-value scrubbing) is normalized but not
+/// counted a second time.
+#[must_use]
+pub fn redact_text_counted(input: &str) -> (String, usize) {
     let mut out = String::with_capacity(input.len());
+    let mut count = 0usize;
     let bytes = input.as_bytes();
     let mut idx = 0;
     while idx < bytes.len() {
         if let Some(end) = match_scope_token(bytes, idx) {
+            count += usize::from(!is_redaction_marker(&input[idx + 6..end]));
             out.push_str("cvst1.");
             out.push_str(REDACTED);
             idx = end;
         } else if let Some(end) = match_bearer(bytes, idx) {
+            count += usize::from(!is_redaction_marker(&input[idx + 6..end]));
             // Keep the scheme so the sink stays intelligible.
             out.push_str(&input[idx..idx + 6]);
             out.push(' ');
             out.push_str(REDACTED);
             idx = end;
         } else if let Some(end) = match_private_pem(bytes, idx) {
+            count += usize::from(!is_redaction_marker(&input[idx..end]));
             out.push_str(REDACTED);
             out.push_str(" PRIVATE KEY");
             idx = end;
         } else if let Some((keep_end, value_end)) = match_credential_url(bytes, idx) {
+            count += usize::from(!is_redaction_marker(&input[keep_end..value_end]));
             out.push_str(&input[idx..keep_end]);
             out.push_str(REDACTED);
             idx = value_end;
         } else if let Some((key_end, value_end)) = match_credential_assignment(bytes, idx) {
+            count += usize::from(!is_redaction_marker(&input[key_end..value_end]));
             out.push_str(&input[idx..key_end]);
             out.push_str(REDACTED);
             idx = value_end;
@@ -115,7 +130,14 @@ pub fn redact_text(input: &str) -> String {
             idx += ch.len_utf8();
         }
     }
-    out
+    (out, count)
+}
+
+/// True when a matched value is already a redaction placeholder.
+fn is_redaction_marker(value: &str) -> bool {
+    value
+        .trim_start_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace())
+        .starts_with("[REDACTED")
 }
 
 /// Returns `true` when `input` contains any credential-shaped span that
@@ -504,6 +526,20 @@ fn is_value_char(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counted_redaction_reports_each_rewrite_once() {
+        // Assembled at runtime so the source holds no credential shape.
+        let key = ["pass", "word"].concat();
+        let input = format!("a {key}=one-fixture b {key}=[REDACTED:X] c");
+        let (out, n) = redact_text_counted(&input);
+        assert_eq!(n, 1, "an existing marker must not be counted again");
+        assert_eq!(out, redact_text(&input));
+        assert_eq!(
+            redact_text_counted("plain text"),
+            ("plain text".to_string(), 0)
+        );
+    }
 
     #[test]
     fn scope_token_redacts_payload_but_keeps_prefix() {

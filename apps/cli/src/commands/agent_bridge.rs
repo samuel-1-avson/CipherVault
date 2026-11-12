@@ -136,8 +136,9 @@ pub(crate) fn cmd_redact(json: bool) -> Result<()> {
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     let (exact, n_exact) = ciphervault_redact::scrub_exact_values(&text, &refs);
-    let scrubbed = ciphervault_redact::redact_text(&exact);
-    let redactions = n_exact;
+    let (scrubbed, n_shape) = ciphervault_redact::redact_text_counted(&exact);
+    // Count every rewrite: shape-only redactions used to report 0.
+    let redactions = n_exact + n_shape;
     if json {
         println!(
             "{}",
