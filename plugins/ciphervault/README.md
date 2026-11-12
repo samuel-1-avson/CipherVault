@@ -61,7 +61,9 @@ throwaway vault in about two minutes.
   (`v1.0.33`, published as a pre-release; macOS assets are not in it
   yet, so on macOS bootstrap refuses and points at a source build) of
   `samuel-1-avson/CipherVault`, verifies the SHA-256 against the
-  per-platform pin in this source, and installs into
+  per-platform pin in this source (an interrupted download is retried and
+  resumed; nothing is installed unless the assembled file matches the
+  pin), and installs into
   `$HERMES_HOME/plugins/ciphervault/bin/`. No binary is bundled in
   this repo (rule 17); no telemetry anywhere. (2) The audit anchor:
   on `ciphervault_run` approval requests and replicated pushes, the

@@ -443,6 +443,139 @@ def test_bootstrap_names_published_platforms_when_none_fits(monkeypatch, tmp_pat
     assert not (tmp_path / "bin").exists()
 
 
+class _FakeDownload:
+    """Minimal urlopen() response: streams `body`, optionally dropping the
+    connection after `drop_after` bytes the way http.client does."""
+
+    def __init__(self, body, status=200, drop_after=None, content_range=None, silent_drop=False):
+        self._body, self.status, self._drop = body, status, drop_after
+        self._pos, self._silent = 0, silent_drop
+        self.headers = {"Content-Length": str(len(body))}
+        if content_range:
+            self.headers["Content-Range"] = content_range
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def getcode(self):
+        return self.status
+
+    def read(self, amt=-1):
+        import http.client
+        end = len(self._body) if amt is None or amt < 0 else self._pos + amt
+        if self._drop is not None and end > self._drop:
+            if self._pos >= self._drop:
+                if self._silent:
+                    # CPython's HTTPResponse.read(amt) returns b"" when the
+                    # peer closes early, even with Content-Length unmet.
+                    return b""
+                raise http.client.IncompleteRead(b"", len(self._body) - self._pos)
+            end = self._drop
+        chunk = self._body[self._pos:end]
+        self._pos += len(chunk)
+        return chunk
+
+
+def _bootstrap_fixture(monkeypatch, tmp_path, payload, asset_responses):
+    """Wire bootstrap_binary() to a fake release whose asset requests are
+    answered, in order, by `asset_responses(range_header)`."""
+    import hashlib as _hashlib
+    digest = _hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(cv, "RELEASE_SUPPORTS_GUARD", True)
+    monkeypatch.setattr(cv, "_release_asset", lambda: ("fixture-asset", digest, "fixture-cli"))
+    monkeypatch.setattr(cv, "_data_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr(cv, "_DOWNLOAD_RETRY_DELAY", 0)
+    ranges = []
+
+    def fake_urlopen(request, timeout=None):
+        url = request if isinstance(request, str) else request.full_url
+        if url.endswith("/SHA256SUMS.txt"):
+            return _FakeDownload((digest + " *fixture-asset").encode() + bytes([13, 10]))
+        header = None if isinstance(request, str) else request.get_header("Range")
+        ranges.append(header)
+        return asset_responses(header)
+
+    monkeypatch.setattr(cv.urllib.request, "urlopen", fake_urlopen)
+    return ranges
+
+
+def test_bootstrap_resumes_an_interrupted_download(monkeypatch, tmp_path):
+    payload = bytes(range(256)) * 400  # ~100 KiB fixture, not a real binary
+    cut = 70_001
+
+    def respond(range_header):
+        if range_header is None:
+            return _FakeDownload(payload, drop_after=cut)
+        assert range_header == f"bytes={cut}-"
+        return _FakeDownload(payload[cut:], status=206,
+                             content_range=f"bytes {cut}-{len(payload) - 1}/{len(payload)}")
+
+    ranges = _bootstrap_fixture(monkeypatch, tmp_path, payload, respond)
+    out = cv.bootstrap_binary(progress=lambda *a: None)
+    assert out["success"] is True, out
+    assert ranges == [None, f"bytes={cut}-"]
+    assert (tmp_path / "bin" / "fixture-cli").read_bytes() == payload
+
+
+def test_bootstrap_resumes_after_a_silent_early_close(monkeypatch, tmp_path):
+    # Real failure mode: the stream just ends short of Content-Length.
+    payload = bytes(range(256)) * 400
+    cut = 3_203
+
+    def respond(range_header):
+        if range_header is None:
+            return _FakeDownload(payload, drop_after=cut, silent_drop=True)
+        assert range_header == f"bytes={cut}-"
+        return _FakeDownload(payload[cut:], status=206,
+                             content_range=f"bytes {cut}-{len(payload) - 1}/{len(payload)}")
+
+    ranges = _bootstrap_fixture(monkeypatch, tmp_path, payload, respond)
+    out = cv.bootstrap_binary(progress=lambda *a: None)
+    assert out["success"] is True, out
+    assert ranges == [None, f"bytes={cut}-"]
+    assert (tmp_path / "bin" / "fixture-cli").read_bytes() == payload
+
+
+def test_bootstrap_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
+    payload = b"fixture-binary-bytes" * 5000
+    calls = iter([_FakeDownload(payload, drop_after=1234), _FakeDownload(payload, status=200)])
+    _bootstrap_fixture(monkeypatch, tmp_path, payload, lambda header: next(calls))
+    out = cv.bootstrap_binary(progress=lambda *a: None)
+    assert out["success"] is True, out
+    assert (tmp_path / "bin" / "fixture-cli").read_bytes() == payload
+
+
+def test_bootstrap_gives_up_without_installing(monkeypatch, tmp_path):
+    payload = b"fixture-binary-bytes" * 5000
+    ranges = _bootstrap_fixture(monkeypatch, tmp_path, payload,
+                                lambda header: _FakeDownload(payload, drop_after=0))
+    out = cv.bootstrap_binary(progress=lambda *a: None)
+    assert out["success"] is False
+    assert "download failed" in out["error"] and str(cv._DOWNLOAD_ATTEMPTS) in out["error"]
+    assert len(ranges) == cv._DOWNLOAD_ATTEMPTS
+    assert not (tmp_path / "bin").exists()
+
+
+def test_bootstrap_resume_cannot_bypass_the_pinned_hash(monkeypatch, tmp_path):
+    payload = b"fixture-binary-bytes" * 5000
+    cut = 4000
+
+    def respond(range_header):
+        if range_header is None:
+            return _FakeDownload(payload, drop_after=cut)
+        tampered = b"X" * (len(payload) - cut)
+        return _FakeDownload(tampered, status=206,
+                             content_range=f"bytes {cut}-{len(payload) - 1}/{len(payload)}")
+
+    _bootstrap_fixture(monkeypatch, tmp_path, payload, respond)
+    out = cv.bootstrap_binary(progress=lambda *a: None)
+    assert out["success"] is False and "SHA-256 mismatch" in out["error"]
+    assert not (tmp_path / "bin").exists()
+
+
 @pytest.mark.parametrize("existing_binary", [False, True])
 def test_bootstrap_refuses_incompatible_pin_without_shadowing(monkeypatch, tmp_path, existing_binary):
     dest_dir = tmp_path / "bin"

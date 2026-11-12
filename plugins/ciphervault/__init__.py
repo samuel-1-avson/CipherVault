@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -137,6 +138,65 @@ def _release_asset():
     return pinned[0], pinned[1], dest
 
 
+_DOWNLOAD_ATTEMPTS = 6
+_DOWNLOAD_RETRY_DELAY = 3  # seconds, multiplied by the attempt number
+_DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _content_range_start(resp):
+    """First byte offset of a 206 response's Content-Range, or None."""
+    value = (getattr(resp, "headers", None) or {}).get("Content-Range") or ""
+    parts = value.split()
+    if len(parts) == 2 and parts[0] == "bytes":
+        start = parts[1].split("-", 1)[0]
+        if start.isdigit():
+            return int(start)
+    return None
+
+
+def _download_resumable(url, progress):
+    """Fetch `url` into memory, resuming with an HTTP Range request when
+    the connection drops mid-transfer (slow links to GitHub's CDN drop
+    long downloads). Integrity is NOT established here: the caller checks
+    the assembled bytes against the SHA-256 pinned in source, so a
+    resumed or restarted transfer cannot install anything unverified."""
+    data = bytearray()
+    last_error = None
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        headers = {"Range": f"bytes={len(data)}-"} if data else {}
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=300) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                if data and (status != 206 or _content_range_start(resp) != len(data)):
+                    data.clear()  # server ignored or misanswered Range: start over
+                    if status == 206:
+                        raise OSError("server answered the resume with a different byte range")
+                # HTTPResponse.read(amt) returns b"" when the peer closes
+                # early, even with Content-Length unmet, so count bytes.
+                length = str((getattr(resp, "headers", None) or {}).get("Content-Length") or "")
+                expected_end = len(data) + int(length) if length.isdigit() else None
+                while True:
+                    chunk = resp.read(1 << 16)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > _DOWNLOAD_MAX_BYTES:
+                        raise OSError("download exceeds the size limit")
+                if expected_end is not None and len(data) < expected_end:
+                    raise OSError(f"connection closed early at {len(data)} of {expected_end} bytes")
+            return bytes(data)
+        except Exception as exc:
+            last_error = exc
+            if attempt < _DOWNLOAD_ATTEMPTS:
+                reason = str(exc) or type(exc).__name__
+                progress(f"Download interrupted at {len(data)} bytes ({reason}); "
+                         f"resuming (attempt {attempt + 1}/{_DOWNLOAD_ATTEMPTS})…")
+                time.sleep(_DOWNLOAD_RETRY_DELAY * attempt)
+    raise OSError(f"{str(last_error) or type(last_error).__name__} "
+                  f"(gave up after {_DOWNLOAD_ATTEMPTS} attempts)")
+
+
 def bootstrap_binary(progress=print):
     """Download the pinned upstream release binary and verify it
     against the release SHA256SUMS.txt before installing it into the
@@ -193,8 +253,7 @@ def bootstrap_binary(progress=print):
         }
     progress(f"Downloading CipherVault v{RELEASE_VERSION} ({asset})…")
     try:
-        with urllib.request.urlopen(f"{RELEASE_BASE}/{asset}", timeout=300) as resp:
-            data = resp.read()
+        data = _download_resumable(f"{RELEASE_BASE}/{asset}", progress)
     except Exception as exc:
         return {"success": False, "error": f"download failed: {exc}"}
     actual = hashlib.sha256(data).hexdigest()
