@@ -20,15 +20,18 @@ Design rules (also in skills/ciphervault/SKILL.md):
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -708,6 +711,176 @@ def _tool_audit(params, **kwargs):
     return json.dumps(out)
 
 
+_DEFAULT_OPERATORS = (
+    "https://op1.cipherv.online",
+    "https://op2.cipherv.online",
+    "https://op3.cipherv.online",
+)
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+_IPV4_TRANSLATED_NET = ipaddress.ip_network("::ffff:0:0:0/96")
+_BLOCKED_OPERATOR_HOSTS = frozenset({
+    "localhost",
+    "metadata.google.internal",
+    "metadata.goog",
+})
+
+
+def _normalize_operator_url(url):
+    """Canonical http(s) operator URL with no trailing slash, query,
+    fragment, or userinfo; None if malformed or ambiguous."""
+    if not isinstance(url, str):
+        return None
+    raw = url.strip()
+    if not raw or any(ord(c) < 0x20 or ord(c) == 0x7F or c.isspace() for c in raw):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").strip().lower().rstrip(".")
+    if (scheme not in ("http", "https") or not parts.netloc or not host
+            or "\\" in raw or "@" in parts.netloc or "%" in parts.netloc
+            or parts.query or parts.fragment):
+        return None
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    host_literal = f"[{host}]" if ":" in host else host
+    netloc = f"{host_literal}:{port}" if port is not None else host_literal
+    path = parts.path.rstrip("/")
+    return f"{scheme}://{netloc}{path}"
+
+
+def _configured_operators(cwd):
+    """Normalized operator URLs configured for the vault at `cwd`
+    (CIPHERVAULT_OPERATORS env override, else .ciphervault/operators.json,
+    else the default public fleet when a vault exists without an
+    operators.json file). Fails closed (`()`) when no vault exists or
+    operators.json cannot be parsed."""
+    env_ops = os.environ.get("CIPHERVAULT_OPERATORS", "").strip()
+    if env_ops:
+        raw_list = [s for s in re.split(r"[\s,;]+", env_ops) if s]
+    else:
+        try:
+            root = _vault_root(cwd)
+        except Exception:
+            return ()
+        if root is None:
+            return ()
+        ops_path = Path(root) / ".ciphervault" / "operators.json"
+        try:
+            ops_path.lstat()
+        except FileNotFoundError:
+            raw_list = list(_DEFAULT_OPERATORS)
+        except OSError:
+            return ()
+        else:
+            try:
+                loaded = json.loads(ops_path.read_text(encoding="utf-8"))
+            except Exception:
+                return ()
+            if not isinstance(loaded, list) or not loaded:
+                return ()
+            raw_list = loaded
+    out = []
+    for item in raw_list:
+        norm = _normalize_operator_url(item)
+        if not norm:
+            return ()
+        if norm not in out:
+            out.append(norm)
+    return tuple(out)
+
+
+def _embedded_ipv4(ip):
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        if ip in _IPV4_TRANSLATED_NET:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
+def _is_public_operator_url(norm):
+    """Unconditional SSRF floor: refuses loopback, private, link-local
+    (169.254.0.0/16 incl. 169.254.169.254), CGNAT, reserved, multicast,
+    unspecified, and internal hostnames even if allow_private_urls is set."""
+    parts = urllib.parse.urlsplit(norm)
+    host = (parts.hostname or "").lower().rstrip(".")
+    if (not host or host in _BLOCKED_OPERATOR_HOSTS
+            or host.endswith((".localhost", ".local", ".internal"))):
+        return False
+    try:
+        ips = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                host, parts.port or (443 if parts.scheme == "https" else 80),
+                socket.AF_UNSPEC, socket.SOCK_STREAM,
+            )
+        except OSError:
+            return False
+        ips = []
+        for _fam, _type, _proto, _canon, sockaddr in infos:
+            try:
+                ips.append(ipaddress.ip_address(str(sockaddr[0]).split("%")[0]))
+            except ValueError:
+                return False
+    if not ips:
+        return False
+    for raw_ip in ips:
+        ip = _embedded_ipv4(raw_ip)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                or ip in _CGNAT_NET or not ip.is_global):
+            return False
+    return True
+
+
+def _is_safe_operator_url(url):
+    """Validate an operator endpoint with Hermes's tools.url_safety.is_safe_url
+    plus an unconditional public-IP check."""
+    norm = _normalize_operator_url(url)
+    if not norm:
+        return False
+    try:
+        from tools.url_safety import is_safe_url
+    except Exception:
+        is_safe_url = None
+    if is_safe_url is not None and not is_safe_url(norm):
+        return False
+    return _is_public_operator_url(norm)
+
+
+def _validate_via_endpoints(via, cwd):
+    """Accept `via` endpoints only when every URL passes
+    tools.url_safety.is_safe_url / public-IP validation (never LAN,
+    loopback, or cloud metadata) AND belongs to this vault's configured
+    operator list."""
+    raw_items = [via] if isinstance(via, str) else list(via) if isinstance(via, (list, tuple)) else []
+    configured = set(_configured_operators(cwd))
+    validated = []
+    for raw in raw_items:
+        norm = _normalize_operator_url(raw)
+        if not norm:
+            return None, "invalid operator URL in `via`: must be a clean http(s) origin without query, fragment, or credentials."
+        if not _is_safe_operator_url(norm):
+            return None, (
+                f"refusing `via` endpoint {norm!r}: private, loopback, link-local, or cloud-metadata hosts are not allowed."
+            )
+        if norm not in configured:
+            return None, (
+                f"refusing `via` endpoint {norm!r}: not in this vault's configured operator list "
+                "(.ciphervault/operators.json). Update operators.json or run `ciphervault recover --via` in your terminal."
+            )
+        if norm not in validated:
+            validated.append(norm)
+    return validated, None
+
+
 def _tool_drill(params, **kwargs):
     params = params or {}
     kit = params.get("kit")
@@ -717,6 +890,15 @@ def _tool_drill(params, **kwargs):
             "success": False,
             "error": "provide kit (path to kit file) or shares (list of share file paths). Paths only — never paste kit contents.",
         })
+    cwd = params.get("cwd")
+    via_raw = params.get("via")
+    via = []
+    if via_raw:
+        via, err = _validate_via_endpoints(via_raw, cwd)
+        if err:
+            _audit("ciphervault_recovery_drill", "blocked",
+                   detail={"reason": "rejected_via_endpoint"}, cwd=cwd)
+            return json.dumps({"success": False, "error": err})
     # The restore target is ALWAYS a fresh temp dir created here, and
     # it is the only directory this tool ever deletes (reviewer rule:
     # never rmtree a model-chosen path).
@@ -727,15 +909,12 @@ def _tool_drill(params, **kwargs):
             args += ["--kit", kit]
         if shares:
             args += ["--shares"] + list(shares)
-        via = params.get("via") or []
-        if isinstance(via, str):
-            via = [via]
         if via:
             # The kit keeps the operators from when it was printed; a vault
             # that moved fleets is recovered through its current operators.
             # Records stay authenticated by the kit's recovery key.
-            args += ["--via"] + [str(endpoint) for endpoint in via]
-        res = _run_cli(args, params.get("cwd"), timeout=300)
+            args += ["--via"] + via
+        res = _run_cli(args, cwd, timeout=300)
         if not res.get("success"):
             return json.dumps(res)
         # Hash-then-delete: prove the restore by manifest (names +
@@ -1312,7 +1491,7 @@ _TOOLS = [
      {"kit": {"type": "string", "description": "Path to kit file on disk"},
       "shares": {"type": "array", "items": {"type": "string"}, "description": "Paths to guardian share files"},
       "via": {"type": "array", "items": {"type": "string"},
-              "description": "Current operator URLs to query instead of the endpoints printed in the kit (use when the vault moved fleets after the kit was made)"},
+              "description": "Configured operator URLs to query instead of the endpoints printed in the kit (must belong to this vault's configured operator list and pass URL safety checks; private, loopback, link-local, and cloud-metadata hosts are refused)"},
       "cwd": {"type": "string"}}),
     ("ciphervault_redact", _tool_redact,
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",

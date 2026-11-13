@@ -178,13 +178,23 @@ def test_drill_never_deletes_caller_chosen_dir(ctx, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("via, expected", [
-    (["https://op1.example.test", "https://op2.example.test"],
-     ["https://op1.example.test", "https://op2.example.test"]),
-    ("https://op1.example.test", ["https://op1.example.test"]),
+    (["https://op1.cipherv.online/", "https://op2.cipherv.online"],
+     ["https://op1.cipherv.online", "https://op2.cipherv.online"]),
+    ("https://op1.cipherv.online", ["https://op1.cipherv.online"]),
 ])
-def test_drill_queries_the_current_fleet_with_via(ctx, monkeypatch, via, expected):
+def test_drill_queries_the_current_fleet_with_via(ctx, tmp_path, monkeypatch, via, expected):
     # A kit keeps the operators from when it was printed; a vault that
-    # moved fleets must be drillable through its current operators.
+    # moved fleets must be drillable through its current configured
+    # public operators.
+    vault = _marker_vault(tmp_path)
+    (vault / ".ciphervault" / "operators.json").write_text(
+        json.dumps(["https://op1.cipherv.online", "https://op2.cipherv.online"]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cv.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(cv.socket.AF_INET, cv.socket.SOCK_STREAM, 6, "", ("136.65.43.84", 443))],
+    )
     seen = []
 
     def fake_run_cli(args, cwd, timeout=300):
@@ -192,11 +202,108 @@ def test_drill_queries_the_current_fleet_with_via(ctx, monkeypatch, via, expecte
         return {"success": True, "binary": "test"}
 
     monkeypatch.setattr(cv, "_run_cli", fake_run_cli)
-    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1]({"kit": "kit.txt", "via": via}))
-    assert out["success"] is True
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "via": via, "cwd": str(vault)}))
+    assert out["success"] is True, out
     args = seen[0]
     start = args.index("--via") + 1
     assert args[start:start + len(expected)] == expected
+
+
+def test_drill_refuses_unconfigured_via_endpoint(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    (vault / ".ciphervault" / "operators.json").write_text(
+        json.dumps(["https://op1.cipherv.online"]), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cv.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(cv.socket.AF_INET, cv.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    calls = _capture_audit(monkeypatch)
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "via": ["https://attacker.example.com"], "cwd": str(vault)}))
+    assert out["success"] is False
+    assert "configured operator" in out["error"]
+    assert not [c for c in calls if c[:1] == ["recover"]]
+    rec = [c for c in calls if c[:2] == ["agent-log", "record"]]
+    assert rec and "blocked" in rec[0]
+
+
+@pytest.mark.parametrize("bad_url, resolved_ip", [
+    ("http://169.254.169.254", "169.254.169.254"),
+    ("http://169.254.169.254/latest/meta-data", "169.254.169.254"),
+    ("http://[::ffff:169.254.169.254]", "::ffff:169.254.169.254"),
+    ("http://metadata.google.internal", "169.254.169.254"),
+    ("http://127.0.0.1:8202", "127.0.0.1"),
+    ("http://localhost:8202", "127.0.0.1"),
+    ("http://[::1]:8202", "::1"),
+    ("http://10.0.0.1:8202", "10.0.0.1"),
+    ("http://172.16.5.4:8202", "172.16.5.4"),
+    ("http://192.168.1.10:8202", "192.168.1.10"),
+    ("http://100.64.0.1:8202", "100.64.0.1"),
+    ("https://rebind.example.com", "169.254.169.254"),
+    ("https://lan.example.com", "192.168.1.50"),
+])
+def test_drill_refuses_private_loopback_and_metadata_via_even_if_configured(
+        ctx, tmp_path, monkeypatch, bad_url, resolved_ip):
+    # Even if an internal/metadata address appears in operators.json, the
+    # agent tool must refuse to send the vault's recovery locator to it.
+    vault = _marker_vault(tmp_path)
+    (vault / ".ciphervault" / "operators.json").write_text(
+        json.dumps([bad_url]), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cv.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(cv.socket.AF_INET, cv.socket.SOCK_STREAM, 6, "", (resolved_ip, 80))],
+    )
+    calls = _capture_audit(monkeypatch)
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "via": [bad_url], "cwd": str(vault)}))
+    assert out["success"] is False, (bad_url, out)
+    assert not [c for c in calls if c[:1] == ["recover"]]
+
+
+def test_drill_consults_hermes_url_safety_is_safe_url(ctx, tmp_path, monkeypatch):
+    import types
+    vault = _marker_vault(tmp_path)
+    (vault / ".ciphervault" / "operators.json").write_text(
+        json.dumps(["https://op1.cipherv.online"]), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cv.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(cv.socket.AF_INET, cv.socket.SOCK_STREAM, 6, "", ("136.65.43.84", 443))],
+    )
+    checked = []
+    fake_mod = types.ModuleType("tools.url_safety")
+    fake_mod.is_safe_url = lambda url: (checked.append(url), False)[1]
+    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+    monkeypatch.setitem(sys.modules, "tools.url_safety", fake_mod)
+    calls = _capture_audit(monkeypatch)
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "via": ["https://op1.cipherv.online"], "cwd": str(vault)}))
+    assert out["success"] is False
+    assert checked == ["https://op1.cipherv.online"]
+    assert not [c for c in calls if c[:1] == ["recover"]]
+
+
+def test_drill_fails_closed_when_operators_json_is_corrupt_or_vault_absent(
+        ctx, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cv.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(cv.socket.AF_INET, cv.socket.SOCK_STREAM, 6, "", ("136.65.43.84", 443))],
+    )
+    calls = _capture_audit(monkeypatch)
+    # 1. No vault in tmp_path -> no configured operators.
+    out = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "via": ["https://op1.cipherv.online"], "cwd": str(tmp_path)}))
+    assert out["success"] is False
+    # 2. Vault exists, but operators.json is corrupt -> fail closed, do not fall back.
+    vault = _marker_vault(tmp_path / "v")
+    (vault / ".ciphervault" / "operators.json").write_text("{not-json", encoding="utf-8")
+    out2 = json.loads(ctx.tools["ciphervault_recovery_drill"][1](
+        {"kit": "kit.txt", "via": ["https://op1.cipherv.online"], "cwd": str(vault)}))
+    assert out2["success"] is False
+    assert not [c for c in calls if c[:1] == ["recover"]]
 
 
 def test_drill_without_via_keeps_the_kit_endpoints(ctx, monkeypatch):

@@ -22,7 +22,7 @@ throwaway vault in about two minutes.
 | `ciphervault_scan` | Secret-sprawl scan of workspace + staged diffs, masked (`hook check --deep --json`; `fix` appends to `.gitignore`) |
 | `ciphervault_run` | Run any command with secrets injected in RAM only; output exact-value + shape scrubbed (`run --json`). **Every call passes Hermes's human-approval gate** (see Disclosure) |
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; replicates when `local_only=false`) |
-| `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir. Pass `via` (current operator URLs) when the vault moved fleets after the kit was printed |
+| `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir. Pass `via` (must match the vault's configured operators and pass `tools.url_safety.is_safe_url`; private, loopback, link-local, and metadata hosts are refused) when the vault moved fleets after the kit was printed |
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
 | `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, device-signed): blocked reads, approval requests, scrubbed results (hash of the whole result plus a whitespace-trimmed hash of the visible text: terminal `output`, file `content`, run `stdout`), writes — plus chain verification and output-hash lookup (`check_text` accepts the text exactly as you saw it) |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file reads, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
