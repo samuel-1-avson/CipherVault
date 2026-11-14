@@ -364,7 +364,7 @@ jobs:
         # Direct pushes to main are blocked by repository rules (v1.0.18
         # fill failed on GH013), so the fill opens a PR instead. Merge it
         # after CI green; the manifests are inert until then.
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           # Signed-off-by trailer keeps the DCO check green so the fill PR
           # merges without an admin bypass.
