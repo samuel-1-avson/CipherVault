@@ -582,6 +582,38 @@ struct DoctorCheck {
     detail: String,
 }
 
+/// Recovery coverage from the activity log: a recorded passphrase key
+/// backup, or a kit drill (`recovery test`) that restored this vault.
+/// Either proves a path back if this machine is lost.
+pub(crate) fn recovery_coverage(
+    entries: &[ciphervault_local_store::ActivityEntry],
+    now_utc: i64,
+) -> (bool, String) {
+    if entries.iter().any(|e| e.event_type == "KEYBACKUP_OK") {
+        return (
+            true,
+            "passphrase key-backup recorded (see activity log for locator)".to_string(),
+        );
+    }
+    if let Some(drill) = entries
+        .iter()
+        .filter(|e| e.event_type == "RECOVERY_TEST_OK")
+        .max_by_key(|e| e.created_at_utc)
+    {
+        let days = now_utc.saturating_sub(drill.created_at_utc).max(0) / 86_400;
+        return (
+            true,
+            format!(
+                "kit recovery drill passed {days} day(s) ago — re-run 'recovery test --kit <file>' after changing operators"
+            ),
+        );
+    }
+    (
+        false,
+        "no passphrase key-backup or passed kit drill on record — run 'recovery key-backup --kit <file>' or drill with 'recovery test --kit <file>'".to_string(),
+    )
+}
+
 fn doctor_report(checks: &[DoctorCheck]) -> serde_json::Value {
     let failures = checks.iter().filter(|check| !check.ok).count();
     let rendered: Vec<serde_json::Value> = checks
@@ -740,15 +772,15 @@ pub(crate) async fn cmd_doctor(json: bool) -> Result<()> {
     match store.as_ref() {
         Some(store) => match store.list_activity(200) {
             Ok(entries) => {
-                let backed_up = entries.iter().any(|e| e.event_type == "KEYBACKUP_OK");
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let (ok, detail) = recovery_coverage(&entries, now);
                 checks.push(DoctorCheck {
                     name: "recovery",
-                    ok: backed_up,
-                    detail: if backed_up {
-                        "passphrase key-backup recorded (see activity log for locator)".to_string()
-                    } else {
-                        "no passphrase key-backup on record — run 'recovery key-backup --kit <file>' or drill with 'recovery test --kit <file>'".to_string()
-                    },
+                    ok,
+                    detail,
                 });
             }
             Err(error) => checks.push(DoctorCheck {
@@ -789,6 +821,27 @@ pub(crate) async fn cmd_doctor(json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_coverage_accepts_a_passed_kit_drill() {
+        let entry = |event: &str, at: i64| ciphervault_local_store::ActivityEntry {
+            id: 1,
+            event_type: event.to_string(),
+            summary: String::new(),
+            details_json: "{}".to_string(),
+            created_at_utc: at,
+        };
+        let now = 1_800_000_000;
+        let (ok, detail) = recovery_coverage(&[], now);
+        assert!(!ok && detail.contains("recovery test --kit"), "{detail}");
+        let (ok, detail) = recovery_coverage(&[entry("PUSH_OK", now)], now);
+        assert!(!ok, "a push is not recovery coverage: {detail}");
+        let (ok, detail) = recovery_coverage(&[entry("RECOVERY_TEST_OK", now - 3 * 86_400)], now);
+        assert!(ok, "{detail}");
+        assert!(detail.contains("3 day"), "{detail}");
+        let (ok, detail) = recovery_coverage(&[entry("KEYBACKUP_OK", now)], now);
+        assert!(ok && detail.contains("key-backup"), "{detail}");
+    }
 
     #[test]
     fn status_report_masks_operators_and_marks_stale_epoch() {

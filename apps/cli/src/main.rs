@@ -397,6 +397,14 @@ enum Commands {
             help = "Rebuild the local store even when one already exists in the target directory"
         )]
         force: bool,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            value_name = "URL",
+            help = "Query these operators instead of the endpoints printed in the kit (repeatable; use when the vault moved fleets after the kit was made). Records stay authenticated by the kit's recovery key"
+        )]
+        via: Vec<String>,
     },
 
     /// Emergency offline recovery commands
@@ -1966,6 +1974,23 @@ enum AgentLogSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Check whether a scrubbed-output hash is in the chain
+    Check {
+        #[arg(long, help = "SHA-256 (hex) of the exact output text to look up")]
+        output_sha256: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Anchor the audit head to the operator fleet (signed checkpoint)
+    Anchor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the chain locally and against the fleet-anchored checkpoint
+    VerifyRemote {
+        #[arg(long)]
+        json: bool,
+    },
     /// Export the whole chain as JSON lines
     Export {
         #[arg(long, help = "Output file (default: stdout)")]
@@ -2029,6 +2054,14 @@ enum RecoverySubcommand {
 
         #[arg(short, long, help = "Test directory to restore into")]
         to: PathBuf,
+
+        #[arg(
+            long,
+            num_args = 1..,
+            value_name = "URL",
+            help = "Query these operators instead of the endpoints printed in the kit (repeatable; use when the vault moved fleets after the kit was made)"
+        )]
+        via: Vec<String>,
     },
 
     /// Seal the recovery kit with a passphrase and store it on operators

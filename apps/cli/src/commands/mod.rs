@@ -191,7 +191,8 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             require_approval,
             approver_key,
             force,
-        } => cmd_recover(kit, shares, to, require_approval, approver_key, force).await,
+            via,
+        } => cmd_recover(kit, shares, to, require_approval, approver_key, force, via).await,
         crate::Commands::Recovery { sub } => match sub {
             RecoverySubcommand::ShowDescriptors => cmd_recovery_export(),
             RecoverySubcommand::Split {
@@ -201,7 +202,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 out_dir,
                 stdout,
             } => cmd_recovery_split(threshold, shares, kit, out_dir, stdout).await,
-            RecoverySubcommand::Test { kit, to } => cmd_recovery_test(kit, to).await,
+            RecoverySubcommand::Test { kit, to, via } => cmd_recovery_test(kit, to, via).await,
             RecoverySubcommand::KeyBackup {
                 kit,
                 share,

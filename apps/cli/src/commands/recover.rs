@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_format::{
@@ -21,9 +21,61 @@ use ciphervault_storage::invites::{InviteApproval, InviteRequest, JoinInvite};
 use ciphervault_storage::{OperatorClient, StorageError};
 
 use crate::util::{
-    configured_operator_pool, get_configured_operators, operator_service_request, DB_FILE,
-    OPERATORS_FILE, VAULT_DIR,
+    configured_operator_pool, get_configured_operators, load_configured_operators,
+    operator_service_request, DB_FILE, DEFAULT_PRODUCTION_OPERATORS, OPERATORS_FILE, VAULT_DIR,
 };
+
+/// Normalizes `--via` endpoints: http(s) URLs with a host, trailing
+/// slashes trimmed, duplicates dropped in order. Checked before the kit
+/// is read so a typo never costs a recovery attempt.
+fn normalize_via_endpoints(raw: &[String]) -> Result<Vec<String>> {
+    let mut endpoints: Vec<String> = Vec::new();
+    for value in raw {
+        let trimmed = value.trim().trim_end_matches('/');
+        let valid = reqwest::Url::parse(trimmed)
+            .map(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some_and(|host| !host.is_empty())
+            })
+            .unwrap_or(false);
+        if !valid {
+            bail!(
+                "Invalid --via endpoint '{value}': expected an http(s) operator URL such as https://op1.cipherv.online"
+            );
+        }
+        if !endpoints.iter().any(|existing| existing == trimmed) {
+            endpoints.push(trimmed.to_string());
+        }
+    }
+    Ok(endpoints)
+}
+
+/// A kit keeps the operator endpoints from the moment it was printed.
+/// When recovery runs inside a vault that has since moved fleets, name
+/// the exact retry; otherwise point at the public fleet as a candidate.
+fn moved_fleet_hint(kit_endpoints: &[String]) -> String {
+    let normalize = |endpoint: &String| endpoint.trim().trim_end_matches('/').to_string();
+    let printed: HashSet<String> = kit_endpoints.iter().map(normalize).collect();
+    let current: Vec<String> = if Path::new(VAULT_DIR).join(DB_FILE).exists() {
+        load_configured_operators()
+            .unwrap_or_default()
+            .iter()
+            .map(normalize)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if current.iter().any(|endpoint| !printed.contains(endpoint)) {
+        return format!(
+            "This vault now replicates to operators the kit does not list (the kit keeps the endpoints from when it was printed). Retry with:\n  --via {}\n",
+            current.join(" ")
+        );
+    }
+    format!(
+        "If the vault moved fleets after this kit was printed, name the current operators with --via (public fleet: --via {}).\n",
+        DEFAULT_PRODUCTION_OPERATORS.join(" ")
+    )
+}
 
 /// Normalizes one `--approver-key` pin: `0x` prefix optional, case-insensitive.
 fn normalize_approver_pin(raw: &str) -> Result<String> {
@@ -85,7 +137,9 @@ pub(crate) async fn cmd_recover(
     require_approval: bool,
     approver_keys: Vec<String>,
     force: bool,
+    via: Vec<String>,
 ) -> Result<()> {
+    let via = normalize_via_endpoints(&via)?;
     println!(
         "{}",
         "=======================================================".cyan()
@@ -158,7 +212,20 @@ pub(crate) async fn cmd_recover(
 
     println!("✓ Recovery kit validated! CRC32 checksum passed.");
     println!("  Vault ID:          {}", kit.vault_id_hex.yellow());
-    println!("  Operators to scan: {}", kit.operator_endpoints.len());
+    // Records are authenticated by the kit's recovery key, never by the
+    // endpoint that served them, so `--via` only changes where to look.
+    let endpoints = if via.is_empty() {
+        kit.operator_endpoints.clone()
+    } else {
+        via.clone()
+    };
+    println!("  Operators to scan: {}", endpoints.len());
+    if !via.is_empty() {
+        println!(
+            "  Operator source:   --via (replaces the {} endpoint(s) printed in the kit)",
+            kit.operator_endpoints.len()
+        );
+    }
 
     let mut vault_id = [0u8; 32];
     vault_id.copy_from_slice(&hex::decode(&kit.vault_id_hex)?);
@@ -176,15 +243,20 @@ pub(crate) async fn cmd_recover(
         locator == secret.derive_recovery_locator()?,
         "Recovery locator does not match offline secret"
     );
-    let pool = configured_operator_pool(kit.operator_endpoints.clone());
+    let pool = configured_operator_pool(endpoints.clone());
 
     println!("\nQuerying operators directly for recovery records...");
     let raw_records = pool.query_recovery_records(&locator).await;
     if raw_records.is_empty() {
+        let fleet_hint = if via.is_empty() {
+            moved_fleet_hint(&kit.operator_endpoints)
+        } else {
+            String::new()
+        };
         bail!(
             "No recovery records found on any surviving operator for this locator.\n\
-             Checklist before retrying:\n\
-             1. Reachability — can you open each --via endpoint in a browser (or curl /v1/info)?\n\
+             {fleet_hint}Checklist before retrying:\n\
+             1. Reachability — can you open each operator endpoint in a browser (or curl /v1/info)?\n\
              2. Locator — does it match the kit your vault was created with? (one wrong character = a different, empty vault)\n\
              3. Was anything ever pushed? A vault that never completed 'push' has no recovery records anywhere.\n\
              4. Alternative — if you ran 'recovery key-backup', restore with 'recovery key-restore --locator <HEX>'."
@@ -234,7 +306,7 @@ pub(crate) async fn cmd_recover(
         // Broadcast challenge to operator federation
         let mut broadcast_count = 0;
         let http = reqwest::Client::new();
-        for op in &kit.operator_endpoints {
+        for op in &endpoints {
             let url = format!("{}/v1/auth/challenges", op.trim_end_matches('/'));
             if let Ok(resp) = operator_service_request(http.post(&url))
                 .json(&challenge)
@@ -277,7 +349,7 @@ pub(crate) async fn cmd_recover(
         let mut rejected_total = 0usize;
         let start_time = std::time::Instant::now();
         while start_time.elapsed().as_secs() < 300 {
-            for op in &kit.operator_endpoints {
+            for op in &endpoints {
                 let url = format!(
                     "{}/v1/auth/challenges/{}",
                     op.trim_end_matches('/'),
@@ -408,7 +480,7 @@ pub(crate) async fn cmd_recover(
     }
 
     rebuild_store_after_recovery(
-        &kit,
+        &endpoints,
         &secret,
         &raw_records,
         &vault_id,
@@ -453,7 +525,7 @@ fn find_genesis_record(
 /// the recovered authority generation so the next push authorizes.
 #[allow(clippy::too_many_arguments)]
 fn rebuild_store_after_recovery(
-    kit: &OfflineRecoveryKit,
+    operator_endpoints: &[String],
     secret: &ciphervault_crypto::RecoverySecret,
     raw_records: &[Vec<u8>],
     vault_id: &[u8; 32],
@@ -518,7 +590,9 @@ fn rebuild_store_after_recovery(
     store.save_device_certificate(&cert)?;
     store.set_head(chosen_head)?;
 
-    let ops_json = serde_json::to_string_pretty(&kit.operator_endpoints)?;
+    // Point the rebuilt store at the fleet that actually served this
+    // recovery, not at endpoints a kit printed before a fleet move.
+    let ops_json = serde_json::to_string_pretty(operator_endpoints)?;
     fs::write(store_dir.join(OPERATORS_FILE), ops_json)?;
 
     println!();

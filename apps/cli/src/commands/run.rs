@@ -734,9 +734,10 @@ async fn spawn_with_env(
             ciphervault_redact::scrub_exact_values(&raw_stdout, &exact_values);
         let (exact_stderr, n_err) =
             ciphervault_redact::scrub_exact_values(&raw_stderr, &exact_values);
-        let redacted_stdout = ciphervault_redact::redact_text(&exact_stdout);
-        let redacted_stderr = ciphervault_redact::redact_text(&exact_stderr);
-        let redactions = n_out + n_err;
+        let (redacted_stdout, s_out) = ciphervault_redact::redact_text_counted(&exact_stdout);
+        let (redacted_stderr, s_err) = ciphervault_redact::redact_text_counted(&exact_stderr);
+        // Count shape-only rewrites too; receipts must not under-report.
+        let redactions = n_out + n_err + s_out + s_err;
 
         let exit_code = output.status.code().unwrap_or(1);
         let payload = serde_json::json!({

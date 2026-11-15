@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version: v1.0.31](https://img.shields.io/badge/Version-v1.0.31-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.31](https://img.shields.io/badge/Version-v1.0.32-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
@@ -493,6 +493,10 @@ Run an automated self-diagnostic check on your local vault configuration, OS key
 ciphervault doctor
 ```
 
+The `recovery` check passes when the activity log holds either a passphrase key backup (`recovery key-backup`) or a kit drill that restored this vault (`recovery test --kit <file>` run inside the vault). A drill run elsewhere, or with another vault's kit, is not recorded. Re-run the drill after changing operators.
+
+A replicated push (`push` without `--local`, all required operators verified) also clears queued uploads of older local-only snapshots that the new head supersedes, so the pending count reflects real upload debt. Snapshots on other branches stay queued.
+
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
@@ -508,6 +512,15 @@ ciphervault recover --kit emergency_recovery_kit.txt --to ./restored_secrets/
 ```
 
 CipherVault contacts the storage operators, downloads the encrypted chunks, reconstructs the key hierarchy in memory, decrypts each file, and restores them with bit-for-bit fidelity.
+
+The kit records the operator endpoints that existed when it was printed. If the vault later moved to another fleet (for example from local test operators to the public fleet), name the current operators with `--via`; the kit's recovery key still authenticates every record, so the endpoint list only changes where to look:
+
+```bash
+ciphervault recover --kit emergency_recovery_kit.txt --to ./restored_secrets/ \
+  --via https://op1.cipherv.online https://op2.cipherv.online https://op3.cipherv.online
+```
+
+The rebuilt vault's `operators.json` uses the fleet given with `--via`. `ciphervault recovery test` accepts the same flag, so a drill exercises the exact command a disaster would need.
 
 ---
 

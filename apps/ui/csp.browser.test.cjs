@@ -31,8 +31,52 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
   const result = {};
   try {
     await fetchAllData();
+    const downloads = document.getElementById('modal-cli-downloads');
+    const downloadsTrigger = document.getElementById('btn-open-cli-downloads');
+    result.downloadsInitialHidden = downloads.hidden;
+    result.downloadsInitialDisplay = getComputedStyle(downloads).display;
+    result.downloadsOpenStates = [];
+    result.downloadsClosedStates = [];
+    for (const closeId of ['btn-close-modal-cli-downloads', 'btn-cancel-modal-cli-downloads']) {
+      downloadsTrigger.click();
+      result.downloadsOpenStates.push({
+        hidden: downloads.hidden,
+        display: getComputedStyle(downloads).display,
+        width: downloads.getBoundingClientRect().width,
+        height: downloads.getBoundingClientRect().height,
+        ariaHidden: downloads.getAttribute('aria-hidden'),
+        focusInside: downloads.contains(document.activeElement),
+      });
+      document.getElementById(closeId).click();
+      result.downloadsClosedStates.push({
+        hidden: downloads.hidden,
+        display: getComputedStyle(downloads).display,
+        ariaHidden: downloads.getAttribute('aria-hidden'),
+        focusRestored: document.activeElement === downloadsTrigger,
+      });
+    }
+    state.accessMode = 'public_explorer';
+    state.account = null; state.accountService = null;
+    applyAccessContext({mode:'public_explorer'});
+    renderAccountStatus(null);
+    const summary = document.getElementById('hosted-session-summary');
+    const deviceSignin = document.getElementById('btn-signin-device');
+    result.anonymousSummaryHidden = summary.hidden;
+    result.anonymousSummaryDisplay = getComputedStyle(summary).display;
+    result.publicDeviceHidden = deviceSignin.hidden;
+    document.getElementById('btn-header-signin').click();
+    result.publicDeviceDisplay = getComputedStyle(deviceSignin).display;
+    document.getElementById('btn-cancel-modal-signin-menu').click();
+    state.accountService = {authenticated:true,session:{account_id:'cvacct_'+'ab'.repeat(16),mfa_required:true}};
+    renderHostedSessionSummary();
+    result.signedInSummaryDisplay = getComputedStyle(summary).display;
+    state.accountService = null;
     state.accessMode = 'local_private';
     applyAccessContext({mode:'local_private'});
+    result.localSummaryDisplay = getComputedStyle(summary).display;
+    document.getElementById('btn-header-signin').click();
+    result.localDeviceDisplay = getComputedStyle(deviceSignin).display;
+    document.getElementById('btn-cancel-modal-signin-menu').click();
     let diffClicks = 0, pushClicks = 0;
     const diff = document.getElementById('btn-run-diff');
     diff.disabled = false;
@@ -143,6 +187,30 @@ const server = http.createServer((request, response) => {
     assert(!result.error, result.error);
     assert.deepEqual(result.scriptErrors, [], 'Actual browser script errors');
     assert.deepEqual(result.cspViolations, [], 'Production CSP violations');
+    assert.equal(result.downloadsInitialHidden, true);
+    assert.equal(result.downloadsInitialDisplay, 'none', 'Downloads start hidden');
+    assert.equal(result.downloadsOpenStates.length, 2);
+    for (const opened of result.downloadsOpenStates) {
+      assert.equal(opened.display, 'flex', 'Downloads must be computed-visible on open and reopen');
+      assert.equal(opened.hidden, false, 'Opening clears the HTML hidden state');
+      assert(opened.width > 0 && opened.height > 0, 'Open downloads must occupy rendered space');
+      assert.equal(opened.ariaHidden, 'false');
+      assert.equal(opened.focusInside, true, 'Open downloads receive keyboard focus');
+    }
+    assert.equal(result.downloadsClosedStates.length, 2);
+    for (const closed of result.downloadsClosedStates) {
+      assert.equal(closed.display, 'none', 'Both download close controls hide the modal');
+      assert.equal(closed.hidden, true, 'Closing restores the HTML hidden state');
+      assert.equal(closed.ariaHidden, 'true');
+      assert.equal(closed.focusRestored, true, 'Closing restores trigger focus');
+    }
+    assert.equal(result.anonymousSummaryHidden, true);
+    assert.equal(result.anonymousSummaryDisplay, 'none', 'Anonymous visitors must not see a Signed in banner');
+    assert.equal(result.publicDeviceHidden, true);
+    assert.equal(result.publicDeviceDisplay, 'none', 'Hosted sign-in must not show a local keystore action');
+    assert.equal(result.signedInSummaryDisplay, 'flex', 'A signed-in hosted summary remains visible');
+    assert.equal(result.localSummaryDisplay, 'none', 'The hosted summary stays hidden locally');
+    assert.equal(result.localDeviceDisplay, 'flex', 'Local workspaces retain device-key sign-in');
     assert.equal(result.diffClicks, 1, 'Diff empty-state control must forward a click');
     assert.equal(result.pushClicks, 1, 'Initial push control must forward a click');
     assert.equal(result.pushModalOpen, true, 'Initial push must open the existing capture modal');
@@ -163,7 +231,7 @@ const server = http.createServer((request, response) => {
     assert(result.mfaCodeLabel.includes('Authenticator code for this session'));
     assert.equal(result.mfaPolicyEnabled, true);
     assert.equal(result.mfaCodeCleared, true);
-    console.log('Actual Chromium dashboard CSP regression passed: forwarded controls, layout, truthful signatures, zero policy violations.');
+    console.log('Actual Chromium dashboard CSP regression passed: computed download-modal visibility, close/reopen focus, hosted/local auth visibility, forwarded controls, layout, truthful signatures, zero policy violations.');
   } finally {
     child?.kill(); server.close();
     await new Promise(resolve => setTimeout(resolve, 150));

@@ -258,6 +258,50 @@ pub(crate) async fn cmd_push(
     match rep_result {
         Ok(issued) => {
             record_replication_receipts(&store, &issued);
+            let snapshot_id: [u8; 32] = output
+                .record
+                .snapshot_id
+                .as_slice()
+                .try_into()
+                .context("Snapshot ID must be 32 bytes")?;
+            match finish_remote_push(&store, &snapshot_id, issued.len(), required_replicas) {
+                Ok(Some(0)) => {}
+                Ok(Some(cleared)) => {
+                    println!(
+                        "  Upload queue:   cleared {cleared} older local-only snapshot(s) superseded by this replicated head"
+                    );
+                    let _ = store.record_activity(
+                        "UPLOAD_QUEUE_SUPERSEDED",
+                        &format!("{cleared} queued local-only snapshot(s) superseded by a replicated head"),
+                        &serde_json::json!({
+                            "snapshot_id": hex::encode(snapshot_id),
+                            "cleared": cleared,
+                        })
+                        .to_string(),
+                    );
+                }
+                Ok(None) => eprintln!(
+                    "warning: verified replicas did not meet the required threshold; snapshot remains queued"
+                ),
+                Err(e) => eprintln!(
+                    "warning: could not clear the completed upload from the pending queue: {e}"
+                ),
+            }
+            // Anchor the agent-audit head off-machine with the same
+            // replication round (best-effort: never fail a good push).
+            match crate::commands::anchor_agent_audit(&operators).await {
+                Ok((confirmed, _cid, entries, head)) => {
+                    println!(
+                        "  Audit anchor:   {} entries, head {}… confirmed by {} operator(s)",
+                        entries,
+                        &head[..head.len().min(8)],
+                        confirmed
+                    );
+                }
+                Err(e) => {
+                    println!("  Audit anchor:   skipped ({e})");
+                }
+            }
             let snapshot_hex = hex::encode(&output.record.snapshot_id);
             let _ = store.record_activity(
                 "PUSH_OK",
@@ -332,6 +376,25 @@ pub(crate) async fn cmd_push(
     Ok(())
 }
 
+/// Clears a snapshot from the pending-upload queue once the required
+/// number of independent operators has verified its replica set, together
+/// with the queued ancestors that replicated head supersedes (each local
+/// push queues an upload; replicating an older snapshot after this one
+/// would republish a stale head). `None`: threshold not met, nothing
+/// cleared; `Some(n)`: completed, plus `n` superseded uploads cleared.
+fn finish_remote_push(
+    store: &ciphervault_local_store::LocalVaultStore,
+    snapshot_id: &[u8; 32],
+    verified_replicas: usize,
+    required_replicas: usize,
+) -> Result<Option<usize>> {
+    if verified_replicas < required_replicas {
+        return Ok(None);
+    }
+    store.mark_upload_completed(snapshot_id)?;
+    Ok(Some(store.supersede_pending_ancestors(snapshot_id)?))
+}
+
 /// Files replication receipts (push, repair) into the local lease receipt
 /// log so `status --overview` shows them without a `lease list` round-trip.
 /// A log failure warns instead of failing the command: the data is safe on
@@ -397,5 +460,67 @@ mod tests {
         assert_eq!(row.issued_at_utc, 1000);
         assert_eq!(row.expires_at_utc, 2000);
         assert_eq!(row.signature_hex, "sig");
+    }
+
+    #[test]
+    fn verified_remote_push_clears_its_pending_upload() {
+        let store = ciphervault_local_store::LocalVaultStore::open(":memory:").unwrap();
+        let snapshot_id = [0x5Au8; 32];
+        let record = ciphervault_format::SnapshotRecord {
+            version: ciphervault_format::PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: snapshot_id.to_vec(),
+            parent_snapshot_ids: Vec::new(),
+            device_id: vec![0x33u8; 32],
+            device_counter: 1,
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![0x22u8; 32],
+            encrypted_manifest_len: 4,
+            advisory_timestamp_utc: 1_700_000_000,
+            signature: Vec::new(),
+        };
+        store.save_snapshot(&record, b"manifest", &[]).unwrap();
+        assert_eq!(store.list_pending_uploads().unwrap().len(), 1);
+
+        assert_eq!(
+            finish_remote_push(&store, &snapshot_id, 3, 3).unwrap(),
+            Some(0)
+        );
+        assert!(store.list_pending_uploads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn verified_remote_push_also_clears_superseded_local_snapshots() {
+        // Local pushes (the Hermes plugin's default) queue a pending
+        // upload each; a later replicated head supersedes them.
+        let store = ciphervault_local_store::LocalVaultStore::open(":memory:").unwrap();
+        let mut parent: Option<[u8; 32]> = None;
+        for (i, id) in [0x61u8, 0x62, 0x63].into_iter().enumerate() {
+            let record = ciphervault_format::SnapshotRecord {
+                version: ciphervault_format::PROTOCOL_VERSION,
+                vault_id: vec![0x11u8; 32],
+                snapshot_id: vec![id; 32],
+                parent_snapshot_ids: parent.iter().map(|p| p.to_vec()).collect(),
+                device_id: vec![0x33u8; 32],
+                device_counter: i as u64 + 1,
+                authority_generation: 1,
+                epoch: 1,
+                encrypted_manifest_cid: vec![0x22u8; 32],
+                encrypted_manifest_len: 4,
+                advisory_timestamp_utc: 1_700_000_000 + i as u64,
+                signature: Vec::new(),
+            };
+            store.save_snapshot(&record, b"manifest", &[]).unwrap();
+            parent = Some([id; 32]);
+        }
+        assert_eq!(store.list_pending_uploads().unwrap().len(), 3);
+        assert_eq!(finish_remote_push(&store, &[0x63; 32], 2, 3).unwrap(), None);
+        assert_eq!(store.list_pending_uploads().unwrap().len(), 3);
+        assert_eq!(
+            finish_remote_push(&store, &[0x63; 32], 3, 3).unwrap(),
+            Some(2)
+        );
+        assert!(store.list_pending_uploads().unwrap().is_empty());
     }
 }

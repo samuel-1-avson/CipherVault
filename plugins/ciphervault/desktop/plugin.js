@@ -206,7 +206,7 @@ export default {
         backendDown: 'Vault backend unavailable',
         backendDownSub: 'The plugin API did not answer. The ciphervault_* agent tools still work in chat.',
         noBinary: 'CipherVault binary not found',
-        noBinarySub: 'Run `hermes ciphervault bootstrap` in a terminal (Windows), or set CIPHERVAULT_BIN.',
+        noBinarySub: 'Set CIPHERVAULT_BIN to a compatible CLI (source build), then run `hermes ciphervault doctor`.',
         noVault: 'No vault in this workspace',
         noVaultSub: 'Run `ciphervault init` here, then `ciphervault track .env` and `ciphervault push --local`.',
         fVault: 'Vault', fHead: 'Head', fFiles: 'Tracked files', fOperators: 'Operators', fEpoch: 'Epoch', fCli: 'CLI',
@@ -220,7 +220,7 @@ export default {
         refresh: 'Refresh',
         copied: l => `Prompt copied — paste it to Hermes (${l}).`,
         ask: l => `Ask Hermes: use ciphervault tool (${l}) — clipboard unavailable.`,
-        foot: 'Values never print. Operators see ciphertext only. Binary via bootstrap, $CIPHERVAULT_BIN, or PATH.',
+        foot: 'Values never print. Operators see ciphertext only. Binary via binary_path, $CIPHERVAULT_BIN, or PATH.',
         chipTip: 'CipherVault — open vault status'
       }
     })

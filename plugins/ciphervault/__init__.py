@@ -20,22 +20,61 @@ Design rules (also in skills/ciphervault/SKILL.md):
 """
 
 import hashlib
+import ipaddress
 import json
 import os
+import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-RELEASE_VERSION = "1.0.31"
-# SHA-256 of the release ciphervault.exe, pinned in source (catalog rule
+RELEASE_VERSION = "1.0.34"
+# Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
-# also cross-checks the release SHA256SUMS.txt against this value.
-RELEASE_BINARY_SHA256 = "d31e7864ca78944f829ee339b9fdd3d3bd8552481e994d2c2f8cef92a0d4a717"
+# also cross-checks the release SHA256SUMS.txt against these values.
+# A platform absent here has no prebuilt asset in the pinned release.
+# The macOS binaries are cross-built (minimum macOS 13); arm64 carries an
+# ad-hoc signature, Intel is unsigned, as in v1.0.32. Neither is notarized:
+# bootstrap's urllib download is not quarantined, so Gatekeeper allows it.
+RELEASE_ASSETS = {
+    "windows-amd64": (
+        "ciphervault.exe",
+        "25aaf9851eb94737bdd53c33992e8c16af276e11d9b340a484292feeab1f7865",
+    ),
+    "linux-amd64": (
+        "ciphervault-linux-amd64",
+        "86b407373f46edc91411d35d6348f10cc47c63a500ce96c0beaa4bc479caa6ae",
+    ),
+    "macos-arm64": (
+        "ciphervault-macos-arm64",
+        "7f6a1e66d87dd3bfaaa1ef9dacd94920b9acaad3e2f4ceb2ae1331fa77489a42",
+    ),
+    "macos-amd64": (
+        "ciphervault-macos-amd64",
+        "e5109defc338a9e5120ef5dd8d3e9beb039db8ef13e89657f12252459ae1089a",
+    ),
+}
+# Backward-compatible alias for the Windows pin.
+RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
+# Whether the pinned release ships `redact --json`'s
+# `exact_values_complete` attestation, which this plugin requires before
+# releasing vault-scoped output. v1.0.34 does; bootstrap refuses any pin
+# where this is False rather than install a CLI whose output it withholds.
+RELEASE_SUPPORTS_GUARD = True
+_COMPATIBLE_CLI_HINT = (
+    "Build the CLI from current source (cargo build --release -p ciphervault-cli "
+    "in https://github.com/samuel-1-avson/CipherVault) or install a newer release "
+    "whose notes confirm exact_values_complete, then point CIPHERVAULT_BIN or the "
+    "binary_path plugin setting at it and rerun `hermes ciphervault doctor`."
+)
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"
@@ -86,22 +125,123 @@ def find_binary():
     return None, "missing"
 
 
+_PLATFORM_LABELS = {
+    "windows-amd64": "Windows x64",
+    "linux-amd64": "Linux x64",
+    "macos-arm64": "macOS arm64",
+    "macos-amd64": "macOS Intel",
+}
+
+
+def _release_asset():
+    """(asset_name, pinned_sha256, dest_name) for this platform, or
+    None when the pinned release publishes no binary for it."""
+    if sys.platform == "win32":
+        key, dest = "windows-amd64", "ciphervault.exe"
+    elif sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64"):
+        key, dest = "linux-amd64", "ciphervault"
+    elif sys.platform == "darwin":
+        key = "macos-arm64" if platform.machine() == "arm64" else "macos-amd64"
+        dest = "ciphervault"
+    else:
+        return None
+    pinned = RELEASE_ASSETS.get(key)
+    if pinned is None:
+        return None
+    return pinned[0], pinned[1], dest
+
+
+_DOWNLOAD_ATTEMPTS = 6
+_DOWNLOAD_RETRY_DELAY = 3  # seconds, multiplied by the attempt number
+_DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _content_range_start(resp):
+    """First byte offset of a 206 response's Content-Range, or None."""
+    value = (getattr(resp, "headers", None) or {}).get("Content-Range") or ""
+    parts = value.split()
+    if len(parts) == 2 and parts[0] == "bytes":
+        start = parts[1].split("-", 1)[0]
+        if start.isdigit():
+            return int(start)
+    return None
+
+
+def _download_resumable(url, progress):
+    """Fetch `url` into memory, resuming with an HTTP Range request when
+    the connection drops mid-transfer (slow links to GitHub's CDN drop
+    long downloads). Integrity is NOT established here: the caller checks
+    the assembled bytes against the SHA-256 pinned in source, so a
+    resumed or restarted transfer cannot install anything unverified."""
+    data = bytearray()
+    last_error = None
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        headers = {"Range": f"bytes={len(data)}-"} if data else {}
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=300) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                if data and (status != 206 or _content_range_start(resp) != len(data)):
+                    data.clear()  # server ignored or misanswered Range: start over
+                    if status == 206:
+                        raise OSError("server answered the resume with a different byte range")
+                # HTTPResponse.read(amt) returns b"" when the peer closes
+                # early, even with Content-Length unmet, so count bytes.
+                length = str((getattr(resp, "headers", None) or {}).get("Content-Length") or "")
+                expected_end = len(data) + int(length) if length.isdigit() else None
+                while True:
+                    chunk = resp.read(1 << 16)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > _DOWNLOAD_MAX_BYTES:
+                        raise OSError("download exceeds the size limit")
+                if expected_end is not None and len(data) < expected_end:
+                    raise OSError(f"connection closed early at {len(data)} of {expected_end} bytes")
+            return bytes(data)
+        except Exception as exc:
+            last_error = exc
+            if attempt < _DOWNLOAD_ATTEMPTS:
+                reason = str(exc) or type(exc).__name__
+                progress(f"Download interrupted at {len(data)} bytes ({reason}); "
+                         f"resuming (attempt {attempt + 1}/{_DOWNLOAD_ATTEMPTS})…")
+                time.sleep(_DOWNLOAD_RETRY_DELAY * attempt)
+    raise OSError(f"{str(last_error) or type(last_error).__name__} "
+                  f"(gave up after {_DOWNLOAD_ATTEMPTS} attempts)")
+
+
 def bootstrap_binary(progress=print):
     """Download the pinned upstream release binary and verify it
     against the release SHA256SUMS.txt before installing it into the
     plugin data dir. User-invoked setup action (CLI/slash command);
     never runs automatically at plugin load (catalog rule 3/17)."""
-    if sys.platform != "win32":
+    if not RELEASE_SUPPORTS_GUARD:
+        # Refuse before any download: installing the pinned binary would
+        # shadow a working configured/PATH CLI and then withhold every
+        # vault-scoped result, while reporting setup as successful.
         return {
             "success": False,
             "error": (
-                "Prebuilt CipherVault binaries are published for Windows only. "
-                "On Linux/macOS build from source (cargo install --path apps/cli "
-                "from https://github.com/samuel-1-avson/CipherVault) or set "
+                f"The pinned CipherVault v{RELEASE_VERSION} release is incompatible with "
+                "this plugin: it predates the complete exact-value redaction attestation. "
+                "Nothing was downloaded or replaced."
+            ),
+            "next": _COMPATIBLE_CLI_HINT,
+        }
+    selected = _release_asset()
+    if selected is None:
+        published = ", ".join(_PLATFORM_LABELS.get(k, k) for k in RELEASE_ASSETS)
+        return {
+            "success": False,
+            "error": (
+                f"No prebuilt CipherVault v{RELEASE_VERSION} binary is published for this "
+                f"platform yet (prebuilt: {published}). Build from source "
+                "(cargo install --path apps/cli from "
+                "https://github.com/samuel-1-avson/CipherVault) or set "
                 "CIPHERVAULT_BIN / the binary_path plugin setting."
             ),
         }
-    asset = "ciphervault.exe"
+    asset, pinned_sha, dest_name = selected
     sums_url = f"{RELEASE_BASE}/SHA256SUMS.txt"
     try:
         with urllib.request.urlopen(sums_url, timeout=60) as resp:
@@ -115,19 +255,18 @@ def bootstrap_binary(progress=print):
             expected = parts[0].lower()
     if not expected:
         return {"success": False, "error": f"{asset} not listed in release SHA256SUMS.txt"}
-    if expected != RELEASE_BINARY_SHA256:
+    if expected != pinned_sha:
         return {
             "success": False,
             "error": (
                 f"release SHA256SUMS.txt lists {expected} for {asset}, which does not "
-                f"match the checksum pinned in this plugin ({RELEASE_BINARY_SHA256}). "
+                f"match the checksum pinned in this plugin ({pinned_sha}). "
                 "Refusing to install."
             ),
         }
     progress(f"Downloading CipherVault v{RELEASE_VERSION} ({asset})…")
     try:
-        with urllib.request.urlopen(f"{RELEASE_BASE}/{asset}", timeout=300) as resp:
-            data = resp.read()
+        data = _download_resumable(f"{RELEASE_BASE}/{asset}", progress)
     except Exception as exc:
         return {"success": False, "error": f"download failed: {exc}"}
     actual = hashlib.sha256(data).hexdigest()
@@ -138,10 +277,18 @@ def bootstrap_binary(progress=print):
         }
     dest_dir = _data_bin_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / asset
+    dest = dest_dir / dest_name
     dest.write_bytes(data)
+    if os.name != "nt":
+        try:
+            dest.chmod(0o755)
+        except Exception:
+            pass
     try:
-        (dest_dir / "cv.exe").write_bytes(data)
+        alias = dest_dir / ("cv.exe" if os.name == "nt" else "cv")
+        alias.write_bytes(data)
+        if os.name != "nt":
+            alias.chmod(0o755)
     except Exception:
         pass
     progress(f"Verified SHA-256 {actual[:16]}… and installed to {dest}")
@@ -155,7 +302,7 @@ _TOKEN_RE = re.compile(
     r"xox[bpas]-[\w-]+|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.?[A-Za-z0-9_-]*)"
 )
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
-_PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
+_PEM_RE = re.compile(r"-----BEGIN [^\n]{0,64}PRIVATE KEY-----[\s\S]{0,16384}?-----END [^\n]{0,64}-----")
 _KV_RE = re.compile(
     r"(?i)\b((?:[A-Za-z0-9_-]{0,64}(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]{0,64})\s*[=:]\s*)([^\s\"']+)"
 )
@@ -167,7 +314,11 @@ def scrub(text):
     exact-value scrubbing (`run --json` / `redact`) is primary."""
     if not text:
         return text
-    text = _PEM_RE.sub("[REDACTED] PRIVATE KEY", text)
+    # Fast path: a PEM block needs both markers; without an END
+    # anywhere there is nothing to redact, and scanning a long run
+    # of BEGIN headers for one is the quadratic case.
+    if "-----END" in text:
+        text = _PEM_RE.sub("[REDACTED] PRIVATE KEY", text)
     text = _BEARER_RE.sub(r"\1[REDACTED]", text)
     text = _URL_RE.sub(r"\1[REDACTED]\2", text)
     text = _TOKEN_RE.sub("[REDACTED]", text)
@@ -198,17 +349,17 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
             "success": False,
             "error": "ciphervault binary not found",
             "binary": "missing",
-            "next": "Run `hermes ciphervault bootstrap` (Windows) or set CIPHERVAULT_BIN / the binary_path plugin setting.",
+            "next": _COMPATIBLE_CLI_HINT,
         }
     try:
         proc = subprocess.run(
             [binary] + args,
             cwd=cwd or os.getcwd(),
-            input=input_text,
+            # Text-mode stdin rewrites LF to CRLF on Windows (and
+            # CRLF to CRCRLF). Exact scrub comparisons and receipt
+            # hashes must use the caller's original UTF-8 bytes.
+            input=input_text.encode("utf-8") if input_text is not None else None,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
             env=_minimal_env(),
         )
@@ -216,14 +367,14 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
         return {"success": False, "error": f"ciphervault timed out after {timeout}s", "binary": source}
     except OSError as exc:
         return {"success": False, "error": f"could not run ciphervault: {exc}", "binary": source}
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
+    out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+    err = (proc.stderr or b"").decode("utf-8", "replace").strip()
     # Some commands print "Error: …" yet exit 0, on either stream.
     if re.search(r"(?m)^Error:", out) or re.search(r"(?m)^Error:", err):
         return {"success": False, "error": scrub(out + ("\n" + err if err else "")),
                 "binary": source, "exit_code": proc.returncode}
-    if proc.returncode != 0 and not out:
-        return {"success": False, "error": scrub(err or f"exit {proc.returncode}"),
+    if proc.returncode != 0:
+        return {"success": False, "error": scrub(err or out or f"exit {proc.returncode}"),
                 "binary": source, "exit_code": proc.returncode}
     return {"success": True, "output": out, "stderr": scrub(err),
             "exit_code": proc.returncode, "binary": source}
@@ -241,32 +392,159 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
     return {"success": True, "data": payload, "binary": res.get("binary")}
 
 
+_CLI_CAPABILITIES = (
+    (("status",), ("--json",)),
+    (("hook", "check"), ("--json", "--deep", "--fix")),
+    (("run",), ("--json", "--dry-run", "--env-file", "--project", "--env")),
+    (("push",), ("--local",)),
+    (("recover",), ("--to", "--kit", "--shares")),
+    (("redact",), ("--json",)),
+    (("export-env",), ("--env-file", "--allow-working-copy")),
+    (("agent-log", "record"), ("--tool", "--decision", "--path", "--detail")),
+    (("agent-log", "show"), ("--json", "--limit")),
+    (("agent-log", "verify"), ("--json",)),
+    (("agent-log", "check"), ("--json", "--output-sha256")),
+    (("agent-log", "anchor"), ()),
+)
+
+
+def binary_diagnostics(cwd=None):
+    """Read-only version/help probes of the binary actually resolved.
+
+    A working `status --json` alone is insufficient: older CLIs lack
+    the exact scrub, JSON run, and signed-audit commands. Version drift
+    is reported separately; capabilities, not a version guess, gate
+    compatibility. This never bootstraps or changes the active binary.
+    """
+    binary, source = find_binary()
+    out = {"success": False, "binary": binary, "binary_source": source,
+           "target_cli_version": RELEASE_VERSION, "installed_version": None,
+           "version_matches_target": False, "capabilities": {},
+           "missing_capabilities": []}
+    remediation = (
+        _COMPATIBLE_CLI_HINT
+        + " Vault outputs remain withheld until exact scrubbing and audit receipts work."
+    )
+    if not binary:
+        out.update(error="ciphervault binary not found", next=remediation)
+        return out
+    version = _run_cli(["--version"], cwd, timeout=10)
+    if version.get("success"):
+        match = re.search(r"(?m)^ciphervault(?:\.exe)?\s+(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)\s*$",
+                          version.get("output", ""))
+        if match:
+            out["installed_version"] = match.group(1)
+    out["version_matches_target"] = out["installed_version"] == RELEASE_VERSION
+    for command, flags in _CLI_CAPABILITIES:
+        name = " ".join(command)
+        probe = _run_cli([*command, "--help"], cwd, timeout=10)
+        help_text = probe.get("output", "")
+        missing = [flag for flag in flags if not re.search(
+            r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)]
+        supported = bool(probe.get("success") and not missing)
+        capability = {"supported": supported, "missing_flags": missing}
+        if not probe.get("success"):
+            capability["error"] = probe.get("error", "help probe failed")
+        out["capabilities"][name] = capability
+        if not supported:
+            out["missing_capabilities"].append(name)
+    # Flags alone cannot tell a CLI that attests complete exact-value
+    # loading from one that silently skips unreadable tracked files.
+    # Probe in an empty directory so workspace state cannot mask it.
+    complete = False
+    if out["capabilities"].get("redact", {}).get("supported"):
+        with tempfile.TemporaryDirectory(prefix="cv-doctor-") as empty:
+            probe = _run_cli_json(["redact", "--json"], empty, timeout=10,
+                                  input_text="cv doctor probe")
+        complete = bool(probe.get("success")
+                        and _complete_redact_response(probe.get("data")))
+    out["capabilities"]["redact completeness"] = {"supported": complete,
+                                                  "missing_flags": []}
+    if not complete:
+        out["missing_capabilities"].append("redact completeness")
+    out["success"] = bool(out["installed_version"] and not out["missing_capabilities"])
+    if not out["version_matches_target"]:
+        out["warning"] = (
+            f"Resolved CLI version {out['installed_version'] or 'unknown'} differs "
+            f"from the plugin's pinned CLI target {RELEASE_VERSION}."
+        )
+    if not out["success"]:
+        out.update(error="resolved CipherVault CLI is incompatible or could not be inspected",
+                   next=remediation)
+    return out
+
+
 def _audit(tool, decision, path="", detail=None, cwd=None):
     """Append one entry to the vault's tamper-evident agent audit
-    chain via the CLI. Best-effort: auditing must never break a tool
-    call, and it records paths/decisions/counts only, never contents."""
+    chain via the CLI. Records paths/decisions/counts only, never
+    contents. Returns True when the entry landed: callers whose
+    correctness depends on the receipt (scrub proofs) must fail
+    closed on False instead of letting absence go ambiguous."""
     try:
         args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
         if path:
             args += ["--path", str(path)[:300]]
         if detail:
             args += ["--detail", json.dumps(detail)[:500]]
-        _run_cli(args, cwd, timeout=10)
+        res = _run_cli(args, _vault_cwd(cwd), timeout=10)
+        return bool(res and res.get("success"))
+    except Exception:
+        return False
+
+
+def _anchor_async(cwd=None):
+    """Fire-and-forget fleet anchor of the audit head. Runs detached
+    so a slow/unreachable fleet can never delay or break the guarded
+    call; failures are silent (the next push re-anchors)."""
+    try:
+        binary, _src = find_binary()
+        if not binary:
+            return
+        kwargs = {
+            "cwd": _vault_cwd(cwd) or os.getcwd(),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([binary, "agent-log", "anchor"], **kwargs)
     except Exception:
         pass
 
 
+def _complete_redact_response(data, require_vault=False):
+    """A well-shaped response is not proof that all tracked files loaded."""
+    return (isinstance(data, dict) and isinstance(data.get("text"), str)
+            and type(data.get("redactions")) is int and data["redactions"] >= 0
+            and type(data.get("exact_values_loaded")) is int and data["exact_values_loaded"] >= 0
+            and data.get("exact_values_complete") is True
+            and type(data.get("vault")) is bool
+            and (not require_vault or data["vault"] is True))
+
+
 def cli_redact(text, cwd, timeout=15):
     """Exact+shape redaction via the CLI (vault values are matched
-    inside the CLI process; they never enter this process). Falls back
-    to local shape scrubbing when the CLI is unavailable."""
+    inside the CLI process; they never enter this process). Returns
+    (text, redactions, exact_ok): exact_ok False means the CLI could
+    not prove complete loading and only local shape scrubbing ran — callers that
+    would hand text to the model must fail closed on that, because a
+    shape-blind vault value (database URL, internal token) would
+    pass through unlogged."""
     if not text:
-        return text, 0
-    res = _run_cli_json(["redact", "--json"], cwd, timeout=timeout, input_text=text)
+        return text, 0, True
+    res = _run_cli_json(["redact", "--json"], _vault_cwd(cwd), timeout=timeout,
+                        input_text=text)
     if res.get("success"):
-        data = res["data"]
-        return data.get("text", scrub(text)), int(data.get("redactions", 0))
-    return scrub(text), 0
+        data = res.get("data")
+        if _complete_redact_response(data, require_vault=_vault_present(cwd)):
+            return data["text"], data["redactions"], True
+    return scrub(text), 0, False
 
 
 # ---------------------------------------------------------------- tools
@@ -301,7 +579,69 @@ def _tool_run(params, **kwargs):
         args += ["--env", params["env"]]
     args.append("--")
     args += list(cmd)
-    return json.dumps(_run_cli_json(args, params.get("cwd"), timeout=300))
+    res = _run_cli_json(args, params.get("cwd"), timeout=300)
+    if params.get("dry_run"):
+        return json.dumps(res)
+    res = _structured_run_failure(res)
+    data = res.get("data")
+    if not (isinstance(data, dict)
+            and any(isinstance(data.get(k), str) for k in ("stdout", "stderr"))):
+        # Nothing ran (no vault, bad flags, missing CLI): no output to receipt.
+        return json.dumps(res)
+    # ciphervault_* results skip transform_tool_result, so the run output
+    # gets its receipt here: the exact string handed to the model, plus
+    # the stdout a person reads (see ciphervault_audit check_text).
+    raw = json.dumps(res)
+    detail = {"program": str(cmd[0])[:64],
+              "exit_code": data.get("exit_code"),
+              "redactions": data.get("redactions"),
+              "output_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+              "content_sha256": _content_sha256(data.get("stdout") or ""),
+              "output_bytes": len(raw)}
+    if _audit("ciphervault_run", "scrubbed_result", detail=detail, cwd=params.get("cwd")):
+        return raw
+    withheld = ("[CipherVault] run output withheld: the audit-log write failed, so "
+                "there is no receipt for it. Exit code and counts are kept.")
+    return json.dumps(dict(res, data=dict(data, stdout=withheld, stderr=""),
+                           audit_receipt=False))
+
+
+def _structured_run_failure(res):
+    """`run --json` exits with the child's status after printing its
+    report, which _run_cli turns into an error string. Keep a failing
+    command's report structured (stdout/stderr/exit_code) instead."""
+    if res.get("success") or "data" in res or not isinstance(res.get("error"), str):
+        return res
+    try:
+        payload = json.loads(res["error"])
+    except Exception:
+        return res
+    if isinstance(payload, dict) and "exit_code" in payload and "stdout" in payload:
+        return {"success": False, "data": payload, "exit_code": res.get("exit_code"),
+                "binary": res.get("binary")}
+    return res
+
+
+def _content_sha256(text):
+    """Hash of the text a person reads, ignoring surrounding whitespace
+    (terminals and copy/paste rarely keep the trailing newline)."""
+    return hashlib.sha256(text.strip().encode()).hexdigest()
+
+
+def _visible_text(result):
+    """The part of a tool result a person actually reads: Hermes wraps
+    terminal and file results in a JSON envelope (`output`, `content`)."""
+    if result[:1] != "{":
+        return result
+    try:
+        data = json.loads(result)
+    except Exception:
+        return result
+    if isinstance(data, dict):
+        for key in ("output", "content", "stdout"):
+            if isinstance(data.get(key), str):
+                return data[key]
+    return result
 
 
 def _tool_push(params, **kwargs):
@@ -317,8 +657,15 @@ def _tool_push(params, **kwargs):
 
 def _tool_redact(params, **kwargs):
     params = params or {}
-    cleaned, n = cli_redact(params.get("text") or "", params.get("cwd"))
-    return json.dumps({"success": True, "text": cleaned, "redactions": n})
+    cleaned, n, exact = cli_redact(params.get("text") or "", params.get("cwd"))
+    if not exact:
+        return json.dumps({
+            "success": False, "exact_value_check": False,
+            "error": "Exact-value redaction unavailable; text withheld, not safe to quote.",
+            "next": "Run `hermes ciphervault doctor` to check the resolved CLI version and capabilities.",
+        })
+    return json.dumps({"success": True, "text": cleaned, "redactions": n,
+                       "exact_value_check": exact})
 
 
 def _tool_audit(params, **kwargs):
@@ -329,12 +676,209 @@ def _tool_audit(params, **kwargs):
     if not show.get("success"):
         return json.dumps(show)
     verify = _run_cli_json(["agent-log", "verify", "--json"], cwd)
-    return json.dumps({
-        "success": True,
+    report = verify.get("data")
+    verified = bool(verify.get("success") and isinstance(report, dict)
+                    and report.get("ok") is True)
+    out = {
+        "success": verified,
         "entries": show.get("data", []),
-        "verification": verify.get("data"),
+        "verification": report if isinstance(report, dict) else verify,
         "binary": show.get("binary"),
-    })
+    }
+    if not verified:
+        out["error"] = "Audit chain verification failed or was unavailable; no hash lookup is proof."
+        return json.dumps(out)
+    if params.get("check_text") is not None:
+        # Exact text first (matches the stored tool-result hash), then the
+        # whitespace-trimmed text (matches the stored visible-content hash).
+        text = str(params["check_text"])
+        digests = [hashlib.sha256(text.encode()).hexdigest()]
+        if text.strip() != text:
+            digests.append(_content_sha256(text))
+        for digest in digests:
+            check = _run_cli_json(
+                ["agent-log", "check", "--json", "--output-sha256", digest], cwd)
+            check_data = check.get("data")
+            if not (check.get("success") and isinstance(check_data, dict)
+                    and isinstance(check_data.get("found"), bool)):
+                out.pop("check", None)
+                out.update(success=False, check=check,
+                           error="Audit output-hash lookup failed or returned an invalid response.")
+                break
+            out["check"] = check_data
+            if check_data["found"]:
+                break
+    return json.dumps(out)
+
+
+_DEFAULT_OPERATORS = (
+    "https://op1.cipherv.online",
+    "https://op2.cipherv.online",
+    "https://op3.cipherv.online",
+)
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+_IPV4_TRANSLATED_NET = ipaddress.ip_network("::ffff:0:0:0/96")
+_BLOCKED_OPERATOR_HOSTS = frozenset({
+    "localhost",
+    "metadata.google.internal",
+    "metadata.goog",
+})
+
+
+def _normalize_operator_url(url):
+    """Canonical http(s) operator URL with no trailing slash, query,
+    fragment, or userinfo; None if malformed or ambiguous."""
+    if not isinstance(url, str):
+        return None
+    raw = url.strip()
+    if not raw or any(ord(c) < 0x20 or ord(c) == 0x7F or c.isspace() for c in raw):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").strip().lower().rstrip(".")
+    if (scheme not in ("http", "https") or not parts.netloc or not host
+            or "\\" in raw or "@" in parts.netloc or "%" in parts.netloc
+            or parts.query or parts.fragment):
+        return None
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    host_literal = f"[{host}]" if ":" in host else host
+    netloc = f"{host_literal}:{port}" if port is not None else host_literal
+    path = parts.path.rstrip("/")
+    return f"{scheme}://{netloc}{path}"
+
+
+def _configured_operators(cwd):
+    """Normalized operator URLs configured for the vault at `cwd`
+    (CIPHERVAULT_OPERATORS env override, else .ciphervault/operators.json,
+    else the default public fleet when a vault exists without an
+    operators.json file). Fails closed (`()`) when no vault exists or
+    operators.json cannot be parsed."""
+    env_ops = os.environ.get("CIPHERVAULT_OPERATORS", "").strip()
+    if env_ops:
+        raw_list = [s for s in re.split(r"[\s,;]+", env_ops) if s]
+    else:
+        try:
+            root = _vault_root(cwd)
+        except Exception:
+            return ()
+        if root is None:
+            return ()
+        ops_path = Path(root) / ".ciphervault" / "operators.json"
+        try:
+            ops_path.lstat()
+        except FileNotFoundError:
+            raw_list = list(_DEFAULT_OPERATORS)
+        except OSError:
+            return ()
+        else:
+            try:
+                loaded = json.loads(ops_path.read_text(encoding="utf-8"))
+            except Exception:
+                return ()
+            if not isinstance(loaded, list) or not loaded:
+                return ()
+            raw_list = loaded
+    out = []
+    for item in raw_list:
+        norm = _normalize_operator_url(item)
+        if not norm:
+            return ()
+        if norm not in out:
+            out.append(norm)
+    return tuple(out)
+
+
+def _embedded_ipv4(ip):
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        if ip in _IPV4_TRANSLATED_NET:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
+def _is_public_operator_url(norm):
+    """Unconditional SSRF floor: refuses loopback, private, link-local
+    (169.254.0.0/16 incl. 169.254.169.254), CGNAT, reserved, multicast,
+    unspecified, and internal hostnames even if allow_private_urls is set."""
+    parts = urllib.parse.urlsplit(norm)
+    host = (parts.hostname or "").lower().rstrip(".")
+    if (not host or host in _BLOCKED_OPERATOR_HOSTS
+            or host.endswith((".localhost", ".local", ".internal"))):
+        return False
+    try:
+        ips = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                host, parts.port or (443 if parts.scheme == "https" else 80),
+                socket.AF_UNSPEC, socket.SOCK_STREAM,
+            )
+        except OSError:
+            return False
+        ips = []
+        for _fam, _type, _proto, _canon, sockaddr in infos:
+            try:
+                ips.append(ipaddress.ip_address(str(sockaddr[0]).split("%")[0]))
+            except ValueError:
+                return False
+    if not ips:
+        return False
+    for raw_ip in ips:
+        ip = _embedded_ipv4(raw_ip)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                or ip in _CGNAT_NET or not ip.is_global):
+            return False
+    return True
+
+
+def _is_safe_operator_url(url):
+    """Validate an operator endpoint with Hermes's tools.url_safety.is_safe_url
+    plus an unconditional public-IP check."""
+    norm = _normalize_operator_url(url)
+    if not norm:
+        return False
+    try:
+        from tools.url_safety import is_safe_url
+    except Exception:
+        is_safe_url = None
+    if is_safe_url is not None and not is_safe_url(norm):
+        return False
+    return _is_public_operator_url(norm)
+
+
+def _validate_via_endpoints(via, cwd):
+    """Accept `via` endpoints only when every URL passes
+    tools.url_safety.is_safe_url / public-IP validation (never LAN,
+    loopback, or cloud metadata) AND belongs to this vault's configured
+    operator list."""
+    raw_items = [via] if isinstance(via, str) else list(via) if isinstance(via, (list, tuple)) else []
+    configured = set(_configured_operators(cwd))
+    validated = []
+    for raw in raw_items:
+        norm = _normalize_operator_url(raw)
+        if not norm:
+            return None, "invalid operator URL in `via`: must be a clean http(s) origin without query, fragment, or credentials."
+        if not _is_safe_operator_url(norm):
+            return None, (
+                f"refusing `via` endpoint {norm!r}: private, loopback, link-local, or cloud-metadata hosts are not allowed."
+            )
+        if norm not in configured:
+            return None, (
+                f"refusing `via` endpoint {norm!r}: not in this vault's configured operator list "
+                "(.ciphervault/operators.json). Update operators.json or run `ciphervault recover --via` in your terminal."
+            )
+        if norm not in validated:
+            validated.append(norm)
+    return validated, None
 
 
 def _tool_drill(params, **kwargs):
@@ -346,6 +890,15 @@ def _tool_drill(params, **kwargs):
             "success": False,
             "error": "provide kit (path to kit file) or shares (list of share file paths). Paths only — never paste kit contents.",
         })
+    cwd = params.get("cwd")
+    via_raw = params.get("via")
+    via = []
+    if via_raw:
+        via, err = _validate_via_endpoints(via_raw, cwd)
+        if err:
+            _audit("ciphervault_recovery_drill", "blocked",
+                   detail={"reason": "rejected_via_endpoint"}, cwd=cwd)
+            return json.dumps({"success": False, "error": err})
     # The restore target is ALWAYS a fresh temp dir created here, and
     # it is the only directory this tool ever deletes (reviewer rule:
     # never rmtree a model-chosen path).
@@ -356,7 +909,12 @@ def _tool_drill(params, **kwargs):
             args += ["--kit", kit]
         if shares:
             args += ["--shares"] + list(shares)
-        res = _run_cli(args, params.get("cwd"), timeout=300)
+        if via:
+            # The kit keeps the operators from when it was printed; a vault
+            # that moved fleets is recovered through its current operators.
+            # Records stay authenticated by the kit's recovery key.
+            args += ["--via"] + via
+        res = _run_cli(args, cwd, timeout=300)
         if not res.get("success"):
             return json.dumps(res)
         # Hash-then-delete: prove the restore by manifest (names +
@@ -391,7 +949,10 @@ def _tool_drill(params, **kwargs):
 
 _SECRET_FILE_RE = re.compile(
     r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|[\w.-]+\.(pem|key)|id_rsa|id_ed25519|"
-    r"credentials\.json|secrets\.json|recovery_kit[\w.-]*|[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
+    r"credentials\.json|secrets\.json|"
+    # Source/docs about kits (recovery_kit.rs, recovery_kit.md) are not kits.
+    r"recovery_kit(?![\w-]*\.(?:rs|py|pyi|js|jsx|ts|tsx|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|md|toml|ya?ml|lock)\b)[\w.-]*|"
+    r"[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
 )
 _READ_CMD_RE = re.compile(r"(?i)\b(cat|type|get-content|gc|more|head|tail|less|bat)\b")
 _GIT_DANGER_RE = re.compile(r"(?i)\bgit\s+(commit|push|add)\b")
@@ -423,11 +984,19 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             _audit("ciphervault_run", "approval_requested",
                    detail={"program": ((args or {}).get("command") or [""])[0]},
                    cwd=(args or {}).get("cwd") or os.getcwd())
+            # Cadence: checkpoint the chain head — this grant included —
+            # to the fleet BEFORE the approved command can run, so a
+            # run that goes badly cannot rewrite the grant away.
+            _anchor_async((args or {}).get("cwd") or os.getcwd())
+            # Narrow grant grain: the rule key names the program, so a
+            # session/always grant in Hermes's approval UI covers that
+            # program only — never every command the model may run.
+            program = str(((args or {}).get("command") or ["run"])[0])
             return {"action": "approve",
                     "message": ("CipherVault: run a command with vault secrets "
                                 "injected in RAM? The command receives the values; "
                                 "approve only if you trust it."),
-                    "rule_key": "ciphervault_run"}
+                    "rule_key": f"ciphervault_run:{program}"}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
@@ -449,15 +1018,18 @@ def on_pre_tool_call(tool_name, args, **kwargs):
 
         joined = "\n".join(texts)
         if joined:
-            cleaned, n = cli_redact(joined, cwd, timeout=10)
-            if n > 0 or cleaned != joined:
-                _audit(tool_name, "blocked",
-                       detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=cwd)
-                return {"action": "block", "message": (
-                    "CipherVault guard: this call contains secret material "
-                    f"({n} exact/shape redaction(s)). Work with paths and names only, "
-                    "seal values with ciphervault_push, run workloads via ciphervault_run."
-                )}
+            # Check against every vault the call touches, not only the
+            # cwd's (vaultless calls still get the CLI's shape pass).
+            for root in _scrub_roots(args, cwd) or [cwd]:
+                cleaned, n, _exact = cli_redact(joined, root, timeout=10)
+                if n > 0 or cleaned != joined:
+                    _audit(tool_name, "blocked",
+                           detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=root)
+                    return {"action": "block", "message": (
+                        "CipherVault guard: this call contains secret material "
+                        f"({n} exact/shape redaction(s)). Work with paths and names only, "
+                        "seal values with ciphervault_push, run workloads via ciphervault_run."
+                    )}
 
         if tool_name == "terminal":
             for text in texts:
@@ -482,24 +1054,176 @@ def on_pre_tool_call(tool_name, args, **kwargs):
         return None
 
 
+def _vault_root(cwd):
+    """Nearest cwd/ancestor holding a vault store entry, else None.
+
+    The store entry itself defines a vault: any `.ciphervault/vault.db`
+    (even a directory or a corrupt file) stays guarded, while a bare
+    `.ciphervault/` such as the installer's `~/.ciphervault/bin` does
+    not. Inspection errors other than absence propagate to the caller.
+    """
+    p = Path(cwd or os.getcwd()).absolute()
+    for parent in (p, *p.parents):
+        try:
+            (parent / ".ciphervault" / "vault.db").lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        return parent
+    return None
+
+
+def _vault_present(cwd):
+    """An expected vault stays guarded even if its store is unreadable."""
+    try:
+        return _vault_root(cwd) is not None
+    except Exception:
+        # An inspection failure is not evidence of a vaultless workspace.
+        return True
+
+
+def _vault_cwd(cwd):
+    """Run vault-scoped CLI calls at the workspace root: the CLI opens
+    ./.ciphervault/vault.db relative to its cwd, so a subdirectory
+    would otherwise look vaultless and lose its exact values/receipts."""
+    try:
+        root = _vault_root(cwd)
+    except Exception:
+        root = None
+    return str(root) if root is not None else cwd
+
+
+# Tool arguments name paths the cwd does not cover (`cat demo/notes.txt`
+# from a parent directory, read_file on an absolute path). Tokens are
+# split on shell punctuation; scans are bounded per call.
+_ARG_TOKEN_RE = re.compile(r"[^\s\"'`;|&<>(){}\[\]=,]+")
+_ARG_SCAN_CHARS = 16_384
+_ARG_MAX_TOKENS = 256
+
+
+def _same_dir(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _nearest_vault_lenient(path, cache):
+    """_vault_root for argument paths: a level that cannot be inspected
+    (glob, invalid name, permission wall) counts as "no store here" and
+    the walk continues upward, so one odd token cannot hide the vault
+    above it. `cache` maps walked directories to their nearest vault."""
+    walked, found = [], None
+    for parent in (path, *path.parents):
+        key = str(parent)
+        if key in cache:
+            found = cache[key]
+            break
+        walked.append(key)
+        try:
+            (parent / ".ciphervault" / "vault.db").lstat()
+        except (OSError, ValueError):
+            continue
+        found = key
+        break
+    for key in walked:
+        cache[key] = found
+    return found
+
+
+def _arg_vault_roots(args, cwd):
+    """Vault roots that path-like tokens in a call's arguments point into."""
+    base = os.path.abspath(cwd or os.getcwd())
+    cache, roots, tokens = {}, [], 0
+    for text in _iter_strings(args or {}):
+        for token in _ARG_TOKEN_RE.findall(text[:_ARG_SCAN_CHARS]):
+            if tokens >= _ARG_MAX_TOKENS:
+                return roots
+            if "://" in token or token.startswith("-") or len(token) > 1024:
+                continue
+            tokens += 1
+            try:
+                path = Path(os.path.abspath(os.path.join(base, os.path.expanduser(token))))
+                root = _nearest_vault_lenient(path, cache)
+            except Exception:
+                continue
+            if root and not any(_same_dir(root, r) for r in roots):
+                roots.append(root)
+    return roots
+
+
+def _scrub_roots(args, cwd):
+    """Every vault whose exact values a call's input or output must be
+    checked against: the cwd's vault (an uninspectable one stays
+    guarded, see _vault_present) plus each vault a path argument points
+    into. Empty means the call touches no vault."""
+    roots = [_vault_cwd(cwd)] if _vault_present(cwd) else []
+    for root in _arg_vault_roots(args, cwd):
+        if not any(_same_dir(root, r) for r in roots):
+            roots.append(root)
+    return roots
+
+
 def on_transform_tool_result(tool_name, args, result, **kwargs):
     """Scrub every non-CipherVault tool result before it enters model
-    context (exact vault values via the CLI, shapes locally)."""
+    context. Fails CLOSED: if the exact-value scrub cannot run, or
+    the audit receipt cannot be written, the result is withheld
+    rather than passed on trust — a silent pass would make the
+    audit log's absence meaningless."""
     try:
         if not isinstance(result, str) or not result:
             return None
         if tool_name and tool_name.startswith("ciphervault_"):
             return None
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
-        sample = result[:262_144]
-        cleaned, n = cli_redact(sample, cwd, timeout=10)
-        if cleaned != sample:
-            _audit(tool_name, "scrubbed_result", detail={"redactions": n}, cwd=cwd)
-            suffix = "\n…[truncated by CipherVault scrub]" if len(result) > len(sample) else ""
-            return cleaned + suffix
+        oversized = len(result) > 262_144
+        sample = result[:262_144] if oversized else result
+        roots = _scrub_roots(args, cwd)
+        if not roots:
+            # No vault here (fresh install, gateway, unrelated
+            # project): there are no vault values to protect, and
+            # withholding every result Hermes-wide would punish
+            # users who never opted into a vault. Pass through with
+            # the local shape scrub; fail-closed applies only where
+            # a vault is actually present (below).
+            cleaned = scrub(sample)
+            if cleaned != sample or oversized:
+                return cleaned + ("\n…[truncated by CipherVault scrub]" if oversized else "")
+            return None
+        # Each vault the call touches scrubs its own exact values; the
+        # passes chain, and any one failing withholds the result.
+        cleaned, n = sample, 0
+        for root in roots:
+            cleaned, n_root, exact = cli_redact(cleaned, root, timeout=10)
+            n += n_root
+            if not exact:
+                _audit(tool_name, "scrub_unavailable",
+                       detail={"withheld_bytes": len(result)}, cwd=root)
+                return ("[CipherVault] tool result withheld: the exact-value scrub "
+                        "could not run (CLI missing, incompatible, or timed out), so "
+                        "this output was not shown. A shape-only pass could miss a "
+                        "vault value entirely; failing loudly instead. Run "
+                        "`hermes ciphervault doctor` to inspect the resolved CLI.")
+        final = cleaned
+        if oversized:
+            # The window is never conditional: an untouched tail must
+            # not pass just because the scrubbed head was clean.
+            final = cleaned + "\n…[truncated by CipherVault scrub]"
+        detail = {"redactions": n,
+                  "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
+                  "content_sha256": _content_sha256(_visible_text(final)),
+                  "output_bytes": len(final)}
+        if len(roots) > 1:
+            detail["vaults"] = len(roots)
+        for root in roots:
+            if not _audit(tool_name, "scrubbed_result", detail=detail, cwd=root):
+                return ("[CipherVault] tool result withheld: the audit-log write "
+                        "failed, so there is no receipt for this output. Withholding "
+                        "it keeps 'no hash in the chain' unambiguous.")
+        if final != result:
+            return final
         return None
     except Exception:
-        return None
+        # Returning None means "release the original" to Hermes. An
+        # unexpected scrub/receipt error must never take that path.
+        return ("[CipherVault] tool result withheld: an unexpected scrub or "
+                "audit error prevented safe release. Run `hermes ciphervault doctor`.")
 
 
 _WRITE_TOOLS = {"write_file", "patch", "terminal", "execute_code", "browser_exec"}
@@ -519,7 +1243,10 @@ def on_post_tool_call(tool_name, args=None, result=None, **kwargs):
                 path = str(args[key])
                 break
         cwd = (args.get("cwd") or args.get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
-        _audit(tool_name, "executed", path=path, cwd=cwd)
+        # Receipt every vault the call touched, not only the cwd's.
+        roots = _scrub_roots(args, cwd) if isinstance(args, dict) else []
+        for root in roots or [cwd]:
+            _audit(tool_name, "executed", path=path, cwd=root)
         return None
     except Exception:
         return None
@@ -563,7 +1290,7 @@ def _make_secret_source():
                 vault_path = cfg.get("vault_path") or os.getcwd()
                 binary, _src = find_binary()
                 if not binary:
-                    result.error = "ciphervault binary not found; run `hermes ciphervault bootstrap`."
+                    result.error = "ciphervault binary not found. " + _COMPATIBLE_CLI_HINT
                     result.error_kind = ErrorKind.BINARY_MISSING
                     return result
                 argv = [binary, "export-env"]
@@ -617,7 +1344,7 @@ def _make_secret_source():
             }
 
         def remediation(self, kind, cfg):
-            return ("Run `hermes ciphervault bootstrap`, then `ciphervault init` in your "
+            return (_COMPATIBLE_CLI_HINT + " Then run `ciphervault init` in your "
                     "project (or set secrets.ciphervault.vault_path).")
 
     return CipherVaultSecretSource()
@@ -650,12 +1377,68 @@ def _slash_ciphervault(raw_args, **kwargs):
     )
 
 
+def _qs_run(binary, args, cwd):
+    proc = subprocess.run(
+        [binary, *args], cwd=cwd, capture_output=True, text=True, timeout=300,
+        env=_minimal_env(),
+    )
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def quickstart(progress=print, keep=False):
+    """Two-minute guided demo: throwaway vault, fake secrets, sealed
+    snapshot, RAM-only run dry-run, audit verify — then cleanup."""
+    binary, _src = find_binary()
+    if not binary:
+        result = bootstrap_binary(progress=progress)
+        if not result.get("success"):
+            return result
+        binary = result["binary"]
+    demo = Path(tempfile.mkdtemp(prefix="cv-quickstart-"))
+    try:
+        (demo / ".env").write_text(
+            "DEMO_API_KEY=sk-demo-0000000000000000000000000000fake\n"
+            "DEMO_DB_URL=postgres://demo:demo-password-fake@localhost:5432/demo\n",
+            encoding="utf-8",
+        )
+        steps = [
+            ("1/5  Create a throwaway vault (kit saved inside the demo dir)",
+             ["init", "--save-kit", str(demo / "recovery-kit.txt")]),
+            ("2/5  Track the fake .env (it is git-ignored automatically)",
+             ["track", ".env"]),
+            ("3/5  Seal an encrypted snapshot (local only)",
+             ["push", "--local", "-m", "quickstart demo"]),
+            ("4/5  RAM-only run, dry-run: names only, values never printed",
+             ["run", "--dry-run", "--", "echo", "demo"]),
+            ("5/5  Verify the tamper-evident audit chain",
+             ["agent-log", "verify"]),
+        ]
+        for label, args in steps:
+            progress(f"\n== {label}\n$ ciphervault {' '.join(args)}")
+            rc, out = _qs_run(binary, args, str(demo))
+            progress(out.strip()[-1200:] or "(no output)")
+            if rc != 0:
+                return {"success": False, "error": f"step failed ({args[0]}): rc={rc}",
+                        "demo_dir": str(demo)}
+        progress(
+            "\nThat's the loop: sealed snapshots, RAM-only injection, and an\n"
+            "audit chain that proves what an agent touched. Real vault next:\n"
+            "  cd your-project && ciphervault init && ciphervault track .env"
+        )
+        return {"success": True, "demo_dir": str(demo) if keep else None}
+    finally:
+        if not keep:
+            shutil.rmtree(demo, ignore_errors=True)
+
+
 def _cli_setup(parser):
     # Hermes hands us the `hermes ciphervault` subparser itself.
     sp = parser.add_subparsers(dest="ciphervault_cmd")
-    sp.add_parser("bootstrap", help="Download + verify the pinned CipherVault binary (Windows)")
+    sp.add_parser("bootstrap", help="Download + verify the pinned CipherVault binary")
     sp.add_parser("status", help="Binary resolution + vault status for the cwd")
     sp.add_parser("doctor", help="Check binary, vault, and wiring")
+    qs = sp.add_parser("quickstart", help="Two-minute guided demo in a throwaway vault")
+    qs.add_argument("--keep", action="store_true", help="Keep the demo directory")
 
 
 def _cli_handler(args):
@@ -664,16 +1447,22 @@ def _cli_handler(args):
         result = bootstrap_binary()
         print(json.dumps(result, indent=2))
         return 0 if result.get("success") else 1
+    if cmd == "quickstart":
+        result = quickstart(keep=bool(getattr(args, "keep", False)))
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("success") else 1
+    if cmd == "doctor":
+        result = binary_diagnostics(os.getcwd())
+        status = _run_cli_json(["status", "--json"], os.getcwd())
+        result["status"] = status
+        result["success"] = bool(result["success"] and status.get("success"))
+        print(json.dumps(result, indent=2))
+        return 0 if result["success"] else 1
     binary, source = find_binary()
     print(f"binary: {binary or 'missing'} ({source})")
-    if cmd == "doctor":
-        if not binary:
-            print("next: hermes ciphervault bootstrap")
-            return 1
-        proc = subprocess.run([binary, "--version"], capture_output=True, text=True)
-        print((proc.stdout or proc.stderr).strip())
-    print(json.dumps(_run_cli_json(["status", "--json"], os.getcwd()), indent=2))
-    return 0
+    result = _run_cli_json(["status", "--json"], os.getcwd())
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("success") else 1
 
 
 # ---------------------------------------------------------------- register
@@ -701,13 +1490,17 @@ _TOOLS = [
      "Prove a recovery kit or guardian shares actually restore: restores into a fresh temp dir created by the tool, returns a SHA-256 manifest (names+sizes+hashes only), then deletes that temp dir. Takes FILE PATHS only — never accept kit/share contents.",
      {"kit": {"type": "string", "description": "Path to kit file on disk"},
       "shares": {"type": "array", "items": {"type": "string"}, "description": "Paths to guardian share files"},
+      "via": {"type": "array", "items": {"type": "string"},
+              "description": "Configured operator URLs to query instead of the endpoints printed in the kit (must belong to this vault's configured operator list and pass URL safety checks; private, loopback, link-local, and cloud-metadata hosts are refused)"},
       "cwd": {"type": "string"}}),
     ("ciphervault_redact", _tool_redact,
      "Redact secret material from text before using it anywhere: vault values matched exactly (inside the CLI), plus credential shapes. Returns masked text + redaction count.",
      {"text": {"type": "string"}, "cwd": {"type": "string"}}),
     ("ciphervault_audit", _tool_audit,
-     "Show the tamper-evident agent audit log: what tools did around this vault's secrets (blocked reads, approval requests, scrubbed results, writes) plus chain verification. Paths/decisions/counts only.",
-     {"limit": {"type": "integer", "default": 50}, "cwd": {"type": "string"}}),
+     "Show the tamper-evident agent audit log: what tools did around this vault's secrets (blocked reads, approval requests, scrubbed results, writes) plus chain verification. With check_text, proves whether that exact output passed the scrub (hash lookup). Paths/decisions/counts only.",
+     {"limit": {"type": "integer", "default": 50},
+      "check_text": {"type": "string", "description": "Output text to check against the scrub log (hashed locally)"},
+      "cwd": {"type": "string"}}),
 ]
 
 _REDACTION_PATTERNS = [
