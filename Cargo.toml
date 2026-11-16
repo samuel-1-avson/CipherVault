@@ -31,7 +31,7 @@ ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 blake2 = "0.10"
 sha2 = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 argon2 = "0.5"
 rand = "0.8"
 base64 = "0.22"
