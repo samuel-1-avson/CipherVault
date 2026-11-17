@@ -161,11 +161,11 @@ fn is_suspicious_secret_file(path_str: &str) -> bool {
 }
 
 #[derive(serde::Serialize)]
-struct HookViolation {
-    kind: String,
-    path: String,
-    details: String,
-    remediation: String,
+pub(crate) struct HookViolation {
+    pub(crate) kind: String,
+    pub(crate) path: String,
+    pub(crate) details: String,
+    pub(crate) remediation: String,
 }
 
 /// Spawn `git` portably: on Windows the PATH git may be an MSYS shim
@@ -189,7 +189,7 @@ fn git_command(args: &[&str]) -> std::process::Command {
     }
 }
 
-pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
+pub(crate) fn scan_hook_violations(deep: bool, fix: bool) -> (Vec<HookViolation>, Vec<String>) {
     let store_res = get_vault_store();
     let tracked: Vec<(PathBuf, [u8; 32])> = store_res
         .as_ref()
@@ -327,6 +327,12 @@ pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
             }
         }
     }
+
+    (violations, fixed_files)
+}
+
+pub(crate) fn cmd_hook_check(deep: bool, fix: bool, json: bool) -> Result<()> {
+    let (violations, fixed_files) = scan_hook_violations(deep, fix);
 
     if json {
         let report = serde_json::json!({

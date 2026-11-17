@@ -45,8 +45,14 @@ pub(crate) async fn cmd_run(
     set_overrides: Option<Vec<String>>,
     allow_keys: Option<Vec<String>>,
     no_net: bool,
+    proxy: bool,
+    proxy_upstream: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
+    let proxy_enabled = proxy || !proxy_upstream.is_empty();
+    if proxy_enabled && no_net {
+        bail!("--proxy and --no-net cannot be combined");
+    }
     if command.is_empty() && !dry_run {
         bail!("No command specified to execute. Usage: ciphervault run [OPTIONS] -- <COMMAND> [ARGS]... (or pass --dry-run with no command to only list secret keys)");
     }
@@ -88,6 +94,8 @@ pub(crate) async fn cmd_run(
             set_overrides,
             allow_keys,
             no_net,
+            proxy_enabled,
+            proxy_upstream,
             command,
         )
         .await;
@@ -103,6 +111,8 @@ pub(crate) async fn cmd_run(
         set_overrides,
         allow_keys,
         no_net,
+        proxy_enabled,
+        proxy_upstream,
         command,
     )
     .await
@@ -136,6 +146,8 @@ async fn cmd_run_scoped(
     set_overrides: Option<Vec<String>>,
     allow_keys: Option<Vec<String>>,
     no_net: bool,
+    proxy: bool,
+    proxy_upstream: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
     let endpoint = resolve_endpoint(endpoint_flag)?;
@@ -333,6 +345,8 @@ async fn cmd_run_scoped(
         deduped_vars,
         no_inherit,
         no_net,
+        proxy,
+        &proxy_upstream,
         quiet,
         json,
         &scope_label,
@@ -493,6 +507,8 @@ async fn cmd_run_snapshot(
     set_overrides: Option<Vec<String>>,
     allow_keys: Option<Vec<String>>,
     no_net: bool,
+    proxy: bool,
+    proxy_upstream: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
     let store = get_vault_store()?;
@@ -680,6 +696,8 @@ async fn cmd_run_snapshot(
         deduped_vars,
         no_inherit,
         no_net,
+        proxy,
+        &proxy_upstream,
         quiet,
         json,
         &label,
@@ -687,19 +705,26 @@ async fn cmd_run_snapshot(
     .await
 }
 
-/// Shared child spawn: injects `vars`, honors `--no-inherit`/`--no-net`/`--quiet`/`--json`,
-/// and propagates the child exit code. `label` names the secret source.
+/// Shared child spawn: injects `vars` (or starts loopback credential proxy when `proxy` is true),
+/// honors `--no-inherit`/`--no-net`/`--quiet`/`--json`, and propagates the child exit code.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_with_env(
     command: &[String],
     vars: std::collections::BTreeMap<String, Zeroizing<String>>,
     no_inherit: bool,
     no_net: bool,
+    proxy: bool,
+    proxy_upstream: &[String],
     quiet: bool,
     json: bool,
     label: &str,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     let num_secrets = vars.len();
+    let proxy_enabled = proxy || !proxy_upstream.is_empty();
+    if proxy_enabled && no_net {
+        bail!("--proxy and --no-net cannot be combined");
+    }
 
     // Configure Child Command
     let exe = &command[0];
@@ -719,6 +744,117 @@ async fn spawn_with_env(
         combined.extend(raw_args.iter().cloned());
         (resolved_bin, combined)
     };
+
+    if proxy_enabled {
+        let explicit_opt = (!proxy_upstream.is_empty()).then_some(proxy_upstream);
+        let routes = super::run_proxy::build_proxy_routes(&vars, explicit_opt)?;
+        let num_proxied = routes.len();
+        let exact_values: Vec<(String, Zeroizing<String>)> = vars
+            .iter()
+            .map(|(k, v)| (k.clone(), Zeroizing::new(v.as_str().to_string())))
+            .collect();
+        drop(vars);
+
+        let running_proxy = super::run_proxy::start_credential_proxy(routes).await?;
+
+        let mut cmd = tokio::process::Command::new(&target_bin);
+        if !full_args.is_empty() {
+            cmd.args(&full_args);
+        }
+        if no_inherit {
+            cmd.env_clear();
+            for (k, v) in std::env::vars() {
+                let k_upper = k.to_uppercase();
+                if k_upper == "PATH"
+                    || k_upper == "SYSTEMROOT"
+                    || k_upper == "TEMP"
+                    || k_upper == "TMP"
+                    || k_upper == "USERPROFILE"
+                    || k_upper == "HOME"
+                    || k_upper == "COMSPEC"
+                    || k_upper == "PATHEXT"
+                {
+                    cmd.env(k, v);
+                }
+            }
+        }
+        for (key, _) in std::env::vars_os() {
+            if is_control_credential(&key.to_string_lossy()) {
+                cmd.env_remove(key);
+            }
+        }
+        for (k, v) in &running_proxy.child_env {
+            cmd.env(k, v);
+        }
+
+        if json {
+            let output = cmd
+                .output()
+                .await
+                .with_context(|| format!("Failed to spawn command '{}'", exe))?;
+            running_proxy.shutdown().await;
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            let raw_stdout = String::from_utf8_lossy(&output.stdout);
+            let raw_stderr = String::from_utf8_lossy(&output.stderr);
+            let (exact_stdout, n_out) =
+                ciphervault_redact::scrub_exact_values(&raw_stdout, &exact_values);
+            let (exact_stderr, n_err) =
+                ciphervault_redact::scrub_exact_values(&raw_stderr, &exact_values);
+            let (redacted_stdout, n_out_shape) =
+                ciphervault_redact::redact_text_counted(&exact_stdout);
+            let (redacted_stderr, n_err_shape) =
+                ciphervault_redact::redact_text_counted(&exact_stderr);
+            let redactions = n_out + n_out_shape + n_err + n_err_shape;
+            let exit_code = output.status.code().unwrap_or(1);
+            let payload = serde_json::json!({
+                "status": if exit_code == 0 { "success" } else { "failed" },
+                "exit_code": exit_code,
+                "command": command,
+                "source": label,
+                "no_net": false,
+                "proxy": true,
+                "secrets_injected_count": 0,
+                "secrets_proxied_count": num_proxied,
+                "stdout": redacted_stdout,
+                "stderr": redacted_stderr,
+                "redactions": redactions,
+                "duration_ms": duration_ms
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            return Ok(());
+        }
+
+        if !quiet {
+            eprintln!(
+                "{} Proxied {} secret(s) from {} via 127.0.0.1 for '{}' (zero real secrets in child env)",
+                "[ciphervault]".bold().cyan(),
+                num_proxied.to_string().bold().green(),
+                label.yellow(),
+                exe.white()
+            );
+        }
+
+        cmd.stdin(std::process::Stdio::inherit());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn command '{}'", exe))?;
+        drop(cmd);
+        let status = child
+            .wait()
+            .await
+            .with_context(|| format!("Failed to wait on child process '{}'", exe))?;
+        running_proxy.shutdown().await;
+        let exit_code = status.code().unwrap_or(1);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
 
     let mut cmd = std::process::Command::new(&target_bin);
     if !full_args.is_empty() {

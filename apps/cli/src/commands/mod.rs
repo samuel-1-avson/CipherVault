@@ -1,6 +1,7 @@
 //! CLI command implementations.
 
 pub(crate) mod agent_bridge;
+pub(crate) mod agent_hooks;
 pub(crate) mod agent_log;
 pub(crate) mod anchor;
 pub(crate) mod approvals;
@@ -14,6 +15,7 @@ pub(crate) mod genesis;
 pub(crate) mod hook;
 pub(crate) mod init;
 pub(crate) mod inspect;
+pub(crate) mod mcp;
 pub(crate) mod migrate;
 pub(crate) mod node;
 pub(crate) mod project;
@@ -26,6 +28,7 @@ pub(crate) mod repo;
 pub(crate) mod restore;
 pub(crate) mod retention;
 pub(crate) mod run;
+pub(crate) mod run_proxy;
 pub(crate) mod scope;
 pub(crate) mod secret;
 pub(crate) mod token;
@@ -33,6 +36,7 @@ pub(crate) mod track;
 pub(crate) mod update;
 
 pub(crate) use agent_bridge::*;
+pub(crate) use agent_hooks::*;
 pub(crate) use agent_log::*;
 pub(crate) use anchor::*;
 pub(crate) use approvals::*;
@@ -44,6 +48,7 @@ pub(crate) use fleet_cli::*;
 pub(crate) use hook::*;
 pub(crate) use init::*;
 pub(crate) use inspect::*;
+pub(crate) use mcp::*;
 pub(crate) use migrate::*;
 pub(crate) use node::*;
 pub(crate) use project::*;
@@ -76,6 +81,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
 
     match command {
         crate::Commands::Redact { json, stdio } => cmd_redact(json, stdio),
+        crate::Commands::Mcp => cmd_mcp(),
         crate::Commands::ExportEnv {
             env_file,
             snapshot,
@@ -293,6 +299,8 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
         crate::Commands::Hook { sub } => match sub {
             HookSubcommand::Install { force } => cmd_hook_install(force),
             HookSubcommand::Check { deep, fix, json } => cmd_hook_check(deep, fix, json),
+            HookSubcommand::AgentPre { json_decision } => cmd_hook_agent_pre(json_decision),
+            HookSubcommand::AgentPost => cmd_hook_agent_post(),
         },
         crate::Commands::Audit {
             operators,
@@ -334,11 +342,29 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             set,
             allow_keys,
             no_net,
+            proxy,
+            proxy_upstream,
             command,
         } => {
             cmd_run(
-                snapshot, env_file, project, env, endpoint, token, legacy, revision, no_inherit,
-                dry_run, quiet, json, set, allow_keys, no_net, command,
+                snapshot,
+                env_file,
+                project,
+                env,
+                endpoint,
+                token,
+                legacy,
+                revision,
+                no_inherit,
+                dry_run,
+                quiet,
+                json,
+                set,
+                allow_keys,
+                no_net,
+                proxy,
+                proxy_upstream,
+                command,
             )
             .await
         }

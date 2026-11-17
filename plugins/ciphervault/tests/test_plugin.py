@@ -658,3 +658,29 @@ def test_run_no_net_defaults_and_forwarding(ctx, monkeypatch):
     assert cv._effective_no_net({}) is True
     monkeypatch.setattr(cv.sys, "platform", "win32")
     assert cv._effective_no_net({}) is False
+
+
+def test_run_proxy_forwarding_and_no_net_interaction(ctx, monkeypatch):
+    seen = {}
+
+    def fake_run_json(args, cwd, timeout=300):
+        seen["args"] = args
+        return {"success": True, "data": {"status": "success"}}
+
+    monkeypatch.setattr(cv, "_run_cli_json", fake_run_json)
+    monkeypatch.setattr(cv.sys, "platform", "linux")
+
+    out = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest"],
+        "proxy": True,
+        "proxy_upstream": ["MY_VAR=https://api.example.com"],
+    }))
+    assert out["success"] is True
+    assert "--proxy" in seen["args"]
+    assert "--proxy-upstream" in seen["args"]
+    assert "MY_VAR=https://api.example.com" in seen["args"]
+    # proxy implies loopback access on Linux/macOS unless no_net explicitly passed
+    assert "--no-net" not in seen["args"]
+
+    appr = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "proxy": True})
+    assert appr and "proxy: real keys stay in parent" in appr["message"]

@@ -538,9 +538,12 @@ def _tool_scan(params, **kwargs):
 def _effective_no_net(params):
     """Default to network isolation on Linux/macOS where kernel `--no-net`
     is supported unprivileged; Windows defaults False unless explicitly requested
-    (so unsupported hosts fail closed only when asked)."""
+    (so unsupported hosts fail closed only when asked). When `proxy` is enabled,
+    loopback access is required so `no_net` defaults False unless explicitly set."""
     if isinstance(params, dict) and params.get("no_net") is not None:
         return bool(params["no_net"])
+    if isinstance(params, dict) and (params.get("proxy") or params.get("proxy_upstream")):
+        return False
     return sys.platform.startswith("linux") or sys.platform == "darwin"
 
 
@@ -564,6 +567,12 @@ def _tool_run(params, **kwargs):
         if not keys:
             return json.dumps({"success": False, "error": "allow_keys cannot be empty when provided"})
         args += ["--allow-keys", ",".join(keys)]
+    if params.get("proxy"):
+        args.append("--proxy")
+    for spec in (params.get("proxy_upstream") or []):
+        s = str(spec).strip()
+        if s:
+            args += ["--proxy-upstream", s]
     if _effective_no_net(params):
         args.append("--no-net")
     args.append("--")
@@ -755,9 +764,11 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # it was given. Every ciphervault_run call is gated.
             allow_keys = (args or {}).get("allow_keys") if isinstance(args, dict) else None
             no_net = _effective_no_net(args)
+            proxy_on = bool(isinstance(args, dict) and (args.get("proxy") or args.get("proxy_upstream")))
             detail = {
                 "program": ((args or {}).get("command") or [""])[0],
                 "no_net": no_net,
+                "proxy": proxy_on,
             }
             if allow_keys:
                 detail["allow_keys"] = [str(k) for k in allow_keys][:20]
@@ -776,7 +787,10 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                 f" (allow_keys: {', '.join(str(k) for k in allow_keys)})"
                 if allow_keys else " (all vault secrets)"
             )
-            net_note = " [network: isolated (--no-net)]" if no_net else " [network: UNRESTRICTED]"
+            net_note = (
+                " [proxy: real keys stay in parent]" if proxy_on
+                else (" [network: isolated (--no-net)]" if no_net else " [network: UNRESTRICTED]")
+            )
             return {"action": "approve",
                     "message": (f"CipherVault: run a command with vault secrets{scope_note}{net_note} "
                                 "injected in RAM? The command receives the values; "
@@ -1083,6 +1097,8 @@ _TOOLS = [
       "env_file": {"type": "string"}, "project": {"type": "string"}, "env": {"type": "string"},
       "allow_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional allowlist of variable names to inject (least-privilege scoping)"},
       "no_net": {"type": "boolean", "description": "Block child outbound/inbound network access (defaults true on Linux/macOS, false on Windows)"},
+      "proxy": {"type": "boolean", "default": False, "description": "Run loopback credential proxy in parent so real API keys never enter child env"},
+      "proxy_upstream": {"type": "array", "items": {"type": "string"}, "description": "Optional VAR=https://host[@HeaderName] mappings for proxy mode"},
       "dry_run": {"type": "boolean", "default": False, "description": "List variable names without executing"},
       "cwd": {"type": "string"}}),
     ("ciphervault_push", _tool_push,

@@ -288,14 +288,14 @@ pub(crate) fn cmd_redact(json: bool, stdio: bool) -> Result<()> {
 
 type CacheFingerprint = Vec<(String, Option<std::time::SystemTime>, u64)>;
 
-struct BridgeSecretCache {
-    values: Vec<(String, Zeroizing<String>)>,
-    vault: bool,
+pub(crate) struct BridgeSecretCache {
+    pub(crate) values: Vec<(String, Zeroizing<String>)>,
+    pub(crate) vault: bool,
     fingerprint: Option<CacheFingerprint>,
 }
 
 impl BridgeSecretCache {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             values: Vec::new(),
             vault: false,
@@ -330,7 +330,7 @@ impl BridgeSecretCache {
         fp
     }
 
-    fn refresh_if_needed(&mut self) {
+    pub(crate) fn refresh_if_needed(&mut self) {
         let fp = Self::current_fingerprint();
         if self.fingerprint.as_ref() == Some(&fp) {
             return;
@@ -339,6 +339,25 @@ impl BridgeSecretCache {
         self.values = working_copy_values();
         self.vault = !self.values.is_empty() || get_vault_store().is_ok();
         self.fingerprint = Some(fp);
+    }
+
+    pub(crate) fn scrub_text(&mut self, text: &str) -> (String, usize, usize, bool) {
+        self.refresh_if_needed();
+        let refs: Vec<(&str, &str)> = self
+            .values
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let (exact, n_exact) = ciphervault_redact::scrub_exact_values(text, &refs);
+        let (scrubbed, n_shape) = ciphervault_redact::redact_text_counted(&exact);
+        (scrubbed, n_exact + n_shape, self.values.len(), self.vault)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_values(&mut self, vals: Vec<(String, Zeroizing<String>)>) {
+        self.values = vals;
+        self.vault = true;
+        self.fingerprint = Some(Self::current_fingerprint());
     }
 
     fn clear(&mut self) {
