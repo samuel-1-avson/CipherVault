@@ -552,6 +552,19 @@ enum Commands {
         set: Option<Vec<String>>,
 
         #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Only inject these comma-separated secret variable names from the vault (least-privilege scoping)"
+        )]
+        allow_keys: Option<Vec<String>>,
+
+        #[arg(
+            long,
+            help = "Block outbound/inbound network access for the child process (Linux unshare / macOS sandbox-exec; fails closed when unsupported)"
+        )]
+        no_net: bool,
+
+        #[arg(
             trailing_var_arg = true,
             required = false,
             help = "Command and arguments to execute (omit with --dry-run to only list secret keys)"
@@ -566,6 +579,12 @@ enum Commands {
             help = "Emit {\"text\", \"redactions\", \"exact_values_loaded\", \"vault\"} JSON instead of raw text"
         )]
         json: bool,
+
+        #[arg(
+            long,
+            help = "Run a persistent JSON-lines bridge over stdin/stdout (redact + agent-log) to avoid per-call process spawn overhead"
+        )]
+        stdio: bool,
     },
 
     /// Print decrypted env vars as JSON for secret-manager integrations (PRINTS SECRET VALUES; refuses a terminal without --force-tty)

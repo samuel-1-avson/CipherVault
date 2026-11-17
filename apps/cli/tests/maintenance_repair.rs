@@ -137,6 +137,7 @@ async fn test_maintenance_audit_and_self_repair() {
             .to_vec(),
         device_id: dev_id.to_vec(),
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
     head.sign(&dev_sk).unwrap();

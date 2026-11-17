@@ -19,23 +19,34 @@ Design rules (also in skills/ciphervault/SKILL.md):
     SHA256SUMS.txt), never bundled in this repo (catalog rule 17).
 """
 
+import atexit
 import hashlib
 import json
 import os
+import platform
+import queue
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-RELEASE_VERSION = "1.0.31"
-# SHA-256 of the release ciphervault.exe, pinned in source (catalog rule
+RELEASE_VERSION = "1.0.32"
+# SHA-256 of the release binaries, pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
-# also cross-checks the release SHA256SUMS.txt against this value.
-RELEASE_BINARY_SHA256 = "d31e7864ca78944f829ee339b9fdd3d3bd8552481e994d2c2f8cef92a0d4a717"
+# also cross-checks the release SHA256SUMS.txt against this table.
+RELEASE_BINARY_SHA256 = "d0cc7b371a904348bd99af5dca758455f141cba818ea1a8febeeeafe1d20938c"
+RELEASE_BINARY_SHA256S = {
+    "ciphervault.exe": "d0cc7b371a904348bd99af5dca758455f141cba818ea1a8febeeeafe1d20938c",
+    "ciphervault-linux-amd64": "105c3ac598249d01d16e50a6e8e1e45cc32bcfdede6c585a0b9fd44b67e4a5b3",
+    "ciphervault-macos-amd64": "6b0e678dad7abd3f1a58435dfc3e774adbb590ade2be42c912c65e686fea4f31",
+    "ciphervault-macos-arm64": "b7d9c48671cb9bc81d2f420e3b9aa3fae13991cc340cb50955234f2566bbf630",
+}
 RELEASE_BASE = (
     "https://github.com/samuel-1-avson/CipherVault/releases/download/"
     f"v{RELEASE_VERSION}"
@@ -86,22 +97,51 @@ def find_binary():
     return None, "missing"
 
 
+def _release_asset_for_platform(plat=None, machine=None):
+    """Map (platform, machine) to the release asset name emitted by
+    `.github/workflows/release.yml`."""
+    plat = (plat or sys.platform).lower()
+    arch = (machine or platform.machine()).lower()
+    if plat.startswith("win"):
+        return "ciphervault.exe"
+    if plat.startswith("linux"):
+        if arch in ("x86_64", "amd64"):
+            return "ciphervault-linux-amd64"
+        if arch in ("aarch64", "arm64"):
+            return "ciphervault-linux-arm64"
+    if plat == "darwin":
+        if arch in ("x86_64", "amd64"):
+            return "ciphervault-macos-amd64"
+        if arch in ("aarch64", "arm64"):
+            return "ciphervault-macos-arm64"
+    return None
+
+
 def bootstrap_binary(progress=print):
     """Download the pinned upstream release binary and verify it
     against the release SHA256SUMS.txt before installing it into the
     plugin data dir. User-invoked setup action (CLI/slash command);
     never runs automatically at plugin load (catalog rule 3/17)."""
-    if sys.platform != "win32":
+    asset = _release_asset_for_platform()
+    if not asset:
         return {
             "success": False,
             "error": (
-                "Prebuilt CipherVault binaries are published for Windows only. "
-                "On Linux/macOS build from source (cargo install --path apps/cli "
-                "from https://github.com/samuel-1-avson/CipherVault) or set "
+                f"No prebuilt release asset mapping for {sys.platform}/{platform.machine()}. "
+                "Build from source (`cargo install --path apps/cli`) or set "
                 "CIPHERVAULT_BIN / the binary_path plugin setting."
             ),
         }
-    asset = "ciphervault.exe"
+    pinned_sha = RELEASE_BINARY_SHA256S.get(asset)
+    if not pinned_sha:
+        return {
+            "success": False,
+            "error": (
+                f"Prebuilt asset '{asset}' is not checksum-pinned for v{RELEASE_VERSION}. "
+                "Build from source (`cargo install --path apps/cli`) or set "
+                "CIPHERVAULT_BIN / the binary_path plugin setting."
+            ),
+        }
     sums_url = f"{RELEASE_BASE}/SHA256SUMS.txt"
     try:
         with urllib.request.urlopen(sums_url, timeout=60) as resp:
@@ -115,12 +155,12 @@ def bootstrap_binary(progress=print):
             expected = parts[0].lower()
     if not expected:
         return {"success": False, "error": f"{asset} not listed in release SHA256SUMS.txt"}
-    if expected != RELEASE_BINARY_SHA256:
+    if expected != pinned_sha:
         return {
             "success": False,
             "error": (
                 f"release SHA256SUMS.txt lists {expected} for {asset}, which does not "
-                f"match the checksum pinned in this plugin ({RELEASE_BINARY_SHA256}). "
+                f"match the checksum pinned in this plugin ({pinned_sha}). "
                 "Refusing to install."
             ),
         }
@@ -138,10 +178,18 @@ def bootstrap_binary(progress=print):
         }
     dest_dir = _data_bin_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / asset
+    is_win = asset.endswith(".exe")
+    exe_name = "ciphervault.exe" if is_win else "ciphervault"
+    alias_name = "cv.exe" if is_win else "cv"
+    dest = dest_dir / exe_name
     dest.write_bytes(data)
+    if not is_win:
+        dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     try:
-        (dest_dir / "cv.exe").write_bytes(data)
+        alias = dest_dir / alias_name
+        alias.write_bytes(data)
+        if not is_win:
+            alias.chmod(alias.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     except Exception:
         pass
     progress(f"Verified SHA-256 {actual[:16]}… and installed to {dest}")
@@ -241,16 +289,156 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
     return {"success": True, "data": payload, "binary": res.get("binary")}
 
 
+_ORIG_RUN_CLI = _run_cli
+_BRIDGE_LOCK = threading.Lock()
+_BRIDGE_POOL = {}
+_NO_STDIO_BINARIES = set()
+_MAX_BRIDGES = 8
+
+
+class _StdioBridge:
+    """Persistent `ciphervault redact --stdio` worker with bounded
+    per-request timeout via a background stdout reader thread."""
+
+    def __init__(self, binary, cwd):
+        self.binary = binary
+        self.cwd = cwd
+        self.proc = subprocess.Popen(
+            [binary, "redact", "--stdio"],
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=_minimal_env(),
+        )
+        self._lines = queue.Queue()
+        self._req_lock = threading.Lock()
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    def _read_loop(self):
+        try:
+            assert self.proc.stdout is not None
+            for line in self.proc.stdout:
+                self._lines.put(line)
+        except Exception:
+            pass
+        finally:
+            self._lines.put(None)
+
+    def request(self, payload, timeout=15):
+        with self._req_lock:
+            if self.proc.poll() is not None or self.proc.stdin is None:
+                return None
+            try:
+                self.proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                self.proc.stdin.flush()
+                line = self._lines.get(timeout=timeout)
+            except Exception:
+                return None
+            if line is None:
+                return None
+            try:
+                resp = json.loads(line)
+            except Exception:
+                return None
+            return resp if isinstance(resp, dict) else None
+
+    def close(self):
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+def _close_all_bridges():
+    with _BRIDGE_LOCK:
+        for bridge in _BRIDGE_POOL.values():
+            bridge.close()
+        _BRIDGE_POOL.clear()
+
+
+atexit.register(_close_all_bridges)
+
+
+def _bridge_request(cwd, payload, timeout=15):
+    """Send one JSON request over a persistent `ciphervault redact --stdio`
+    pipe. Returns None when unavailable or unsupported (e.g. legacy CLI or
+    unit tests that monkeypatch `_run_cli`), so callers fall back cleanly."""
+    if _run_cli is not _ORIG_RUN_CLI:
+        return None
+    binary, _src = find_binary()
+    if not binary:
+        return None
+    resolved_cwd = str(cwd or os.getcwd())
+    key = (binary, resolved_cwd)
+    with _BRIDGE_LOCK:
+        if binary in _NO_STDIO_BINARIES:
+            return None
+        bridge = _BRIDGE_POOL.get(key)
+        if bridge is not None and bridge.proc.poll() is not None:
+            bridge.close()
+            _BRIDGE_POOL.pop(key, None)
+            bridge = None
+        if bridge is None:
+            if len(_BRIDGE_POOL) >= _MAX_BRIDGES:
+                oldest_key = next(iter(_BRIDGE_POOL))
+                _BRIDGE_POOL.pop(oldest_key).close()
+            try:
+                bridge = _StdioBridge(binary, resolved_cwd)
+            except Exception:
+                return None
+            _BRIDGE_POOL[key] = bridge
+    resp = bridge.request(payload, timeout=timeout)
+    if resp is None:
+        with _BRIDGE_LOCK:
+            if _BRIDGE_POOL.get(key) is bridge:
+                _BRIDGE_POOL.pop(key, None)
+            bridge.close()
+            # Probe failed before producing valid JSON (e.g. older CLI without --stdio).
+            if payload.get("op") != "ping":
+                _NO_STDIO_BINARIES.add(binary)
+    return resp
+
+
 def _audit(tool, decision, path="", detail=None, cwd=None):
     """Append one entry to the vault's tamper-evident agent audit
     chain via the CLI. Best-effort: auditing must never break a tool
     call, and it records paths/decisions/counts only, never contents."""
     try:
+        detail_str = json.dumps(detail)[:500] if detail else "{}"
+        resp = _bridge_request(
+            cwd,
+            {
+                "op": "audit",
+                "tool": str(tool),
+                "decision": str(decision),
+                "path": str(path)[:300],
+                "detail": detail_str,
+            },
+            timeout=5,
+        )
+        if resp and resp.get("ok"):
+            return
         args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
         if path:
             args += ["--path", str(path)[:300]]
         if detail:
-            args += ["--detail", json.dumps(detail)[:500]]
+            args += ["--detail", detail_str]
         _run_cli(args, cwd, timeout=10)
     except Exception:
         pass
@@ -282,17 +470,53 @@ def _anchor_async(cwd=None):
         pass
 
 
+def _has_vault(cwd=None):
+    """Return True when cwd (or CIPHERVAULT_VAULT_DB) hosts a CipherVault."""
+    db_override = os.environ.get("CIPHERVAULT_VAULT_DB")
+    if db_override:
+        return Path(db_override).exists()
+    try:
+        root = Path(cwd or os.getcwd()).resolve()
+    except OSError:
+        return False
+    return (root / ".ciphervault").is_dir()
+
+
 def cli_redact(text, cwd, timeout=15):
     """Exact+shape redaction via the CLI (vault values are matched
     inside the CLI process; they never enter this process). Falls back
     to local shape scrubbing when the CLI is unavailable."""
     if not text:
         return text, 0
+    resp = _bridge_request(cwd, {"op": "redact", "text": text}, timeout=timeout)
+    if resp and resp.get("ok"):
+        return resp.get("text", scrub(text)), int(resp.get("redactions", 0))
     res = _run_cli_json(["redact", "--json"], cwd, timeout=timeout, input_text=text)
     if res.get("success"):
         data = res["data"]
         return data.get("text", scrub(text)), int(data.get("redactions", 0))
     return scrub(text), 0
+
+
+_ORIG_CLI_REDACT = cli_redact
+
+
+def _call_cli_redact(text, cwd, timeout=15):
+    """Call exact+shape redaction and report whether the CLI succeeded.
+    Honors monkeypatches of `cli_redact` in unit tests."""
+    if not text:
+        return text, 0, True
+    if cli_redact is not _ORIG_CLI_REDACT:
+        cleaned, n = cli_redact(text, cwd, timeout=timeout)
+        return cleaned, n, True
+    resp = _bridge_request(cwd, {"op": "redact", "text": text}, timeout=timeout)
+    if resp and resp.get("ok"):
+        return resp.get("text", scrub(text)), int(resp.get("redactions", 0)), True
+    res = _run_cli_json(["redact", "--json"], cwd, timeout=timeout, input_text=text)
+    if res.get("success"):
+        data = res["data"]
+        return data.get("text", scrub(text)), int(data.get("redactions", 0)), True
+    return scrub(text), 0, False
 
 
 # ---------------------------------------------------------------- tools
@@ -311,6 +535,15 @@ def _tool_scan(params, **kwargs):
     return json.dumps(_run_cli_json(args, params.get("cwd")))
 
 
+def _effective_no_net(params):
+    """Default to network isolation on Linux/macOS where kernel `--no-net`
+    is supported unprivileged; Windows defaults False unless explicitly requested
+    (so unsupported hosts fail closed only when asked)."""
+    if isinstance(params, dict) and params.get("no_net") is not None:
+        return bool(params["no_net"])
+    return sys.platform.startswith("linux") or sys.platform == "darwin"
+
+
 def _tool_run(params, **kwargs):
     params = params or {}
     cmd = params.get("command") or []
@@ -325,6 +558,14 @@ def _tool_run(params, **kwargs):
         args += ["--project", params["project"]]
     if params.get("env"):
         args += ["--env", params["env"]]
+    allow_keys = params.get("allow_keys")
+    if allow_keys is not None:
+        keys = [str(k).strip() for k in allow_keys if str(k).strip()]
+        if not keys:
+            return json.dumps({"success": False, "error": "allow_keys cannot be empty when provided"})
+        args += ["--allow-keys", ",".join(keys)]
+    if _effective_no_net(params):
+        args.append("--no-net")
     args.append("--")
     args += list(cmd)
     return json.dumps(_run_cli_json(args, params.get("cwd"), timeout=300))
@@ -422,11 +663,29 @@ def _tool_drill(params, **kwargs):
 # ---------------------------------------------------------------- hooks
 
 _SECRET_FILE_RE = re.compile(
-    r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|[\w.-]+\.(pem|key)|id_rsa|id_ed25519|"
-    r"credentials\.json|secrets\.json|recovery_kit[\w.-]*|[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
+    r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|\.envrc|\.npmrc|\.pypirc|"
+    r"[\w.-]+\.(pem|key|p12|pfx)|id_rsa|id_ed25519|"
+    r"credentials\.json|secrets\.(json|ya?ml|toml)|"
+    r"recovery_kit[\w.-]*|[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
 )
-_READ_CMD_RE = re.compile(r"(?i)\b(cat|type|get-content|gc|more|head|tail|less|bat)\b")
+_SHELL_CHAIN_RE = re.compile(r"[;&|`$<>]|\r|\n")
+_SAFE_SECRET_PATH_CMD_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"(?:ciphervault|cv)(?:\.exe)?\s+(?:status|track|untrack|push|hook|init|audit|agent-log|diff|rekey|prune)\b|"
+    r"git(?:\.exe)?\s+(?:status|check-ignore|rm\s+--cached|ls-files)\b"
+    r")"
+)
+_EXPORT_ENV_RE = re.compile(r"(?i)\b(?:ciphervault|cv)(?:\.exe)?\s+export-env\b")
 _GIT_DANGER_RE = re.compile(r"(?i)\bgit\s+(commit|push|add)\b")
+_REDACT_CHUNK_CHARS = 262_144
+_REDACT_SEAM_OVERLAP = 4_096
+
+
+def _is_safe_terminal_secret_ref(text):
+    return (
+        not _SHELL_CHAIN_RE.search(text)
+        and bool(_SAFE_SECRET_PATH_CMD_RE.search(text))
+    )
 
 
 def _iter_strings(value):
@@ -440,11 +699,53 @@ def _iter_strings(value):
             yield from _iter_strings(v)
 
 
+def _scrub_full_text(text, cwd, timeout=15):
+    """Scrub arbitrarily large text across all chunks + join seams.
+    Returns (scrubbed_text, total_redactions, cli_ok, changed)."""
+    if len(text) <= _REDACT_CHUNK_CHARS:
+        cleaned, n, ok = _call_cli_redact(text, cwd, timeout=timeout)
+        return cleaned, n, ok, (cleaned != text)
+
+    parts = []
+    seam_centers = []
+    total_n = 0
+    all_ok = True
+    any_changed = False
+    pos = 0
+    while pos < len(text):
+        chunk = text[pos:pos + _REDACT_CHUNK_CHARS]
+        cleaned, n, ok = _call_cli_redact(chunk, cwd, timeout=timeout)
+        if not ok:
+            all_ok = False
+        if cleaned != chunk:
+            any_changed = True
+        total_n += int(n)
+        parts.append(cleaned)
+        pos += _REDACT_CHUNK_CHARS
+        if pos < len(text):
+            seam_centers.append(sum(len(p) for p in parts))
+
+    assembled = "".join(parts)
+    for center in reversed(seam_centers):
+        start = max(0, center - _REDACT_SEAM_OVERLAP)
+        end = min(len(assembled), center + _REDACT_SEAM_OVERLAP)
+        seam = assembled[start:end]
+        cleaned_seam, n_seam, ok_seam = _call_cli_redact(seam, cwd, timeout=timeout)
+        if not ok_seam:
+            all_ok = False
+        if cleaned_seam != seam:
+            any_changed = True
+            total_n += int(n_seam)
+            assembled = assembled[:start] + cleaned_seam + assembled[end:]
+    return assembled, total_n, all_ok, any_changed
+
+
 def on_pre_tool_call(tool_name, args, **kwargs):
     """Leak guard. Blocks secret-file reads into chat, secret-shaped
     content handed to other tools, and git add/commit/push while the
-    CipherVault hook check reports violations. Fail-open on internal
-    errors (Hermes isolates hook exceptions too)."""
+    CipherVault hook check reports violations. Fails closed when a
+    CipherVault workspace is present and redaction cannot run."""
+    cwd = ((args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
     try:
         if tool_name == "ciphervault_run":
             # Running an arbitrary command with vault secrets in its
@@ -452,45 +753,76 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # (same gate as dangerous shell commands). Output scrubbing
             # alone cannot stop a command from exfiltrating the values
             # it was given. Every ciphervault_run call is gated.
+            allow_keys = (args or {}).get("allow_keys") if isinstance(args, dict) else None
+            no_net = _effective_no_net(args)
+            detail = {
+                "program": ((args or {}).get("command") or [""])[0],
+                "no_net": no_net,
+            }
+            if allow_keys:
+                detail["allow_keys"] = [str(k) for k in allow_keys][:20]
             _audit("ciphervault_run", "approval_requested",
-                   detail={"program": ((args or {}).get("command") or [""])[0]},
-                   cwd=(args or {}).get("cwd") or os.getcwd())
+                   detail=detail,
+                   cwd=cwd)
             # Cadence: checkpoint the chain head — this grant included —
             # to the fleet BEFORE the approved command can run, so a
             # run that goes badly cannot rewrite the grant away.
-            _anchor_async((args or {}).get("cwd") or os.getcwd())
+            _anchor_async(cwd)
             # Narrow grant grain: the rule key names the program, so a
             # session/always grant in Hermes's approval UI covers that
             # program only — never every command the model may run.
             program = str(((args or {}).get("command") or ["run"])[0])
+            scope_note = (
+                f" (allow_keys: {', '.join(str(k) for k in allow_keys)})"
+                if allow_keys else " (all vault secrets)"
+            )
+            net_note = " [network: isolated (--no-net)]" if no_net else " [network: UNRESTRICTED]"
             return {"action": "approve",
-                    "message": ("CipherVault: run a command with vault secrets "
+                    "message": (f"CipherVault: run a command with vault secrets{scope_note}{net_note} "
                                 "injected in RAM? The command receives the values; "
                                 "approve only if you trust it."),
                     "rule_key": f"ciphervault_run:{program}"}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
-        cwd = args.get("cwd") or args.get("workdir") or os.getcwd()
         texts = list(_iter_strings(args))
+
+        if tool_name == "terminal":
+            for text in texts:
+                if _EXPORT_ENV_RE.search(text):
+                    _audit(tool_name, "blocked", path=text[:300],
+                           detail={"reason": "export_env_terminal"}, cwd=cwd)
+                    return {"action": "block", "message": (
+                        "CipherVault guard: `ciphervault export-env` prints plaintext secrets "
+                        "and cannot run in terminal. Use ciphervault_run instead."
+                    )}
 
         if tool_name in ("terminal", "execute_code", "read_file", "browser_exec"):
             for text in texts:
-                if _SECRET_FILE_RE.search(text) and (
-                    tool_name == "read_file" or _READ_CMD_RE.search(text) or tool_name != "terminal"
-                ):
+                if _SECRET_FILE_RE.search(text):
+                    if tool_name == "terminal" and _is_safe_terminal_secret_ref(text):
+                        continue
                     _audit(tool_name, "blocked", path=text[:300],
                            detail={"reason": "secret_file_read"}, cwd=cwd)
                     return {"action": "block", "message": (
-                        "CipherVault guard: reading a secret/kit file into the chat would leak it. "
+                        "CipherVault guard: accessing a secret/kit file from this tool could leak it. "
                         "Use ciphervault_run (RAM-only injection), ciphervault_redact (masked), or "
                         "ciphervault_status (names only). Paths are fine; contents are not."
                     )}
 
         joined = "\n".join(texts)
         if joined:
-            cleaned, n = cli_redact(joined, cwd, timeout=10)
-            if n > 0 or cleaned != joined:
+            cleaned, n, cli_ok, changed = _scrub_full_text(joined, cwd, timeout=10)
+            if not cli_ok and _has_vault(cwd) and tool_name in (
+                "terminal", "execute_code", "read_file", "write_file", "patch", "browser_exec"
+            ):
+                _audit(tool_name, "blocked",
+                       detail={"reason": "redact_unavailable_fail_closed"}, cwd=cwd)
+                return {"action": "block", "message": (
+                    "CipherVault guard: exact-value redaction check failed/timed out inside "
+                    "a vault workspace; failing closed. Verify `ciphervault` binary health."
+                )}
+            if n > 0 or changed:
                 _audit(tool_name, "blocked",
                        detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=cwd)
                 return {"action": "block", "message": (
@@ -519,31 +851,44 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                     break
         return None
     except Exception:
+        if _has_vault(cwd):
+            return {"action": "block", "message": (
+                "CipherVault guard: internal error during security check inside a vault "
+                "workspace; failing closed."
+            )}
         return None
 
 
 def on_transform_tool_result(tool_name, args, result, **kwargs):
     """Scrub every non-CipherVault tool result before it enters model
     context (exact vault values via the CLI, shapes locally)."""
+    cwd = ((args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
     try:
         if not isinstance(result, str) or not result:
             return None
         if tool_name and tool_name.startswith("ciphervault_"):
             return None
-        cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
-        sample = result[:262_144]
-        cleaned, n = cli_redact(sample, cwd, timeout=10)
-        if cleaned != sample:
-            suffix = "\n…[truncated by CipherVault scrub]" if len(result) > len(sample) else ""
-            final = cleaned + suffix
+        cleaned, n, cli_ok, changed = _scrub_full_text(result, cwd, timeout=15)
+        if not cli_ok and _has_vault(cwd):
+            _audit(tool_name or "unknown", "blocked_unredacted_result",
+                   detail={"reason": "redact_unavailable_fail_closed",
+                           "output_bytes": len(result)},
+                   cwd=cwd)
+            return (
+                "[CipherVault guard: tool output withheld because exact-value redaction "
+                "failed/timed out inside a vault workspace]"
+            )
+        if changed:
             _audit(tool_name, "scrubbed_result",
                    detail={"redactions": n,
-                           "output_sha256": hashlib.sha256(final.encode()).hexdigest(),
-                           "output_bytes": len(final)},
+                           "output_sha256": hashlib.sha256(cleaned.encode()).hexdigest(),
+                           "output_bytes": len(cleaned)},
                    cwd=cwd)
-            return final
+            return cleaned
         return None
     except Exception:
+        if _has_vault(cwd):
+            return "[CipherVault guard: tool output withheld due to redaction error inside a vault workspace]"
         return None
 
 
@@ -736,6 +1081,8 @@ _TOOLS = [
      "Run a command with vault secrets injected into its environment in RAM only (nothing written to disk). Output is exact-value + shape scrubbed before return. Never prints plaintext secrets.",
      {"command": {"type": "array", "items": {"type": "string"}, "description": "Command, e.g. ['npm','test']"},
       "env_file": {"type": "string"}, "project": {"type": "string"}, "env": {"type": "string"},
+      "allow_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional allowlist of variable names to inject (least-privilege scoping)"},
+      "no_net": {"type": "boolean", "description": "Block child outbound/inbound network access (defaults true on Linux/macOS, false on Windows)"},
       "dry_run": {"type": "boolean", "default": False, "description": "List variable names without executing"},
       "cwd": {"type": "string"}}),
     ("ciphervault_push", _tool_push,

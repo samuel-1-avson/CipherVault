@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use ciphervault_crypto::HardwareSecurityModule;
 use colored::Colorize;
 
-use ciphervault_format::{to_canonical_cbor, HeadRecord, PROTOCOL_VERSION};
+use ciphervault_format::{to_canonical_cbor, HeadRecord, HEAD_RECORD_VERSION_V2};
 use ciphervault_snapshot::{create_snapshot, create_snapshot_with_signer, DeviceSigner};
 
 use crate::cmd_anchor;
@@ -145,15 +145,16 @@ pub(crate) async fn cmd_push(
     };
     let record_cid = output.record.compute_record_cid()?;
 
-    // Create and sign updated HeadRecord pointing to snapshot-record CID
+    // Create and sign updated HeadRecord v2 pointing to snapshot-record CID
     let mut head = HeadRecord {
-        version: PROTOCOL_VERSION,
+        version: HEAD_RECORD_VERSION_V2,
         vault_id: vault_id.to_vec(),
         snapshot_id: record_cid.to_vec(),
         parent_snapshot_ids: output.record.parent_snapshot_ids.clone(),
         closure_digest: recovery_set.closure.compute_base_closure_digest()?.to_vec(),
         device_id: device_id.to_vec(),
         device_counter: counter + 1,
+        authority_generation: Some(output.record.authority_generation),
         signature: Vec::new(),
     };
 

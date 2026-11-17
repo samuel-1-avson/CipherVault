@@ -2807,6 +2807,7 @@ mod tests {
             closure_digest: vec![0x11u8; 32],
             device_id: dev_id.clone(),
             device_counter: 1,
+            authority_generation: None,
             signature: Vec::new(),
         };
         head1.sign(&dev_sk).unwrap();
@@ -2825,6 +2826,7 @@ mod tests {
             closure_digest: vec![0x22u8; 32],
             device_id: dev_id,
             device_counter: 2,
+            authority_generation: None,
             signature: Vec::new(),
         };
         head2.sign(&dev_sk).unwrap();
@@ -2928,6 +2930,7 @@ mod tests {
             closure_digest: vec![0x11u8; 32],
             device_id: vec![0x33u8; 32],
             device_counter: 2,
+            authority_generation: None,
             signature: Vec::new(),
         };
         head.sign(&generate_signing_key()).unwrap();
@@ -3071,6 +3074,7 @@ mod tests {
             closure_digest: set.closure.compute_base_closure_digest().unwrap().to_vec(),
             device_id: vec![42; 32],
             device_counter: 1,
+            authority_generation: None,
             signature: vec![],
         };
         head.sign_with_hsm(&hsm, HsmSlot::DigitalSignature).unwrap();

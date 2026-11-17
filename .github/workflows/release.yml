@@ -358,7 +358,7 @@ jobs:
 
       - name: Synchronize package manifest versions, URLs, and hashes
         shell: bash
-        run: python3 dist/scripts/fill_package_manager_manifests.py dist/package-managers SHA256SUMS.txt "${{ github.ref_name }}"
+        run: python3 dist/scripts/fill_package_manager_manifests.py dist/package-managers SHA256SUMS.txt "${{ github.ref_name }}" --plugin plugins/ciphervault/__init__.py
 
       - name: Open PR with filled manifests
         # Direct pushes to main are blocked by repository rules (v1.0.18
@@ -380,6 +380,7 @@ jobs:
             dist/package-managers/homebrew/Formula/ciphervault.rb
             dist/package-managers/scoop/ciphervault.json
             dist/package-managers/winget/manifests/c/CipherVault/CipherVault/*/CipherVault.CipherVault.installer.yaml
+            plugins/ciphervault/__init__.py
 
   publish-containers:
     name: Build & Publish Multi-Platform GHCR Images

@@ -75,7 +75,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
     use colored::Colorize;
 
     match command {
-        crate::Commands::Redact { json } => cmd_redact(json),
+        crate::Commands::Redact { json, stdio } => cmd_redact(json, stdio),
         crate::Commands::ExportEnv {
             env_file,
             snapshot,
@@ -332,11 +332,13 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             quiet,
             json,
             set,
+            allow_keys,
+            no_net,
             command,
         } => {
             cmd_run(
                 snapshot, env_file, project, env, endpoint, token, legacy, revision, no_inherit,
-                dry_run, quiet, json, set, command,
+                dry_run, quiet, json, set, allow_keys, no_net, command,
             )
             .await
         }

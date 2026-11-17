@@ -349,43 +349,44 @@ impl ResponseApdu {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-mod ffi {
+mod pcsc_backend {
+    use super::{CommandApdu, CryptoError, ResponseApdu};
     use std::ffi::c_void;
 
-    pub const SCARD_SCOPE_USER: u32 = 0;
-    pub const SCARD_SHARE_SHARED: u32 = 2;
-    pub const SCARD_PROTOCOL_T0: u32 = 1;
-    pub const SCARD_PROTOCOL_T1: u32 = 2;
-    pub const SCARD_LEAVE_CARD: u32 = 0;
-    pub const SCARD_S_SUCCESS: i32 = 0;
+    const SCARD_SCOPE_USER: u32 = 0;
+    const SCARD_SHARE_SHARED: u32 = 2;
+    const SCARD_PROTOCOL_T0: u32 = 1;
+    const SCARD_PROTOCOL_T1: u32 = 2;
+    const SCARD_LEAVE_CARD: u32 = 0;
+    const SCARD_S_SUCCESS: i32 = 0;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
     #[allow(non_snake_case)]
-    pub struct SCARD_IO_REQUEST {
-        pub dwProtocol: u32,
-        pub cbPciLength: u32,
+    struct SCARD_IO_REQUEST {
+        dwProtocol: u32,
+        cbPciLength: u32,
     }
 
     #[link(name = "winscard")]
     extern "system" {
-        pub fn SCardEstablishContext(
+        fn SCardEstablishContext(
             dwScope: u32,
             pvReserved1: *const c_void,
             pvReserved2: *const c_void,
             phContext: *mut usize,
         ) -> i32;
 
-        pub fn SCardReleaseContext(hContext: usize) -> i32;
+        fn SCardReleaseContext(hContext: usize) -> i32;
 
-        pub fn SCardListReadersA(
+        fn SCardListReadersA(
             hContext: usize,
             mszGroups: *const u8,
             mszReaders: *mut u8,
             pcchReaders: *mut u32,
         ) -> i32;
 
-        pub fn SCardConnectA(
+        fn SCardConnectA(
             hContext: usize,
             szReader: *const u8,
             dwShareMode: u32,
@@ -394,9 +395,9 @@ mod ffi {
             pdwActiveProtocol: *mut u32,
         ) -> i32;
 
-        pub fn SCardDisconnect(hCard: usize, dwDisposition: u32) -> i32;
+        fn SCardDisconnect(hCard: usize, dwDisposition: u32) -> i32;
 
-        pub fn SCardTransmit(
+        fn SCardTransmit(
             hCard: usize,
             pioSendPci: *const SCARD_IO_REQUEST,
             pbSendBuffer: *const u8,
@@ -406,186 +407,662 @@ mod ffi {
             pcbRecvLength: *mut u32,
         ) -> i32;
     }
-}
 
-/// Native PC/SC Low-Level Transport
-struct NativePcscTransport {
-    #[cfg(windows)]
-    context: usize,
-    #[cfg(windows)]
-    card: usize,
-    #[cfg(windows)]
-    protocol: u32,
-}
+    pub struct Transport {
+        context: usize,
+        card: usize,
+        protocol: u32,
+    }
 
-impl NativePcscTransport {
-    #[cfg(windows)]
-    fn connect(reader: &str) -> Result<Self, CryptoError> {
+    impl Transport {
+        pub fn connect(reader: &str) -> Result<Self, CryptoError> {
+            let mut ctx: usize = 0;
+            let res = unsafe {
+                SCardEstablishContext(
+                    SCARD_SCOPE_USER,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut ctx,
+                )
+            };
+            if res != SCARD_S_SUCCESS {
+                return Err(CryptoError::HsmError(format!(
+                    "Failed to establish PC/SC context: error 0x{:08X}",
+                    res
+                )));
+            }
+
+            let mut c_reader = reader.as_bytes().to_vec();
+            c_reader.push(0);
+
+            let mut card: usize = 0;
+            let mut protocol: u32 = 0;
+            let connect_res = unsafe {
+                SCardConnectA(
+                    ctx,
+                    c_reader.as_ptr(),
+                    SCARD_SHARE_SHARED,
+                    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
+                    &mut card,
+                    &mut protocol,
+                )
+            };
+
+            if connect_res != SCARD_S_SUCCESS {
+                unsafe { SCardReleaseContext(ctx) };
+                return Err(CryptoError::HsmError(format!(
+                    "Failed to connect to smartcard reader '{}': error 0x{:08X}",
+                    reader, connect_res
+                )));
+            }
+
+            Ok(Self {
+                context: ctx,
+                card,
+                protocol,
+            })
+        }
+
+        pub fn transmit(&self, apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
+            let send_bytes = apdu.to_bytes();
+            let mut recv_buf = vec![0u8; 1024];
+            let mut recv_len = recv_buf.len() as u32;
+
+            let io_send = SCARD_IO_REQUEST {
+                dwProtocol: self.protocol,
+                cbPciLength: std::mem::size_of::<SCARD_IO_REQUEST>() as u32,
+            };
+
+            let res = unsafe {
+                SCardTransmit(
+                    self.card,
+                    &io_send,
+                    send_bytes.as_ptr(),
+                    send_bytes.len() as u32,
+                    std::ptr::null_mut(),
+                    recv_buf.as_mut_ptr(),
+                    &mut recv_len,
+                )
+            };
+
+            if res != SCARD_S_SUCCESS {
+                return Err(CryptoError::HsmError(format!(
+                    "SCardTransmit failed: error 0x{:08X}",
+                    res
+                )));
+            }
+
+            if (recv_len as usize) > recv_buf.len() {
+                return Err(CryptoError::HsmError(format!(
+                    "SCardTransmit reported {recv_len} bytes into a {}-byte buffer",
+                    recv_buf.len()
+                )));
+            }
+            recv_buf.truncate(recv_len as usize);
+            ResponseApdu::parse(&recv_buf)
+        }
+    }
+
+    impl Drop for Transport {
+        fn drop(&mut self) {
+            unsafe {
+                if self.card != 0 {
+                    SCardDisconnect(self.card, SCARD_LEAVE_CARD);
+                }
+                if self.context != 0 {
+                    SCardReleaseContext(self.context);
+                }
+            }
+        }
+    }
+
+    pub fn list_readers() -> Result<Vec<String>, CryptoError> {
         let mut ctx: usize = 0;
         let res = unsafe {
-            ffi::SCardEstablishContext(
-                ffi::SCARD_SCOPE_USER,
+            SCardEstablishContext(
+                SCARD_SCOPE_USER,
                 std::ptr::null(),
                 std::ptr::null(),
                 &mut ctx,
             )
         };
-        if res != ffi::SCARD_S_SUCCESS {
-            return Err(CryptoError::HsmError(format!(
-                "Failed to establish PC/SC context: error 0x{:08X}",
-                res
-            )));
-        }
-
-        let mut c_reader = reader.as_bytes().to_vec();
-        c_reader.push(0);
-
-        let mut card: usize = 0;
-        let mut protocol: u32 = 0;
-        let connect_res = unsafe {
-            ffi::SCardConnectA(
-                ctx,
-                c_reader.as_ptr(),
-                ffi::SCARD_SHARE_SHARED,
-                ffi::SCARD_PROTOCOL_T0 | ffi::SCARD_PROTOCOL_T1,
-                &mut card,
-                &mut protocol,
-            )
-        };
-
-        if connect_res != ffi::SCARD_S_SUCCESS {
-            unsafe { ffi::SCardReleaseContext(ctx) };
-            return Err(CryptoError::HsmError(format!(
-                "Failed to connect to smartcard reader '{}': error 0x{:08X}",
-                reader, connect_res
-            )));
-        }
-
-        Ok(Self {
-            context: ctx,
-            card,
-            protocol,
-        })
-    }
-
-    #[cfg(not(windows))]
-    fn connect(_reader: &str) -> Result<Self, CryptoError> {
-        Err(CryptoError::HsmError(
-            "PC/SC hardware driver not supported on this platform configuration".into(),
-        ))
-    }
-
-    #[cfg(windows)]
-    fn transmit(&self, apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
-        let send_bytes = apdu.to_bytes();
-        let mut recv_buf = vec![0u8; 1024];
-        let mut recv_len = recv_buf.len() as u32;
-
-        let io_send = ffi::SCARD_IO_REQUEST {
-            dwProtocol: self.protocol,
-            cbPciLength: std::mem::size_of::<ffi::SCARD_IO_REQUEST>() as u32,
-        };
-
-        let res = unsafe {
-            ffi::SCardTransmit(
-                self.card,
-                &io_send,
-                send_bytes.as_ptr(),
-                send_bytes.len() as u32,
-                std::ptr::null_mut(),
-                recv_buf.as_mut_ptr(),
-                &mut recv_len,
-            )
-        };
-
-        if res != ffi::SCARD_S_SUCCESS {
-            return Err(CryptoError::HsmError(format!(
-                "SCardTransmit failed: error 0x{:08X}",
-                res
-            )));
-        }
-
-        // Never trust the driver's reported length beyond our buffer.
-        if (recv_len as usize) > recv_buf.len() {
-            return Err(CryptoError::HsmError(format!(
-                "SCardTransmit reported {recv_len} bytes into a {}-byte buffer",
-                recv_buf.len()
-            )));
-        }
-        recv_buf.truncate(recv_len as usize);
-        ResponseApdu::parse(&recv_buf)
-    }
-
-    #[cfg(not(windows))]
-    fn transmit(&self, _apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
-        Err(CryptoError::HsmError("PC/SC transport inactive".into()))
-    }
-}
-
-impl Drop for NativePcscTransport {
-    fn drop(&mut self) {
-        #[cfg(windows)]
-        unsafe {
-            if self.card != 0 {
-                ffi::SCardDisconnect(self.card, ffi::SCARD_LEAVE_CARD);
-            }
-            if self.context != 0 {
-                ffi::SCardReleaseContext(self.context);
-            }
-        }
-    }
-}
-
-/// Enumerates connected PC/SC smartcard readers.
-pub fn list_pcsc_readers() -> Result<Vec<String>, CryptoError> {
-    #[cfg(windows)]
-    {
-        let mut ctx: usize = 0;
-        let res = unsafe {
-            ffi::SCardEstablishContext(
-                ffi::SCARD_SCOPE_USER,
-                std::ptr::null(),
-                std::ptr::null(),
-                &mut ctx,
-            )
-        };
-        if res != ffi::SCARD_S_SUCCESS {
+        if res != SCARD_S_SUCCESS {
             return Ok(Vec::new());
         }
 
         let mut len: u32 = 0;
-        let list_len_res = unsafe {
-            ffi::SCardListReadersA(ctx, std::ptr::null(), std::ptr::null_mut(), &mut len)
-        };
-        if list_len_res != ffi::SCARD_S_SUCCESS || len == 0 {
-            unsafe { ffi::SCardReleaseContext(ctx) };
+        let list_len_res =
+            unsafe { SCardListReadersA(ctx, std::ptr::null(), std::ptr::null_mut(), &mut len) };
+        if list_len_res != SCARD_S_SUCCESS || len == 0 {
+            unsafe { SCardReleaseContext(ctx) };
             return Ok(Vec::new());
         }
 
         let mut buf = vec![0u8; len as usize];
         let list_res =
-            unsafe { ffi::SCardListReadersA(ctx, std::ptr::null(), buf.as_mut_ptr(), &mut len) };
-        unsafe { ffi::SCardReleaseContext(ctx) };
+            unsafe { SCardListReadersA(ctx, std::ptr::null(), buf.as_mut_ptr(), &mut len) };
+        unsafe { SCardReleaseContext(ctx) };
 
-        if list_res != ffi::SCARD_S_SUCCESS {
+        if list_res != SCARD_S_SUCCESS {
             return Ok(Vec::new());
         }
 
-        let mut readers = Vec::new();
-        for chunk in buf.split(|b| *b == 0) {
-            if !chunk.is_empty() {
-                if let Ok(name) = std::str::from_utf8(chunk) {
-                    readers.push(name.to_string());
+        Ok(super::parse_multistring_readers(&buf))
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+mod pcsc_backend {
+    use super::{CommandApdu, CryptoError, ResponseApdu};
+    use std::ffi::{c_char, c_void};
+
+    const SCARD_SCOPE_USER: u32 = 0;
+    const SCARD_SHARE_SHARED: u32 = 2;
+    const SCARD_PROTOCOL_T0: u32 = 1;
+    const SCARD_PROTOCOL_T1: u32 = 2;
+    const SCARD_LEAVE_CARD: u32 = 0;
+    const SCARD_S_SUCCESS: i32 = 0;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(non_snake_case)]
+    struct SCARD_IO_REQUEST {
+        dwProtocol: u32,
+        cbPciLength: u32,
+    }
+
+    #[link(name = "PCSC", kind = "framework")]
+    extern "C" {
+        fn SCardEstablishContext(
+            dwScope: u32,
+            pvReserved1: *const c_void,
+            pvReserved2: *const c_void,
+            phContext: *mut i32,
+        ) -> i32;
+
+        fn SCardReleaseContext(hContext: i32) -> i32;
+
+        fn SCardListReaders(
+            hContext: i32,
+            mszGroups: *const c_char,
+            mszReaders: *mut c_char,
+            pcchReaders: *mut u32,
+        ) -> i32;
+
+        fn SCardConnect(
+            hContext: i32,
+            szReader: *const c_char,
+            dwShareMode: u32,
+            dwPreferredProtocols: u32,
+            phCard: *mut i32,
+            pdwActiveProtocol: *mut u32,
+        ) -> i32;
+
+        fn SCardDisconnect(hCard: i32, dwDisposition: u32) -> i32;
+
+        fn SCardTransmit(
+            hCard: i32,
+            pioSendPci: *const SCARD_IO_REQUEST,
+            pbSendBuffer: *const u8,
+            cbSendLength: u32,
+            pioRecvPci: *mut SCARD_IO_REQUEST,
+            pbRecvBuffer: *mut u8,
+            pcbRecvLength: *mut u32,
+        ) -> i32;
+    }
+
+    pub struct Transport {
+        context: i32,
+        card: i32,
+        protocol: u32,
+    }
+
+    impl Transport {
+        pub fn connect(reader: &str) -> Result<Self, CryptoError> {
+            let mut ctx: i32 = 0;
+            let res = unsafe {
+                SCardEstablishContext(
+                    SCARD_SCOPE_USER,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut ctx,
+                )
+            };
+            if res != SCARD_S_SUCCESS {
+                return Err(CryptoError::HsmError(format!(
+                    "Failed to establish macOS PC/SC context: error 0x{:08X}",
+                    res
+                )));
+            }
+
+            let c_reader = std::ffi::CString::new(reader).map_err(|_| {
+                unsafe { SCardReleaseContext(ctx) };
+                CryptoError::HsmError("Reader name contains interior NUL byte".into())
+            })?;
+
+            let mut card: i32 = 0;
+            let mut protocol: u32 = 0;
+            let connect_res = unsafe {
+                SCardConnect(
+                    ctx,
+                    c_reader.as_ptr(),
+                    SCARD_SHARE_SHARED,
+                    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
+                    &mut card,
+                    &mut protocol,
+                )
+            };
+
+            if connect_res != SCARD_S_SUCCESS {
+                unsafe { SCardReleaseContext(ctx) };
+                return Err(CryptoError::HsmError(format!(
+                    "Failed to connect to smartcard reader '{}': error 0x{:08X}",
+                    reader, connect_res
+                )));
+            }
+
+            Ok(Self {
+                context: ctx,
+                card,
+                protocol,
+            })
+        }
+
+        pub fn transmit(&self, apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
+            let send_bytes = apdu.to_bytes();
+            let mut recv_buf = vec![0u8; 1024];
+            let mut recv_len = recv_buf.len() as u32;
+
+            let io_send = SCARD_IO_REQUEST {
+                dwProtocol: self.protocol,
+                cbPciLength: std::mem::size_of::<SCARD_IO_REQUEST>() as u32,
+            };
+
+            let res = unsafe {
+                SCardTransmit(
+                    self.card,
+                    &io_send,
+                    send_bytes.as_ptr(),
+                    send_bytes.len() as u32,
+                    std::ptr::null_mut(),
+                    recv_buf.as_mut_ptr(),
+                    &mut recv_len,
+                )
+            };
+
+            if res != SCARD_S_SUCCESS {
+                return Err(CryptoError::HsmError(format!(
+                    "SCardTransmit failed: error 0x{:08X}",
+                    res
+                )));
+            }
+
+            if (recv_len as usize) > recv_buf.len() {
+                return Err(CryptoError::HsmError(format!(
+                    "SCardTransmit reported {recv_len} bytes into a {}-byte buffer",
+                    recv_buf.len()
+                )));
+            }
+            recv_buf.truncate(recv_len as usize);
+            ResponseApdu::parse(&recv_buf)
+        }
+    }
+
+    impl Drop for Transport {
+        fn drop(&mut self) {
+            unsafe {
+                if self.card != 0 {
+                    SCardDisconnect(self.card, SCARD_LEAVE_CARD);
+                }
+                if self.context != 0 {
+                    SCardReleaseContext(self.context);
                 }
             }
         }
-        Ok(readers)
     }
 
-    #[cfg(not(windows))]
-    {
+    pub fn list_readers() -> Result<Vec<String>, CryptoError> {
+        let mut ctx: i32 = 0;
+        let res = unsafe {
+            SCardEstablishContext(
+                SCARD_SCOPE_USER,
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut ctx,
+            )
+        };
+        if res != SCARD_S_SUCCESS {
+            return Ok(Vec::new());
+        }
+
+        let mut len: u32 = 0;
+        let list_len_res =
+            unsafe { SCardListReaders(ctx, std::ptr::null(), std::ptr::null_mut(), &mut len) };
+        if list_len_res != SCARD_S_SUCCESS || len == 0 {
+            unsafe { SCardReleaseContext(ctx) };
+            return Ok(Vec::new());
+        }
+
+        let mut raw = vec![0 as c_char; len as usize];
+        let list_res =
+            unsafe { SCardListReaders(ctx, std::ptr::null(), raw.as_mut_ptr(), &mut len) };
+        unsafe { SCardReleaseContext(ctx) };
+
+        if list_res != SCARD_S_SUCCESS {
+            return Ok(Vec::new());
+        }
+
+        let bytes: Vec<u8> = raw.into_iter().map(|c| c as u8).collect();
+        Ok(super::parse_multistring_readers(&bytes))
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod pcsc_backend {
+    use super::{CommandApdu, CryptoError, ResponseApdu};
+    use std::ffi::{c_char, c_int, c_long, c_ulong, c_void};
+    use std::sync::OnceLock;
+
+    const RTLD_LAZY: c_int = 1;
+    const SCARD_SCOPE_USER: c_ulong = 0;
+    const SCARD_SHARE_SHARED: c_ulong = 2;
+    const SCARD_PROTOCOL_T0: c_ulong = 1;
+    const SCARD_PROTOCOL_T1: c_ulong = 2;
+    const SCARD_LEAVE_CARD: c_ulong = 0;
+    const SCARD_S_SUCCESS: c_long = 0;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(non_snake_case)]
+    struct SCARD_IO_REQUEST {
+        dwProtocol: c_ulong,
+        cbPciLength: c_ulong,
+    }
+
+    #[cfg_attr(not(target_env = "musl"), link(name = "dl"))]
+    extern "C" {
+        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    type FnEstablishContext =
+        unsafe extern "C" fn(c_ulong, *const c_void, *const c_void, *mut c_long) -> c_long;
+    type FnReleaseContext = unsafe extern "C" fn(c_long) -> c_long;
+    type FnListReaders =
+        unsafe extern "C" fn(c_long, *const c_char, *mut c_char, *mut c_ulong) -> c_long;
+    type FnConnect = unsafe extern "C" fn(
+        c_long,
+        *const c_char,
+        c_ulong,
+        c_ulong,
+        *mut c_long,
+        *mut c_ulong,
+    ) -> c_long;
+    type FnDisconnect = unsafe extern "C" fn(c_long, c_ulong) -> c_long;
+    type FnTransmit = unsafe extern "C" fn(
+        c_long,
+        *const SCARD_IO_REQUEST,
+        *const u8,
+        c_ulong,
+        *mut SCARD_IO_REQUEST,
+        *mut u8,
+        *mut c_ulong,
+    ) -> c_long;
+
+    struct LinuxPcscApi {
+        establish_context: FnEstablishContext,
+        release_context: FnReleaseContext,
+        list_readers: FnListReaders,
+        connect: FnConnect,
+        disconnect: FnDisconnect,
+        transmit: FnTransmit,
+    }
+
+    impl LinuxPcscApi {
+        fn get() -> Option<&'static Self> {
+            static API: OnceLock<Option<LinuxPcscApi>> = OnceLock::new();
+            API.get_or_init(|| unsafe {
+                let candidates: [&[u8]; 2] = [b"libpcsclite.so.1\0", b"libpcsclite.so\0"];
+                let mut handle: *mut c_void = std::ptr::null_mut();
+                for soname in candidates {
+                    handle = dlopen(soname.as_ptr() as *const c_char, RTLD_LAZY);
+                    if !handle.is_null() {
+                        break;
+                    }
+                }
+                if handle.is_null() {
+                    return None;
+                }
+                macro_rules! sym {
+                    ($name:expr, $ty:ty) => {{
+                        let ptr = dlsym(handle, $name.as_ptr() as *const c_char);
+                        if ptr.is_null() {
+                            return None;
+                        }
+                        std::mem::transmute::<*mut c_void, $ty>(ptr)
+                    }};
+                }
+                Some(Self {
+                    establish_context: sym!(b"SCardEstablishContext\0", FnEstablishContext),
+                    release_context: sym!(b"SCardReleaseContext\0", FnReleaseContext),
+                    list_readers: sym!(b"SCardListReaders\0", FnListReaders),
+                    connect: sym!(b"SCardConnect\0", FnConnect),
+                    disconnect: sym!(b"SCardDisconnect\0", FnDisconnect),
+                    transmit: sym!(b"SCardTransmit\0", FnTransmit),
+                })
+            })
+            .as_ref()
+        }
+    }
+
+    pub struct Transport {
+        api: &'static LinuxPcscApi,
+        context: c_long,
+        card: c_long,
+        protocol: c_ulong,
+    }
+
+    impl Transport {
+        pub fn connect(reader: &str) -> Result<Self, CryptoError> {
+            let api = LinuxPcscApi::get().ok_or_else(|| {
+                CryptoError::HsmError(
+                    "PC/SC library (libpcsclite.so.1) not found on this Linux host".into(),
+                )
+            })?;
+
+            let mut ctx: c_long = 0;
+            let res = unsafe {
+                (api.establish_context)(
+                    SCARD_SCOPE_USER,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut ctx,
+                )
+            };
+            if res != SCARD_S_SUCCESS {
+                return Err(CryptoError::HsmError(format!(
+                    "Failed to establish Linux PC/SC context: error 0x{:08X}",
+                    res
+                )));
+            }
+
+            let c_reader = std::ffi::CString::new(reader).map_err(|_| {
+                unsafe { (api.release_context)(ctx) };
+                CryptoError::HsmError("Reader name contains interior NUL byte".into())
+            })?;
+
+            let mut card: c_long = 0;
+            let mut protocol: c_ulong = 0;
+            let connect_res = unsafe {
+                (api.connect)(
+                    ctx,
+                    c_reader.as_ptr(),
+                    SCARD_SHARE_SHARED,
+                    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1,
+                    &mut card,
+                    &mut protocol,
+                )
+            };
+
+            if connect_res != SCARD_S_SUCCESS {
+                unsafe { (api.release_context)(ctx) };
+                return Err(CryptoError::HsmError(format!(
+                    "Failed to connect to smartcard reader '{}': error 0x{:08X}",
+                    reader, connect_res
+                )));
+            }
+
+            Ok(Self {
+                api,
+                context: ctx,
+                card,
+                protocol,
+            })
+        }
+
+        pub fn transmit(&self, apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
+            let send_bytes = apdu.to_bytes();
+            let mut recv_buf = vec![0u8; 1024];
+            let mut recv_len = recv_buf.len() as c_ulong;
+
+            let io_send = SCARD_IO_REQUEST {
+                dwProtocol: self.protocol,
+                cbPciLength: std::mem::size_of::<SCARD_IO_REQUEST>() as c_ulong,
+            };
+
+            let res = unsafe {
+                (self.api.transmit)(
+                    self.card,
+                    &io_send,
+                    send_bytes.as_ptr(),
+                    send_bytes.len() as c_ulong,
+                    std::ptr::null_mut(),
+                    recv_buf.as_mut_ptr(),
+                    &mut recv_len,
+                )
+            };
+
+            if res != SCARD_S_SUCCESS {
+                return Err(CryptoError::HsmError(format!(
+                    "SCardTransmit failed: error 0x{:08X}",
+                    res
+                )));
+            }
+
+            if (recv_len as usize) > recv_buf.len() {
+                return Err(CryptoError::HsmError(format!(
+                    "SCardTransmit reported {recv_len} bytes into a {}-byte buffer",
+                    recv_buf.len()
+                )));
+            }
+            recv_buf.truncate(recv_len as usize);
+            ResponseApdu::parse(&recv_buf)
+        }
+    }
+
+    impl Drop for Transport {
+        fn drop(&mut self) {
+            unsafe {
+                if self.card != 0 {
+                    (self.api.disconnect)(self.card, SCARD_LEAVE_CARD);
+                }
+                if self.context != 0 {
+                    (self.api.release_context)(self.context);
+                }
+            }
+        }
+    }
+
+    pub fn list_readers() -> Result<Vec<String>, CryptoError> {
+        let Some(api) = LinuxPcscApi::get() else {
+            return Ok(Vec::new());
+        };
+        let mut ctx: c_long = 0;
+        let res = unsafe {
+            (api.establish_context)(
+                SCARD_SCOPE_USER,
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut ctx,
+            )
+        };
+        if res != SCARD_S_SUCCESS {
+            return Ok(Vec::new());
+        }
+
+        let mut len: c_ulong = 0;
+        let list_len_res =
+            unsafe { (api.list_readers)(ctx, std::ptr::null(), std::ptr::null_mut(), &mut len) };
+        if list_len_res != SCARD_S_SUCCESS || len == 0 {
+            unsafe { (api.release_context)(ctx) };
+            return Ok(Vec::new());
+        }
+
+        let mut raw = vec![0 as c_char; len as usize];
+        let list_res =
+            unsafe { (api.list_readers)(ctx, std::ptr::null(), raw.as_mut_ptr(), &mut len) };
+        unsafe { (api.release_context)(ctx) };
+
+        if list_res != SCARD_S_SUCCESS {
+            return Ok(Vec::new());
+        }
+
+        let bytes: Vec<u8> = raw.into_iter().map(|c| c as u8).collect();
+        Ok(super::parse_multistring_readers(&bytes))
+    }
+}
+
+#[cfg(not(any(windows, target_vendor = "apple", target_os = "linux")))]
+mod pcsc_backend {
+    use super::{CommandApdu, CryptoError, ResponseApdu};
+
+    pub struct Transport;
+
+    impl Transport {
+        pub fn connect(_reader: &str) -> Result<Self, CryptoError> {
+            Err(CryptoError::HsmError(
+                "PC/SC hardware driver not supported on this platform configuration".into(),
+            ))
+        }
+
+        pub fn transmit(&self, _apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
+            Err(CryptoError::HsmError("PC/SC transport inactive".into()))
+        }
+    }
+
+    pub fn list_readers() -> Result<Vec<String>, CryptoError> {
         Ok(Vec::new())
     }
+}
+
+fn parse_multistring_readers(buf: &[u8]) -> Vec<String> {
+    let mut readers = Vec::new();
+    for chunk in buf.split(|b| *b == 0) {
+        if !chunk.is_empty() {
+            if let Ok(name) = std::str::from_utf8(chunk) {
+                readers.push(name.to_string());
+            }
+        }
+    }
+    readers
+}
+
+/// Native PC/SC Low-Level Transport
+struct NativePcscTransport(pcsc_backend::Transport);
+
+impl NativePcscTransport {
+    fn connect(reader: &str) -> Result<Self, CryptoError> {
+        Ok(Self(pcsc_backend::Transport::connect(reader)?))
+    }
+
+    fn transmit(&self, apdu: &CommandApdu) -> Result<ResponseApdu, CryptoError> {
+        self.0.transmit(apdu)
+    }
+}
+
+/// Enumerates connected PC/SC smartcard readers.
+pub fn list_pcsc_readers() -> Result<Vec<String>, CryptoError> {
+    pcsc_backend::list_readers()
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,6 +1678,17 @@ mod tests {
         // Probe with a nonexistent reader filter returns Ok(None)
         let specific = probe_with_reader(Some("NonExistentVirtualReader12345")).unwrap();
         assert!(specific.is_none());
+    }
+
+    #[test]
+    fn test_parse_multistring_readers() {
+        let raw = b"Yubico YubiKey OTP+FIDO+CCID 00 00\0ACS ACR122U 01 00\0\0";
+        let parsed = parse_multistring_readers(raw);
+        assert_eq!(
+            parsed,
+            vec!["Yubico YubiKey OTP+FIDO+CCID 00 00", "ACS ACR122U 01 00"]
+        );
+        assert!(parse_multistring_readers(b"\0\0").is_empty());
     }
 
     /// Manual hardware lane: requires a physical PIV token on a real reader.

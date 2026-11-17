@@ -30,7 +30,7 @@ pub fn select_head(
     let mut heads = Vec::new();
     for bytes in records {
         if let Ok(head) = from_canonical_cbor::<HeadRecord>(bytes) {
-            if head.version != PROTOCOL_VERSION
+            if head.validate_version_and_generation().is_err()
                 || head.vault_id != vault
                 || head.snapshot_id.len() != 32
                 || head
@@ -41,6 +41,11 @@ pub fn select_head(
                 continue;
             }
             for cert in &certs {
+                if let Some(head_gen) = head.authority_generation {
+                    if cert.authority_generation != head_gen {
+                        continue;
+                    }
+                }
                 let pk: [u8; 32] = cert.device_signing_pk.as_slice().try_into()?;
                 if head.device_id.len() == 32 && head.verify(&pk).is_ok() {
                     heads.push((head.clone(), cert.clone()));
@@ -148,6 +153,9 @@ pub fn verify_snapshot(
             && record.device_counter == head.device_counter
             && record.parent_snapshot_ids == head.parent_snapshot_ids
             && record.authority_generation == cert.authority_generation
+            && head
+                .authority_generation
+                .is_none_or(|gen| gen == cert.authority_generation)
             && record.compute_record_cid()?.as_slice() == head.snapshot_id,
         "Snapshot authority or head binding mismatch"
     );
@@ -207,6 +215,7 @@ mod tests {
             closure_digest: vec![3; 32],
             device_id: signer.verifying_key().to_bytes().to_vec(),
             device_counter: counter,
+            authority_generation: None,
             signature: vec![],
         };
         head.sign(signer).unwrap();
@@ -286,6 +295,7 @@ mod tests {
             closure_digest: vec![3; 32],
             device_id: attacker.verifying_key().to_bytes().to_vec(),
             device_counter: u64::MAX,
+            authority_generation: None,
             signature: vec![],
         };
         head.sign(&attacker).unwrap();
@@ -366,6 +376,7 @@ mod tests {
             closure_digest: vec![3; 32],
             device_id: vec![9; 32],
             device_counter: 1,
+            authority_generation: None,
             signature: vec![],
         };
         assert!(verify_snapshot(&record, &head, &cert).is_ok());
@@ -399,5 +410,80 @@ mod tests {
             &[6; 32]
         )
         .is_err());
+    }
+
+    #[test]
+    fn head_record_v2_resolves_same_key_recertification_across_generations() {
+        use ciphervault_format::HEAD_RECORD_VERSION_V2;
+        let root = generate_signing_key();
+        let root_pk = root.verifying_key().to_bytes();
+        let signer = generate_signing_key();
+        let signer_pk = signer.verifying_key().to_bytes().to_vec();
+        let vault = vec![1u8; 32];
+        let dev_id = vec![9u8; 32];
+
+        // Device key `signer` has two certificates across generations 1 and 2.
+        let mut cert_gen1 = DeviceCertificate {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.clone(),
+            certificate_id: vec![10u8; 32],
+            device_signing_pk: signer_pk.clone(),
+            permissions: 1,
+            authority_generation: 1,
+            issued_at_utc: 1,
+            signature: vec![],
+        };
+        cert_gen1.sign(&root).unwrap();
+
+        let mut cert_gen2 = DeviceCertificate {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.clone(),
+            certificate_id: vec![20u8; 32],
+            device_signing_pk: signer_pk,
+            permissions: 1,
+            authority_generation: 2,
+            issued_at_utc: 2,
+            signature: vec![],
+        };
+        cert_gen2.sign(&root).unwrap();
+
+        // Older snapshot was captured under generation 1 before any generation-2 snapshot existed.
+        let mut record_gen1 = SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault.clone(),
+            snapshot_id: vec![2u8; 32],
+            parent_snapshot_ids: vec![],
+            device_id: dev_id.clone(),
+            device_counter: 1,
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![5u8; 32],
+            encrypted_manifest_len: 0,
+            advisory_timestamp_utc: 1,
+            signature: vec![],
+        };
+        record_gen1.sign(&signer).unwrap();
+
+        let mut head_v2_gen1 = HeadRecord {
+            version: HEAD_RECORD_VERSION_V2,
+            vault_id: vault,
+            snapshot_id: record_gen1.compute_record_cid().unwrap().to_vec(),
+            parent_snapshot_ids: vec![],
+            closure_digest: vec![3u8; 32],
+            device_id: dev_id,
+            device_counter: 1,
+            authority_generation: Some(1),
+            signature: vec![],
+        };
+        head_v2_gen1.sign(&signer).unwrap();
+
+        let records = vec![
+            to_canonical_cbor(&cert_gen1).unwrap(),
+            to_canonical_cbor(&cert_gen2).unwrap(),
+            to_canonical_cbor(&head_v2_gen1).unwrap(),
+        ];
+        let (chosen_head, chosen_cert) = select_head(&records, &[1u8; 32], &root_pk).unwrap();
+        assert_eq!(chosen_cert.authority_generation, 1);
+        verify_snapshot(&record_gen1, &chosen_head, &chosen_cert).unwrap();
     }
 }

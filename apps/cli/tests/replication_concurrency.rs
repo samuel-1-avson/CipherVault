@@ -210,6 +210,7 @@ async fn setup_replication_fixture() -> ReplicationFixture {
             .to_vec(),
         device_id: dev_id.to_vec(),
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
     head.sign(&dev_sk).unwrap();

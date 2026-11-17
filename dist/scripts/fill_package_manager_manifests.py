@@ -25,6 +25,13 @@ HOMEBREW_TARGETS = (
     "x86_64-unknown-linux-gnu",
 )
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
+HERMES_PLUGIN_ASSETS = (
+    "ciphervault.exe",
+    "ciphervault-linux-amd64",
+    "ciphervault-linux-arm64",
+    "ciphervault-macos-amd64",
+    "ciphervault-macos-arm64",
+)
 REPO_RELEASE_URL = "https://github.com/samuel-1-avson/CipherVault/releases/download/"
 
 
@@ -47,6 +54,7 @@ def read_checksums(path: Path, tag: str) -> dict[str, str]:
         if len(parts) != 2:
             continue
         digest, filename = parts
+        filename = filename.lstrip("*")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"non-hex SHA-256 digest for {filename}")
         if filename in checksums:
@@ -182,7 +190,42 @@ def update_winget(manifests_root: Path, version: str, checksums: dict[str, str],
     write_preserving_newlines(installer, text)
 
 
-def update_manifests(dist: Path, sums_path: Path, tag: str) -> None:
+def update_hermes_plugin(path: Path, version: str, checksums: dict[str, str]) -> None:
+    text = path.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    if "ciphervault.exe" not in checksums:
+        raise ValueError("missing checksum for ciphervault.exe (required by Hermes plugin)")
+    win_sha = checksums["ciphervault.exe"]
+    text = exact_substitution(
+        text,
+        re.compile(r'(?m)^RELEASE_VERSION = "[^"]+"(\r?)$'),
+        lambda match: f'RELEASE_VERSION = "{version}"{match.group(1)}',
+        f"{path} (RELEASE_VERSION)",
+    )
+    text = exact_substitution(
+        text,
+        re.compile(r'(?m)^RELEASE_BINARY_SHA256 = "[0-9a-f]{64}"(\r?)$'),
+        lambda match: f'RELEASE_BINARY_SHA256 = "{win_sha}"{match.group(1)}',
+        f"{path} (RELEASE_BINARY_SHA256)",
+    )
+    entries = [
+        f'    "{asset}": "{checksums[asset]}",'
+        for asset in HERMES_PLUGIN_ASSETS
+        if asset in checksums
+    ]
+    block = "RELEASE_BINARY_SHA256S = {" + newline + newline.join(entries) + newline + "}"
+    text = exact_substitution(
+        text,
+        re.compile(r"(?ms)^RELEASE_BINARY_SHA256S = \{.*?^\}"),
+        lambda _match: block,
+        f"{path} (RELEASE_BINARY_SHA256S)",
+    )
+    write_preserving_newlines(path, text)
+
+
+def update_manifests(
+    dist: Path, sums_path: Path, tag: str, plugin_path: Path | None = None
+) -> None:
     if not re.fullmatch(r"v?\d+\.\d+\.\d+", tag):
         raise ValueError(f"unsupported release tag {tag!r}")
     version = tag[1:] if tag.startswith("v") else tag
@@ -193,6 +236,8 @@ def update_manifests(dist: Path, sums_path: Path, tag: str) -> None:
     update_scoop(dist / "scoop/ciphervault.json", version, tag, checksums)
     winget = dist / "winget/manifests/c/CipherVault/CipherVault"
     update_winget(winget, version, checksums, tag)
+    if plugin_path is not None:
+        update_hermes_plugin(plugin_path, version, checksums)
 
 
 def main() -> None:
@@ -200,8 +245,14 @@ def main() -> None:
     parser.add_argument("dist", type=Path, help="dist/package-managers directory")
     parser.add_argument("sums", type=Path, help="authenticated SHA256SUMS.txt")
     parser.add_argument("tag", help="release tag, for example v1.0.28")
+    parser.add_argument(
+        "--plugin",
+        type=Path,
+        default=None,
+        help="optional Hermes plugin __init__.py to sync RELEASE_VERSION and RELEASE_BINARY_SHA256S",
+    )
     args = parser.parse_args()
-    update_manifests(args.dist, args.sums, args.tag)
+    update_manifests(args.dist, args.sums, args.tag, plugin_path=args.plugin)
     print(f"Updated Homebrew, Scoop, and Winget manifests for {args.tag}")
 
 

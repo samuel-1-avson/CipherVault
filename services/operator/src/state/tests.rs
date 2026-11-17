@@ -227,6 +227,7 @@ fn test_operator_recovery_record_cryptographic_authorization() {
         closure_digest: vec![0xBBu8; 32],
         device_id: vec![0xCCu8; 32],
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
     head.sign(&dev_sk).unwrap();

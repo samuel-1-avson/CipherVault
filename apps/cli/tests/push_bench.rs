@@ -192,6 +192,7 @@ async fn bench_push_sequential_vs_concurrent() {
             .to_vec(),
         device_id: dev_id.to_vec(),
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
     head.sign(&dev_sk).unwrap();
