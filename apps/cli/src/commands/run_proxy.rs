@@ -143,7 +143,22 @@ fn known_provider_for_key(key: &str) -> Option<ProviderSpec> {
         .map(|(_, url, hdr, bearer, envs)| (*url, *hdr, *bearer, *envs))
 }
 
-fn validate_upstream_url(raw: &str) -> Result<String> {
+fn allow_loopback_upstream() -> bool {
+    cfg!(test) || std::env::var("CIPHERVAULT_ALLOW_LOOPBACK_UPSTREAM").as_deref() == Ok("1")
+}
+
+fn allow_provider_override() -> bool {
+    cfg!(test) || std::env::var("CIPHERVAULT_ALLOW_PROVIDER_OVERRIDE").as_deref() == Ok("1")
+}
+
+fn canonical_urls_match(candidate: &str, canonical: &str) -> bool {
+    match (reqwest::Url::parse(candidate), reqwest::Url::parse(canonical)) {
+        (Ok(a), Ok(b)) => a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/'),
+        _ => candidate.trim_end_matches('/') == canonical.trim_end_matches('/'),
+    }
+}
+
+fn validate_upstream_url(raw: &str, allow_loopback: bool) -> Result<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed)
         .with_context(|| format!("invalid --proxy-upstream URL '{raw}'"))?;
@@ -153,16 +168,25 @@ fn validate_upstream_url(raw: &str) -> Result<String> {
     match parsed.scheme() {
         "https" => Ok(trimmed.to_string()),
         "http" if matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]") => {
-            Ok(trimmed.to_string())
+            if allow_loopback {
+                Ok(trimmed.to_string())
+            } else {
+                bail!(
+                    "refusing loopback http:// upstream '{raw}' without CIPHERVAULT_ALLOW_LOOPBACK_UPSTREAM=1"
+                )
+            }
         }
         "http" => bail!(
-            "refusing cleartext http:// upstream '{raw}' (only https:// or loopback http:// is allowed)"
+            "refusing cleartext http:// upstream '{raw}' (only https:// or explicitly allowed loopback http:// is allowed)"
         ),
         other => bail!("unsupported upstream URL scheme '{other}' in '{raw}'"),
     }
 }
 
-pub(crate) fn parse_proxy_upstream_spec(spec: &str) -> Result<(String, String, String, bool)> {
+pub(crate) fn parse_proxy_upstream_spec(
+    spec: &str,
+    allow_loopback: bool,
+) -> Result<(String, String, String, bool)> {
     let (key, rhs) = spec.split_once('=').ok_or_else(|| {
         anyhow::anyhow!("invalid --proxy-upstream '{spec}': expected VAR=https://host[@HeaderName]")
     })?;
@@ -179,7 +203,7 @@ pub(crate) fn parse_proxy_upstream_spec(spec: &str) -> Result<(String, String, S
     } else {
         (rhs, "authorization".to_string(), true)
     };
-    let clean_url = validate_upstream_url(url_part)?;
+    let clean_url = validate_upstream_url(url_part, allow_loopback)?;
     Ok((key.to_string(), clean_url, header_name, bearer_prefix))
 }
 
@@ -193,12 +217,33 @@ pub(crate) fn build_proxy_routes(
     vars: &BTreeMap<String, Zeroizing<String>>,
     explicit_upstreams: Option<&[String]>,
 ) -> Result<Vec<ProxyRoute>> {
+    build_proxy_routes_with_policy(
+        vars,
+        explicit_upstreams,
+        allow_loopback_upstream(),
+        allow_provider_override(),
+    )
+}
+
+fn build_proxy_routes_with_policy(
+    vars: &BTreeMap<String, Zeroizing<String>>,
+    explicit_upstreams: Option<&[String]>,
+    allow_loopback: bool,
+    allow_provider_override: bool,
+) -> Result<Vec<ProxyRoute>> {
     let mut overrides: BTreeMap<String, (String, String, bool)> = BTreeMap::new();
     if let Some(specs) = explicit_upstreams {
         for spec in specs {
-            let (k, url, hdr, bearer) = parse_proxy_upstream_spec(spec)?;
+            let (k, url, hdr, bearer) = parse_proxy_upstream_spec(spec, allow_loopback)?;
             if !vars.contains_key(&k) {
                 bail!("--proxy-upstream references '{k}' which is not loaded in this run");
+            }
+            if let Some((canonical_url, _, _, _)) = known_provider_for_key(&k) {
+                if !allow_provider_override && !canonical_urls_match(&url, canonical_url) {
+                    bail!(
+                        "refusing to override known provider '{k}' upstream '{url}' (canonical '{canonical_url}') without CIPHERVAULT_ALLOW_PROVIDER_OVERRIDE=1"
+                    );
+                }
             }
             overrides.insert(k, (url, hdr, bearer));
         }
@@ -450,11 +495,13 @@ async fn proxy_handler(State(state): State<Arc<ProxyState>>, req: Request<Body>)
     let resp_bytes = match resp.bytes().await {
         Ok(b) => b,
         Err(e) => {
+            let (scrubbed_err, _) =
+                ciphervault_redact::scrub_exact_values(&e.to_string(), &state.exact_values);
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("upstream response read failed: {e}"),
+                format!("upstream response read failed: {scrubbed_err}"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -494,12 +541,16 @@ mod tests {
 
     #[test]
     fn validates_upstream_urls_and_rejects_cleartext_remote() {
-        assert!(parse_proxy_upstream_spec("MY_VAR=https://api.example.com").is_ok());
-        assert!(parse_proxy_upstream_spec("MY_VAR=http://127.0.0.1:8080").is_ok());
-        assert!(parse_proxy_upstream_spec("MY_VAR=http://evil.example.com").is_err());
+        let allow_loopback = allow_loopback_upstream();
+        assert!(
+            parse_proxy_upstream_spec("MY_VAR=https://api.example.com", allow_loopback).is_ok()
+        );
+        assert!(parse_proxy_upstream_spec("MY_VAR=http://127.0.0.1:8080", allow_loopback).is_ok());
+        assert!(parse_proxy_upstream_spec("MY_VAR=http://evil.example.com", allow_loopback).is_err());
 
         let (k, u, h, bearer) =
-            parse_proxy_upstream_spec("MY_VAR=https://api.example.com@X-Api-Key").unwrap();
+            parse_proxy_upstream_spec("MY_VAR=https://api.example.com@X-Api-Key", allow_loopback)
+                .unwrap();
         assert_eq!(k, "MY_VAR");
         assert_eq!(u, "https://api.example.com");
         assert_eq!(h, "x-api-key");
@@ -561,6 +612,151 @@ mod tests {
         let body = ok.text().await.unwrap();
         assert!(!body.contains(real_val), "value leaked in body: {body}");
         assert!(body.contains("[REDACTED"), "expected redaction in {body}");
+
+        proxy.shutdown().await;
+        mock_handle.abort();
+    }
+
+    #[test]
+    fn rejects_loopback_http_upstream_unless_allowed() {
+        for url in [
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://[::1]:8080",
+        ] {
+            let err = validate_upstream_url(url, false).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("CIPHERVAULT_ALLOW_LOOPBACK_UPSTREAM=1"),
+                "unexpected error for {url}: {err}"
+            );
+            assert!(
+                validate_upstream_url(url, true).is_ok(),
+                "expected {url} to be allowed when allow_loopback=true"
+            );
+        }
+
+        // Non-loopback cleartext HTTP is always refused even with allow_loopback=true.
+        assert!(validate_upstream_url("http://evil.example.com", true).is_err());
+    }
+
+    #[test]
+    fn rejects_known_provider_override_unless_allowed() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "OPENAI_API_KEY".to_string(),
+            Zeroizing::new("sk-test-1234567890".to_string()),
+        );
+        vars.insert(
+            "OPENROUTER_API_KEY".to_string(),
+            Zeroizing::new("sk-or-test-1234567890".to_string()),
+        );
+        vars.insert(
+            "CUSTOM_API_KEY".to_string(),
+            Zeroizing::new("custom-1234567890".to_string()),
+        );
+
+        // Overriding a known provider to a non-canonical HTTPS host fails when disallowed.
+        let err = build_proxy_routes_with_policy(
+            &vars,
+            Some(&["OPENAI_API_KEY=https://attacker.example.com".to_string()]),
+            false,
+            false,
+        )
+        .err()
+        .expect("expected provider override to fail");
+        assert!(
+            err.to_string()
+                .contains("CIPHERVAULT_ALLOW_PROVIDER_OVERRIDE=1"),
+            "unexpected error: {err}"
+        );
+
+        // Overriding a known provider to a loopback HTTP endpoint also fails without provider override.
+        assert!(build_proxy_routes_with_policy(
+            &vars,
+            Some(&["OPENAI_API_KEY=http://127.0.0.1:9999".to_string()]),
+            true,
+            false,
+        )
+        .is_err());
+
+        // Allowed when CIPHERVAULT_ALLOW_PROVIDER_OVERRIDE=1 policy is enabled.
+        let allowed_routes = build_proxy_routes_with_policy(
+            &vars,
+            Some(&["OPENAI_API_KEY=https://attacker.example.com".to_string()]),
+            false,
+            true,
+        )
+        .unwrap();
+        let openai = allowed_routes
+            .iter()
+            .find(|r| r.env_key == "OPENAI_API_KEY")
+            .unwrap();
+        assert_eq!(openai.upstream_base, "https://attacker.example.com");
+
+        // Canonical URL (even with trailing slash or uppercase host) succeeds without override flag.
+        assert!(build_proxy_routes_with_policy(
+            &vars,
+            Some(&[
+                "OPENAI_API_KEY=HTTPS://API.OPENAI.COM/".to_string(),
+                "OPENROUTER_API_KEY=https://openrouter.ai/api/".to_string(),
+            ]),
+            false,
+            false,
+        )
+        .is_ok());
+
+        // Non-known custom keys can bind to arbitrary HTTPS upstreams without override flag.
+        assert!(build_proxy_routes_with_policy(
+            &vars,
+            Some(&["CUSTOM_API_KEY=https://gateway.example.com".to_string()]),
+            false,
+            false,
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn proxy_scrubs_upstream_response_read_errors() {
+        use tokio::io::AsyncWriteExt;
+
+        let real_val = concat!("real_read_err_", "tok_", "aabbccddeeff");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = listener.local_addr().unwrap();
+        let mock_handle = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 512\r\n\r\npartial")
+                    .await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "CUSTOM_KEY".to_string(),
+            Zeroizing::new(real_val.to_string()),
+        );
+        let upstream_arg = format!("CUSTOM_KEY=http://{mock_addr}");
+        let routes = build_proxy_routes(&vars, Some(&[upstream_arg])).unwrap();
+        let placeholder = routes[0].placeholder.clone();
+
+        let proxy = start_credential_proxy(routes).await.unwrap();
+        let client = reqwest::Client::new();
+        let scheme = bearer_scheme_prefix();
+        let resp = client
+            .get(format!("http://{}/__cv/custom_key/data", proxy.addr))
+            .header("authorization", format!("{scheme}{placeholder}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.starts_with("upstream response read failed:"),
+            "unexpected body: {body}"
+        );
+        assert!(!body.contains(real_val));
 
         proxy.shutdown().await;
         mock_handle.abort();

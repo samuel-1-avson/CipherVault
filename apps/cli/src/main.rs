@@ -271,6 +271,13 @@ enum Commands {
 
         #[arg(long, help = "Replicas required for quorum (default 3, must be >= 1)")]
         replicas: Option<usize>,
+
+        #[arg(
+            long,
+            visible_alias = "seal",
+            help = "Overwrite and remove tracked plaintext files from the working directory after sealing the snapshot in the vault"
+        )]
+        shred: bool,
     },
 
     /// Pull the latest snapshot from independent operators and update local files
@@ -586,6 +593,13 @@ enum Commands {
             help = "Pin a variable to an HTTPS upstream URL for --proxy: VAR=https://host[@HeaderName] (repeatable)"
         )]
         proxy_upstream: Vec<String>,
+
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Apply a named execution profile from .ciphervault/policy.toml (command allowlist, allow_keys, no_net, proxy/upstreams)"
+        )]
+        profile: Option<String>,
 
         #[arg(
             trailing_var_arg = true,

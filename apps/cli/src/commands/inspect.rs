@@ -102,6 +102,8 @@ struct StatusReport {
     active_head_short: Option<String>,
     tracked_files: usize,
     tracked_paths: Vec<String>,
+    working_tree_plaintext_files: usize,
+    working_tree_sealed: bool,
     operators: Vec<String>,
     pending_uploads: usize,
     sync_health: SyncHealthJson,
@@ -147,6 +149,8 @@ impl StatusReport {
             active_head_short: active_head.as_ref().map(|h| short_hex(h, 8)),
             tracked_files,
             tracked_paths,
+            working_tree_plaintext_files: tracked_files,
+            working_tree_sealed: false,
             operators: operators
                 .iter()
                 .map(|op| mask_operator_endpoint(op))
@@ -407,8 +411,15 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         .collect();
 
     let sync_health = build_sync_health(&store)?;
+    let root_dir = crate::util::get_workspace_root()?;
+    let plaintext_on_disk_count = tracked
+        .iter()
+        .filter(|(rel_path, _)| root_dir.join(rel_path).exists())
+        .count();
+    let working_tree_sealed =
+        head_cid.is_some() && !tracked.is_empty() && plaintext_on_disk_count == 0;
     if json {
-        let report = StatusReport::new(
+        let mut report = StatusReport::new(
             &vault_id,
             &device_id,
             epoch,
@@ -427,6 +438,8 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
             now_utc,
             lease_statuses,
         );
+        report.working_tree_plaintext_files = plaintext_on_disk_count;
+        report.working_tree_sealed = working_tree_sealed;
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
@@ -438,7 +451,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
     println!("  Current Epoch:   {}", epoch);
     println!("  Device Counter:  {}", counter);
 
-    if let Some(head) = active_head {
+    if let Some(ref head) = active_head {
         println!(
             "  Active Head:     {}",
             hex::encode(&head.snapshot_id).green()
@@ -463,13 +476,15 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         );
     } else {
         for (rel_path, file_id) in tracked {
-            let full_path = crate::util::get_workspace_root()?.join(&rel_path);
+            let full_path = root_dir.join(&rel_path);
             let exists = full_path.exists();
             let state = if exists {
                 match fs::metadata(&full_path) {
                     Ok(meta) => format!("{} bytes", meta.len()).green(),
                     Err(error) => format!("unreadable ({error})").red(),
                 }
+            } else if active_head.is_some() {
+                "sealed in vault (0 bytes on disk)".cyan()
             } else {
                 "missing on disk".red()
             };

@@ -4,7 +4,6 @@
 //! local store; entries carry paths/decisions/counts, never contents.
 
 use anyhow::{bail, ensure, Result};
-use ed25519_dalek::Signer;
 use sha2::Digest;
 use std::io::Write;
 
@@ -12,6 +11,8 @@ use crate::util::{
     configured_operator_pool, get_configured_operators, get_vault_directory, get_vault_store,
 };
 use crate::AgentLogSubcommand;
+
+const AUDIT_CHECKPOINT_SIG_DOMAIN: &[u8] = b"CipherVault-AuditCheckpoint-v1";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AuditCheckpoint {
@@ -25,6 +26,32 @@ struct AuditCheckpoint {
 
 fn checkpoint_payload(vault_id: &str, entries: usize, head_hash: &str, ts: i64) -> String {
     format!("agent-audit-checkpoint\n{vault_id}\n{entries}\n{head_hash}\n{ts}")
+}
+
+fn verify_checkpoint_signature(vk: &ed25519_dalek::VerifyingKey, cp: &AuditCheckpoint) -> bool {
+    let payload = checkpoint_payload(&cp.vault_id, cp.entries, &cp.head_hash, cp.created_at_utc);
+    let Some(sig_bytes) = hex::decode(&cp.signature)
+        .ok()
+        .and_then(|b| <[u8; 64]>::try_from(b.as_slice()).ok())
+    else {
+        return false;
+    };
+    if ciphervault_crypto::verify_with_domain(
+        vk.as_bytes(),
+        AUDIT_CHECKPOINT_SIG_DOMAIN,
+        payload.as_bytes(),
+        &sig_bytes,
+    )
+    .is_ok()
+    {
+        return true;
+    }
+    // Legacy backwards-compatibility fallback for pre-domain checkpoints.
+    if vk.is_weak() {
+        return false;
+    }
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    vk.verify_strict(payload.as_bytes(), &sig).is_ok()
 }
 
 /// Anchors the current audit-chain head to the operator fleet as a
@@ -48,14 +75,12 @@ pub(crate) async fn anchor_agent_audit(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let signature = hex::encode(
-            device_sk
-                .sign(
-                    checkpoint_payload(&vault_hex, report.entries, &report.head_hash, ts)
-                        .as_bytes(),
-                )
-                .to_bytes(),
-        );
+        let payload = checkpoint_payload(&vault_hex, report.entries, &report.head_hash, ts);
+        let signature = hex::encode(ciphervault_crypto::sign_with_domain(
+            &device_sk,
+            AUDIT_CHECKPOINT_SIG_DOMAIN,
+            payload.as_bytes(),
+        ));
         let checkpoint = AuditCheckpoint {
             kind: "agent-audit-checkpoint".to_string(),
             vault_id: vault_hex,
@@ -209,7 +234,6 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
             }
         }
         AgentLogSubcommand::VerifyRemote { json } => {
-            use ed25519_dalek::Verifier;
             let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
                 get_vault_directory().join("audit_checkpoint.json"),
             )?)?;
@@ -236,23 +260,7 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
                 let Ok(cp) = serde_json::from_slice::<AuditCheckpoint>(&bytes) else {
                     continue;
                 };
-                let sig_ok = hex::decode(&cp.signature)
-                    .ok()
-                    .and_then(|b| ed25519_dalek::Signature::from_slice(&b).ok())
-                    .map(|sig| {
-                        vk.verify(
-                            checkpoint_payload(
-                                &cp.vault_id,
-                                cp.entries,
-                                &cp.head_hash,
-                                cp.created_at_utc,
-                            )
-                            .as_bytes(),
-                            &sig,
-                        )
-                        .is_ok()
-                    })
-                    .unwrap_or(false);
+                let sig_ok = verify_checkpoint_signature(&vk, &cp);
                 if sig_ok && cp.vault_id == hex::encode(vault_id) {
                     confirmed += 1;
                     anchored_entries = cp.entries;
@@ -322,4 +330,65 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::Signer;
+
+    #[test]
+    fn audit_checkpoint_uses_domain_separation_with_legacy_fallback() {
+        let sk = ciphervault_crypto::generate_signing_key();
+        let vk = sk.verifying_key();
+        let payload = checkpoint_payload("aa".repeat(32).as_str(), 3, "bb".repeat(32).as_str(), 1700);
+        let domain_sig = hex::encode(ciphervault_crypto::sign_with_domain(
+            &sk,
+            AUDIT_CHECKPOINT_SIG_DOMAIN,
+            payload.as_bytes(),
+        ));
+        let cp = AuditCheckpoint {
+            kind: "agent-audit-checkpoint".to_string(),
+            vault_id: "aa".repeat(32),
+            entries: 3,
+            head_hash: "bb".repeat(32),
+            created_at_utc: 1700,
+            signature: domain_sig,
+        };
+        assert!(verify_checkpoint_signature(&vk, &cp));
+
+        // Tampering with entries breaks verification.
+        let mut tampered = AuditCheckpoint {
+            entries: 4,
+            ..AuditCheckpoint {
+                kind: cp.kind.clone(),
+                vault_id: cp.vault_id.clone(),
+                entries: cp.entries,
+                head_hash: cp.head_hash.clone(),
+                created_at_utc: cp.created_at_utc,
+                signature: cp.signature.clone(),
+            }
+        };
+        assert!(!verify_checkpoint_signature(&vk, &tampered));
+
+        // Wrong domain signature must fail verification.
+        tampered.entries = 3;
+        tampered.signature = hex::encode(ciphervault_crypto::sign_with_domain(
+            &sk,
+            b"CipherVault-AgentAudit-v1",
+            payload.as_bytes(),
+        ));
+        assert!(!verify_checkpoint_signature(&vk, &tampered));
+
+        // Legacy raw Ed25519 signature still verifies for backwards compatibility.
+        let legacy_cp = AuditCheckpoint {
+            kind: "agent-audit-checkpoint".to_string(),
+            vault_id: "aa".repeat(32),
+            entries: 3,
+            head_hash: "bb".repeat(32),
+            created_at_utc: 1700,
+            signature: hex::encode(sk.sign(payload.as_bytes()).to_bytes()),
+        };
+        assert!(verify_checkpoint_signature(&vk, &legacy_cp));
+    }
 }

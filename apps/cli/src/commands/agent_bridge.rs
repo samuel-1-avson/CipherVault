@@ -52,12 +52,7 @@ pub(crate) fn parse_secret_values(
     {
         collect_kv_lines(&text, path_hint, &mut out);
     }
-    if let Some(start) = text.find("-----BEGIN") {
-        if text[start..].contains("PRIVATE KEY-----") {
-            let block = text[start..].trim().to_string();
-            out.push(("PRIVATE_KEY".to_string(), Zeroizing::new(block)));
-        }
-    }
+    collect_pem_private_keys(&text, &mut out);
     // Fallback for raw tracked secret files (e.g. .npmrc, .pypirc, token files)
     // where structured parsers extracted nothing.
     if out.is_empty() && bytes.len() <= 65_536 {
@@ -79,6 +74,70 @@ pub(crate) fn parse_secret_values(
         }
     }
     out
+}
+
+fn collect_pem_private_keys(text: &str, out: &mut Vec<(String, Zeroizing<String>)>) {
+    const BEGIN: &str = "-----BEGIN ";
+    const END_MARK: &str = "-----END ";
+    let mut cursor = 0usize;
+    while let Some(rel_start) = text[cursor..].find(BEGIN) {
+        let start = cursor + rel_start;
+        let label_start = start + BEGIN.len();
+        let Some(rel_header_end) = text[label_start..].find("-----") else {
+            break;
+        };
+        let label = &text[label_start..label_start + rel_header_end];
+        if label.contains('\n') || label.contains('\r') {
+            cursor = label_start;
+            continue;
+        }
+        let header_end = label_start + rel_header_end + 5;
+        if !label.to_ascii_uppercase().contains("PRIVATE KEY") {
+            cursor = header_end;
+            continue;
+        }
+        let (body_end, block_end) = if let Some(rel_end) = text[header_end..].find(END_MARK) {
+            let end_mark = header_end + rel_end;
+            let end_label_start = end_mark + END_MARK.len();
+            let block_end = text[end_label_start..]
+                .find("-----")
+                .map(|p| end_label_start + p + 5)
+                .unwrap_or(text.len());
+            (end_mark, block_end)
+        } else {
+            (text.len(), text.len())
+        };
+        let block = text[start..block_end].trim().to_string();
+        out.push(("PRIVATE_KEY".to_string(), Zeroizing::new(block)));
+        for raw_line in text[header_end..body_end].lines() {
+            let line = raw_line.trim();
+            if line.len() >= 16
+                && !line.starts_with("-----")
+                && line.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_')
+                })
+            {
+                out.push((
+                    "PRIVATE_KEY_LINE".to_string(),
+                    Zeroizing::new(line.to_string()),
+                ));
+            }
+        }
+        cursor = block_end;
+    }
+}
+
+fn strip_inline_hash_comment(val: &str) -> &str {
+    if val.starts_with('#') {
+        return "";
+    }
+    let bytes = val.as_bytes();
+    for i in 1..bytes.len() {
+        if bytes[i] == b'#' && matches!(bytes[i - 1], b' ' | b'\t') {
+            return val[..i].trim();
+        }
+    }
+    val.trim()
 }
 
 fn collect_kv_lines(text: &str, prefix: &str, out: &mut Vec<(String, Zeroizing<String>)>) {
@@ -105,7 +164,7 @@ fn collect_kv_lines(text: &str, prefix: &str, out: &mut Vec<(String, Zeroizing<S
         {
             val[1..val.len() - 1].to_string()
         } else {
-            val.split('#').next().unwrap_or(val).trim().to_string()
+            strip_inline_hash_comment(val).to_string()
         };
         if parsed.chars().count() >= 6 {
             out.push((format!("{prefix}.{key}"), Zeroizing::new(parsed)));
@@ -364,6 +423,13 @@ impl BridgeSecretCache {
             db_path.to_string_lossy().to_string(),
             db_meta.as_ref().and_then(|m| m.modified().ok()),
             db_meta.as_ref().map(|m| m.len()).unwrap_or(0),
+        ));
+        let wal_path = db_path.with_extension("db-wal");
+        let wal_meta = std::fs::metadata(&wal_path).ok();
+        fp.push((
+            wal_path.to_string_lossy().to_string(),
+            wal_meta.as_ref().and_then(|m| m.modified().ok()),
+            wal_meta.as_ref().map(|m| m.len()).unwrap_or(0),
         ));
         if let Ok(store) = get_vault_store() {
             if let Ok(tracked) = store.list_tracked_files() {
@@ -638,5 +704,113 @@ mod tests {
 
         let bad = handle_stdio_line(r#"{"op":"unknown"}"#, &mut cache);
         assert_eq!(bad["ok"], false);
+    }
+
+    #[test]
+    fn parses_multi_pem_blocks_and_body_lines() {
+        let line1 = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC";
+        let line2 = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4";
+        let line3 = "MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1u";
+        let pem_bundle = format!(
+            "{begin} CERTIFICATE-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\n{end} CERTIFICATE-----\n\
+             {begin} RSA {pk}-----\nProc-Type: 4,ENCRYPTED\n{line1}\n{line2}\n{end} RSA {pk}-----\n\
+             {begin} EC {pk}-----\n{line3}\nshortline==\n{end} EC {pk}-----\n",
+            begin = "-----BEGIN",
+            end = "-----END",
+            pk = "PRIVATE KEY",
+        );
+
+        let vals = parse_secret_values(pem_bundle.as_bytes(), "bundle.pem");
+        let blocks: Vec<&str> = vals
+            .iter()
+            .filter(|(k, _)| k == "PRIVATE_KEY")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(blocks.len(), 2, "expected both private PEM blocks: {blocks:?}");
+        assert!(blocks[0].contains(line1));
+        assert!(blocks[1].contains(line3));
+
+        let lines: Vec<&str> = vals
+            .iter()
+            .filter(|(k, _)| k == "PRIVATE_KEY_LINE")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert!(lines.contains(&line1));
+        assert!(lines.contains(&line2));
+        assert!(lines.contains(&line3));
+        assert!(!lines.contains(&"shortline=="));
+        assert!(!lines.contains(&"Proc-Type: 4,ENCRYPTED"));
+
+        // Partial PEM dump (body line only, no BEGIN/END headers) must scrub cleanly.
+        let refs: Vec<(&str, &str)> = vals.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (scrubbed, n) =
+            ciphervault_redact::scrub_exact_values(&format!("leaked line: {line2}"), &refs);
+        assert_eq!(n, 1);
+        assert_eq!(scrubbed, "leaked line: [REDACTED:PRIVATE_KEY_LINE]");
+    }
+
+    #[test]
+    fn parses_unquoted_kv_with_hash_without_truncation() {
+        let yaml = concat!(
+            "db_pass: abc#def123\n",
+            "api_pass: p@ss#word12 # trailing comment\n",
+            "tab_pass: t@b#secret9\t# tab comment\n",
+            "only_comment: # ignore_this_comment\n",
+        );
+        let vals = parse_secret_values(yaml.as_bytes(), "secrets.yaml");
+        let find_val = |key: &str| -> Option<String> {
+            vals.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str().to_string())
+        };
+        assert_eq!(find_val("secrets.yaml.db_pass").as_deref(), Some("abc#def123"));
+        assert_eq!(
+            find_val("secrets.yaml.api_pass").as_deref(),
+            Some("p@ss#word12")
+        );
+        assert_eq!(
+            find_val("secrets.yaml.tab_pass").as_deref(),
+            Some("t@b#secret9")
+        );
+        assert!(find_val("secrets.yaml.only_comment").is_none());
+    }
+
+    #[test]
+    fn fingerprint_tracks_sqlite_wal_changes() {
+        let base = std::env::temp_dir().join(format!(
+            "cv-bridge-wal-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let ctx = crate::util::tests::workspace_fixture(&base, "wal", 7);
+        let wal_path = ctx.db_path.with_extension("db-wal");
+
+        crate::util::REQUEST_VAULT_CONTEXT.sync_scope(ctx.clone(), || {
+            let mut cache = BridgeSecretCache::new();
+            cache.refresh_if_needed();
+            assert!(cache.complete);
+            let fp1 = cache.fingerprint.clone().unwrap();
+            assert!(
+                fp1.iter().any(|(p, _, _)| p.ends_with("vault.db-wal")),
+                "fingerprint must include vault.db-wal: {fp1:?}"
+            );
+
+            // Simulate a WAL write while vault.db itself is untouched.
+            std::fs::write(&wal_path, b"wal-commit-frame-1").unwrap();
+            let fp2 = BridgeSecretCache::current_fingerprint();
+            assert_ne!(fp1, fp2, "WAL creation must invalidate fingerprint");
+
+            // Seed a stale sentinel so we verify refresh_if_needed reloads when WAL grows.
+            cache.values = vec![("STALE".to_string(), Zeroizing::new("stale_sentinel_99".to_string()))];
+            cache.fingerprint = Some(fp2.clone());
+            std::fs::write(&wal_path, b"wal-commit-frame-1-and-frame-2").unwrap();
+            cache.refresh_if_needed();
+            assert!(
+                !cache.values.iter().any(|(k, _)| k == "STALE"),
+                "cache must reload after WAL growth"
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

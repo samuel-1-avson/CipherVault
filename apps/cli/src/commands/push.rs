@@ -3,6 +3,9 @@
 use anyhow::{bail, Context, Result};
 use ciphervault_crypto::HardwareSecurityModule;
 use colored::Colorize;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 use ciphervault_format::{to_canonical_cbor, HeadRecord, HEAD_RECORD_VERSION_V2};
 use ciphervault_snapshot::{create_snapshot, create_snapshot_with_signer, DeviceSigner};
@@ -26,8 +29,10 @@ pub(crate) async fn cmd_push(
     pin: Option<String>,
     concurrency: Option<usize>,
     replicas: Option<usize>,
+    shred: bool,
 ) -> Result<()> {
     let store = get_vault_store()?;
+    let shred = resolve_push_shred(shred, &crate::util::get_vault_directory())?;
     let vault_id = store.get_vault_id()?;
     let (device_id, device_sk, counter, epoch) = store.get_device_state()?;
     let epoch_key = store.get_epoch_key(epoch)?;
@@ -101,10 +106,66 @@ pub(crate) async fn cmd_push(
         .context("No trusted signing authority; local snapshot state was not advanced")?;
     store.validate_capture_authority_for_key(&signing_key, authority_generation)?;
 
+    let current_dir = crate::util::get_workspace_root()?;
+    let missing_on_disk: Vec<PathBuf> = tracked
+        .iter()
+        .filter(|(rel, _)| !current_dir.join(rel).exists())
+        .map(|(rel, _)| rel.clone())
+        .collect();
+
+    let mut temp_restored: Vec<(PathBuf, [u8; 32])> = Vec::new();
+    if !missing_on_disk.is_empty() && active_head.is_some() {
+        if let Ok(mut bundle) = crate::commands::run::load_local_snapshot_bundle_sync(&store) {
+            let mut restorable_indices: Vec<(PathBuf, [u8; 32], usize)> = Vec::new();
+            for (rel, fid) in &tracked {
+                let norm = rel.to_string_lossy().replace('\\', "/");
+                if !current_dir.join(rel).exists() {
+                    if let Some(idx) = bundle
+                        .files
+                        .iter()
+                        .position(|f| f.relative_path.replace('\\', "/") == norm)
+                    {
+                        restorable_indices.push((rel.clone(), *fid, idx));
+                    }
+                }
+            }
+            if missing_on_disk.len() == tracked.len() && restorable_indices.len() == tracked.len() {
+                for f in &mut bundle.files {
+                    f.plaintext.zeroize();
+                }
+                if shred {
+                    println!(
+                        "{}",
+                        "✓ Working tree is already sealed (0 plaintext bytes on disk); active head snapshot is up to date."
+                            .bold()
+                            .green()
+                    );
+                    return Ok(());
+                }
+                bail!(
+                    "Tracked confidential files are currently sealed in the vault (not on disk). \
+                     Run 'ciphervault restore' before pushing new edits, or 'ciphervault untrack <file>' to remove a file."
+                );
+            }
+            for (rel, fid, idx) in restorable_indices {
+                let full = current_dir.join(&rel);
+                if let Some(parent) = full.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut f = ciphervault_file_lock::create_secret_file(&full)?;
+                f.write_all(&bundle.files[idx].plaintext)?;
+                f.sync_all()?;
+                temp_restored.push((rel, fid));
+            }
+            for f in &mut bundle.files {
+                f.plaintext.zeroize();
+            }
+        }
+    }
+
     println!("{}", "Capturing and encrypting snapshot...".bold());
 
-    let current_dir = crate::util::get_workspace_root()?;
-    let output = match &maybe_token {
+    let snap_res = match &maybe_token {
         Some(token) => create_snapshot_with_signer(
             &current_dir,
             &tracked,
@@ -116,7 +177,7 @@ pub(crate) async fn cmd_push(
             counter + 1,
             authority_generation,
             &DeviceSigner::Hardware(token, ciphervault_crypto::HsmSlot::DigitalSignature),
-        )?,
+        ),
         None => create_snapshot(
             &current_dir,
             &tracked,
@@ -128,8 +189,12 @@ pub(crate) async fn cmd_push(
             counter + 1,
             authority_generation,
             &device_sk,
-        )?,
+        ),
     };
+    if !temp_restored.is_empty() {
+        let _ = shred_working_tree_files(&current_dir, &temp_restored);
+    }
+    let output = snap_res?;
 
     // Store snapshot and chunks in local transactional queue
     store.save_snapshot(&output.record, &output.encrypted_manifest, &output.chunks)?;
@@ -205,6 +270,14 @@ pub(crate) async fn cmd_push(
             "  Durability:     {} (offline / local-only commit)",
             "LocalOnly".yellow().bold()
         );
+        if shred {
+            let shredded = shred_working_tree_files(&current_dir, &tracked)?;
+            println!(
+                "  Working tree:   {} ({} tracked file(s) zero-filled and removed; 0 bytes on disk)",
+                "Sealed".green().bold(),
+                shredded
+            );
+        }
         return Ok(());
     }
 
@@ -374,7 +447,61 @@ pub(crate) async fn cmd_push(
         }
     }
 
+    if shred {
+        let shredded = shred_working_tree_files(&current_dir, &tracked)?;
+        println!(
+            "  Working tree:   {} ({} tracked file(s) zero-filled and removed; 0 bytes on disk)",
+            "Sealed".green().bold(),
+            shredded
+        );
+    }
+
     Ok(())
+}
+
+pub(crate) fn resolve_push_shred(shred_flag: bool, vault_dir: &Path) -> Result<bool> {
+    if shred_flag {
+        return Ok(true);
+    }
+    Ok(crate::commands::run::load_workspace_policy(vault_dir)?
+        .is_some_and(|policy| policy.sealed_mode))
+}
+
+/// Zero-fills and removes tracked plaintext working-tree files so confidential
+/// values live only encrypted in `.ciphervault/vault.db` (and on operators).
+pub(crate) fn shred_working_tree_files(root: &Path, tracked: &[(PathBuf, [u8; 32])]) -> Result<usize> {
+    let mut shredded = 0usize;
+    let zeros = [0u8; 64 * 1024];
+    for (rel_path, _) in tracked {
+        let full = root.join(rel_path);
+        let meta = match std::fs::symlink_metadata(&full) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("stat '{}'", rel_path.display())),
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            bail!(
+                "Refusing to shred non-regular/symlink tracked path '{}'",
+                rel_path.display()
+            );
+        }
+        let len = meta.len();
+        if len > 0 {
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&full) {
+                let mut remaining = len;
+                while remaining > 0 {
+                    let chunk = (remaining as usize).min(zeros.len());
+                    f.write_all(&zeros[..chunk])?;
+                    remaining -= chunk as u64;
+                }
+                let _ = f.sync_all();
+            }
+        }
+        std::fs::remove_file(&full)
+            .with_context(|| format!("remove shredded tracked file '{}'", rel_path.display()))?;
+        shredded += 1;
+    }
+    Ok(shredded)
 }
 
 /// Clears a snapshot from the pending-upload queue once the required
@@ -523,5 +650,57 @@ mod tests {
             Some(2)
         );
         assert!(store.list_pending_uploads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn shred_working_tree_files_zero_fills_and_removes_regular_files() {
+        let dir = std::env::temp_dir().join(format!("cv-shred-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let env_path = dir.join(".env");
+        let sub_path = dir.join("sub/.env.prod");
+        std::fs::create_dir_all(sub_path.parent().unwrap()).unwrap();
+        std::fs::write(&env_path, b"API_KEY=secret_value_123456\n").unwrap();
+        std::fs::write(&sub_path, b"DB_PASS=another_secret_987\n").unwrap();
+
+        let tracked = vec![
+            (PathBuf::from(".env"), [0x11u8; 32]),
+            (PathBuf::from("sub/.env.prod"), [0x22u8; 32]),
+            (PathBuf::from(".env.missing"), [0x33u8; 32]),
+        ];
+        let count = shred_working_tree_files(&dir, &tracked).unwrap();
+        assert_eq!(count, 2);
+        assert!(!env_path.exists());
+        assert!(!sub_path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sealed_mode_auto_shreds_on_push() {
+        let dir =
+            std::env::temp_dir().join(format!("cv-sealed-push-test-{}", rand::random::<u64>()));
+        let vault_dir = dir.join(".ciphervault");
+        std::fs::create_dir_all(&vault_dir).unwrap();
+        let env_path = dir.join(".env");
+        std::fs::write(&env_path, b"SECRET=sealed_value\n").unwrap();
+
+        // No policy.toml -> false
+        assert!(!resolve_push_shred(false, &vault_dir).unwrap());
+        assert!(resolve_push_shred(true, &vault_dir).unwrap());
+
+        // sealed_mode = false -> false
+        std::fs::write(vault_dir.join("policy.toml"), "[vault]\nsealed_mode = false\n").unwrap();
+        assert!(!resolve_push_shred(false, &vault_dir).unwrap());
+
+        // sealed_mode = true -> true, and shreds tracked files
+        std::fs::write(vault_dir.join("policy.toml"), "[vault]\nsealed_mode = true\n").unwrap();
+        assert!(resolve_push_shred(false, &vault_dir).unwrap());
+
+        let tracked = vec![(PathBuf::from(".env"), [0x44u8; 32])];
+        if resolve_push_shred(false, &vault_dir).unwrap() {
+            let count = shred_working_tree_files(&dir, &tracked).unwrap();
+            assert_eq!(count, 1);
+        }
+        assert!(!env_path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

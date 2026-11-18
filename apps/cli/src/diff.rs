@@ -501,7 +501,12 @@ pub fn generate_diff_report(
             | (None, Some("working")) => {
                 let head_cid = get_head_cid()?;
                 let old_map = decrypt_snap(&head_cid)?;
-                let new_map = read_working_tree();
+                let mut new_map = read_working_tree();
+                for (p, bytes) in &old_map {
+                    if !new_map.contains_key(p) && !workspace_root.join(p).exists() {
+                        new_map.insert(p.clone(), bytes.clone());
+                    }
+                }
                 (
                     format!("head:{}", &hex::encode(head_cid)[..8]),
                     "working tree".to_string(),
@@ -511,8 +516,13 @@ pub fn generate_diff_report(
             }
             (Some("working"), Some("head")) => {
                 let head_cid = get_head_cid()?;
-                let old_map = read_working_tree();
+                let mut old_map = read_working_tree();
                 let new_map = decrypt_snap(&head_cid)?;
+                for (p, bytes) in &new_map {
+                    if !old_map.contains_key(p) && !workspace_root.join(p).exists() {
+                        old_map.insert(p.clone(), bytes.clone());
+                    }
+                }
                 (
                     "working tree".to_string(),
                     format!("head:{}", &hex::encode(head_cid)[..8]),

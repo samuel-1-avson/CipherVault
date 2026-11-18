@@ -67,7 +67,11 @@ pub(crate) async fn cmd_ui(
     }
     let addr = std::net::SocketAddr::new(host_ip, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let browser_url = ui_browser_url(host_ip, port);
+    let mut browser_url = ui_browser_url(host_ip, port);
+    if mode == UiServerMode::LocalPrivate {
+        let bootstrap = crate::init_private_ui_bootstrap_token();
+        browser_url = format!("{browser_url}?token={bootstrap}");
+    }
 
     println!(
         "{}",
