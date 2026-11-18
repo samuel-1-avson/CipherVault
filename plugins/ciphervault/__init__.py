@@ -396,6 +396,7 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
 
 
 _ORIG_RUN_CLI = _run_cli
+_ORIG_RUN_CLI_JSON = _run_cli_json
 _BRIDGE_LOCK = threading.Lock()
 _BRIDGE_POOL = {}
 _NO_STDIO_BINARIES = set()
@@ -484,8 +485,9 @@ atexit.register(_close_all_bridges)
 def _bridge_request(cwd, payload, timeout=15):
     """Send one JSON request over a persistent `ciphervault redact --stdio`
     pipe. Returns None when unavailable or unsupported (e.g. legacy CLI or
-    unit tests that monkeypatch `_run_cli`), so callers fall back cleanly."""
-    if _run_cli is not _ORIG_RUN_CLI:
+    unit tests that monkeypatch `_run_cli` / `_run_cli_json`), so callers fall
+    back cleanly."""
+    if _run_cli is not _ORIG_RUN_CLI or _run_cli_json is not _ORIG_RUN_CLI_JSON:
         return None
     binary, _src = find_binary()
     if not binary:
