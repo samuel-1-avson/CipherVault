@@ -64,6 +64,7 @@ Developer: vault & secrets:
 
 Developer: run & automate:
   run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
+  policy               Initialize and validate .ciphervault/policy.toml workspace execution policies
   redact               Filter stdin through secret redaction (vault values + credential shapes); for agent/CI pipelines, never prints a secret value
   mcp                  Run a stdio Model Context Protocol (MCP) server for Claude Code, Codex, and Cursor
   agent-log            Tamper-evident log of what agent tools did around this vault's secrets
@@ -87,7 +88,7 @@ Fleet administration:
 Account & devices:
   auth                 Manage the optional CipherVault control-plane account on this device
   device               Manage devices enrolled in the local CipherVault account
-  vault                Link the current local vault to the optional CipherVault account
+  vault                Manage local vault secrets (set, generate, unset) and optional account link
 
 App:
   update               Check for and install the latest signed GitHub release for this platform
@@ -625,6 +626,12 @@ enum Commands {
         command: Vec<String>,
     },
 
+    /// Initialize and validate .ciphervault/policy.toml workspace execution policies
+    Policy {
+        #[command(subcommand)]
+        sub: PolicySubcommand,
+    },
+
     /// Filter stdin through secret redaction (vault values + credential shapes); for agent/CI pipelines, never prints a secret value
     Redact {
         #[arg(
@@ -802,7 +809,7 @@ enum Commands {
         sub: DeviceSubcommand,
     },
 
-    /// Link the current local vault to the optional CipherVault account
+    /// Manage local vault secrets (set, generate, unset) and optional account link
     Vault {
         #[command(subcommand)]
         sub: VaultSubcommand,
@@ -1069,6 +1076,125 @@ enum VaultSubcommand {
 
     /// Remove the current local vault from the account registry
     Unlink,
+
+    /// Store or update a single secret key inside the local vault snapshot (zero-disk when sealed)
+    Set {
+        #[arg(help = "Environment variable name (e.g. API_KEY)")]
+        name: String,
+
+        #[arg(
+            long,
+            help = "Read the secret value from stdin (never echoes; prompts securely on a TTY if omitted)"
+        )]
+        stdin: bool,
+
+        #[arg(
+            long,
+            default_value = ".env",
+            help = "Target tracked .env file relative to workspace root"
+        )]
+        env_file: String,
+
+        #[arg(
+            long,
+            help = "Seal working tree (0 plaintext bytes on disk; also honors [vault].sealed_mode = true)"
+        )]
+        seal: bool,
+
+        #[arg(
+            long,
+            help = "Emit machine-readable JSON metadata (never prints the secret value)"
+        )]
+        json: bool,
+    },
+
+    /// Generate a CSPRNG secret directly into the local vault snapshot (refuses overwrite without --overwrite)
+    Generate {
+        #[arg(help = "Environment variable name (e.g. JWT_SECRET)")]
+        name: String,
+
+        #[arg(
+            long,
+            default_value = "base64url",
+            help = "Secret format: base64url, hex, uuid, or alphanumeric"
+        )]
+        format: String,
+
+        #[arg(
+            long,
+            default_value = "32",
+            help = "Entropy bytes (16..=64; character count for alphanumeric)"
+        )]
+        bytes: usize,
+
+        #[arg(
+            long,
+            default_value = ".env",
+            help = "Target tracked .env file relative to workspace root"
+        )]
+        env_file: String,
+
+        #[arg(
+            long,
+            help = "Seal working tree (0 plaintext bytes on disk; also honors [vault].sealed_mode = true)"
+        )]
+        seal: bool,
+
+        #[arg(
+            long,
+            help = "Replace an existing key if already defined in the target env file"
+        )]
+        overwrite: bool,
+
+        #[arg(
+            long,
+            help = "Emit machine-readable JSON metadata (never prints the secret value)"
+        )]
+        json: bool,
+    },
+
+    /// Remove a single secret key from the local vault snapshot while preserving all other keys
+    Unset {
+        #[arg(help = "Environment variable name to remove")]
+        name: String,
+
+        #[arg(
+            long,
+            default_value = ".env",
+            help = "Target tracked .env file relative to workspace root"
+        )]
+        env_file: String,
+
+        #[arg(
+            long,
+            help = "Seal working tree (0 plaintext bytes on disk; also honors [vault].sealed_mode = true)"
+        )]
+        seal: bool,
+
+        #[arg(long, help = "Emit machine-readable JSON metadata")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicySubcommand {
+    /// Create a starter .ciphervault/policy.toml with test and llm_eval profiles
+    Init {
+        #[arg(long, help = "Set [vault].sealed_mode = true in the generated policy")]
+        sealed: bool,
+
+        #[arg(long, help = "Overwrite an existing .ciphervault/policy.toml")]
+        force: bool,
+
+        #[arg(long, help = "Emit machine-readable JSON")]
+        json: bool,
+    },
+
+    /// Validate .ciphervault/policy.toml syntax, profiles, upstreams, and sandbox paths
+    Check {
+        #[arg(long, help = "Emit machine-readable JSON validation report")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2802,6 +2928,113 @@ mod entry_tests {
     fn explicit_subcommand_still_parses() {
         let cli = Cli::try_parse_from(["ciphervault", "tui"]).expect("tui must parse");
         assert!(matches!(cli.command, Some(Commands::Tui { .. })));
+    }
+
+    #[test]
+    fn vault_secret_and_policy_subcommands_parse() {
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "vault",
+            "set",
+            "API_KEY",
+            "--stdin",
+            "--env-file",
+            ".env.prod",
+            "--seal",
+            "--json",
+        ])
+        .expect("vault set must parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Vault {
+                sub: VaultSubcommand::Set {
+                    ref name,
+                    stdin: true,
+                    ref env_file,
+                    seal: true,
+                    json: true,
+                }
+            }) if name == "API_KEY" && env_file == ".env.prod"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "vault",
+            "generate",
+            "JWT_SECRET",
+            "--format",
+            "hex",
+            "--bytes",
+            "48",
+            "--seal",
+            "--overwrite",
+            "--json",
+        ])
+        .expect("vault generate must parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Vault {
+                sub: VaultSubcommand::Generate {
+                    ref name,
+                    ref format,
+                    bytes: 48,
+                    ref env_file,
+                    seal: true,
+                    overwrite: true,
+                    json: true,
+                }
+            }) if name == "JWT_SECRET" && format == "hex" && env_file == ".env"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "vault",
+            "unset",
+            "OLD_KEY",
+            "--seal",
+            "--json",
+        ])
+        .expect("vault unset must parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Vault {
+                sub: VaultSubcommand::Unset {
+                    ref name,
+                    seal: true,
+                    json: true,
+                    ..
+                }
+            }) if name == "OLD_KEY"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "ciphervault",
+            "policy",
+            "init",
+            "--sealed",
+            "--force",
+            "--json",
+        ])
+        .expect("policy init must parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Policy {
+                sub: PolicySubcommand::Init {
+                    sealed: true,
+                    force: true,
+                    json: true,
+                }
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["ciphervault", "policy", "check", "--json"])
+            .expect("policy check must parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Policy {
+                sub: PolicySubcommand::Check { json: true }
+            })
+        ));
     }
 }
 

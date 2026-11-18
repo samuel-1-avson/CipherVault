@@ -34,6 +34,7 @@ pub(crate) mod secret;
 pub(crate) mod token;
 pub(crate) mod track;
 pub(crate) mod update;
+pub(crate) mod vault_secret;
 
 pub(crate) use agent_bridge::*;
 pub(crate) use agent_hooks::*;
@@ -65,6 +66,7 @@ pub(crate) use secret::*;
 pub(crate) use token::*;
 pub(crate) use track::*;
 pub(crate) use update::*;
+pub(crate) use vault_secret::*;
 
 /// Routes a parsed top-level command to its implementation. Lives here —
 /// not in `main.rs` — so the binary entry point stays thin wiring (parse,
@@ -74,12 +76,20 @@ pub(crate) use update::*;
 pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> {
     use crate::{
         ApproveSubcommand, AuthSubcommand, DeviceSubcommand, GenesisSubcommand, HookSubcommand,
-        InviteSubcommand, LeaseSubcommand, NodeSubcommand, RecoverySubcommand, ReleaseSubcommand,
-        VaultSubcommand, VoucherSubcommand,
+        InviteSubcommand, LeaseSubcommand, NodeSubcommand, PolicySubcommand, RecoverySubcommand,
+        ReleaseSubcommand, VaultSubcommand, VoucherSubcommand,
     };
     use colored::Colorize;
 
     match command {
+        crate::Commands::Policy { sub } => match sub {
+            PolicySubcommand::Init {
+                sealed,
+                force,
+                json,
+            } => cmd_policy_init(sealed, force, json),
+            PolicySubcommand::Check { json } => cmd_policy_check(json),
+        },
         crate::Commands::Redact { json, stdio } => cmd_redact(json, stdio),
         crate::Commands::Mcp => cmd_mcp(),
         crate::Commands::ExportEnv {
@@ -118,6 +128,28 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
         crate::Commands::Vault { sub } => match sub {
             VaultSubcommand::Link { alias } => cmd_vault_link(&alias),
             VaultSubcommand::Unlink => cmd_vault_unlink(),
+            VaultSubcommand::Set {
+                name,
+                stdin,
+                env_file,
+                seal,
+                json,
+            } => cmd_vault_set(name, stdin, env_file, seal, json).await,
+            VaultSubcommand::Generate {
+                name,
+                format,
+                bytes,
+                env_file,
+                seal,
+                overwrite,
+                json,
+            } => cmd_vault_generate(name, format, bytes, env_file, seal, overwrite, json).await,
+            VaultSubcommand::Unset {
+                name,
+                env_file,
+                seal,
+                json,
+            } => cmd_vault_unset(name, env_file, seal, json).await,
         },
         crate::Commands::Repo { sub } => cmd_repo(sub).await,
         crate::Commands::Context { sub } => cmd_context(sub).await,

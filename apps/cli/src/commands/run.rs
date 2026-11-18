@@ -43,13 +43,16 @@ pub(crate) async fn cmd_run(
     quiet: bool,
     json: bool,
     set_overrides: Option<Vec<String>>,
-    mut allow_keys: Option<Vec<String>>,
+    allow_keys: Option<Vec<String>>,
     mut no_net: bool,
     mut proxy: bool,
     mut proxy_upstream: Vec<String>,
     profile_opt: Option<String>,
     command: Vec<String>,
 ) -> Result<()> {
+    let mut allow_filter = AllowKeysFilter::default();
+    let mut sandbox_read_paths: Vec<String> = Vec::new();
+
     if let Some(profile_name_raw) = profile_opt {
         let profile_name = profile_name_raw.trim();
         if profile_name.is_empty() {
@@ -71,7 +74,24 @@ pub(crate) async fn cmd_run(
             )
         })?;
         enforce_profile_command_allowlist(&command, profile_name, &profile.commands)?;
-        allow_keys = merge_profile_allow_keys(allow_keys, &profile.allow_keys, profile_name)?;
+
+        allow_filter = build_profile_allow_keys_filter(
+            allow_keys,
+            &profile.allow_keys,
+            &profile.require_keys,
+            profile_name,
+        )?;
+
+        for path in policy
+            .sandbox_read_paths
+            .iter()
+            .chain(profile.sandbox_read_paths.iter())
+        {
+            if !sandbox_read_paths.contains(path) {
+                sandbox_read_paths.push(path.clone());
+            }
+        }
+
         if let Some(profile_proxy) = profile.proxy {
             proxy = proxy || profile_proxy;
         }
@@ -93,10 +113,24 @@ pub(crate) async fn cmd_run(
             }
         });
         no_net = no_net || policy_no_net;
-    } else if !no_net && !proxy && proxy_upstream.is_empty() {
+    } else {
+        if let Some(cli_keys) = allow_keys {
+            let normalized = normalize_allow_keys(Some(&cli_keys))?
+                .expect("normalize_allow_keys returns Some for Some input");
+            allow_filter.cli_patterns = Some(normalized.into_iter().collect());
+        }
         let vault_dir = crate::util::get_vault_directory();
         if let Some(policy) = load_workspace_policy(&vault_dir)? {
-            if policy.default_no_net == Some(true) {
+            for path in &policy.sandbox_read_paths {
+                if !sandbox_read_paths.contains(path) {
+                    sandbox_read_paths.push(path.clone());
+                }
+            }
+            if !no_net
+                && !proxy
+                && proxy_upstream.is_empty()
+                && policy.default_no_net == Some(true)
+            {
                 no_net = true;
             }
         }
@@ -145,10 +179,11 @@ pub(crate) async fn cmd_run(
             quiet,
             json,
             set_overrides,
-            allow_keys,
+            &allow_filter,
             no_net,
             proxy_enabled,
             proxy_upstream,
+            &sandbox_read_paths,
             command,
         )
         .await;
@@ -162,10 +197,11 @@ pub(crate) async fn cmd_run(
         quiet,
         json,
         set_overrides,
-        allow_keys,
+        &allow_filter,
         no_net,
         proxy_enabled,
         proxy_upstream,
+        &sandbox_read_paths,
         command,
     )
     .await
@@ -197,10 +233,11 @@ async fn cmd_run_scoped(
     quiet: bool,
     json: bool,
     set_overrides: Option<Vec<String>>,
-    allow_keys: Option<Vec<String>>,
+    allow_filter: &AllowKeysFilter,
     no_net: bool,
     proxy: bool,
     proxy_upstream: Vec<String>,
+    sandbox_read_paths: &[String],
     command: Vec<String>,
 ) -> Result<()> {
     let endpoint = resolve_endpoint(endpoint_flag)?;
@@ -258,22 +295,7 @@ async fn cmd_run_scoped(
         names.push((name.to_string(), version, status));
     }
     names.sort_by(|a, b| a.0.cmp(&b.0));
-    if let Some(allowed) = normalize_allow_keys(allow_keys.as_deref())? {
-        let present: std::collections::HashSet<&str> =
-            names.iter().map(|(n, _, _)| n.as_str()).collect();
-        let missing: Vec<&str> = allowed
-            .iter()
-            .map(String::as_str)
-            .filter(|k| !present.contains(*k))
-            .collect();
-        if !missing.is_empty() {
-            bail!(
-                "--allow-keys requested variable(s) not present in {scope_label}: {}",
-                missing.join(", ")
-            );
-        }
-        names.retain(|(n, _, _)| allowed.contains(n));
-    }
+    filter_scoped_names_with_policy(&mut names, allow_filter, &scope_label)?;
 
     if dry_run {
         if json {
@@ -400,6 +422,7 @@ async fn cmd_run_scoped(
         no_net,
         proxy,
         &proxy_upstream,
+        sandbox_read_paths,
         quiet,
         json,
         &scope_label,
@@ -612,10 +635,11 @@ async fn cmd_run_snapshot(
     quiet: bool,
     json: bool,
     set_overrides: Option<Vec<String>>,
-    allow_keys: Option<Vec<String>>,
+    allow_filter: &AllowKeysFilter,
     no_net: bool,
     proxy: bool,
     proxy_upstream: Vec<String>,
+    sandbox_read_paths: &[String],
     command: Vec<String>,
 ) -> Result<()> {
     let store = get_vault_store()?;
@@ -729,7 +753,7 @@ async fn cmd_run_snapshot(
     }
 
     // Apply least-privilege allowlist before --set overrides, zeroizing filtered-out values.
-    filter_loaded_vars_by_allow_keys(&mut loaded_vars, allow_keys.as_deref())?;
+    filter_loaded_vars_with_policy(&mut loaded_vars, allow_filter)?;
 
     // Apply additional --set overrides, then deduplicate (last wins).
     let deduped_vars = apply_overrides(loaded_vars, set_overrides)?;
@@ -805,6 +829,7 @@ async fn cmd_run_snapshot(
         no_net,
         proxy,
         &proxy_upstream,
+        sandbox_read_paths,
         quiet,
         json,
         &label,
@@ -822,6 +847,7 @@ async fn spawn_with_env(
     no_net: bool,
     proxy: bool,
     proxy_upstream: &[String],
+    sandbox_read_paths: &[String],
     quiet: bool,
     json: bool,
     label: &str,
@@ -853,6 +879,22 @@ async fn spawn_with_env(
             let ctx = windows_no_net::AppContainerContext::new()?;
             ctx.ensure_winsta_desktop_access()?;
             ctx.preflight()?;
+            if !sandbox_read_paths.is_empty() {
+                let workspace_root = crate::util::get_workspace_root()
+                    .or_else(|_| std::env::current_dir().map_err(anyhow::Error::from))?;
+                let tracked_paths: Vec<String> = crate::util::get_vault_store()
+                    .ok()
+                    .and_then(|s| s.list_tracked_files().ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(p, _)| p.to_string_lossy().replace('\\', "/"))
+                    .collect();
+                windows_no_net::grant_sandbox_read_paths(
+                    &workspace_root,
+                    sandbox_read_paths,
+                    &tracked_paths,
+                )?;
+            }
             let prepared =
                 windows_no_net::prepare_command(&resolved_bin, &resolved_prefix, raw_args)?;
             win_no_net = Some(ctx);
@@ -860,6 +902,7 @@ async fn spawn_with_env(
         }
         #[cfg(not(target_os = "windows"))]
         {
+            let _ = sandbox_read_paths;
             apply_no_net_sandbox(&resolved_bin, &resolved_prefix, raw_args)?
         }
     } else {
@@ -1297,6 +1340,90 @@ pub(crate) fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
     )
 }
 
+/// Glob matching for secret variable names where `*` matches zero or more characters.
+pub(crate) fn key_matches_pattern(key: &str, pattern: &str) -> bool {
+    let k = key.as_bytes();
+    let p = pattern.as_bytes();
+    let (mut ki, mut pi) = (0usize, 0usize);
+    let mut star_pi: Option<usize> = None;
+    let mut star_ki: usize = 0;
+
+    while ki < k.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            star_pi = Some(pi);
+            pi += 1;
+            star_ki = ki;
+        } else if pi < p.len() && p[pi] == k[ki] {
+            pi += 1;
+            ki += 1;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ki += 1;
+            ki = star_ki;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Returns true iff there exists at least one string matched by both `*`-glob patterns.
+fn patterns_can_overlap(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let (n, m) = (ab.len(), bb.len());
+    let mut dp = vec![vec![false; m + 1]; n + 1];
+    dp[n][m] = true;
+    for i in (0..=n).rev() {
+        for j in (0..=m).rev() {
+            if i == n && j == m {
+                continue;
+            }
+            if i < n && ab[i] == b'*' {
+                dp[i][j] = dp[i + 1][j] || (j < m && dp[i][j + 1]);
+            } else if j < m && bb[j] == b'*' {
+                dp[i][j] = dp[i][j + 1] || (i < n && dp[i + 1][j]);
+            } else if i < n && j < m && ab[i] == bb[j] {
+                dp[i][j] = dp[i + 1][j + 1];
+            }
+        }
+    }
+    dp[0][0]
+}
+
+fn validate_allow_pattern(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("allow_keys pattern cannot be empty");
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '*')
+    {
+        bail!(
+            "Invalid allow_keys pattern '{trimmed}': only ASCII letters, digits, '_', and '*' are allowed"
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AllowKeysFilter {
+    /// Upper-bound patterns from `[profiles.<name>].allow_keys` (optional matches;
+    /// injects all matching keys that exist in the vault, errors only if zero match).
+    pub(crate) profile_patterns: Option<Vec<String>>,
+    /// Explicit CLI `--allow-keys` patterns (narrows profile if present; non-wildcard
+    /// entries MUST exist in the vault).
+    pub(crate) cli_patterns: Option<Vec<String>>,
+    /// Keys from `[profiles.<name>].require_keys` that MUST exist and remain allowed.
+    pub(crate) require_keys: Vec<String>,
+    /// Profile name for diagnostics.
+    pub(crate) profile_name: Option<String>,
+}
+
 fn normalize_allow_keys(
     allow_keys: Option<&[String]>,
 ) -> Result<Option<std::collections::BTreeSet<String>>> {
@@ -1307,7 +1434,7 @@ fn normalize_allow_keys(
     for item in raw {
         let key = item.trim();
         if !key.is_empty() {
-            set.insert(key.to_string());
+            set.insert(validate_allow_pattern(key)?);
         }
     }
     if set.is_empty() {
@@ -1316,6 +1443,137 @@ fn normalize_allow_keys(
     Ok(Some(set))
 }
 
+fn key_permitted_by_filter(key: &str, filter: &AllowKeysFilter) -> bool {
+    if let Some(ref prof_pats) = filter.profile_patterns {
+        if !prof_pats.iter().any(|p| key_matches_pattern(key, p)) {
+            return false;
+        }
+    }
+    if let Some(ref cli_pats) = filter.cli_patterns {
+        if !cli_pats.iter().any(|p| key_matches_pattern(key, p)) {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_filter_against_keys(
+    present: &std::collections::HashSet<&str>,
+    retained: &std::collections::HashSet<&str>,
+    filter: &AllowKeysFilter,
+    source_label: &str,
+) -> Result<()> {
+    if let Some(ref cli_pats) = filter.cli_patterns {
+        let missing_exact: Vec<&str> = cli_pats
+            .iter()
+            .map(String::as_str)
+            .filter(|p| !p.contains('*') && !present.contains(*p))
+            .collect();
+        if !missing_exact.is_empty() {
+            bail!(
+                "--allow-keys requested variable(s) not present in {source_label}: {}",
+                missing_exact.join(", ")
+            );
+        }
+    }
+
+    if (filter.profile_patterns.is_some() || filter.cli_patterns.is_some()) && retained.is_empty() {
+        if let Some(ref prof_name) = filter.profile_name {
+            if let Some(ref cli_pats) = filter.cli_patterns {
+                bail!(
+                    "--allow-keys ({}) matched 0 variables permitted by profile '{prof_name}' in {source_label}",
+                    cli_pats.join(", ")
+                );
+            }
+            let pats = filter
+                .profile_patterns
+                .as_deref()
+                .unwrap_or(&[])
+                .join(", ");
+            bail!(
+                "Profile '{prof_name}' allow_keys matched 0 variables in {source_label} (patterns: {pats})"
+            );
+        }
+        let pats = filter.cli_patterns.as_deref().unwrap_or(&[]).join(", ");
+        bail!("--allow-keys matched 0 variables in {source_label} (patterns: {pats})");
+    }
+
+    if !filter.require_keys.is_empty() {
+        let missing_req: Vec<&str> = filter
+            .require_keys
+            .iter()
+            .map(String::as_str)
+            .filter(|req| !retained.contains(*req))
+            .collect();
+        if !missing_req.is_empty() {
+            let prof_label = filter.profile_name.as_deref().unwrap_or("default");
+            bail!(
+                "Profile '{prof_label}' require_keys missing from {source_label} or active allowlist: {}",
+                missing_req.join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn filter_loaded_vars_with_policy(
+    loaded_vars: &mut Vec<(String, Zeroizing<String>)>,
+    filter: &AllowKeysFilter,
+) -> Result<()> {
+    if filter.profile_patterns.is_none()
+        && filter.cli_patterns.is_none()
+        && filter.require_keys.is_empty()
+    {
+        return Ok(());
+    }
+    let check_res = {
+        let present: std::collections::HashSet<&str> =
+            loaded_vars.iter().map(|(k, _)| k.as_str()).collect();
+        let retained: std::collections::HashSet<&str> = loaded_vars
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| key_permitted_by_filter(k, filter))
+            .collect();
+        validate_filter_against_keys(&present, &retained, filter, "vault snapshot")
+    };
+    if let Err(err) = check_res {
+        loaded_vars.clear();
+        return Err(err);
+    }
+    loaded_vars.retain(|(k, _)| key_permitted_by_filter(k, filter));
+    Ok(())
+}
+
+fn filter_scoped_names_with_policy(
+    names: &mut Vec<(String, i64, String)>,
+    filter: &AllowKeysFilter,
+    scope_label: &str,
+) -> Result<()> {
+    if filter.profile_patterns.is_none()
+        && filter.cli_patterns.is_none()
+        && filter.require_keys.is_empty()
+    {
+        return Ok(());
+    }
+    let check_res = {
+        let present: std::collections::HashSet<&str> =
+            names.iter().map(|(n, _, _)| n.as_str()).collect();
+        let retained: std::collections::HashSet<&str> = names
+            .iter()
+            .map(|(n, _, _)| n.as_str())
+            .filter(|n| key_permitted_by_filter(n, filter))
+            .collect();
+        validate_filter_against_keys(&present, &retained, filter, scope_label)
+    };
+    if let Err(err) = check_res {
+        names.clear();
+        return Err(err);
+    }
+    names.retain(|(n, _, _)| key_permitted_by_filter(n, filter));
+    Ok(())
+}
+
+#[cfg(test)]
 fn filter_loaded_vars_by_allow_keys(
     loaded_vars: &mut Vec<(String, Zeroizing<String>)>,
     allow_keys: Option<&[String]>,
@@ -1323,22 +1581,111 @@ fn filter_loaded_vars_by_allow_keys(
     let Some(allowed) = normalize_allow_keys(allow_keys)? else {
         return Ok(());
     };
-    let present: std::collections::HashSet<&str> =
-        loaded_vars.iter().map(|(k, _)| k.as_str()).collect();
-    let missing: Vec<&str> = allowed
-        .iter()
-        .map(String::as_str)
-        .filter(|k| !present.contains(*k))
-        .collect();
-    if !missing.is_empty() {
-        loaded_vars.clear();
+    let filter = AllowKeysFilter {
+        profile_patterns: None,
+        cli_patterns: Some(allowed.into_iter().collect()),
+        require_keys: Vec::new(),
+        profile_name: None,
+    };
+    filter_loaded_vars_with_policy(loaded_vars, &filter)
+}
+
+/// Validates a relative `sandbox_read_paths` entry from `policy.toml` so AppContainer
+/// read-only grants can never escape the workspace or touch `.ciphervault`/secret files.
+pub(crate) fn validate_sandbox_read_path(
+    rel_raw: &str,
+    workspace_root: &Path,
+    tracked_paths: &[String],
+) -> Result<std::path::PathBuf> {
+    let trimmed = rel_raw.trim();
+    if trimmed.is_empty() {
+        bail!("sandbox_read_paths entry cannot be empty");
+    }
+    if trimmed.contains('\0')
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || trimmed.contains(':')
+    {
+        bail!("sandbox_read_paths entry '{trimmed}' must be a relative path inside the workspace");
+    }
+    let mut norm = trimmed.replace('\\', "/");
+    while let Some(stripped) = norm.strip_prefix("./") {
+        norm = stripped.to_string();
+    }
+    norm = norm.trim_end_matches('/').to_string();
+    if norm.is_empty() || norm == "." {
+        bail!("sandbox_read_paths entry '{trimmed}' cannot target the workspace root '.'");
+    }
+    ciphervault_snapshot::validate_safe_relative_path(&norm)
+        .map_err(|e| anyhow::anyhow!("Invalid sandbox_read_paths entry '{trimmed}': {e}"))?;
+
+    if crate::commands::agent_hooks::is_protected_vault_config_path(&norm)
+        || crate::commands::agent_hooks::is_secret_filename(&norm)
+    {
         bail!(
-            "--allow-keys requested variable(s) not present in vault snapshot: {}",
-            missing.join(", ")
+            "Refusing sandbox_read_paths entry '{trimmed}': cannot grant sandbox read access to vault/secret paths"
         );
     }
-    loaded_vars.retain(|(k, _)| allowed.contains(k));
-    Ok(())
+
+    for tracked in tracked_paths {
+        let mut t_norm = tracked.replace('\\', "/");
+        while let Some(stripped) = t_norm.strip_prefix("./") {
+            t_norm = stripped.to_string();
+        }
+        let t_norm = t_norm.trim_end_matches('/');
+        if t_norm.is_empty() {
+            continue;
+        }
+        if norm.eq_ignore_ascii_case(t_norm)
+            || norm
+                .to_ascii_lowercase()
+                .starts_with(&format!("{}/", t_norm.to_ascii_lowercase()))
+            || t_norm
+                .to_ascii_lowercase()
+                .starts_with(&format!("{}/", norm.to_ascii_lowercase()))
+        {
+            bail!(
+                "Refusing sandbox_read_paths entry '{trimmed}': overlaps vault-tracked path '{tracked}'"
+            );
+        }
+    }
+
+    let rel_path = Path::new(&norm);
+    let canonical_root =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    let mut cursor = workspace_root.to_path_buf();
+    for comp in rel_path.components() {
+        cursor.push(comp);
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    bail!("Refusing symlink in sandbox_read_paths entry '{trimmed}'");
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes() & 0x400 != 0 {
+                        bail!("Refusing reparse point in sandbox_read_paths entry '{trimmed}'");
+                    }
+                }
+                if let Ok(canon) = std::fs::canonicalize(&cursor) {
+                    if !canon.starts_with(&canonical_root) {
+                        bail!(
+                            "sandbox_read_paths entry '{trimmed}' resolves outside workspace root"
+                        );
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("inspecting sandbox_read_paths entry '{trimmed}'")
+                });
+            }
+        }
+    }
+
+    Ok(workspace_root.join(rel_path))
 }
 
 #[cfg(target_os = "linux")]
@@ -2338,6 +2685,51 @@ mod windows_no_net {
         Ok(staged_exe.to_string_lossy().to_string())
     }
 
+    fn grant_appcontainer_rx_readonly(path: &Path, is_dir: bool) {
+        if is_windows_system_path(path) {
+            return;
+        }
+        let mut cmd = std::process::Command::new("C:\\Windows\\System32\\icacls.exe");
+        cmd.arg(path).arg("/grant");
+        if is_dir {
+            cmd.arg("*S-1-15-2-1:(OI)(CI)(RX)");
+        } else {
+            cmd.arg("*S-1-15-2-1:(RX)");
+        }
+        let _ = cmd
+            .arg("/Q")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+
+    pub(crate) fn grant_sandbox_read_paths(
+        workspace_root: &Path,
+        rel_paths: &[String],
+        tracked_paths: &[String],
+    ) -> Result<()> {
+        for rel in rel_paths {
+            let full = super::validate_sandbox_read_path(rel, workspace_root, tracked_paths)?;
+            match std::fs::symlink_metadata(&full) {
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() {
+                        bail!("Refusing symlink in sandbox_read_paths entry '{rel}'");
+                    }
+                    grant_appcontainer_rx_readonly(&full, meta.is_dir());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("inspecting sandbox_read_paths entry '{rel}'")
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_command(
         resolved_bin: &str,
         resolved_prefix: &[String],
@@ -2392,15 +2784,21 @@ fn apply_no_net_sandbox(
 pub(crate) struct WorkspacePolicy {
     pub(crate) sealed_mode: bool,
     pub(crate) default_no_net: Option<bool>,
+    pub(crate) description: Option<String>,
+    pub(crate) sandbox_read_paths: Vec<String>,
     pub(crate) profiles: BTreeMap<String, RunProfile>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RunProfile {
+    pub(crate) description: Option<String>,
     pub(crate) commands: Vec<String>,
     pub(crate) allow_keys: Vec<String>,
+    pub(crate) require_keys: Vec<String>,
     pub(crate) no_net: Option<bool>,
     pub(crate) proxy: Option<bool>,
+    pub(crate) require_explicit_approval: Option<bool>,
+    pub(crate) sandbox_read_paths: Vec<String>,
     pub(crate) upstreams: BTreeMap<String, String>,
 }
 
@@ -2749,17 +3147,35 @@ fn parse_workspace_policy(raw: &str) -> Result<WorkspacePolicy> {
                     policy.default_no_net =
                         Some(parse_toml_bool(v_raw).with_context(|| format!("line {line_no}"))?);
                 }
+                "description" => {
+                    policy.description = Some(
+                        parse_toml_string(v_raw).with_context(|| format!("line {line_no}"))?,
+                    );
+                }
+                "sandbox_read_paths" => {
+                    policy.sandbox_read_paths = parse_toml_string_array(v_raw)
+                        .with_context(|| format!("line {line_no}"))?;
+                }
                 other => bail!("line {line_no}: unknown [vault] key '{other}'"),
             },
             PolicySection::Profile(name) => {
                 let profile = policy.profiles.entry(name.clone()).or_default();
                 match key.as_str() {
+                    "description" => {
+                        profile.description = Some(
+                            parse_toml_string(v_raw).with_context(|| format!("line {line_no}"))?,
+                        );
+                    }
                     "commands" => {
                         profile.commands = parse_toml_string_array(v_raw)
                             .with_context(|| format!("line {line_no}"))?;
                     }
                     "allow_keys" => {
                         profile.allow_keys = parse_toml_string_array(v_raw)
+                            .with_context(|| format!("line {line_no}"))?;
+                    }
+                    "require_keys" => {
+                        profile.require_keys = parse_toml_string_array(v_raw)
                             .with_context(|| format!("line {line_no}"))?;
                     }
                     "no_net" => {
@@ -2771,6 +3187,15 @@ fn parse_workspace_policy(raw: &str) -> Result<WorkspacePolicy> {
                         profile.proxy = Some(
                             parse_toml_bool(v_raw).with_context(|| format!("line {line_no}"))?,
                         );
+                    }
+                    "require_explicit_approval" => {
+                        profile.require_explicit_approval = Some(
+                            parse_toml_bool(v_raw).with_context(|| format!("line {line_no}"))?,
+                        );
+                    }
+                    "sandbox_read_paths" => {
+                        profile.sandbox_read_paths = parse_toml_string_array(v_raw)
+                            .with_context(|| format!("line {line_no}"))?;
                     }
                     "upstreams" => {
                         let parsed = parse_toml_inline_string_table(v_raw)
@@ -2849,11 +3274,13 @@ fn merge_profile_allow_keys(
     if profile_keys.is_empty() {
         return Ok(caller);
     }
-    let profile_set: BTreeSet<String> = profile_keys
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let mut profile_set = BTreeSet::new();
+    for raw in profile_keys {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            profile_set.insert(validate_allow_pattern(trimmed)?);
+        }
+    }
     if profile_set.is_empty() {
         bail!("Profile '{profile_name}' has an empty allow_keys list");
     }
@@ -2862,8 +3289,14 @@ fn merge_profile_allow_keys(
             let caller_set = normalize_allow_keys(Some(&caller_vec))?
                 .expect("normalize_allow_keys returns Some for Some input");
             let intersected: Vec<String> = caller_set
-                .intersection(&profile_set)
-                .cloned()
+                .into_iter()
+                .filter(|c| {
+                    if c.contains('*') {
+                        profile_set.iter().any(|p| patterns_can_overlap(c, p))
+                    } else {
+                        profile_set.iter().any(|p| key_matches_pattern(c, p))
+                    }
+                })
                 .collect();
             if intersected.is_empty() {
                 bail!(
@@ -2873,6 +3306,442 @@ fn merge_profile_allow_keys(
             Ok(Some(intersected))
         }
         None => Ok(Some(profile_set.into_iter().collect())),
+    }
+}
+
+fn build_profile_allow_keys_filter(
+    caller: Option<Vec<String>>,
+    profile_keys: &[String],
+    profile_require_keys: &[String],
+    profile_name: &str,
+) -> Result<AllowKeysFilter> {
+    let mut require_keys = Vec::new();
+    for raw in profile_require_keys {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.contains('*') {
+            bail!(
+                "Profile '{profile_name}' require_keys entry '{trimmed}' cannot contain '*' wildcards"
+            );
+        }
+        validate_allow_pattern(trimmed)?;
+        if !require_keys.iter().any(|k| k == trimmed) {
+            require_keys.push(trimmed.to_string());
+        }
+    }
+
+    if profile_keys.is_empty() {
+        let cli_patterns = match caller {
+            Some(v) => Some(
+                normalize_allow_keys(Some(&v))?
+                    .expect("normalize_allow_keys returns Some for Some input")
+                    .into_iter()
+                    .collect(),
+            ),
+            None => None,
+        };
+        return Ok(AllowKeysFilter {
+            profile_patterns: None,
+            cli_patterns,
+            require_keys,
+            profile_name: Some(profile_name.to_string()),
+        });
+    }
+
+    let mut profile_set = BTreeSet::new();
+    for raw in profile_keys {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            profile_set.insert(validate_allow_pattern(trimmed)?);
+        }
+    }
+    if profile_set.is_empty() {
+        bail!("Profile '{profile_name}' has an empty allow_keys list");
+    }
+
+    let (profile_patterns, cli_patterns) = match caller {
+        None => (Some(profile_set.into_iter().collect()), None),
+        Some(caller_vec) => {
+            let caller_set = normalize_allow_keys(Some(&caller_vec))?
+                .expect("normalize_allow_keys returns Some for Some input");
+            if caller_set == profile_set {
+                // Caller echoed the exact profile upper bound: retain profile upper-bound semantics.
+                (Some(profile_set.into_iter().collect()), None)
+            } else {
+                let narrowed =
+                    merge_profile_allow_keys(Some(caller_vec), profile_keys, profile_name)?;
+                (Some(profile_set.into_iter().collect()), narrowed)
+            }
+        }
+    };
+
+    Ok(AllowKeysFilter {
+        profile_patterns,
+        cli_patterns,
+        require_keys,
+        profile_name: Some(profile_name.to_string()),
+    })
+}
+
+pub(crate) fn starter_policy_toml(sealed_mode: bool) -> String {
+    format!(
+        r#"[vault]
+sealed_mode = {sealed_mode}
+default_no_net = true
+description = "Workspace secret execution policy"
+
+[profiles.test]
+description = "Offline test runner with scoped test variables"
+commands = ["pytest", "python", "npm", "npx", "node", "cargo", "vitest"]
+allow_keys = ["DATABASE_URL", "REDIS_URL", "TEST_*"]
+no_net = true
+
+[profiles.llm_eval]
+description = "LLM evaluation via loopback credential proxy"
+commands = ["python", "node"]
+allow_keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
+proxy = true
+"#
+    )
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct PolicyProfileReport {
+    pub name: String,
+    pub description: Option<String>,
+    pub commands: Vec<String>,
+    pub allow_keys: Vec<String>,
+    pub require_keys: Vec<String>,
+    pub no_net: Option<bool>,
+    pub proxy: Option<bool>,
+    pub require_explicit_approval: Option<bool>,
+    pub sandbox_read_paths: Vec<String>,
+    pub upstreams: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_vault_keys: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct PolicyCheckReport {
+    pub success: bool,
+    pub exists: bool,
+    pub valid: bool,
+    pub path: String,
+    pub sealed_mode: bool,
+    pub default_no_net: Option<bool>,
+    pub description: Option<String>,
+    pub sandbox_read_paths: Vec<String>,
+    pub profiles: Vec<PolicyProfileReport>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) fn validate_workspace_policy(
+    policy: &WorkspacePolicy,
+    workspace_root: &Path,
+    tracked_paths: &[String],
+    snapshot_keys: Option<&BTreeSet<String>>,
+) -> PolicyCheckReport {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let allow_loopback =
+        std::env::var("CIPHERVAULT_ALLOW_LOOPBACK_UPSTREAM").as_deref() == Ok("1");
+
+    for rel in &policy.sandbox_read_paths {
+        match validate_sandbox_read_path(rel, workspace_root, tracked_paths) {
+            Ok(full) => {
+                if !full.exists() {
+                    warnings.push(format!(
+                        "[vault].sandbox_read_paths entry '{rel}' does not exist yet on disk"
+                    ));
+                }
+            }
+            Err(e) => errors.push(format!("[vault].sandbox_read_paths: {e}")),
+        }
+    }
+
+    let mut profiles_out = Vec::new();
+    for (name, prof) in &policy.profiles {
+        let mut valid_allow_pats = Vec::new();
+        for pat in &prof.allow_keys {
+            match validate_allow_pattern(pat) {
+                Ok(clean) => valid_allow_pats.push(clean),
+                Err(e) => errors.push(format!("[profiles.{name}].allow_keys: {e}")),
+            }
+        }
+
+        for req in &prof.require_keys {
+            let trimmed = req.trim();
+            if trimmed.is_empty() {
+                errors.push(format!("[profiles.{name}].require_keys contains an empty key"));
+                continue;
+            }
+            if trimmed.contains('*') {
+                errors.push(format!(
+                    "[profiles.{name}].require_keys entry '{trimmed}' cannot contain '*' wildcards"
+                ));
+                continue;
+            }
+            if let Err(e) = validate_allow_pattern(trimmed) {
+                errors.push(format!("[profiles.{name}].require_keys: {e}"));
+                continue;
+            }
+            if !valid_allow_pats.is_empty()
+                && !valid_allow_pats
+                    .iter()
+                    .any(|p| key_matches_pattern(trimmed, p))
+            {
+                errors.push(format!(
+                    "[profiles.{name}].require_keys '{trimmed}' is not matched by allow_keys"
+                ));
+            }
+        }
+
+        let proxy_active = prof.proxy == Some(true) || !prof.upstreams.is_empty();
+        if prof.no_net == Some(true) && proxy_active {
+            errors.push(format!(
+                "[profiles.{name}] combines incompatible no_net = true with proxy/upstreams"
+            ));
+        }
+
+        for (k, v) in &prof.upstreams {
+            if let Err(e) =
+                super::run_proxy::parse_proxy_upstream_spec(&format!("{k}={v}"), allow_loopback)
+            {
+                errors.push(format!("[profiles.{name}.upstreams] '{k}': {e}"));
+            }
+        }
+
+        for rel in &prof.sandbox_read_paths {
+            match validate_sandbox_read_path(rel, workspace_root, tracked_paths) {
+                Ok(full) => {
+                    if !full.exists() {
+                        warnings.push(format!(
+                            "[profiles.{name}].sandbox_read_paths entry '{rel}' does not exist yet on disk"
+                        ));
+                    }
+                }
+                Err(e) => errors.push(format!("[profiles.{name}].sandbox_read_paths: {e}")),
+            }
+        }
+
+        let matched_vault_keys = snapshot_keys.map(|keys| {
+            let matched: Vec<String> = if valid_allow_pats.is_empty() {
+                keys.iter().cloned().collect()
+            } else {
+                keys.iter()
+                    .filter(|k| valid_allow_pats.iter().any(|p| key_matches_pattern(k, p)))
+                    .cloned()
+                    .collect()
+            };
+            if !valid_allow_pats.is_empty() && matched.is_empty() {
+                warnings.push(format!(
+                    "[profiles.{name}] allow_keys currently matches 0 keys in active snapshot"
+                ));
+            }
+            for req in &prof.require_keys {
+                let r = req.trim();
+                if !r.is_empty() && !matched.iter().any(|k| k == r) {
+                    warnings.push(format!(
+                        "[profiles.{name}] required key '{r}' is not present in active snapshot"
+                    ));
+                }
+            }
+            matched
+        });
+
+        profiles_out.push(PolicyProfileReport {
+            name: name.clone(),
+            description: prof.description.clone(),
+            commands: prof.commands.clone(),
+            allow_keys: prof.allow_keys.clone(),
+            require_keys: prof.require_keys.clone(),
+            no_net: prof.no_net,
+            proxy: prof.proxy,
+            require_explicit_approval: prof.require_explicit_approval,
+            sandbox_read_paths: prof.sandbox_read_paths.clone(),
+            upstreams: prof.upstreams.clone(),
+            matched_vault_keys,
+        });
+    }
+
+    let valid = errors.is_empty();
+    PolicyCheckReport {
+        success: valid,
+        exists: true,
+        valid,
+        path: ".ciphervault/policy.toml".to_string(),
+        sealed_mode: policy.sealed_mode,
+        default_no_net: policy.default_no_net,
+        description: policy.description.clone(),
+        sandbox_read_paths: policy.sandbox_read_paths.clone(),
+        profiles: profiles_out,
+        errors,
+        warnings,
+    }
+}
+
+pub(crate) fn cmd_policy_init(sealed: bool, force: bool, json: bool) -> Result<()> {
+    let _store = get_vault_store()?;
+    let vault_dir = crate::util::get_vault_directory();
+    let policy_path = vault_dir.join("policy.toml");
+    if policy_path.exists() && !force {
+        bail!(
+            "'{}' already exists. Pass --force to overwrite it.",
+            policy_path.display()
+        );
+    }
+    let content = starter_policy_toml(sealed);
+    // Sanity-parse our own template before writing.
+    let parsed = parse_workspace_policy(&content)?;
+    std::fs::write(&policy_path, content)
+        .with_context(|| format!("writing '{}'", policy_path.display()))?;
+    let profile_names: Vec<String> = parsed.profiles.keys().cloned().collect();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "success": true,
+                "path": ".ciphervault/policy.toml",
+                "sealed_mode": sealed,
+                "profiles": profile_names,
+            }))?
+        );
+    } else {
+        println!(
+            "{} Created '{}' (sealed_mode={}, profiles: {})",
+            "✓".green().bold(),
+            policy_path.display(),
+            sealed,
+            profile_names.join(", ")
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn cmd_policy_check(json: bool) -> Result<()> {
+    let vault_dir = crate::util::get_vault_directory();
+    let policy_path = vault_dir.join("policy.toml");
+    if !policy_path.exists() {
+        let report = PolicyCheckReport {
+            success: true,
+            exists: false,
+            valid: true,
+            path: ".ciphervault/policy.toml".to_string(),
+            sealed_mode: false,
+            default_no_net: None,
+            description: None,
+            sandbox_read_paths: Vec::new(),
+            profiles: Vec::new(),
+            errors: Vec::new(),
+            warnings: vec![
+                "No .ciphervault/policy.toml found; run 'ciphervault policy init' to create one."
+                    .to_string(),
+            ],
+        };
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("{}", report.warnings[0].yellow());
+        }
+        return Ok(());
+    }
+
+    let policy = match load_workspace_policy(&vault_dir) {
+        Ok(Some(p)) => p,
+        Ok(None) => unreachable!("policy_path existence already verified"),
+        Err(err) => {
+            if json {
+                let report = PolicyCheckReport {
+                    success: false,
+                    exists: true,
+                    valid: false,
+                    path: ".ciphervault/policy.toml".to_string(),
+                    sealed_mode: false,
+                    default_no_net: None,
+                    description: None,
+                    sandbox_read_paths: Vec::new(),
+                    profiles: Vec::new(),
+                    errors: vec![format!("{err:#}")],
+                    warnings: Vec::new(),
+                };
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                std::process::exit(1);
+            }
+            return Err(err);
+        }
+    };
+
+    let workspace_root = crate::util::get_workspace_root()
+        .or_else(|_| std::env::current_dir().map_err(anyhow::Error::from))?;
+    let store_opt = get_vault_store().ok();
+    let tracked_paths: Vec<String> = store_opt
+        .as_ref()
+        .and_then(|s| s.list_tracked_files().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(p, _)| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    // Collect key names only (zeroizing plaintext immediately) when a local head exists.
+    let snapshot_keys: Option<BTreeSet<String>> = store_opt.as_ref().and_then(|store| {
+        let mut bundle = load_local_snapshot_bundle_sync(store).ok()?;
+        let mut keys = BTreeSet::new();
+        for f in &mut bundle.files {
+            let p = f.relative_path.replace('\\', "/");
+            let name = p.rsplit('/').next().unwrap_or(&p);
+            if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
+                if let Ok(mut parsed) = dotenv::parse_dotenv_bytes(&f.plaintext) {
+                    for (k, _) in &parsed {
+                        keys.insert(k.clone());
+                    }
+                    dotenv::zeroize_env_pairs(&mut parsed);
+                }
+            }
+            f.plaintext.zeroize();
+        }
+        Some(keys)
+    });
+
+    let report = validate_workspace_policy(
+        &policy,
+        &workspace_root,
+        &tracked_paths,
+        snapshot_keys.as_ref(),
+    );
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        if !report.valid {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    if report.valid {
+        println!(
+            "{} Policy '{}' is valid ({} profile(s), sealed_mode={}).",
+            "✓".green().bold(),
+            report.path,
+            report.profiles.len(),
+            report.sealed_mode
+        );
+        for w in &report.warnings {
+            println!("  {} {w}", "warning:".yellow().bold());
+        }
+        Ok(())
+    } else {
+        for e in &report.errors {
+            eprintln!("  {} {e}", "error:".red().bold());
+        }
+        bail!(
+            "Workspace policy '{}' failed validation with {} error(s)",
+            report.path,
+            report.errors.len()
+        );
     }
 }
 
@@ -3121,5 +3990,232 @@ STRIPE_KEY = "https://api.stripe.com"
             "test",
         )
         .is_err());
+    }
+
+    #[test]
+    fn wildcard_glob_matching_and_overlap_detection() {
+        assert!(key_matches_pattern("TEST_DB_URL", "TEST_*"));
+        assert!(key_matches_pattern("TEST_", "TEST_*"));
+        assert!(!key_matches_pattern("TES_DB", "TEST_*"));
+        assert!(key_matches_pattern("OPENAI_API_KEY", "*_API_KEY"));
+        assert!(key_matches_pattern("APP_PROD_SECRET", "APP_*_SECRET"));
+        assert!(key_matches_pattern("ANY_KEY", "*"));
+        assert!(!key_matches_pattern("OPENAI_API_KEY_2", "OPENAI_API_KEY"));
+
+        assert!(patterns_can_overlap("TEST_*", "TEST_FOO"));
+        assert!(patterns_can_overlap("TEST_*", "*_KEY"));
+        assert!(patterns_can_overlap("TEST_DB_*", "TEST_*"));
+        assert!(!patterns_can_overlap("PROD_*", "TEST_*"));
+        assert!(!patterns_can_overlap("A*B", "A*C"));
+        assert!(patterns_can_overlap("*A", "B*"));
+    }
+
+    #[test]
+    fn profile_upper_bound_wildcards_optional_and_require_keys() {
+        // 1. Starter `test` profile with `TEST_*` wildcard & optional `REDIS_URL`
+        let test_allow = vec![
+            "DATABASE_URL".to_string(),
+            "REDIS_URL".to_string(),
+            "TEST_*".to_string(),
+        ];
+        let filter = build_profile_allow_keys_filter(None, &test_allow, &[], "test").unwrap();
+        let mut vars = vec![
+            ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+            ("TEST_TOKEN".to_string(), Zeroizing::new("t1".to_string())),
+            ("TEST_SECRET".to_string(), Zeroizing::new("t2".to_string())),
+            ("PROD_STRIPE_KEY".to_string(), Zeroizing::new("sk_live_x".to_string())),
+        ];
+        filter_loaded_vars_with_policy(&mut vars, &filter).unwrap();
+        let names: Vec<&str> = vars.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, vec!["DATABASE_URL", "TEST_TOKEN", "TEST_SECRET"]);
+
+        // 2. Starter `llm_eval` profile with only 1 of 3 provider keys present succeeds
+        let llm_allow = vec![
+            "OPENAI_API_KEY".to_string(),
+            "ANTHROPIC_API_KEY".to_string(),
+            "GEMINI_API_KEY".to_string(),
+        ];
+        let llm_filter =
+            build_profile_allow_keys_filter(None, &llm_allow, &[], "llm_eval").unwrap();
+        let mut llm_vars = vec![
+            ("OPENAI_API_KEY".to_string(), Zeroizing::new("sk-123".to_string())),
+            ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+        ];
+        filter_loaded_vars_with_policy(&mut llm_vars, &llm_filter).unwrap();
+        assert_eq!(llm_vars.len(), 1);
+        assert_eq!(llm_vars[0].0, "OPENAI_API_KEY");
+
+        // 3. Profile upper-bound errors when ZERO keys match in vault
+        let mut empty_match_vars = vec![(
+            "UNRELATED_KEY".to_string(),
+            Zeroizing::new("val".to_string()),
+        )];
+        let err = filter_loaded_vars_with_policy(&mut empty_match_vars, &llm_filter).unwrap_err();
+        assert!(err.to_string().contains("matched 0 variables"));
+        assert!(empty_match_vars.is_empty());
+
+        // 4. Explicit CLI --allow-keys narrows against wildcard profile & requires exact keys
+        let cli_narrow_ok = build_profile_allow_keys_filter(
+            Some(vec!["TEST_TOKEN".to_string()]),
+            &test_allow,
+            &[],
+            "test",
+        )
+        .unwrap();
+        let mut vars_narrow = vec![
+            ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+            ("TEST_TOKEN".to_string(), Zeroizing::new("t1".to_string())),
+            ("TEST_OTHER".to_string(), Zeroizing::new("t2".to_string())),
+        ];
+        filter_loaded_vars_with_policy(&mut vars_narrow, &cli_narrow_ok).unwrap();
+        assert_eq!(vars_narrow.len(), 1);
+        assert_eq!(vars_narrow[0].0, "TEST_TOKEN");
+
+        let cli_narrow_missing = build_profile_allow_keys_filter(
+            Some(vec!["TEST_MISSING".to_string()]),
+            &test_allow,
+            &[],
+            "test",
+        )
+        .unwrap();
+        let mut vars_missing = vec![("TEST_TOKEN".to_string(), Zeroizing::new("t1".to_string()))];
+        let miss_err =
+            filter_loaded_vars_with_policy(&mut vars_missing, &cli_narrow_missing).unwrap_err();
+        assert!(miss_err.to_string().contains("TEST_MISSING"));
+        assert!(vars_missing.is_empty());
+
+        // 5. CLI wildcard NEVER widens beyond profile allow_keys
+        let narrow_prof = vec!["TEST_A".to_string(), "TEST_B".to_string()];
+        let cli_wild = build_profile_allow_keys_filter(
+            Some(vec!["TEST_*".to_string()]),
+            &narrow_prof,
+            &[],
+            "narrow",
+        )
+        .unwrap();
+        let mut wild_vars = vec![
+            ("TEST_A".to_string(), Zeroizing::new("a".to_string())),
+            (
+                "TEST_SECRET_OUTSIDE_PROFILE".to_string(),
+                Zeroizing::new("leak".to_string()),
+            ),
+        ];
+        filter_loaded_vars_with_policy(&mut wild_vars, &cli_wild).unwrap();
+        assert_eq!(wild_vars.len(), 1);
+        assert_eq!(wild_vars[0].0, "TEST_A");
+
+        // 6. require_keys fails when missing from vault or excluded by CLI narrowing
+        let req_filter = build_profile_allow_keys_filter(
+            None,
+            &test_allow,
+            &["DATABASE_URL".to_string()],
+            "test",
+        )
+        .unwrap();
+        let mut missing_req_vars = vec![("TEST_A".to_string(), Zeroizing::new("a".to_string()))];
+        let req_err =
+            filter_loaded_vars_with_policy(&mut missing_req_vars, &req_filter).unwrap_err();
+        assert!(req_err.to_string().contains("require_keys"));
+        assert!(req_err.to_string().contains("DATABASE_URL"));
+        assert!(missing_req_vars.is_empty());
+
+        let req_excluded_filter = build_profile_allow_keys_filter(
+            Some(vec!["TEST_A".to_string()]),
+            &test_allow,
+            &["DATABASE_URL".to_string()],
+            "test",
+        )
+        .unwrap();
+        let mut both_vars = vec![
+            ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+            ("TEST_A".to_string(), Zeroizing::new("a".to_string())),
+        ];
+        assert!(filter_loaded_vars_with_policy(&mut both_vars, &req_excluded_filter).is_err());
+        assert!(both_vars.is_empty());
+    }
+
+    #[test]
+    fn workspace_policy_parses_extended_fields_and_validates_sandbox_paths() {
+        let dir = std::env::temp_dir().join(format!("cv-policy-ext-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(dir.join(".venv")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+
+        let toml = r#"
+[vault]
+sealed_mode = true
+default_no_net = true
+description = "My repo policy"
+sandbox_read_paths = [".venv", "node_modules"]
+
+[profiles.test]
+description = "Offline pytest profile"
+commands = ["pytest", "python"]
+allow_keys = ["DATABASE_URL", "TEST_*"]
+require_keys = ["DATABASE_URL"]
+no_net = true
+require_explicit_approval = false
+sandbox_read_paths = [".venv"]
+
+[profiles.deploy]
+description = "Production deploy"
+commands = ["node"]
+allow_keys = ["STRIPE_SECRET_KEY"]
+proxy = true
+require_explicit_approval = true
+"#;
+        let policy = parse_workspace_policy(toml).unwrap();
+        assert_eq!(policy.description.as_deref(), Some("My repo policy"));
+        assert_eq!(policy.sandbox_read_paths, vec![".venv", "node_modules"]);
+        let test_p = &policy.profiles["test"];
+        assert_eq!(test_p.description.as_deref(), Some("Offline pytest profile"));
+        assert_eq!(test_p.require_keys, vec!["DATABASE_URL"]);
+        assert_eq!(test_p.require_explicit_approval, Some(false));
+        assert_eq!(test_p.sandbox_read_paths, vec![".venv"]);
+        let deploy_p = &policy.profiles["deploy"];
+        assert_eq!(deploy_p.require_explicit_approval, Some(true));
+
+        let tracked = vec![".env".to_string(), "config/prod.env".to_string()];
+        let snap_keys: BTreeSet<String> = ["DATABASE_URL", "TEST_FOO", "STRIPE_SECRET_KEY"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let report = validate_workspace_policy(&policy, &dir, &tracked, Some(&snap_keys));
+        assert!(report.valid, "errors: {:?}", report.errors);
+        assert!(report.errors.is_empty());
+
+        // Safe sandbox_read_paths accepted; secret/vault/tracked/parent-of-tracked/traversal rejected
+        assert!(validate_sandbox_read_path(".venv", &dir, &tracked).is_ok());
+        assert!(validate_sandbox_read_path("node_modules", &dir, &tracked).is_ok());
+        assert!(validate_sandbox_read_path("../escape", &dir, &tracked).is_err());
+        assert!(validate_sandbox_read_path("/etc", &dir, &tracked).is_err());
+        assert!(validate_sandbox_read_path(".ciphervault", &dir, &tracked).is_err());
+        assert!(validate_sandbox_read_path(".ciphervault/policy.toml", &dir, &tracked).is_err());
+        assert!(validate_sandbox_read_path(".env", &dir, &tracked).is_err());
+        assert!(validate_sandbox_read_path("config", &dir, &tracked).is_err());
+        assert!(validate_sandbox_read_path("config/prod.env", &dir, &tracked).is_err());
+
+        // Starter policy template must always parse & validate cleanly
+        let starter = parse_workspace_policy(&starter_policy_toml(true)).unwrap();
+        let starter_rep = validate_workspace_policy(&starter, &dir, &tracked, None);
+        assert!(starter_rep.valid, "starter errors: {:?}", starter_rep.errors);
+
+        // Policy check flags incompatible no_net + proxy and require_keys outside allow_keys
+        let bad_toml = r#"
+[profiles.broken]
+allow_keys = ["TEST_*"]
+require_keys = ["DATABASE_URL"]
+no_net = true
+proxy = true
+"#;
+        let bad_policy = parse_workspace_policy(bad_toml).unwrap();
+        let bad_rep = validate_workspace_policy(&bad_policy, &dir, &tracked, None);
+        assert!(!bad_rep.valid);
+        assert!(bad_rep.errors.len() >= 2);
+
+        // Unknown keys still fail closed
+        assert!(parse_workspace_policy("[profiles.x]\nbogus_key = 1\n").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

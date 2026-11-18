@@ -35,11 +35,49 @@ fn is_file_read_tool(name: &str) -> bool {
 fn is_file_write_tool(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "write" | "edit" | "multiedit" | "write_file" | "patch" | "replace_file_content"
+        "write"
+            | "edit"
+            | "multiedit"
+            | "write_file"
+            | "edit_file"
+            | "create_file"
+            | "append_file"
+            | "patch"
+            | "replace_file_content"
+            | "multi_replace_file_content"
+            | "notebookedit"
     )
 }
 
-fn is_secret_filename(path_str: &str) -> bool {
+pub(crate) fn is_protected_vault_config_path(path_str: &str) -> bool {
+    let norm = path_str.replace('\\', "/").to_ascii_lowercase();
+    if norm
+        .split('/')
+        .any(|seg| seg == ".ciphervault")
+    {
+        return true;
+    }
+    let name = Path::new(&norm)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if name.is_empty() {
+        return false;
+    }
+    matches!(
+        name,
+        "policy.toml"
+            | "operators.json"
+            | "operator_pins.json"
+            | "vault.db"
+            | "vault.db-wal"
+            | "vault.db-shm"
+            | "audit_hmac.key"
+            | "keystore"
+    ) || name.starts_with("keystore.")
+}
+
+pub(crate) fn is_secret_filename(path_str: &str) -> bool {
     let norm = path_str.replace('\\', "/").to_ascii_lowercase();
     let name = Path::new(&norm)
         .file_name()
@@ -66,8 +104,11 @@ fn is_secret_filename(path_str: &str) -> bool {
         || name == "secrets.yml"
         || name == "secrets.toml"
         || name == "vault.db"
+        || name == "vault.db-wal"
+        || name == "vault.db-shm"
         || name == "keystore.key"
         || name == "keystore.salt"
+        || name.starts_with("keystore.")
         || name == "audit_hmac.key"
         || name == "policy.toml"
         || name.starts_with("recovery_kit")
@@ -307,9 +348,205 @@ fn command_mentions_secret_file(cmd: &str, tracked_paths: &[String]) -> Option<S
     None
 }
 
+fn split_shell_segments_and_tokens(cmd: &str) -> Vec<Vec<String>> {
+    let mut segments: Vec<Vec<String>> = Vec::new();
+    let mut current_tokens: Vec<String> = Vec::new();
+    let mut current_tok = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for ch in cmd.chars() {
+        if escaped {
+            current_tok.push(ch);
+            escaped = false;
+            continue;
+        }
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            } else {
+                current_tok.push(ch);
+            }
+            continue;
+        }
+        if in_double {
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_double = false,
+                other => current_tok.push(other),
+            }
+            continue;
+        }
+        match ch {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            ';' | '|' | '&' | '\n' | '\r' => {
+                if !current_tok.is_empty() {
+                    current_tokens.push(std::mem::take(&mut current_tok));
+                }
+                if !current_tokens.is_empty() {
+                    segments.push(std::mem::take(&mut current_tokens));
+                }
+            }
+            c if c.is_whitespace() => {
+                if !current_tok.is_empty() {
+                    current_tokens.push(std::mem::take(&mut current_tok));
+                }
+            }
+            other => current_tok.push(other),
+        }
+    }
+    if !current_tok.is_empty() {
+        current_tokens.push(current_tok);
+    }
+    if !current_tokens.is_empty() {
+        segments.push(current_tokens);
+    }
+    segments
+}
+
+fn is_git_executable(tok: &str) -> bool {
+    let file_name = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    stem.eq_ignore_ascii_case("git")
+}
+
 fn is_git_commit_or_push(cmd: &str) -> bool {
-    let lower = cmd.to_ascii_lowercase();
-    lower.contains("git add") || lower.contains("git commit") || lower.contains("git push")
+    for tokens in split_shell_segments_and_tokens(cmd) {
+        for (idx, tok) in tokens.iter().enumerate() {
+            if !is_git_executable(tok) {
+                continue;
+            }
+            let mut skip_next = false;
+            for arg in &tokens[idx + 1..] {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if arg == "--" {
+                    break;
+                }
+                if arg.starts_with('-') {
+                    // Global git options that take a separate value argument
+                    if matches!(
+                        arg.as_str(),
+                        "-C" | "-c"
+                            | "--git-dir"
+                            | "--work-tree"
+                            | "--namespace"
+                            | "--super-prefix"
+                            | "--config-env"
+                            | "--attr-source"
+                    ) {
+                        skip_next = true;
+                    }
+                    continue;
+                }
+                // First non-flag token is the git subcommand.
+                if arg.eq_ignore_ascii_case("add")
+                    || arg.eq_ignore_ascii_case("commit")
+                    || arg.eq_ignore_ascii_case("push")
+                {
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+    false
+}
+
+fn extract_tool_target_paths(tool_input: &serde_json::Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    const PATH_KEYS: &[&str] = &[
+        "file_path",
+        "path",
+        "file",
+        "target_file",
+        "TargetFile",
+        "notebook_path",
+        "destination",
+        "dest",
+    ];
+    for key in PATH_KEYS {
+        if let Some(s) = tool_input.get(*key).and_then(|v| v.as_str()) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                paths.push(trimmed.to_string());
+            }
+        }
+    }
+    for arr_key in ["edits", "files", "patches"] {
+        if let Some(arr) = tool_input.get(arr_key).and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        paths.push(trimmed.to_string());
+                    }
+                } else {
+                    for key in PATH_KEYS {
+                        if let Some(s) = item.get(*key).and_then(|v| v.as_str()) {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                paths.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for patch_key in ["patch", "diff", "unified_diff", "content"] {
+        if let Some(text) = tool_input.get(patch_key).and_then(|v| v.as_str()) {
+            if patch_key == "content"
+                && !text.contains("+++ ")
+                && !text.contains("*** Update File:")
+                && !text.contains("*** Add File:")
+                && !text.contains("*** Delete File:")
+            {
+                continue;
+            }
+            for line in text.lines() {
+                let candidate = if let Some(rest) = line.strip_prefix("+++ ") {
+                    Some(
+                        rest.split('\t')
+                            .next()
+                            .unwrap_or(rest)
+                            .trim()
+                            .trim_start_matches("b/"),
+                    )
+                } else if let Some(rest) = line.strip_prefix("--- ") {
+                    Some(
+                        rest.split('\t')
+                            .next()
+                            .unwrap_or(rest)
+                            .trim()
+                            .trim_start_matches("a/"),
+                    )
+                } else if let Some(rest) = line
+                    .strip_prefix("*** Update File:")
+                    .or_else(|| line.strip_prefix("*** Add File:"))
+                    .or_else(|| line.strip_prefix("*** Delete File:"))
+                    .or_else(|| line.strip_prefix("*** Move to:"))
+                {
+                    Some(rest.trim())
+                } else {
+                    None
+                };
+                if let Some(p) = candidate {
+                    if !p.is_empty() && p != "/dev/null" {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+    }
+    paths
 }
 
 fn tracked_vault_paths() -> Vec<String> {
@@ -425,6 +662,9 @@ pub(crate) fn evaluate_agent_pre(
         if let Some(path) = tool_input
             .get("file_path")
             .or_else(|| tool_input.get("path"))
+            .or_else(|| tool_input.get("file"))
+            .or_else(|| tool_input.get("target_file"))
+            .or_else(|| tool_input.get("TargetFile"))
             .and_then(|v| v.as_str())
         {
             if is_secret_filename(path) || target_matches_tracked(path, tracked_paths) {
@@ -432,6 +672,27 @@ pub(crate) fn evaluate_agent_pre(
                     tool_name.to_string(),
                     format!(
                         "CipherVault blocked read of confidential/tracked file '{path}'. Use `ciphervault_run` so secrets are injected in RAM only."
+                    ),
+                ));
+            }
+        }
+    }
+
+    if is_file_write_tool(tool_name) {
+        for path in extract_tool_target_paths(tool_input) {
+            if is_protected_vault_config_path(&path) {
+                return Some((
+                    tool_name.to_string(),
+                    format!(
+                        "CipherVault blocked write to protected vault/policy path '{path}'. Modify vault policies and operator configs manually outside agent tools."
+                    ),
+                ));
+            }
+            if is_secret_filename(&path) || target_matches_tracked(&path, tracked_paths) {
+                return Some((
+                    tool_name.to_string(),
+                    format!(
+                        "CipherVault blocked write to confidential/tracked file '{path}'. Use `ciphervault vault set|generate` so secrets stay encrypted in the vault."
                     ),
                 ));
             }
@@ -808,6 +1069,109 @@ mod tests {
             assert!(
                 evaluate_agent_pre(&call, &mut cache, &tracked).is_none(),
                 "expected `{allowed_cmd}` to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_pre_blocks_file_writes_to_protected_vault_policy_and_secret_paths() {
+        let mut cache = BridgeSecretCache::new();
+        let tracked = vec!["config/prod.yaml".to_string()];
+
+        for (tool, target) in [
+            ("Write", ".ciphervault/policy.toml"),
+            ("Edit", "./.ciphervault/operators.json"),
+            ("write_file", "/repo/.ciphervault/vault.db"),
+            ("replace_file_content", ".ciphervault/keystore.key"),
+            ("Write", "keystore.salt"),
+            ("Write", "keystore.json"),
+            ("Edit", ".ciphervault/audit_hmac.key"),
+            ("write_file", ".env"),
+            ("Edit", ".env.production"),
+            ("Write", "certs/server.pem"),
+            ("replace_file_content", "config/prod.yaml"),
+            ("Write", r"C:\repo\.ciphervault\policy.toml"),
+        ] {
+            let call = serde_json::json!({
+                "tool_name": tool,
+                "tool_input": { "file_path": target, "content": "benign content" }
+            });
+            assert!(
+                evaluate_agent_pre(&call, &mut cache, &tracked).is_some(),
+                "expected {tool} on '{target}' to be blocked"
+            );
+        }
+
+        // Unified diff / patch targeting .ciphervault/policy.toml must be blocked
+        let patch_call = serde_json::json!({
+            "tool_name": "patch",
+            "tool_input": {
+                "patch": "--- a/.ciphervault/policy.toml\n+++ b/.ciphervault/policy.toml\n@@ -1 +1 @@\n-default_no_net = true\n+default_no_net = false\n"
+            }
+        });
+        assert!(evaluate_agent_pre(&patch_call, &mut cache, &tracked).is_some());
+
+        // MultiEdit with nested edits targeting operators.json must be blocked
+        let multiedit_call = serde_json::json!({
+            "tool_name": "MultiEdit",
+            "tool_input": {
+                "edits": [
+                    { "path": "src/lib.rs", "content": "// ok" },
+                    { "path": ".ciphervault/operators.json", "content": "[\"https://evil.example\"]" }
+                ]
+            }
+        });
+        assert!(evaluate_agent_pre(&multiedit_call, &mut cache, &tracked).is_some());
+
+        // Safe writes to normal source files and .env.example remain allowed
+        for safe_path in ["src/main.rs", ".env.example", "docs/README.md"] {
+            let call = serde_json::json!({
+                "tool_name": "Write",
+                "tool_input": { "file_path": safe_path, "content": "PORT=8080\n" }
+            });
+            assert!(
+                evaluate_agent_pre(&call, &mut cache, &tracked).is_none(),
+                "expected safe write to '{safe_path}' to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn git_commit_or_push_catches_flags_between_git_and_subcommand() {
+        for flagged in [
+            "git add .",
+            "git commit -m 'msg'",
+            "git push origin main",
+            "git -C repo push",
+            "git -C /tmp/my-repo commit -m 'hi'",
+            "git -Crepo push",
+            "git --no-pager commit -am 'fix'",
+            "git -c user.name=bot -c user.email=bot@example.com add -A",
+            "git --git-dir=.git --work-tree=. push",
+            "git --git-dir .git commit",
+            "/usr/bin/git -C repo push",
+            "git.exe --no-pager -C \"my repo\" add .",
+            "echo ok && git -C repo push",
+            "env GIT_TRACE=1 git --no-pager commit",
+        ] {
+            assert!(
+                is_git_commit_or_push(flagged),
+                "expected `{flagged}` to be detected as git add/commit/push"
+            );
+        }
+
+        for benign in [
+            "git status",
+            "git -C repo status",
+            "git --no-pager log --grep=push",
+            "git --no-pager diff",
+            "git -C repo branch -a",
+            "git check-ignore .env",
+            "echo hello",
+        ] {
+            assert!(
+                !is_git_commit_or_push(benign),
+                "expected `{benign}` NOT to trigger git add/commit/push"
             );
         }
     }
