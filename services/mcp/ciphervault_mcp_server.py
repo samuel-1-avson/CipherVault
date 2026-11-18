@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""CipherVault Model Context Protocol (MCP) Server.
+"""Thin compatibility shim that delegates MCP requests to `ciphervault mcp`.
 
-Enables autonomous AI coding assistants (Antigravity, Claude Code, Cursor, AutoGen)
-to interact with CipherVault-managed environments without writing secrets to disk.
+The single hardened MCP implementation lives in the native Rust CLI
+(`apps/cli/src/commands/mcp.rs`). This launcher exists only for existing
+configurations pointing at `services/mcp/ciphervault_mcp_server.py` or calling
+legacy tool names (`ciphervault_run_in_memory`, `ciphervault_scan_secrets`,
+`ciphervault_list_secrets`, `ciphervault_create_snapshot`).
 
-Executions go through `ciphervault run --json`, which injects values in RAM and
-exact-value-scrubs captured output before returning it. Non-JSON fallback output
-is shape-scrubbed here (Bearer/PEM/credential assignments/URLs) before it can
-reach the LLM; only the CLI --json path also scrubs bare echoed values exactly.
+New setups should configure `ciphervault mcp` directly.
 """
 
+import atexit
 import json
 import os
 from pathlib import Path
-import re
+import queue
+import shutil
 import subprocess
 import sys
+import threading
+import weakref
 
 TOOL_TIMEOUT_SECS = 120
 
@@ -36,467 +40,366 @@ _ENV_KEEP = (
     "PATHEXT",
 )
 
+LEGACY_TOOL_ALIASES = {
+    "ciphervault_run_in_memory": "ciphervault_run",
+    "ciphervault_scan_secrets": "ciphervault_scan",
+    "ciphervault_list_secrets": "ciphervault_status",
+    "ciphervault_create_snapshot": "ciphervault_push",
+}
 
-def _minimal_env():
-    """Environment for CLI subprocesses: an allowlist so parent provider keys
-    (OPENAI_API_KEY, etc.) never leak into the CLI or spawned children."""
+_LEGACY_DESCRIPTIONS = {
+    "ciphervault_run_in_memory": "Legacy alias for ciphervault_run: execute a command with decrypted secrets injected in RAM only (zero disk exposure, output scrubbed, audit-receipted).",
+    "ciphervault_scan_secrets": "Legacy alias for ciphervault_scan: scan workspace and staged Git changes for secret sprawl and credential patterns.",
+    "ciphervault_list_secrets": "Legacy alias for ciphervault_status: list tracked confidential file paths and vault status without exposing values.",
+    "ciphervault_create_snapshot": "Legacy alias for ciphervault_push: create an encrypted snapshot of tracked confidential files.",
+}
+
+
+def _minimal_env() -> dict:
+    """Allowlisted environment for the native `ciphervault mcp` child process.
+
+    Strips inherited provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
+    while preserving essential OS variables and `CIPHERVAULT_*` configuration.
+    """
     env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
     env.update({k: v for k, v in os.environ.items() if k.startswith("CIPHERVAULT_")})
-    env.setdefault("NO_COLOR", "1")
+    env["NO_COLOR"] = "1"
     return env
 
 
-def _effective_no_net(args):
-    """Default to --no-net on Linux, macOS, and Windows unless proxy is True
-    or no_net=False is explicitly passed."""
-    if isinstance(args, dict) and args.get("no_net") is not None:
-        return bool(args["no_net"])
-    if isinstance(args, dict) and args.get("proxy"):
-        return False
-    return sys.platform.startswith("linux") or sys.platform in ("darwin", "win32")
-
-_TOKEN_RE = re.compile(r"(cvst1\.[A-Za-z0-9._~=-]+|sk_live[\w-]+|sk_test[\w-]+|ghp_[\w]+|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.?[A-Za-z0-9_-]*)")
-_BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
-_PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
-_KV_RE = re.compile(r"(?i)((?:[A-Za-z0-9_-]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)\s*[=:]\s*)([^\s\"']+)")
-_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]+:)[^\s/@]+(@)")
+def _validate_cwd(cwd):
+    if cwd is None:
+        return None, None
+    if not isinstance(cwd, str):
+        return None, "cwd must be a string"
+    cleaned = cwd.strip()
+    if not cleaned:
+        return None, None
+    if cleaned.startswith(("\\\\", "//", "\\??\\")) or "\x00" in cleaned:
+        return None, "cwd cannot be a UNC or network share path"
+    return cleaned, None
 
 
-def scrub_text(text):
-    if not text:
-        return text
-    text = _PEM_RE.sub("[REDACTED] PRIVATE KEY", text)
-    text = _BEARER_RE.sub(r"\1[REDACTED]", text)
-    text = _URL_RE.sub(r"\1[REDACTED]\2", text)
-    text = _TOKEN_RE.sub("[REDACTED]", text)
-    return _KV_RE.sub(r"\1[REDACTED]", text)
-
-
-def find_ciphervault_binary():
-    """Locate the ciphervault executable in workspace or system PATH."""
+def find_ciphervault_binary() -> str:
+    """Locate the native `ciphervault` executable in env, target dirs, or PATH."""
+    exe = "ciphervault.exe" if sys.platform == "win32" else "ciphervault"
     repo_root = Path(__file__).resolve().parents[2]
-    # Check debug/release build targets
-    candidates = [
-        Path(os.environ.get("CARGO_TARGET_DIR", "")) / "debug" / ("ciphervault.exe" if sys.platform == "win32" else "ciphervault"),
-        Path.home() / ".cargo-targets" / "ciphervault" / "debug" / ("ciphervault.exe" if sys.platform == "win32" else "ciphervault"),
-        repo_root / "target" / "debug" / ("ciphervault.exe" if sys.platform == "win32" else "ciphervault"),
-        Path(shutil_which("ciphervault") or ""),
-    ]
-    for c in candidates:
-        if c and c.is_file() and os.access(c, os.X_OK):
-            return str(c)
-    # Default to "ciphervault" CLI in PATH
+    candidates = []
+    env_bin = os.environ.get("CIPHERVAULT_BIN")
+    if env_bin:
+        candidates.append(Path(env_bin))
+    cargo_target = os.environ.get("CARGO_TARGET_DIR")
+    if cargo_target:
+        candidates.extend([Path(cargo_target) / "debug" / exe, Path(cargo_target) / "release" / exe])
+    candidates.extend([
+        repo_root / "target" / "debug" / exe,
+        repo_root / "target" / "release" / exe,
+        Path.home() / ".cargo-targets" / "ciphervault" / "debug" / exe,
+        Path.home() / ".cargo-targets" / "ciphervault" / "release" / exe,
+    ])
+    which = shutil.which("ciphervault")
+    if which:
+        candidates.append(Path(which))
+    for cand in candidates:
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
     return "ciphervault"
 
 
-def shutil_which(cmd):
-    import shutil
-    return shutil.which(cmd)
+def translate_legacy_tool_call(tool_name: str, args: dict):
+    """Translate a legacy tool name + arguments to its native `ciphervault mcp` call.
+
+    Returns `(native_name, native_args, error_message_or_None)`.
+    Non-legacy tool names pass through unchanged.
+    """
+    args = dict(args) if isinstance(args, dict) else {}
+    cwd, cwd_err = _validate_cwd(args.get("cwd"))
+    if cwd_err:
+        return None, None, cwd_err
+
+    if tool_name not in LEGACY_TOOL_ALIASES:
+        if cwd is not None:
+            args["cwd"] = cwd
+        return tool_name, args, None
+
+    native_name = LEGACY_TOOL_ALIASES[tool_name]
+
+    if tool_name == "ciphervault_run_in_memory":
+        cmd = args.get("command")
+        dry_run = bool(args.get("dry_run", False))
+        if cmd is not None and not isinstance(cmd, list):
+            return None, None, "command must be an array of strings"
+        cmd_list = [str(c) for c in (cmd or [])]
+        if not cmd_list and not dry_run:
+            return None, None, "command must be a non-empty array of strings"
+
+        allow_keys = args.get("allow_keys")
+        cleaned_keys = None
+        if allow_keys is not None:
+            if not isinstance(allow_keys, list):
+                return None, None, "allow_keys must be an array of variable names"
+            cleaned_keys = [str(k).strip() for k in allow_keys if str(k).strip()]
+            if not cleaned_keys:
+                return None, None, "allow_keys cannot be empty when provided"
+
+        proxy = bool(args.get("proxy", False))
+        no_net_raw = args.get("no_net")
+        if proxy and no_net_raw is True:
+            return None, None, "proxy and no_net cannot both be enabled"
+
+        native_args = {"command": cmd_list}
+        if dry_run:
+            native_args["dry_run"] = True
+        if args.get("profile"):
+            native_args["profile"] = str(args["profile"])
+        if args.get("env_file"):
+            native_args["env_file"] = str(args["env_file"])
+        if args.get("project"):
+            native_args["project"] = str(args["project"])
+        env_val = args.get("env") or args.get("environment")
+        if env_val:
+            native_args["env"] = str(env_val)
+        if cleaned_keys is not None:
+            native_args["allow_keys"] = cleaned_keys
+        if proxy:
+            native_args["proxy"] = True
+        if no_net_raw is not None:
+            native_args["no_net"] = bool(no_net_raw)
+        if cwd is not None:
+            native_args["cwd"] = cwd
+        # Agent-supplied proxy_upstream is intentionally dropped.
+        return native_name, native_args, None
+
+    if tool_name == "ciphervault_scan_secrets":
+        native_args = {
+            "deep": bool(args.get("deep", True)),
+            "fix": bool(args.get("fix", False)),
+        }
+        if cwd is not None:
+            native_args["cwd"] = cwd
+        return native_name, native_args, None
+
+    if tool_name == "ciphervault_list_secrets":
+        native_args = {}
+        if cwd is not None:
+            native_args["cwd"] = cwd
+        return native_name, native_args, None
+
+    if tool_name == "ciphervault_create_snapshot":
+        native_args = {
+            "message": str(args.get("message") or "Agent snapshot"),
+            "local_only": bool(args.get("local_only", True)),
+            "shred_working_copy": bool(args.get("shred_working_copy", False)),
+        }
+        if cwd is not None:
+            native_args["cwd"] = cwd
+        return native_name, native_args, None
+
+    return native_name, args, None
+
+
+def _augment_tools_list(native_tools: list) -> list:
+    """Keep every native tool and append legacy aliases derived from their schemas."""
+    tools = list(native_tools)
+    by_name = {t.get("name"): t for t in tools if isinstance(t, dict) and t.get("name")}
+    for alias, target in LEGACY_TOOL_ALIASES.items():
+        if alias in by_name or target not in by_name:
+            continue
+        base = by_name[target]
+        schema = json.loads(json.dumps(base.get("inputSchema") or {"type": "object", "properties": {}}))
+        props = schema.setdefault("properties", {})
+        if alias == "ciphervault_run_in_memory" and "environment" not in props:
+            props["environment"] = {
+                "type": "string",
+                "description": "Legacy alias for `env`",
+            }
+        tools.append({
+            "name": alias,
+            "description": _LEGACY_DESCRIPTIONS[alias],
+            "inputSchema": schema,
+        })
+    return tools
 
 
 class CipherVaultMcpServer:
-    """JSON-RPC 2.0 Model Context Protocol Server."""
+    """Thin JSON-RPC 2.0 bridge delegating all MCP execution to `ciphervault mcp`."""
 
     def __init__(self, binary_path=None, repo_root=None):
         self.binary_path = binary_path or find_ciphervault_binary()
-        self.repo_root = repo_root or Path(__file__).resolve().parents[2]
+        self.repo_root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[2]
+        self._proc = None
+        self._lines = None
+        self._reader = None
+        self._lock = threading.Lock()
+        self._ref = weakref.ref(self)
+        atexit.register(CipherVaultMcpServer._cleanup_ref, self._ref)
 
-    def server_version(self):
-        """Version of the wrapped CLI (cached); never a stale literal."""
-        if getattr(self, "_version", None) is None:
+    @staticmethod
+    def _cleanup_ref(ref):
+        inst = ref()
+        if inst is not None:
+            inst.close()
+
+    def _ensure_native_process(self):
+        if self._proc is not None and self._proc.poll() is None:
+            return
+        self.close()
+        self._proc = subprocess.Popen(
+            [self.binary_path, "mcp"],
+            cwd=str(self.repo_root),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=_minimal_env(),
+        )
+        lines = queue.Queue()
+        self._lines = lines
+
+        def _read_loop(stdout_pipe, out_q):
             try:
-                proc = subprocess.run(
-                    [self.binary_path, "--version"],
-                    capture_output=True, text=True, encoding="utf-8", timeout=15,
-                    env=_minimal_env(),
-                )
-                parts = (proc.stdout or "").strip().split()
-                self._version = parts[-1] if parts else "unknown"
+                for line in stdout_pipe:
+                    out_q.put(line)
             except Exception:
-                self._version = "unknown"
-        return self._version
+                pass
+            finally:
+                out_q.put(None)
 
-    def run_cli(self, cli_args, args):
-        """Run the CLI with a timeout, allowlisted env, and caller-selected cwd."""
-        cwd = (args or {}).get("cwd") or str(self.repo_root)
+        self._reader = threading.Thread(
+            target=_read_loop, args=(self._proc.stdout, lines), daemon=True
+        )
+        self._reader.start()
+
+    def close(self):
+        proc = self._proc
+        self._proc = None
+        self._lines = None
+        self._reader = None
+        if proc is None:
+            return
         try:
-            return subprocess.run(
-                cli_args, cwd=cwd, capture_output=True, text=True,
-                encoding="utf-8", timeout=TOOL_TIMEOUT_SECS,
-                env=_minimal_env(),
-            )
-        except subprocess.TimeoutExpired:
-            raise TimeoutError(f"ciphervault timed out after {TOOL_TIMEOUT_SECS}s")
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
-    def handle_request(self, request: dict) -> dict:
-        """Dispatch a single JSON-RPC 2.0 request."""
+    def _forward_to_native(self, request: dict, timeout: int = TOOL_TIMEOUT_SECS):
+        """Send one JSON-RPC 2.0 message to the native `ciphervault mcp` process."""
+        is_notification = request.get("id") is None or str(request.get("method") or "").startswith("notifications/")
+        with self._lock:
+            self._ensure_native_process()
+            assert self._proc is not None and self._proc.stdin is not None and self._lines is not None
+            try:
+                self._proc.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+                self._proc.stdin.flush()
+            except Exception as exc:
+                self.close()
+                raise RuntimeError(f"failed to write to native ciphervault mcp: {exc}") from exc
+
+            if is_notification:
+                return None
+
+            try:
+                line = self._lines.get(timeout=timeout)
+            except queue.Empty as exc:
+                self.close()
+                raise TimeoutError(f"ciphervault mcp timed out after {timeout}s") from exc
+
+            if line is None:
+                self.close()
+                raise RuntimeError("native ciphervault mcp process exited unexpectedly")
+            return json.loads(line)
+
+    def handle_request(self, request: dict):
+        """Dispatch a JSON-RPC 2.0 request to the native `ciphervault mcp` binary."""
+        if not isinstance(request, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid Request"},
+            }
         req_id = request.get("id")
-        method = request.get("method")
+        method = request.get("method") or ""
         params = request.get("params") or {}
 
-        if method == "initialize":
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "tools": {},
-                    },
-                    "serverInfo": {
-                        "name": "ciphervault-mcp-server",
-                        "version": self.server_version(),
-                    },
-                },
-            }
+        if req_id is None or str(method).startswith("notifications/"):
+            try:
+                self._forward_to_native(request)
+            except Exception:
+                pass
+            return None
 
-        elif method == "tools/list":
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "tools": [
-                        {
-                            "name": "ciphervault_run_in_memory",
-                            "description": "Execute a shell command with decrypted secrets injected into memory (zero disk exposure). Output is automatically scrubbed of secret values before returning.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "command": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                        "description": "Command and arguments to execute (e.g. ['python', 'app.py'] or ['npm', 'test'])",
-                                    },
-                                    "env_file": {
-                                        "type": "string",
-                                        "description": "Optional specific secret file to load (e.g. '.env.production')",
-                                    },
-                                    "project": {
-                                        "type": "string",
-                                        "description": "Optional project scope identifier",
-                                    },
-                                    "environment": {
-                                        "type": "string",
-                                        "description": "Optional environment name (e.g. 'staging', 'production')",
-                                    },
-                                    "allow_keys": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                        "description": "Optional allowlist of variable names to inject (least-privilege scoping)",
-                                    },
-                                    "no_net": {
-                                        "type": "boolean",
-                                        "description": "Block child outbound/inbound network access (defaults true on Linux, macOS, and Windows unless proxy is enabled)",
-                                    },
-                                    "proxy": {
-                                        "type": "boolean",
-                                        "default": False,
-                                        "description": "Run loopback credential proxy in parent so real API keys never enter child env",
-                                    },
-                                    "dry_run": {
-                                        "type": "boolean",
-                                        "description": "List injected variable names without executing command",
-                                    },
-                                    "cwd": {
-                                        "type": "string",
-                                        "description": "Optional workspace directory",
-                                    },
-                                },
-                                "required": ["command"],
-                            },
-                        },
-                        {
-                            "name": "ciphervault_scan_secrets",
-                            "description": "Deep-scan workspace and staged Git changes for secret sprawl, untracked .env files, private keys, and token patterns.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "deep": {
-                                        "type": "boolean",
-                                        "default": True,
-                                        "description": "Scan staged diffs and filesystem for untracked credentials",
-                                    },
-                                    "fix": {
-                                        "type": "boolean",
-                                        "default": False,
-                                        "description": "Automatically append discovered sprawling secret files to .gitignore",
-                                    },
-                                    "cwd": {
-                                        "type": "string",
-                                        "description": "Optional workspace directory",
-                                    },
-                                },
-                            },
-                        },
-                        {
-                            "name": "ciphervault_list_secrets",
-                            "description": "List tracked confidential files and active secret variables without exposing plaintext values.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "project": {"type": "string"},
-                                    "environment": {"type": "string"},
-                                    "cwd": {
-                                        "type": "string",
-                                        "description": "Optional workspace directory",
-                                    },
-                                },
-                            },
-                        },
-                        {
-                            "name": "ciphervault_create_snapshot",
-                            "description": "Create an encrypted snapshot of tracked confidential files with zero plaintext exposure.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "message": {
-                                        "type": "string",
-                                        "description": "Descriptive commit message for the snapshot",
-                                    },
-                                    "local_only": {
-                                        "type": "boolean",
-                                        "default": True,
-                                        "description": "Store snapshot locally without operator replication",
-                                    },
-                                    "shred_working_copy": {
-                                        "type": "boolean",
-                                        "default": False,
-                                        "description": "Zero-fill and remove tracked plaintext files from the working directory after sealing the snapshot",
-                                    },
-                                    "cwd": {
-                                        "type": "string",
-                                        "description": "Optional workspace directory",
-                                    },
-                                },
-                                "required": ["message"],
-                            },
-                        },
-                    ]
-                },
-            }
-
-        elif method == "tools/call":
-            tool_name = params.get("name")
+        forwarded = request
+        if method == "tools/call":
+            tool_name = params.get("name") or ""
             arguments = params.get("arguments") or {}
-            return self.dispatch_tool(req_id, tool_name, arguments)
-
-        else:
-            return {
+            native_name, native_args, err = translate_legacy_tool_call(tool_name, arguments)
+            if err is not None:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32602, "message": err},
+                }
+            forwarded = {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Method '{method}' not found",
-                },
+                "method": "tools/call",
+                "params": {"name": native_name, "arguments": native_args},
             }
 
-    def dispatch_tool(self, req_id, tool_name: str, args: dict) -> dict:
-        """Execute the requested tool and format result."""
-        args = args or {}
         try:
-            if tool_name == "ciphervault_run_in_memory":
-                cmd = args.get("command") or []
-                env_file = args.get("env_file")
-                project = args.get("project")
-                environment = args.get("environment")
-                dry_run = bool(args.get("dry_run", False))
-                allow_keys = args.get("allow_keys")
-                proxy = bool(args.get("proxy", False))
-                no_net = _effective_no_net(args)
-
-                if cmd and not isinstance(cmd, list):
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {
-                            "code": -32602,
-                            "message": "command must be an array of strings",
-                        },
-                    }
-                if not cmd and not dry_run:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {
-                            "code": -32602,
-                            "message": "command must be a non-empty array of strings",
-                        },
-                    }
-
-                cli_args = [self.binary_path, "run", "--json"]
-                if dry_run:
-                    cli_args.append("--dry-run")
-                if env_file:
-                    cli_args.extend(["--env-file", env_file])
-                if project:
-                    cli_args.extend(["--project", project])
-                if environment:
-                    cli_args.extend(["--env", environment])
-                if allow_keys is not None:
-                    if not isinstance(allow_keys, list):
-                        return {
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "error": {
-                                "code": -32602,
-                                "message": "allow_keys must be an array of variable names",
-                            },
-                        }
-                    keys = [str(k).strip() for k in allow_keys if str(k).strip()]
-                    if not keys:
-                        return {
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "error": {
-                                "code": -32602,
-                                "message": "allow_keys cannot be empty when provided",
-                            },
-                        }
-                    cli_args.extend(["--allow-keys", ",".join(keys)])
-                if proxy and no_net:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {
-                            "code": -32602,
-                            "message": "proxy and no_net cannot both be enabled",
-                        },
-                    }
-                if proxy:
-                    cli_args.append("--proxy")
-                if no_net:
-                    cli_args.append("--no-net")
-
-                if cmd:
-                    cli_args.append("--")
-                    cli_args.extend(str(c) for c in cmd)
-
-                proc = self.run_cli(cli_args, args)
-
-                output_text = (proc.stdout or "").strip()
-                stderr_text = (proc.stderr or "").strip()
-                try:
-                    payload = json.loads(output_text)
-                except Exception:
-                    payload = {
-                        "raw_output": scrub_text(output_text),
-                        "raw_stderr": scrub_text(stderr_text),
-                        "exit_code": proc.returncode,
-                    }
-
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            {"type": "text", "text": json.dumps(payload, indent=2)}
-                        ]
-                    },
-                }
-
-            elif tool_name == "ciphervault_scan_secrets":
-                deep = args.get("deep", True)
-                fix = args.get("fix", False)
-
-                cli_args = [self.binary_path, "hook", "check", "--json"]
-                if deep:
-                    cli_args.append("--deep")
-                if fix:
-                    cli_args.append("--fix")
-
-                proc = self.run_cli(cli_args, args)
-
-                output_text = (proc.stdout or "").strip()
-                stderr_text = (proc.stderr or "").strip()
-                try:
-                    payload = json.loads(output_text)
-                except Exception:
-                    payload = {"output": scrub_text(output_text), "stderr": scrub_text(stderr_text)}
-
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            {"type": "text", "text": json.dumps(payload, indent=2)}
-                        ]
-                    },
-                }
-
-            elif tool_name == "ciphervault_list_secrets":
-                cli_args = [self.binary_path, "status", "--json"]
-                proc = self.run_cli(cli_args, args)
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            {"type": "text", "text": scrub_text((proc.stdout or "").strip() or (proc.stderr or "").strip())}
-                        ]
-                    },
-                }
-
-            elif tool_name == "ciphervault_create_snapshot":
-                msg = args.get("message", "Agent snapshot")
-                local_only = args.get("local_only", True)
-                cli_args = [self.binary_path, "push", "-m", msg]
-                if local_only:
-                    cli_args.append("--local")
-                if args.get("shred_working_copy"):
-                    cli_args.append("--shred")
-
-                proc = self.run_cli(cli_args, args)
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            {"type": "text", "text": scrub_text((proc.stdout or "").strip() or (proc.stderr or "").strip())}
-                        ]
-                    },
-                }
-
-            else:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {
-                        "code": -32602,
-                        "message": f"Unknown tool name '{tool_name}'",
-                    },
-                }
-
+            resp = self._forward_to_native(forwarded)
         except Exception as exc:
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {
-                    "code": -32000,
-                    "message": str(exc),
-                },
+                "error": {"code": -32000, "message": str(exc)},
             }
 
+        if method == "tools/list" and isinstance(resp, dict):
+            result = resp.get("result")
+            if isinstance(result, dict) and isinstance(result.get("tools"), list):
+                resp = dict(resp)
+                resp["result"] = dict(result, tools=_augment_tools_list(result["tools"]))
+        return resp
+
     def run_stdio(self):
-        """Standard I/O event loop for MCP clients."""
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                request = json.loads(line)
+        """Standard I/O JSON-RPC 2.0 loop delegating to `ciphervault mcp`."""
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    request = json.loads(line)
+                except Exception as exc:
+                    err_resp = {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": f"Parse error: {exc}"},
+                    }
+                    sys.stdout.write(json.dumps(err_resp) + "\n")
+                    sys.stdout.flush()
+                    continue
                 response = self.handle_request(request)
-                sys.stdout.write(json.dumps(response) + "\n")
-                sys.stdout.flush()
-            except Exception as exc:
-                err_resp = {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": -32700, "message": f"Parse error: {exc}"},
-                }
-                sys.stdout.write(json.dumps(err_resp) + "\n")
-                sys.stdout.flush()
+                if response is not None:
+                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.flush()
+        finally:
+            self.close()
 
 
 if __name__ == "__main__":
-    server = CipherVaultMcpServer()
-    server.run_stdio()
+    CipherVaultMcpServer().run_stdio()

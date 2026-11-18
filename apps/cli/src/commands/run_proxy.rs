@@ -6,6 +6,11 @@
 //! `*_BASE_URL` / `CIPHERVAULT_PROXY_ROUTE_*` URLs. Outbound requests carrying a
 //! valid placeholder are authenticated against pinned HTTPS upstreams (with
 //! redirects disabled) and response bodies are scrubbed before return.
+//!
+//! Streaming responses (`text/event-stream`, NDJSON, and chunked bodies) are
+//! forwarded incrementally through a rolling overlap scrubber so SSE events
+//! arrive immediately while exact vault values split across chunk boundaries
+//! are still scrubbed without leakage.
 
 use anyhow::{bail, Context, Result};
 use axum::body::Body;
@@ -13,11 +18,21 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use base64::Engine as _;
+use futures_util::stream;
 use rand::RngCore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::oneshot;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const PROXY_IDLE_READ_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_LINE_HOLD_BYTES: usize = 4096;
+const MIN_LONG_LINE_OVERLAP_BYTES: usize = 256;
+const MAX_PEM_HOLD_BYTES: usize = 16 * 1024;
+const MAX_BUFFERED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct ProxyRoute {
@@ -35,6 +50,7 @@ struct ProxyState {
     routes: Vec<ProxyRoute>,
     client: reqwest::Client,
     exact_values: Vec<(String, Zeroizing<String>)>,
+    idle_read_timeout: Duration,
 }
 
 fn bearer_scheme_prefix() -> &'static str {
@@ -127,16 +143,72 @@ const KNOWN_PROVIDERS: &[KnownProvider] = &[
         true,
         &[],
     ),
+    (
+        "RESEND_API_KEY",
+        "https://api.resend.com",
+        "authorization",
+        true,
+        &[("RESEND_BASE_URL", "")],
+    ),
+    (
+        "SLACK_BOT_TOKEN",
+        "https://slack.com/api",
+        "authorization",
+        true,
+        &[("SLACK_API_URL", "")],
+    ),
+    (
+        "VERCEL_TOKEN",
+        "https://api.vercel.com",
+        "authorization",
+        true,
+        &[],
+    ),
+    (
+        "CLOUDFLARE_API_TOKEN",
+        "https://api.cloudflare.com",
+        "authorization",
+        true,
+        &[("CLOUDFLARE_BASE_URL", "/client/v4")],
+    ),
+    (
+        "GROQ_API_KEY",
+        "https://api.groq.com",
+        "authorization",
+        true,
+        &[("GROQ_BASE_URL", "")],
+    ),
+    (
+        "DEEPSEEK_API_KEY",
+        "https://api.deepseek.com",
+        "authorization",
+        true,
+        &[("DEEPSEEK_BASE_URL", "/v1")],
+    ),
+    (
+        "XAI_API_KEY",
+        "https://api.x.ai",
+        "authorization",
+        true,
+        &[("XAI_BASE_URL", "/v1")],
+    ),
+    (
+        "MISTRAL_API_KEY",
+        "https://api.mistral.ai",
+        "authorization",
+        true,
+        &[("MISTRAL_BASE_URL", "")],
+    ),
 ];
 
-type ProviderSpec = (
+pub(crate) type ProviderSpec = (
     &'static str,
     &'static str,
     bool,
     &'static [(&'static str, &'static str)],
 );
 
-fn known_provider_for_key(key: &str) -> Option<ProviderSpec> {
+pub(crate) fn known_provider_for_key(key: &str) -> Option<ProviderSpec> {
     KNOWN_PROVIDERS
         .iter()
         .find(|(k, _, _, _, _)| *k == key)
@@ -307,6 +379,15 @@ impl RunningProxy {
 }
 
 pub(crate) async fn start_credential_proxy(routes: Vec<ProxyRoute>) -> Result<RunningProxy> {
+    start_credential_proxy_with_timeouts(routes, PROXY_CONNECT_TIMEOUT, PROXY_IDLE_READ_TIMEOUT)
+        .await
+}
+
+async fn start_credential_proxy_with_timeouts(
+    routes: Vec<ProxyRoute>,
+    connect_timeout: Duration,
+    idle_read_timeout: Duration,
+) -> Result<RunningProxy> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .context("failed to bind loopback credential proxy")?;
@@ -331,9 +412,11 @@ pub(crate) async fn start_credential_proxy(routes: Vec<ProxyRoute>) -> Result<Ru
         .iter()
         .map(|r| (r.env_key.clone(), r.upstream_cred.clone()))
         .collect();
+    // Use connect_timeout + per-chunk idle read timeout instead of a hard total
+    // request timeout so long SSE streaming LLM responses are never cut off.
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(connect_timeout)
         .build()
         .context("failed to build upstream proxy client")?;
 
@@ -341,6 +424,7 @@ pub(crate) async fn start_credential_proxy(routes: Vec<ProxyRoute>) -> Result<Ru
         routes,
         client,
         exact_values,
+        idle_read_timeout,
     });
     let app = Router::new().fallback(proxy_handler).with_state(state);
     let (tx, rx) = oneshot::channel::<()>();
@@ -357,6 +441,304 @@ pub(crate) async fn start_credential_proxy(routes: Vec<ProxyRoute>) -> Result<Ru
         shutdown_tx: Some(tx),
         handle: Some(handle),
     })
+}
+
+fn percent_encode_needle(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for &b in value.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn json_escape_needle(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build the full set of exact-value needles (raw + encoded variants matching
+/// `ciphervault_redact::scrub_exact_values`) used to size the streaming overlap
+/// buffer and detect partial secret prefixes at chunk boundaries.
+fn build_exact_needles(exact_values: &[(String, Zeroizing<String>)]) -> Vec<Zeroizing<String>> {
+    let mut needles: Vec<Zeroizing<String>> = Vec::new();
+    for (_, val) in exact_values {
+        let value = val.as_str();
+        if value.chars().count() < ciphervault_redact::MIN_EXACT_VALUE_LEN {
+            continue;
+        }
+        let mut push_unique = |cand: String| {
+            if !cand.is_empty() && !needles.iter().any(|existing| existing.as_str() == cand) {
+                needles.push(Zeroizing::new(cand));
+            }
+        };
+        push_unique(value.to_string());
+        push_unique(percent_encode_needle(value));
+        let bytes = value.as_bytes();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let b64_unpadded = b64.trim_end_matches('=').to_string();
+        push_unique(b64);
+        push_unique(b64_unpadded);
+        push_unique(base64::engine::general_purpose::URL_SAFE.encode(bytes));
+        push_unique(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes));
+        if bytes.len() >= 12 {
+            for shift in 0..3 {
+                let slice = &bytes[shift..];
+                let complete_len = (slice.len() / 3) * 3;
+                if complete_len < 6 {
+                    continue;
+                }
+                let aligned = &slice[..complete_len];
+                for sub in [
+                    base64::engine::general_purpose::STANDARD.encode(aligned),
+                    base64::engine::general_purpose::URL_SAFE.encode(aligned),
+                ] {
+                    if sub.len() >= 8 {
+                        push_unique(sub);
+                    }
+                }
+            }
+        }
+        push_unique(hex::encode(bytes));
+        push_unique(hex::encode_upper(bytes));
+        push_unique(json_escape_needle(value));
+    }
+    needles.sort_by(|a, b| b.len().cmp(&a.len()));
+    needles
+}
+
+fn longest_needle_prefix_suffix(pending: &str, needles: &[Zeroizing<String>]) -> usize {
+    let p_bytes = pending.as_bytes();
+    let mut best = 0usize;
+    for needle in needles {
+        let n_bytes = needle.as_bytes();
+        if n_bytes.len() <= 1 {
+            continue;
+        }
+        let max_check = p_bytes.len().min(n_bytes.len() - 1);
+        if max_check <= best {
+            continue;
+        }
+        for len in (best + 1..=max_check).rev() {
+            if p_bytes.ends_with(&n_bytes[..len]) {
+                best = len;
+                break;
+            }
+        }
+    }
+    best
+}
+
+fn pem_overlap_hold(pending: &str) -> usize {
+    const BEGIN: &str = "-----BEGIN ";
+    const END_MARK: &str = "-----END ";
+    let mut hold = 0usize;
+
+    if let Some(pos) = pending.rfind(BEGIN) {
+        let tail = &pending[pos..];
+        let closed = tail.find(END_MARK).is_some_and(|end_rel| {
+            tail[end_rel + END_MARK.len()..].contains("-----")
+        });
+        if !closed {
+            let after_begin = &tail[BEGIN.len()..];
+            let header_maybe_private = match after_begin.find("-----") {
+                None => !after_begin.contains('\n'),
+                Some(h_end) => after_begin[..h_end]
+                    .to_ascii_uppercase()
+                    .contains("PRIVATE"),
+            };
+            if header_maybe_private && tail.len() <= MAX_PEM_HOLD_BYTES {
+                hold = tail.len();
+            }
+        }
+    }
+
+    let p_bytes = pending.as_bytes();
+    let b_bytes = BEGIN.as_bytes();
+    let max_prefix = p_bytes.len().min(b_bytes.len() - 1);
+    for len in (hold + 1..=max_prefix).rev() {
+        if p_bytes.ends_with(&b_bytes[..len]) {
+            hold = len;
+            break;
+        }
+    }
+    hold
+}
+
+/// Incremental UTF-8 stream scrubber with a rolling overlap buffer sized to
+/// the maximum exact-value needle length so secrets split across HTTP/SSE chunk
+/// boundaries are held and scrubbed while complete SSE events flush immediately.
+struct StreamScrubber {
+    exact_values: Vec<(String, Zeroizing<String>)>,
+    needles: Vec<Zeroizing<String>>,
+    max_needle_len: usize,
+    pending: String,
+    utf8_tail: Vec<u8>,
+    is_binary: bool,
+}
+
+impl StreamScrubber {
+    fn new(exact_values: Vec<(String, Zeroizing<String>)>) -> Self {
+        let needles = build_exact_needles(&exact_values);
+        let max_needle_len = needles.iter().map(|n| n.len()).max().unwrap_or(0);
+        Self {
+            exact_values,
+            needles,
+            max_needle_len,
+            pending: String::new(),
+            utf8_tail: Vec::new(),
+            is_binary: false,
+        }
+    }
+
+    fn push_chunk(&mut self, chunk: &[u8]) -> Vec<u8> {
+        if chunk.is_empty() {
+            return Vec::new();
+        }
+        if self.is_binary {
+            return chunk.to_vec();
+        }
+
+        let mut combined = Vec::with_capacity(self.utf8_tail.len() + chunk.len());
+        combined.extend_from_slice(&self.utf8_tail);
+        combined.extend_from_slice(chunk);
+        self.utf8_tail.clear();
+
+        let valid_text = match std::str::from_utf8(&combined) {
+            Ok(s) => s,
+            Err(err) => {
+                if err.error_len().is_none() {
+                    let valid_up_to = err.valid_up_to();
+                    self.utf8_tail.extend_from_slice(&combined[valid_up_to..]);
+                    // SAFETY: std::str::from_utf8 guaranteed `..valid_up_to` is valid UTF-8.
+                    std::str::from_utf8(&combined[..valid_up_to]).unwrap_or("")
+                } else {
+                    self.is_binary = true;
+                    let mut out = self.flush_pending_scrubbed();
+                    out.extend_from_slice(&combined);
+                    combined.zeroize();
+                    return out;
+                }
+            }
+        };
+
+        self.pending.push_str(valid_text);
+        combined.zeroize();
+
+        // Compute holdback BEFORE exact-value replacement so that a shorter
+        // secret which is a prefix of a longer secret (e.g. `abc123` vs
+        // `abc123456`) is not prematurely rewritten before the remaining bytes
+        // arrive in the next chunk.
+        let exact_hold = longest_needle_prefix_suffix(&self.pending, &self.needles);
+        let pem_hold = pem_overlap_hold(&self.pending);
+        let max_line_hold = MAX_LINE_HOLD_BYTES.max(self.max_needle_len);
+        let tail_after_nl = match self.pending.rfind('\n') {
+            Some(nl_pos) => self.pending.len().saturating_sub(nl_pos + 1),
+            None => self.pending.len(),
+        };
+        let line_hold = if tail_after_nl <= max_line_hold {
+            tail_after_nl
+        } else {
+            MIN_LONG_LINE_OVERLAP_BYTES.max(exact_hold)
+        };
+
+        let hold = exact_hold.max(pem_hold).max(line_hold);
+        let mut emit_end = self.pending.len().saturating_sub(hold);
+        while emit_end > 0 && !self.pending.is_char_boundary(emit_end) {
+            emit_end -= 1;
+        }
+        // Guarantee the cut point `emit_end` never bisects an exact-value needle
+        // (e.g. a multiline secret straddling a newline when `line_hold > 0`).
+        while emit_end > 0 && emit_end < self.pending.len() {
+            let seam_overlap =
+                longest_needle_prefix_suffix(&self.pending[..emit_end], &self.needles);
+            if seam_overlap == 0 {
+                break;
+            }
+            emit_end = emit_end.saturating_sub(seam_overlap);
+            while emit_end > 0 && !self.pending.is_char_boundary(emit_end) {
+                emit_end -= 1;
+            }
+        }
+        if emit_end == 0 {
+            return Vec::new();
+        }
+
+        let (scrubbed_exact, _) =
+            ciphervault_redact::scrub_exact_values(&self.pending[..emit_end], &self.exact_values);
+        let redacted = ciphervault_redact::redact_text(&scrubbed_exact);
+        let rest = self.pending[emit_end..].to_string();
+        self.pending.zeroize();
+        self.pending = rest;
+        redacted.into_bytes()
+    }
+
+    fn flush_pending_scrubbed(&mut self) -> Vec<u8> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let (exact, _) = ciphervault_redact::scrub_exact_values(&self.pending, &self.exact_values);
+        self.pending.zeroize();
+        self.pending.clear();
+        ciphervault_redact::redact_text(&exact).into_bytes()
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        let mut out = self.flush_pending_scrubbed();
+        if !self.utf8_tail.is_empty() {
+            out.extend_from_slice(&self.utf8_tail);
+            self.utf8_tail.zeroize();
+            self.utf8_tail.clear();
+        }
+        out
+    }
+}
+
+impl Drop for StreamScrubber {
+    fn drop(&mut self) {
+        self.pending.zeroize();
+        self.utf8_tail.zeroize();
+    }
+}
+
+fn is_streaming_response(headers: &reqwest::header::HeaderMap) -> bool {
+    let ct_lower = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    if ct_lower.starts_with("text/event-stream")
+        || ct_lower.starts_with("application/x-ndjson")
+        || ct_lower.starts_with("application/ndjson")
+        || ct_lower.starts_with("application/stream+json")
+    {
+        return true;
+    }
+    let is_chunked = headers
+        .get_all(reqwest::header::TRANSFER_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.to_ascii_lowercase().contains("chunked"));
+    let has_content_length = headers.contains_key(reqwest::header::CONTENT_LENGTH);
+    is_chunked && !has_content_length
 }
 
 fn extract_presented_tokens(headers: &HeaderMap) -> Vec<String> {
@@ -392,11 +774,40 @@ fn is_hop_by_hop_or_auth(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "content-length"
+            | "accept-encoding"
             | "authorization"
             | "x-api-key"
             | "x-goog-api-key"
             | "x-ciphervault-proxy-token"
     )
+}
+
+fn scrub_error_message(raw: &str, exact_values: &[(String, Zeroizing<String>)]) -> String {
+    let (exact, _) = ciphervault_redact::scrub_exact_values(raw, exact_values);
+    ciphervault_redact::redact_text(&exact)
+}
+
+fn build_response_headers(
+    status: StatusCode,
+    resp_headers: &reqwest::header::HeaderMap,
+) -> axum::http::response::Builder {
+    let mut out_resp = Response::builder().status(status);
+    for (k, v) in resp_headers {
+        let k_lower = k.as_str().to_ascii_lowercase();
+        if matches!(
+            k_lower.as_str(),
+            "connection" | "transfer-encoding" | "content-length" | "keep-alive"
+        ) {
+            continue;
+        }
+        if let (Ok(hn), Ok(hv)) = (
+            HeaderName::from_bytes(k.as_str().as_bytes()),
+            HeaderValue::from_bytes(v.as_bytes()),
+        ) {
+            out_resp = out_resp.header(hn, hv);
+        }
+    }
+    out_resp
 }
 
 async fn proxy_handler(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> Response {
@@ -477,14 +888,20 @@ async fn proxy_handler(State(state): State<Arc<ProxyState>>, req: Request<Body>)
         out_req = out_req.body(body_bytes.to_vec());
     }
 
-    let resp = match out_req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let (scrubbed_err, _) =
-                ciphervault_redact::scrub_exact_values(&e.to_string(), &state.exact_values);
+    let mut resp = match tokio::time::timeout(state.idle_read_timeout, out_req.send()).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            let scrubbed_err = scrub_error_message(&e.to_string(), &state.exact_values);
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("upstream request failed: {scrubbed_err}"),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                "upstream request timed out waiting for response headers",
             )
                 .into_response();
         }
@@ -492,43 +909,114 @@ async fn proxy_handler(State(state): State<Arc<ProxyState>>, req: Request<Body>)
 
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let resp_headers = resp.headers().clone();
-    let resp_bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            let (scrubbed_err, _) =
-                ciphervault_redact::scrub_exact_values(&e.to_string(), &state.exact_values);
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("upstream response read failed: {scrubbed_err}"),
-            )
-                .into_response();
+
+    if is_streaming_response(&resp_headers) {
+        let scrubber = StreamScrubber::new(state.exact_values.clone());
+        let idle_timeout = state.idle_read_timeout;
+        let body_stream = stream::unfold(
+            (resp, scrubber, idle_timeout, false),
+            |(mut resp, mut scrubber, idle_timeout, mut done)| async move {
+                if done {
+                    return None;
+                }
+                loop {
+                    match tokio::time::timeout(idle_timeout, resp.chunk()).await {
+                        Ok(Ok(Some(chunk))) => {
+                            let emitted = scrubber.push_chunk(&chunk);
+                            if !emitted.is_empty() {
+                                return Some((
+                                    Ok::<Vec<u8>, std::io::Error>(emitted),
+                                    (resp, scrubber, idle_timeout, false),
+                                ));
+                            }
+                        }
+                        Ok(Ok(None)) => {
+                            done = true;
+                            let tail = scrubber.finish();
+                            if tail.is_empty() {
+                                return None;
+                            }
+                            return Some((
+                                Ok::<Vec<u8>, std::io::Error>(tail),
+                                (resp, scrubber, idle_timeout, done),
+                            ));
+                        }
+                        Ok(Err(e)) => {
+                            let scrubbed_err =
+                                scrub_error_message(&e.to_string(), &scrubber.exact_values);
+                            return Some((
+                                Err(std::io::Error::other(format!(
+                                    "upstream stream read failed: {scrubbed_err}"
+                                ))),
+                                (resp, scrubber, idle_timeout, true),
+                            ));
+                        }
+                        Err(_) => {
+                            return Some((
+                                Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "upstream stream idle read timeout",
+                                )),
+                                (resp, scrubber, idle_timeout, true),
+                            ));
+                        }
+                    }
+                }
+            },
+        );
+
+        let out_resp = build_response_headers(status, &resp_headers);
+        return out_resp
+            .body(Body::from_stream(body_stream))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+
+    let mut resp_bytes = Vec::new();
+    loop {
+        match tokio::time::timeout(state.idle_read_timeout, resp.chunk()).await {
+            Ok(Ok(Some(chunk))) => {
+                if resp_bytes.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
+                    resp_bytes.zeroize();
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        "upstream response read failed: buffered response exceeds 64 MiB limit",
+                    )
+                        .into_response();
+                }
+                resp_bytes.extend_from_slice(&chunk);
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
+                resp_bytes.zeroize();
+                let scrubbed_err = scrub_error_message(&e.to_string(), &state.exact_values);
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("upstream response read failed: {scrubbed_err}"),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                resp_bytes.zeroize();
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "upstream response read failed: idle read timeout",
+                )
+                    .into_response();
+            }
         }
-    };
+    }
 
     let final_body: Vec<u8> = match std::str::from_utf8(&resp_bytes) {
         Ok(text) => {
             let (exact, _) = ciphervault_redact::scrub_exact_values(text, &state.exact_values);
-            ciphervault_redact::redact_text(&exact).into_bytes()
+            let out = ciphervault_redact::redact_text(&exact).into_bytes();
+            resp_bytes.zeroize();
+            out
         }
-        Err(_) => resp_bytes.to_vec(),
+        Err(_) => resp_bytes,
     };
 
-    let mut out_resp = Response::builder().status(status);
-    for (k, v) in &resp_headers {
-        let k_lower = k.as_str().to_ascii_lowercase();
-        if matches!(
-            k_lower.as_str(),
-            "connection" | "transfer-encoding" | "content-length" | "keep-alive"
-        ) {
-            continue;
-        }
-        if let (Ok(hn), Ok(hv)) = (
-            HeaderName::from_bytes(k.as_str().as_bytes()),
-            HeaderValue::from_bytes(v.as_bytes()),
-        ) {
-            out_resp = out_resp.header(hn, hv);
-        }
-    }
+    let out_resp = build_response_headers(status, &resp_headers);
     out_resp
         .body(Body::from(final_body))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
@@ -555,6 +1043,58 @@ mod tests {
         assert_eq!(u, "https://api.example.com");
         assert_eq!(h, "x-api-key");
         assert!(!bearer);
+    }
+
+    #[test]
+    fn known_providers_cover_expanded_developer_apis() {
+        let expected = [
+            ("RESEND_API_KEY", "https://api.resend.com", "RESEND_BASE_URL"),
+            ("SLACK_BOT_TOKEN", "https://slack.com/api", "SLACK_API_URL"),
+            ("VERCEL_TOKEN", "https://api.vercel.com", ""),
+            (
+                "CLOUDFLARE_API_TOKEN",
+                "https://api.cloudflare.com",
+                "CLOUDFLARE_BASE_URL",
+            ),
+            ("GROQ_API_KEY", "https://api.groq.com", "GROQ_BASE_URL"),
+            (
+                "DEEPSEEK_API_KEY",
+                "https://api.deepseek.com",
+                "DEEPSEEK_BASE_URL",
+            ),
+            ("XAI_API_KEY", "https://api.x.ai", "XAI_BASE_URL"),
+            (
+                "MISTRAL_API_KEY",
+                "https://api.mistral.ai",
+                "MISTRAL_BASE_URL",
+            ),
+        ];
+        for (key, url, base_env) in expected {
+            let (got_url, hdr, bearer, envs) =
+                known_provider_for_key(key).unwrap_or_else(|| panic!("missing provider {key}"));
+            assert_eq!(got_url, url);
+            assert_eq!(hdr, "authorization");
+            assert!(bearer);
+            if !base_env.is_empty() {
+                assert!(
+                    envs.iter().any(|(e, _)| *e == base_env),
+                    "{key} missing expected base env {base_env}"
+                );
+            }
+            // Non-canonical override must be rejected when allow_provider_override=false.
+            let mut vars = BTreeMap::new();
+            vars.insert(
+                key.to_string(),
+                Zeroizing::new("synthetic_provider_val_998877".to_string()),
+            );
+            assert!(build_proxy_routes_with_policy(
+                &vars,
+                Some(&[format!("{key}=https://attacker.example.com")]),
+                false,
+                false,
+            )
+            .is_err());
+        }
     }
 
     #[tokio::test]
@@ -612,6 +1152,316 @@ mod tests {
         let body = ok.text().await.unwrap();
         assert!(!body.contains(real_val), "value leaked in body: {body}");
         assert!(body.contains("[REDACTED"), "expected redaction in {body}");
+
+        proxy.shutdown().await;
+        mock_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_streams_sse_incrementally_and_scrubs_secret_split_across_chunks() {
+        let real_val = concat!("real_sse_", "stream_", "secret_55667788");
+        let hex_val = hex::encode(real_val.as_bytes());
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate_server = gate.clone();
+
+        let mock_app = Router::new().route(
+            "/v1/chat/completions",
+            get(move |headers: HeaderMap| {
+                let gate_inner = gate_server.clone();
+                let hex_copy = hex_val.clone();
+                async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let raw_secret = auth
+                        .strip_prefix(bearer_scheme_prefix())
+                        .unwrap_or(&auth)
+                        .to_string();
+                    let split_raw = raw_secret.len() / 2;
+                    let raw_a = raw_secret[..split_raw].to_string();
+                    let raw_b = raw_secret[split_raw..].to_string();
+                    let split_hex = hex_copy.len() / 2;
+                    let hex_a = hex_copy[..split_hex].to_string();
+                    let hex_b = hex_copy[split_hex..].to_string();
+
+                    let (tx, rx) =
+                        tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(
+                            8,
+                        );
+                    tokio::spawn(async move {
+                        let _ = tx
+                            .send(Ok(b"data: {\"delta\":\"hello\"}\n\n".to_vec()))
+                            .await;
+                        // Hold sending chunk 2 until the client proves it received chunk 1
+                        // incrementally while the upstream stream is still open.
+                        gate_inner.notified().await;
+                        let _ = tx
+                            .send(Ok(format!("data: {{\"raw\":\"{raw_a}").into_bytes()))
+                            .await;
+                        let _ = tx
+                            .send(Ok(format!("{raw_b}\",\"hex\":\"{hex_a}").into_bytes()))
+                            .await;
+                        let _ = tx
+                            .send(Ok(format!("{hex_b}\"}}\n\n").into_bytes()))
+                            .await;
+                        let _ = tx.send(Ok(b"data: [DONE]\n\n".to_vec())).await;
+                    });
+
+                    let body_stream = stream::unfold(rx, |mut rx| async move {
+                        rx.recv().await.map(|item| (item, rx))
+                    });
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/event-stream")
+                        .header("cache-control", "no-cache")
+                        .body(Body::from_stream(body_stream))
+                        .unwrap()
+                }
+            }),
+        );
+
+        let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = mock_listener.local_addr().unwrap();
+        let mock_handle = tokio::spawn(async move {
+            let _ = axum::serve(mock_listener, mock_app).await;
+        });
+
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "OPENAI_API_KEY".to_string(),
+            Zeroizing::new(real_val.to_string()),
+        );
+        let upstream_arg = format!("OPENAI_API_KEY=http://{mock_addr}");
+        let routes = build_proxy_routes(&vars, Some(&[upstream_arg])).unwrap();
+        let placeholder = routes[0].placeholder.clone();
+
+        let proxy = start_credential_proxy(routes).await.unwrap();
+        let client = reqwest::Client::new();
+        let scheme = bearer_scheme_prefix();
+
+        let mut resp = client
+            .get(format!(
+                "http://{}/__cv/openai_api_key/v1/chat/completions",
+                proxy.addr
+            ))
+            .header("authorization", format!("{scheme}{placeholder}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        // Chunk 1 must arrive BEFORE we notify the mock upstream to send chunks 2..5.
+        let first_chunk = tokio::time::timeout(Duration::from_secs(3), resp.chunk())
+            .await
+            .expect("SSE chunk 1 stalled (response was buffered instead of streamed)")
+            .unwrap()
+            .expect("expected SSE chunk 1 bytes");
+        let first_text = String::from_utf8(first_chunk.to_vec()).unwrap();
+        assert!(
+            first_text.contains("\"delta\":\"hello\""),
+            "unexpected first SSE chunk: {first_text}"
+        );
+
+        // Release remaining chunks containing secrets split across chunk boundaries.
+        gate.notify_one();
+
+        let mut full = first_text;
+        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(3), resp.chunk())
+            .await
+            .expect("timed out reading remaining SSE chunks")
+            .unwrap()
+        {
+            full.push_str(&String::from_utf8_lossy(&chunk));
+        }
+
+        let hex_needle = hex::encode(real_val.as_bytes());
+        assert!(!full.contains(real_val), "raw secret leaked in SSE: {full}");
+        assert!(
+            !full.contains(&hex_needle),
+            "hex-encoded secret leaked in SSE: {full}"
+        );
+        assert_eq!(
+            full.matches("[REDACTED:OPENAI_API_KEY]").count(),
+            2,
+            "expected both split raw and split hex values to redact cleanly: {full}"
+        );
+        assert!(full.contains("data: [DONE]\n\n"));
+
+        proxy.shutdown().await;
+        mock_handle.abort();
+    }
+
+    #[test]
+    fn stream_scrubber_handles_single_byte_chunks_utf8_and_multiline_secrets() {
+        let secret = concat!("line1_secret_", "abc\nline2_", "xyz987");
+        let mut scrubber = StreamScrubber::new(vec![(
+            "MULTI_KEY".to_string(),
+            Zeroizing::new(secret.to_string()),
+        )]);
+
+        // Complete non-secret SSE frame flushes immediately in a single push.
+        let immediate = scrubber.push_chunk(b"data: ok \xF0\x9F\x94\x92\n\n");
+        assert_eq!(
+            String::from_utf8(immediate).unwrap(),
+            "data: ok \u{1F512}\n\n"
+        );
+
+        // Feed a payload with multi-byte UTF-8 + multiline secret split 1 byte at a time.
+        let payload = format!("prefix \u{2713} {secret} suffix\n");
+        let mut collected = Vec::new();
+        for b in payload.as_bytes() {
+            collected.extend_from_slice(&scrubber.push_chunk(&[*b]));
+        }
+        collected.extend_from_slice(&scrubber.finish());
+        let out = String::from_utf8(collected).unwrap();
+        assert!(!out.contains("line1_secret_abc"), "part 1 leaked: {out}");
+        assert!(!out.contains("line2_xyz987"), "part 2 leaked: {out}");
+        assert_eq!(out, "prefix \u{2713} [REDACTED:MULTI_KEY] suffix\n");
+
+        // Seam safety: multiline secret straddling newline with trailing incomplete line
+        // AND shorter secret that is a prefix of a longer secret across chunk boundaries.
+        let mut scrubber2 = StreamScrubber::new(vec![
+            (
+                "SHORT_KEY".to_string(),
+                Zeroizing::new("overlap_tok_1234".to_string()),
+            ),
+            (
+                "LONG_KEY".to_string(),
+                Zeroizing::new("overlap_tok_1234_extended".to_string()),
+            ),
+            (
+                "ML_KEY".to_string(),
+                Zeroizing::new("alpha_line\nbeta_line".to_string()),
+            ),
+        ]);
+        let mut out2 = Vec::new();
+        out2.extend_from_slice(&scrubber2.push_chunk(b"a=overlap_tok_1234"));
+        out2.extend_from_slice(&scrubber2.push_chunk(b"_extended\nb=alpha_line\nbeta_line tail"));
+        out2.extend_from_slice(&scrubber2.push_chunk(b"\n"));
+        out2.extend_from_slice(&scrubber2.finish());
+        let text2 = String::from_utf8(out2).unwrap();
+        assert!(!text2.contains("_extended"), "longer secret suffix leaked: {text2}");
+        assert!(!text2.contains("alpha_line"), "multiline secret leaked: {text2}");
+        assert!(!text2.contains("beta_line"), "multiline secret leaked: {text2}");
+        assert_eq!(
+            text2,
+            "a=[REDACTED:LONG_KEY]\nb=[REDACTED:ML_KEY] tail\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_uses_per_chunk_idle_timeout_without_killing_long_streams() {
+        let mock_app = Router::new()
+            .route(
+                "/slow-steady",
+                get(|| async {
+                    let (tx, rx) =
+                        tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(
+                            8,
+                        );
+                    tokio::spawn(async move {
+                        for idx in 0..5 {
+                            tokio::time::sleep(Duration::from_millis(70)).await;
+                            let _ = tx
+                                .send(Ok(format!("data: tick-{idx}\n\n").into_bytes()))
+                                .await;
+                        }
+                    });
+                    let body_stream = stream::unfold(rx, |mut rx| async move {
+                        rx.recv().await.map(|item| (item, rx))
+                    });
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from_stream(body_stream))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/stalled",
+                get(|| async {
+                    let (tx, rx) =
+                        tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(
+                            4,
+                        );
+                    tokio::spawn(async move {
+                        let _ = tx.send(Ok(b"data: first\n\n".to_vec())).await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let _ = tx.send(Ok(b"data: too-late\n\n".to_vec())).await;
+                    });
+                    let body_stream = stream::unfold(rx, |mut rx| async move {
+                        rx.recv().await.map(|item| (item, rx))
+                    });
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from_stream(body_stream))
+                        .unwrap()
+                }),
+            );
+
+        let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = mock_listener.local_addr().unwrap();
+        let mock_handle = tokio::spawn(async move {
+            let _ = axum::serve(mock_listener, mock_app).await;
+        });
+
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "CUSTOM_KEY".to_string(),
+            Zeroizing::new("custom_stream_tok_12345".to_string()),
+        );
+        let routes =
+            build_proxy_routes(&vars, Some(&[format!("CUSTOM_KEY=http://{mock_addr}")])).unwrap();
+        let placeholder = routes[0].placeholder.clone();
+
+        // Idle timeout is 220ms, while 5 ticks * 70ms = 350ms total (> 220ms).
+        // A total timeout would kill /slow-steady; a per-chunk idle timeout lets it finish!
+        let proxy = start_credential_proxy_with_timeouts(
+            routes,
+            Duration::from_secs(5),
+            Duration::from_millis(220),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let scheme = bearer_scheme_prefix();
+
+        let ok = client
+            .get(format!("http://{}/__cv/custom_key/slow-steady", proxy.addr))
+            .header("authorization", format!("{scheme}{placeholder}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
+        let body = ok.text().await.unwrap();
+        assert!(body.contains("data: tick-4\n\n"), "stream truncated: {body}");
+
+        // A genuinely stalled stream must fail once idle_read_timeout expires.
+        let mut stalled = client
+            .get(format!("http://{}/__cv/custom_key/stalled", proxy.addr))
+            .header("authorization", format!("{scheme}{placeholder}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stalled.status(), reqwest::StatusCode::OK);
+        let first = stalled.chunk().await.unwrap().unwrap();
+        assert_eq!(&first[..], b"data: first\n\n");
+        let second = tokio::time::timeout(Duration::from_secs(2), stalled.chunk())
+            .await
+            .expect("stalled stream did not time out promptly");
+        assert!(
+            second.is_err(),
+            "expected stream read error after idle timeout, got {second:?}"
+        );
 
         proxy.shutdown().await;
         mock_handle.abort();
