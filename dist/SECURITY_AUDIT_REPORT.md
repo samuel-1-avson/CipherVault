@@ -1,6 +1,6 @@
 # CipherVault — Phase 4 Security Beta Gate & Audit Report
 
-> Historical internal report. Its readiness ratings and certification language are superseded by the current README and docs/10-recovery-milestone.md; they are not evidence of production security or current test results.
+> Historical internal report. Its readiness ratings and certification language are superseded by the current README and docs/archive/10-recovery-milestone.md; they are not evidence of production security or current test results.
 
 **Date**: September 12, 2026  
 **Auditor Scope**: Internal Engineering & Security Review  

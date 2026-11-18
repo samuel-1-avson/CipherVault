@@ -1,0 +1,7 @@
+# intermediate renders, stills, stems and logs (rebuilt by build.sh)
+out/
+# fetched by tools/fonts.sh (OFL, named in CREDITS)
+fonts/
+# rendered films and generated voice takes (~60 MB): rebuilt by `sh build.sh` (voice: tools/vo.sh)
+*.mp4
+voices/*.wav

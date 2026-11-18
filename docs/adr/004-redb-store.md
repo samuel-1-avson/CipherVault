@@ -10,7 +10,7 @@ File-per-object degrades on NTFS past ~50K objects (measured
 ## Decision
 
 Adopt redb 4.3.0 behind an `ObjectStore` trait, per the D6 spike
-(`docs/D6_OBJECT_STORE_SPIKE.md`): 144K batched puts/s, zero crash
+(`docs/archive/D6_OBJECT_STORE_SPIKE.md`): 144K batched puts/s, zero crash
 debris, MIT/Apache, pure Rust. Migration keeps the existing on-disk
 layout readable. RocksDB was not measured (no C++ toolchain on the
 spike host); the adapter exists for a Linux rerun if needed.

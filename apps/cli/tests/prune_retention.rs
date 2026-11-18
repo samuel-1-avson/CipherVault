@@ -122,6 +122,7 @@ fn prune_retains_head_pending_and_shared_chunks() {
         closure_digest: set2.closure.compute_base_closure_digest().unwrap().to_vec(),
         device_id: dev_id.to_vec(),
         device_counter: 2,
+        authority_generation: None,
         signature: Vec::new(),
     };
     head.sign(&dev_sk).unwrap();

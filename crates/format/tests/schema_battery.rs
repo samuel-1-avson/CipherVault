@@ -135,6 +135,7 @@ fn sample_head_record() -> HeadRecord {
         closure_digest: vec![0xAB; 32],
         device_id: vec![0xEE; 32],
         device_counter: 43,
+        authority_generation: None,
         signature: Vec::new(),
     }
 }
@@ -581,4 +582,35 @@ fn domain_separation_snapshot_vs_head() {
     let mut forged = r.clone();
     forged.signature.clone_from(&h.signature);
     assert!(forged.verify(&dpk).is_err());
+}
+
+#[test]
+fn head_record_v2_encodes_and_authenticates_authority_generation() {
+    use ciphervault_format::HEAD_RECORD_VERSION_V2;
+    let dk = signing_key(0x44);
+    let dpk = pk_of(&dk);
+    let mut h2 = HeadRecord {
+        version: HEAD_RECORD_VERSION_V2,
+        authority_generation: Some(7),
+        ..sample_head_record()
+    };
+    h2.sign(&dk).unwrap();
+    let bytes = to_canonical_cbor(&h2).unwrap();
+    let back: HeadRecord = from_canonical_cbor(&bytes).unwrap();
+    assert_eq!(back, h2);
+    back.verify(&dpk).unwrap();
+
+    // Tampering authority_generation invalidates signature.
+    let mut tampered = back.clone();
+    tampered.authority_generation = Some(8);
+    assert!(tampered.verify(&dpk).is_err());
+
+    // Mismatched version/generation combinations fail closed.
+    let mut v2_missing_gen = h2.clone();
+    v2_missing_gen.authority_generation = None;
+    assert!(v2_missing_gen.sign(&dk).is_err());
+
+    let mut v1_with_gen = sample_head_record();
+    v1_with_gen.authority_generation = Some(1);
+    assert!(v1_with_gen.sign(&dk).is_err());
 }

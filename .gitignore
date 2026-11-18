@@ -68,6 +68,64 @@ operator-data*/
 readiness-*.log
 docs/review-evidence/
 
+# ==============================================================================
+# Internal working docs (kept locally, not published)
+# ==============================================================================
+# Dated audits, ratings, status/progress reports, plans, drafts and rollout logs
+# are working notes, not documentation. The published docs live in docs/, docs/adr/
+# and the READMEs. report/ publishes only the curated evidence set allow-listed
+# below (cited by docs, code comments or tooling). To publish another report,
+# add an explicit "!/report/<name>" line and link it from report/README.md.
+/PROJECT_AUDIT_AND_ANALYSIS_REPORT.md
+/report/*
+!/report/README.md
+!/report/DEPLOYMENT_2026-09-30.md
+!/report/AUDIT_REMEDIATION_2026-09-30.md
+!/report/PROJECT_AUDIT_2026-09-30.md
+!/report/SECURITY_REVIEW_READINESS_2026-10-01.md
+!/report/ASSURANCE_IMPLEMENTATION_2026-10-01.md
+!/report/CAPACITY_VALIDATION_2026-10-01.md
+!/report/RECOVERY_CUSTODY_2026-10-01.md
+!/report/PROJECT_REASSESSMENT_2026-10-01.md
+!/report/capacity-final-2026-10-01.json
+!/report/capacity-fresh-mfa-2026-10-01.json
+!/report/capacity-http-admission-2026-10-01.json
+!/report/capacity-legacy-baseline-2026-10-01.json
+!/report/TEST_EVIDENCE_v1.0.31.md
+!/report/HACKATHON_VIDEO_SCRIPT.md
+!/report/OPERATOR_AUDIT_2026-11-08.md
+!/report/OPERATOR_REMEDIATION_PLAN_2026-11-08.md
+!/report/EXTERNAL_REHEARSAL_PROOF_2026-09-20.md
+!/report/CIPHERCHAIN_ROTATION_DRILL_EVIDENCE_2026-11-08.md
+!/report/CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html
+!/report/plugin-catalog-ciphervault.yaml
+!/report/SCOPED_SECRETS_TARGET_ARCHITECTURE.md
+!/report/SCOPED_SECRETS_DATABASE_SPEC.md
+!/report/SCOPED_SECRETS_API_SPEC.md
+!/report/SCOPED_SECRETS_SECURITY_THREAT_MODEL.md
+!/report/SCOPED_SECRETS_IMPLEMENTATION_TASKS.md
+# Superseded / planning / audit docs under docs/
+/docs/CAPACITY_SOAK_PLAN.md
+/docs/CLI_TUI_AUDIT_REPORT.md
+/docs/IMPLEMENTATION_PLAN.md
+/docs/HOSTED_SECRETS_BROWSER_DESIGN.md
+/docs/LEGAL_REVIEW_PACKAGE.md
+/docs/MAINNET_ANCHOR_PROMOTION.md
+/docs/MAINNET_PROMOTION_EVIDENCE.md
+/docs/MAINNET_READINESS.md
+/docs/archive/CHAOS_LOG.md
+/docs/archive/CIPHERVAULT_AUDIT_2026-09-12.md
+/docs/archive/CONFIRM_FIRST_VERDICTS_2026-09-18.md
+/docs/archive/LANDING_PAGE_PLAN_AND_REPORT.md
+/docs/archive/OPERATORS_AUDIT_2026-09-14.md
+/docs/archive/PRODUCTION_ROLLOUT_2026-09-15.md
+/docs/archive/PROJECT_AUDIT_2026-09-16.md
+/docs/archive/PROJECT_REPORT.md
+/docs/archive/RELEASE_READINESS_2026-09-13.md
+/docs/archive/SPLIT_PLAN.md
+/docs/archive/WEB_DASHBOARD_EXPLORER_AUDIT_2026-09-13.md
+/docs/archive/WEB_DASHBOARD_EXPLORER_IMPLEMENTATION_PROGRESS_2026-09-14.md
+
 # Coverage artifacts
 coverage/
 lcov.info
@@ -120,3 +178,4 @@ guardians/guardian_share_4_of_5.txt
 guardians/guardian_share_5_of_5.txt
 secrets/api_keys.json
 tmp/ex-e2e/op-data/operator.key
+secrets/operator_service_token.env

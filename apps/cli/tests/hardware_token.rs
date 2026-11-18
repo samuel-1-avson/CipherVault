@@ -263,6 +263,7 @@ fn test_hardware_token_snapshot_and_head_signing_ceremony() {
         closure_digest: closure_digest.to_vec(),
         device_id: device_id.to_vec(),
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
 

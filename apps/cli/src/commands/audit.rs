@@ -428,6 +428,7 @@ mod tests {
             closure_digest: set.closure.compute_base_closure_digest().unwrap().to_vec(),
             device_id: device.to_vec(),
             device_counter: 1,
+            authority_generation: None,
             signature: vec![],
         };
         head.sign(&signer).unwrap();

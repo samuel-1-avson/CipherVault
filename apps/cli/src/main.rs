@@ -64,6 +64,7 @@ Developer: vault & secrets:
 Developer: run & automate:
   run                  Run a command with decrypted secrets injected into its environment (zero-disk exposure)
   redact               Filter stdin through secret redaction (vault values + credential shapes); for agent/CI pipelines, never prints a secret value
+  mcp                  Run a stdio Model Context Protocol (MCP) server for Claude Code, Codex, and Cursor
   agent-log            Tamper-evident log of what agent tools did around this vault's secrets
   export-env           Print decrypted env vars as JSON for secret-manager integrations (PRINTS SECRET VALUES; refuses a terminal without --force-tty)
   watch                Watch tracked confidential files and automatically create snapshots on save
@@ -560,6 +561,33 @@ enum Commands {
         set: Option<Vec<String>>,
 
         #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Only inject these comma-separated secret variable names from the vault (least-privilege scoping)"
+        )]
+        allow_keys: Option<Vec<String>>,
+
+        #[arg(
+            long,
+            help = "Block outbound/inbound network access for the child process (Linux unshare / macOS sandbox-exec; fails closed when unsupported)"
+        )]
+        no_net: bool,
+
+        #[arg(
+            long,
+            conflicts_with = "no_net",
+            help = "Run a loopback credential-injecting HTTP proxy in the parent process so real API keys never enter the child environment"
+        )]
+        proxy: bool,
+
+        #[arg(
+            long = "proxy-upstream",
+            conflicts_with = "no_net",
+            help = "Pin a variable to an HTTPS upstream URL for --proxy: VAR=https://host[@HeaderName] (repeatable)"
+        )]
+        proxy_upstream: Vec<String>,
+
+        #[arg(
             trailing_var_arg = true,
             required = false,
             help = "Command and arguments to execute (omit with --dry-run to only list secret keys)"
@@ -574,7 +602,16 @@ enum Commands {
             help = "Emit {\"text\", \"redactions\", \"exact_values_loaded\", \"vault\"} JSON instead of raw text"
         )]
         json: bool,
+
+        #[arg(
+            long,
+            help = "Run a persistent JSON-lines bridge over stdin/stdout (redact + agent-log) to avoid per-call process spawn overhead"
+        )]
+        stdio: bool,
     },
+
+    /// Run a stdio Model Context Protocol (MCP) server for Claude Code, Codex, and Cursor
+    Mcp,
 
     /// Print decrypted env vars as JSON for secret-manager integrations (PRINTS SECRET VALUES; refuses a terminal without --force-tty)
     ExportEnv {
@@ -1944,6 +1981,18 @@ enum HookSubcommand {
         )]
         json: bool,
     },
+
+    /// Cross-agent PreToolUse guardrail (blocks secret file reads, export-env, secret args, and unguarded git commits)
+    AgentPre {
+        #[arg(
+            long,
+            help = "Emit Claude Code PreToolUse JSON permissionDecision and exit 0 instead of exiting 2 on deny"
+        )]
+        json_decision: bool,
+    },
+
+    /// Cross-agent PostToolUse guardrail (scrubs exact vault values & secret shapes from tool results and audits)
+    AgentPost,
 }
 
 #[derive(Subcommand)]

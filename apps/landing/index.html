@@ -14,7 +14,7 @@
   <meta property="og:site_name" content="CipherVault">
   <meta property="og:url" content="https://cipherv.online/">
   <meta property="og:title" content="CipherVault — The Safest Way to Back Up Developer Secrets">
-  <meta property="og:description" content="Git tracks your source code. CipherVault protects your secrets. Automatic private backups, smart delta sync, and 30-second disaster recovery without cloud custodians.">
+  <meta property="og:description" content="Git tracks your source code. CipherVault protects your secrets. Automatic private backups, smart delta sync, and clean-machine disaster recovery without cloud custodians.">
   <meta property="og:image" content="https://cipherv.online/og-card.svg">
   <meta property="og:image:secure_url" content="https://cipherv.online/og-card.svg">
   <meta property="og:image:type" content="image/svg+xml">
@@ -26,7 +26,7 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:site" content="@CipherVault">
   <meta name="twitter:title" content="CipherVault [v1.0.30] — Sovereign Secrets Protection">
-  <meta name="twitter:description" content="Client-side encryption, smart delta sync, and 30-second disaster recovery without cloud custodians.">
+  <meta name="twitter:description" content="Client-side encryption, smart delta sync, and clean-machine disaster recovery without cloud custodians.">
   <meta name="twitter:image" content="https://cipherv.online/og-card.svg">
   
   <!-- SEO & Author Metadata -->
@@ -330,7 +330,7 @@
             <div class="hero-reassurance-strip">
               <span class="reassurance-item"><span class="reassurance-dot">●</span> Zero cloud accounts</span>
               <span class="reassurance-sep">·</span>
-              <span class="reassurance-item"><span class="reassurance-dot">●</span> Local hardware encryption</span>
+              <span class="reassurance-item"><span class="reassurance-dot">●</span> Encrypted on your machine</span>
               <span class="reassurance-sep">·</span>
               <span class="reassurance-item mode-simple-only"><span class="reassurance-dot">●</span> No wallet or crypto tokens needed</span>
               <span class="reassurance-item mode-tech-only"><span class="reassurance-dot">●</span> ChaCha20-Poly1305 + Shamir M-of-N</span>
@@ -376,7 +376,7 @@
                         <span class="scenario-name">Local Vault Guard</span>
                       </div>
                       <div class="scenario-text">
-                        Secrets are sealed on your machine in a hardware-backed vault that Git never stages, sees, or commits.
+                        Secrets are encrypted on your machine and added to .gitignore, so Git never stages, sees, or commits them.
                       </div>
                     </div>
                     <div class="scenario-footer">
@@ -409,10 +409,10 @@
                     <div>
                       <div class="scenario-card-header">
                         <span class="scenario-num-tag mint">02 FIX</span>
-                        <span class="scenario-name">30-Second Restore</span>
+                        <span class="scenario-name">Restore Anywhere</span>
                       </div>
                       <div class="scenario-text">
-                        Run <code class="tui-code">cv pull</code> to reconstruct all project secrets in 30 seconds on any clean machine.
+                        Run <code class="tui-code">cv pull</code> to reconstruct all project secrets on any clean machine.
                       </div>
                     </div>
                     <div class="scenario-footer">
@@ -518,12 +518,12 @@
               </div>
               <h3 class="pillar-title">
                 <span class="mode-simple-only">Zero-Cloud Safety</span>
-                <span class="mode-tech-only">Hardware-Sealed Vault</span>
+                <span class="mode-tech-only">Locally Sealed Vault</span>
               </h3>
               <div class="pillar-stat-line">
                 <span class="pillar-val text-mint">100% Private</span>
-                <span class="pillar-lbl mode-simple-only">Hardware-enclave sealed</span>
-                <span class="pillar-lbl mode-tech-only">YubiKey PIV slots, touch-gated</span>
+                <span class="pillar-lbl mode-simple-only">Encrypted on your machine</span>
+                <span class="pillar-lbl mode-tech-only">Optional YubiKey PIV, touch-gated</span>
               </div>
               <div class="pillar-toggle-bar">
                 <span class="pillar-toggle-text mode-simple-only">How it works</span>
@@ -535,10 +535,10 @@
               <div class="pillar-dropdown-drawer" id="pillar-drawer-1">
                 <div class="pillar-dropdown-inner">
                   <p class="pillar-desc mode-simple-only">
-                    Device hardware enclaves seal secrets locally before sync. Git never touches plaintext.
+                    Secrets are encrypted on your machine before they sync, and tracked files are added to .gitignore so Git never stages them.
                   </p>
                   <p class="pillar-desc mode-tech-only">
-                    SQLite WAL ledger sealed by OS hardware enclaves (DPAPI, Keychain, SecretService).
+                    SQLite WAL ledger. Local keys: Windows DPAPI, or an authenticated envelope over a master key or private key file elsewhere (not Keychain, Secret Service or TPM). Back that key up separately.
                   </p>
                 </div>
               </div>
@@ -551,11 +551,11 @@
               </div>
               <h3 class="pillar-title">
                 <span class="mode-simple-only">Smart Delta Sync</span>
-                <span class="mode-tech-only">96.15% Deduplication</span>
+                <span class="mode-tech-only">Content-Defined Deduplication</span>
               </h3>
               <div class="pillar-stat-line">
-                <span class="pillar-val text-cyan">96.15% Saved</span>
-                <span class="pillar-lbl mode-simple-only">Sub-second sync</span>
+                <span class="pillar-val text-cyan">Changed Chunks Only</span>
+                <span class="pillar-lbl mode-simple-only">Re-uploads only what changed</span>
                 <span class="pillar-lbl mode-tech-only">Chunk+encrypt pipeline</span>
               </div>
               <div class="pillar-toggle-bar">
@@ -587,7 +587,7 @@
                 <span class="mode-tech-only">Hierarchical Scopes</span>
               </h3>
               <div class="pillar-stat-line">
-                <span class="pillar-val text-purple">Token-Theft Proof</span>
+                <span class="pillar-val text-purple">Device-Bound Tokens</span>
                 <span class="pillar-lbl mode-simple-only">Client device bound</span>
                 <span class="pillar-lbl mode-tech-only">Quorum gates &amp; Merkle audit</span>
               </div>
@@ -601,7 +601,7 @@
               <div class="pillar-dropdown-drawer" id="pillar-drawer-3">
                 <div class="pillar-dropdown-inner">
                   <p class="pillar-desc mode-simple-only">
-                    Dev, Staging, and Production separated by project. Stolen tokens cannot decrypt on other PCs.
+                    Dev, Staging, and Production separated by project. Tokens are bound to your device's key, so a stolen token fails from another machine.
                   </p>
                   <p class="pillar-desc mode-tech-only">
                     Tenant → Project → Env hierarchy with XChaCha20 DEK/KEK envelopes and RFC 9449 DPoP.
@@ -620,7 +620,7 @@
                 <span class="mode-tech-only">Clean-Machine Restore</span>
               </h3>
               <div class="pillar-stat-line">
-                <span class="pillar-val text-gold">30-Second Restore</span>
+                <span class="pillar-val text-gold">Restore Anywhere</span>
                 <span class="pillar-lbl mode-simple-only">Zero vendor dependency</span>
                 <span class="pillar-lbl mode-tech-only">Paper kit, Shamir, or CVKB1</span>
               </div>
@@ -634,7 +634,7 @@
               <div class="pillar-dropdown-drawer" id="pillar-drawer-4">
                 <div class="pillar-dropdown-inner">
                   <p class="pillar-desc mode-simple-only">
-                    Reconstruct your workspace on any clean PC in 30 seconds via offline paper kit, trusted guardians, or client-side passphrase backup.
+                    Reconstruct your workspace on any clean PC via offline paper kit, trusted guardians, or client-side passphrase backup.
                   </p>
                   <p class="pillar-desc mode-tech-only">
                     Reconstruct environment on wiped machines via CVKB1 Argon2id passphrase envelopes, Paper Kit, or M-of-N Shamir shares over GF(2^8).
@@ -713,11 +713,11 @@
                   <div>
                     <div class="flashcard-top">
                       <span class="dilemma-badge badge-mint">Shield 01</span>
-                      <span class="flashcard-status-tag text-mint">Hardware Sealed</span>
+                      <span class="flashcard-status-tag text-mint">Locally Sealed</span>
                     </div>
                     <div class="flashcard-title">Out-of-Band Vault</div>
                     <p class="flashcard-body">
-                      Secrets are tracked in a hardware-sealed local ledger (DPAPI/Keychain). Git commits never touch plaintext secrets.
+                      Secrets are tracked in a local ledger and added to .gitignore, so Git commits never touch them. Local keys use Windows DPAPI, or a private key file on other platforms.
                     </p>
                   </div>
                   <div class="flashcard-footer">
@@ -752,11 +752,11 @@
                   <div>
                     <div class="flashcard-top">
                       <span class="dilemma-badge badge-mint">Shield 02</span>
-                      <span class="flashcard-status-tag text-mint">30-Second Restore</span>
+                      <span class="flashcard-status-tag text-mint">Restore Anywhere</span>
                     </div>
                     <div class="flashcard-title">Clean-Machine Recovery</div>
                     <p class="flashcard-body">
-                      Reconstruct your complete secret tree on any clean machine in 30 seconds via offline Paper Kit, Shamir guardians, or client-side passphrase key backup (CVKB1).
+                      Reconstruct your complete secret tree on any clean machine via offline Paper Kit, Shamir guardians, or client-side passphrase key backup (CVKB1).
                     </p>
                   </div>
                   <div class="flashcard-footer">
@@ -1224,7 +1224,7 @@
                   <div class="insp-section insp-security-box">
                     <div class="insp-label text-gold">SECURITY INVARIANT GUARANTEE:</div>
                     <p class="insp-body" id="insp-security">
-                      Guarantees zero accidental staging into Git commits (<code class="tui-code">git add .</code> will never expose secrets). Host OS hardware keyrings (Windows DPAPI, macOS Keychain, Linux Secret Service) seal the vault master key R.
+                      Guarantees zero accidental staging into Git commits (<code class="tui-code">git add .</code> will never expose secrets). Local device and epoch keys use Windows DPAPI, or an authenticated envelope over a master key or private key file on other platforms (not Keychain, Secret Service or TPM binding). The master secret R is printed once and never stored.
                     </p>
                   </div>
                 </div>
@@ -1765,13 +1765,13 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
               <span class="mode-simple-only">[SPEED &amp; EFFICIENCY]</span>
               <span class="mode-tech-only">[EMPIRICAL DATA &amp; COMPARATIVE MATRIX]</span>
             </div>
-            <h2 class="pane-title" data-scramble-text="Performance Metrics vs. Traditional Systems">
-              <span class="mode-simple-only">Lightning Fast on Any Computer</span>
-              <span class="mode-tech-only">Performance Metrics vs. Traditional Systems</span>
+            <h2 class="pane-title" data-scramble-text="Measured Performance &amp; Common Approaches">
+              <span class="mode-simple-only">Fast Because It Runs on Your Computer</span>
+              <span class="mode-tech-only">Measured Performance &amp; Common Approaches</span>
             </h2>
             <p class="pane-desc">
-              <span class="mode-simple-only">Because CipherVault runs directly on your computer instead of waiting for slow cloud servers, operations happen in milliseconds with zero lag.</span>
-              <span class="mode-tech-only">Empirical benchmarks measured on x86_64 release builds, backed by 150+ workspace test files and live multi-region nodes.</span>
+              <span class="mode-simple-only">Because CipherVault encrypts and reads locally instead of waiting on a remote server, those steps need no network round trip.</span>
+              <span class="mode-tech-only">Historical measurements on x86_64 release builds, on fixed workloads. They are examples, not guarantees: remeasure after protocol changes, and expect your machine to differ.</span>
             </p>
           </div>
 
@@ -1781,6 +1781,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
               <div class="bench-title-wrap">
                 <span class="bench-title-main">MEASURED PERFORMANCE GAUGES</span>
                 <span class="bench-harness-tag">x86_64 • release-mode repo benchmarks (throughput_benchmark + push_bench + scoped_load_gate)</span>
+                <span class="bench-caveat" role="note">Historical workload examples from an earlier implementation, not v2 performance or universal deduplication guarantees. Deduplication depends on the edit and chunk boundaries; no fixed percentage is promised.</span>
               </div>
               <div class="bench-actions-bar">
                 <div class="bench-filter-pills" id="bench-filter-pills" role="tablist" aria-label="Benchmark Categories">
@@ -1803,7 +1804,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                 <div class="gauge-meta">
                   <div class="gauge-title-group">
                     <span class="gauge-name">Chunk+Encrypt Pipeline (FastCDC + XChaCha20-Poly1305)</span>
-                    <span class="gauge-compare-pill tag-gold">101.7x faster than debug build</span>
+                    <span class="gauge-compare-pill tag-gold">release-mode measurement</span>
                   </div>
                   <div class="gauge-val-group">
                     <span class="gauge-val text-gold" id="gauge-val-1" data-target="362.21" data-suffix=" MiB/s">362.21 MiB/s</span>
@@ -1830,7 +1831,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                 <div class="gauge-meta">
                   <div class="gauge-title-group">
                     <span class="gauge-name">Decryption Throughput (In-Memory Streaming)</span>
-                    <span class="gauge-compare-pill tag-mint">157.6x faster than debug build</span>
+                    <span class="gauge-compare-pill tag-mint">release-mode measurement</span>
                   </div>
                   <div class="gauge-val-group">
                     <span class="gauge-val text-mint" id="gauge-val-2" data-target="669.74" data-suffix=" MiB/s">669.74 MiB/s</span>
@@ -1857,11 +1858,11 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                 <div class="gauge-meta">
                   <div class="gauge-title-group">
                     <span class="gauge-name">FastCDC Deduplication Ratio</span>
-                    <span class="gauge-compare-pill tag-cyan">96.15% upload wire reduced</span>
+                    <span class="gauge-compare-pill tag-cyan">25 of 26 chunks reused on one demo edit</span>
                   </div>
                   <div class="gauge-val-group">
                     <span class="gauge-val text-cyan" id="gauge-val-3" data-target="96.15" data-suffix="% (25/26 Chunks Reused)">96.15% (25/26 Chunks Reused)</span>
-                    <span class="gauge-baseline-val">vs 0% Git Blob</span>
+                    <span class="gauge-baseline-val">fixture: one mid-file insert</span>
                   </div>
                 </div>
                 <div class="gauge-bar-track">
@@ -1870,12 +1871,11 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                     <span class="tick t-50"></span>
                     <span class="tick t-75"></span>
                   </div>
-                  <div class="gauge-baseline-marker" style="left: 4%;" title="Git/S3 Raw Blob Baseline: 0% Dedup"></div>
                   <div class="gauge-bar-fill fill-cyan" data-target-width="96%" style="width: 0%;"></div>
                 </div>
                 <div class="gauge-detail-foot">
-                  <span>Gear rolling hash boundary detection (4–64 KiB) • 1 line edit re-syncs only 4 KiB</span>
-                  <span class="baseline-legend">Git/S3 Full Re-upload: 0% Savings ↗</span>
+                  <span>Gear rolling hash boundary detection (4–64 KiB) • unchanged chunks keep their ciphertext IDs within a vault and epoch</span>
+                  <span class="baseline-legend">Result depends on the edit and chunk boundaries ↗</span>
                 </div>
               </div>
 
@@ -1951,12 +1951,11 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                     <span class="tick t-50"></span>
                     <span class="tick t-75"></span>
                   </div>
-                  <div class="gauge-baseline-marker" style="left: 21%;" title="Cloud API Rate Limit Baseline: ~120 reads/s"></div>
                   <div class="gauge-bar-fill fill-gold" data-target-width="88%" style="width: 0%;"></div>
                 </div>
                 <div class="gauge-detail-foot">
                   <span>secret_routes::scoped_load_gate • 8 workers • 200 reads • 0 busy retries • SHA-256 chained audit</span>
-                  <span class="baseline-legend">Cloud API Quota: ~120 reads/s ↗</span>
+                  <span class="baseline-legend">Loopback test: no network latency ↗</span>
                 </div>
               </div>
 
@@ -1969,7 +1968,7 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                   </div>
                   <div class="gauge-val-group">
                     <span class="gauge-val text-mint" id="gauge-val-7" data-target="25000" data-suffix=" blocks/s">25,000 blocks/s</span>
-                    <span class="gauge-baseline-val">vs 250 ms cloud audit query</span>
+                    <span class="gauge-baseline-val">in-memory, no network</span>
                   </div>
                 </div>
                 <div class="gauge-bar-track">
@@ -1978,12 +1977,11 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                     <span class="tick t-50"></span>
                     <span class="tick t-75"></span>
                   </div>
-                  <div class="gauge-baseline-marker" style="left: 5%;" title="Cloud Audit Query Latency Baseline"></div>
                   <div class="gauge-bar-fill fill-mint" data-target-width="96%" style="width: 0%;"></div>
                 </div>
                 <div class="gauge-detail-foot">
                   <span>services/account/src/audit_chain.rs • In-memory SHA-256 preimages • Sub-millisecond tamper tripwire</span>
-                  <span class="baseline-legend">Cloudtrail/SaaS Query: ~250 ms ↗</span>
+                  <span class="baseline-legend">Measured locally, not a cloud comparison ↗</span>
                 </div>
               </div>
 
@@ -1995,10 +1993,10 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
                 <span class="summary-dot green">●</span> <strong>Autonomous Client Engine</strong>: Zero network delay for encryption or local reads.
               </div>
               <div class="summary-pill">
-                <span class="summary-dot cyan">●</span> <strong>Deterministic Storage</strong>: SHA-256 content-defined deduplication eliminates repeat backups.
+                <span class="summary-dot cyan">●</span> <strong>Deterministic Storage</strong>: SHA-256 content-defined chunks reduce repeat uploads when only part of a file changes.
               </div>
               <div class="summary-pill">
-                <span class="summary-dot gold">●</span> <strong>Enterprise Scale</strong>: 574 reads/s concurrent load gate with full SQLite WAL fsync durability.
+                <span class="summary-dot gold">●</span> <strong>Measured Load Gate</strong>: 574 reads/s on one machine (8 workers, 200 reads) with full SQLite WAL fsync durability.
               </div>
               <div class="summary-pill">
                 <span class="summary-dot mint">●</span> <strong>Bounded Admission (503 Shedding)</strong>: Disk permits &amp; client backoff prevent I/O thrashing during quorum bursts.
@@ -2006,109 +2004,78 @@ cv secret set STRIPE_WEBHOOK_KEY --repo-binding 84920194 --env production</code>
             </div>
           </div>
 
-          <!-- High-Density TUI Comparison Table -->
+                    <!-- Comparison with common approaches (categories, not products) -->
           <div class="tui-box tui-table-box">
-            <div class="tui-box-title">ARCHITECTURAL COMPARISON: CIPHERVAULT VS. INDUSTRY STANDARDS</div>
+            <div class="tui-box-title">HOW CIPHERVAULT DIFFERS FROM COMMON APPROACHES</div>
+            <p class="bench-caveat" role="note">Categories, not products. Real products vary and change: check each vendor's own documentation before relying on any cell below.</p>
             <div class="tui-table-scroll">
               <table class="tui-table">
                 <thead>
                   <tr>
                     <th>EVALUATION DIMENSION</th>
                     <th class="col-highlight">CIPHERVAULT</th>
-                    <th>AWS SECRETS MGR</th>
-                    <th>HASHICORP VAULT</th>
-                    <th>1PASSWORD / DOPPLER</th>
-                    <th>SOPS / GIT-CRYPT</th>
+                    <th>CLOUD SECRETS MANAGER</th>
+                    <th>SELF-HOSTED SECRETS SERVER</th>
+                    <th>PLAIN .ENV + .GITIGNORE</th>
+                    <th>ENCRYPTED-IN-GIT TOOLS</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr>
-                    <td><strong>Trust Model</strong></td>
-                    <td class="col-highlight text-mint">Zero-Knowledge (Client)</td>
-                    <td class="text-danger">Custodial (Cloud KMS)</td>
-                    <td class="text-warning">Semi-Custodial (Server)</td>
-                    <td class="text-danger">SaaS Custodial</td>
-                    <td class="text-mint">Sovereign (Local)</td>
+                    <td><strong>Who holds the keys</strong></td>
+                    <td class="col-highlight text-mint">You: client-side, zero-knowledge</td>
+                    <td class="text-warning">Typically the provider (custodial KMS)</td>
+                    <td class="text-warning">The server decrypts for clients</td>
+                    <td class="text-danger">No encryption</td>
+                    <td class="text-mint">You (local key)</td>
                   </tr>
                   <tr>
-                    <td><strong>Deduplication</strong></td>
-                    <td class="col-highlight text-mint">FastCDC 96.15%</td>
-                    <td class="text-danger">0% (Full Blob)</td>
-                    <td class="text-danger">0% (Full Blob)</td>
-                    <td class="text-danger">0% (Full Blob)</td>
-                    <td class="text-danger">0% (Full Blob)</td>
+                    <td><strong>Plaintext on disk at run time</strong></td>
+                    <td class="col-highlight text-mint">None: <code>run</code> injects into memory only</td>
+                    <td class="text-warning">Often exported to env files</td>
+                    <td class="text-warning">Often exported or templated to files</td>
+                    <td class="text-danger">Always</td>
+                    <td class="text-danger">After checkout or decrypt</td>
                   </tr>
                   <tr>
-                    <td><strong>Durability Proof</strong></td>
-                    <td class="col-highlight text-mint">PoS Nonce (461 B)</td>
-                    <td class="text-danger">None (Cloud SLA)</td>
-                    <td class="text-warning">Raft Heartbeat</td>
-                    <td class="text-danger">None (SaaS SLA)</td>
-                    <td class="text-danger">Git Hash Only</td>
+                    <td><strong>Lost-laptop recovery</strong></td>
+                    <td class="col-highlight text-mint">Paper kit, Shamir guardians, or passphrase backup</td>
+                    <td class="text-warning">Your cloud account</td>
+                    <td class="text-warning">Unseal keys plus backups you run</td>
+                    <td class="text-danger">Only what you backed up</td>
+                    <td class="text-warning">Your key (PGP / KMS)</td>
                   </tr>
                   <tr>
-                    <td><strong>Disaster Recovery</strong></td>
-                    <td class="col-highlight text-mint">Paper Kit / Shamir / CVKB1</td>
-                    <td class="text-danger">Cloud Account Auth</td>
-                    <td class="text-warning">3-of-5 Unseal Keys</td>
-                    <td class="text-danger">Account PDF Key</td>
-                    <td class="text-warning">PGP Master Key</td>
+                    <td><strong>Works offline</strong></td>
+                    <td class="col-highlight text-mint">Local-first (<code>push --local</code>)</td>
+                    <td class="text-danger">Needs the service</td>
+                    <td class="text-danger">Needs your server</td>
+                    <td class="text-mint">Yes</td>
+                    <td class="text-mint">Yes</td>
                   </tr>
                   <tr>
-                    <td><strong>Disk Exposure</strong></td>
-                    <td class="col-highlight text-mint">Zero-Disk RAM Execution</td>
-                    <td class="text-danger">Plaintext Disk Export</td>
-                    <td class="text-danger">Plaintext Disk Export</td>
-                    <td class="text-danger">Plaintext .env File</td>
-                    <td class="text-danger">Checked out Plaintext</td>
+                    <td><strong>History for secrets</strong></td>
+                    <td class="col-highlight text-mint">Git-style snapshots, masked diff, restore</td>
+                    <td class="text-warning">Versions inside the service</td>
+                    <td class="text-warning">Versions inside the server</td>
+                    <td class="text-danger">None</td>
+                    <td class="text-warning">Your Git history</td>
                   </tr>
                   <tr>
-                    <td><strong>Scope Model &amp; Isolation</strong></td>
-                    <td class="col-highlight text-mint">Hierarchical (Tenant/Proj/Env) + AAD Envelope</td>
-                    <td class="text-danger">Flat ARNs / Paths</td>
-                    <td class="text-warning">Path Mount Namespaces</td>
-                    <td class="text-danger">SaaS Project / Env</td>
-                    <td class="text-danger">Single File PGP/KMS</td>
+                    <td><strong>Tamper evidence</strong></td>
+                    <td class="col-highlight text-mint">Hash-chained audit trail and optional anchoring</td>
+                    <td class="text-warning">The service's audit log</td>
+                    <td class="text-warning">The server's audit log</td>
+                    <td class="text-danger">None</td>
+                    <td class="text-warning">Git commit history</td>
                   </tr>
                   <tr>
-                    <td><strong>Token Security (DPoP)</strong></td>
-                    <td class="col-highlight text-mint">Asymmetric DPoP-Lite (Anti-Replay)</td>
-                    <td class="text-danger">Bearer IAM Credentials</td>
-                    <td class="text-warning">Bearer Vault Token</td>
-                    <td class="text-danger">Bearer Service Token</td>
-                    <td class="text-mint">N/A (Local Key Only)</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Audit Verification</strong></td>
-                    <td class="col-highlight text-mint">SHA-256 Chained Hash Ledger + PoA Anchor</td>
-                    <td class="text-danger">Centralized CloudTrail</td>
-                    <td class="text-warning">Flat File Audit Log</td>
-                    <td class="text-danger">SaaS Audit Export</td>
-                    <td class="text-danger">Git Commit History Only</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Zero-Downtime Migration</strong></td>
-                    <td class="col-highlight text-mint">7-Stage Pipeline with Readback Verify &amp; Rollback</td>
-                    <td class="text-danger">Manual Scripted (Risk of Outage)</td>
-                    <td class="text-warning">KV v1→v2 Engine Migration</td>
-                    <td class="text-danger">Manual Secret Re-entry</td>
-                    <td class="text-danger">Full Git Re-encrypt</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Offline Autonomy</strong></td>
-                    <td class="col-highlight text-mint">100% Offline-First</td>
-                    <td class="text-danger">Fails on Cloud Outage</td>
-                    <td class="text-danger">Requires Vault Host</td>
-                    <td class="text-danger">Requires SaaS API</td>
-                    <td class="text-mint">100% Offline</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Cost & Licensing</strong></td>
-                    <td class="col-highlight text-mint">Free / MIT / Apache-2.0</td>
-                    <td class="text-danger">$0.40/secret + API calls</td>
-                    <td class="text-danger">BSL / Commercial</td>
-                    <td class="text-danger">$3-$18/user/month</td>
-                    <td class="text-mint">Free / Open Source</td>
+                    <td><strong>Cost &amp; licensing</strong></td>
+                    <td class="col-highlight text-mint">Free, MIT / Apache-2.0</td>
+                    <td class="text-warning">Usage- or seat-based fees</td>
+                    <td class="text-warning">Licence and hosting cost vary</td>
+                    <td class="text-mint">Free</td>
+                    <td class="text-mint">Free</td>
                   </tr>
                 </tbody>
               </table>
@@ -2581,7 +2548,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
             <div class="step-card">
               <div class="step-idx">STEP 01</div>
               <div class="step-card-title">Initialize Vault</div>
-              <p class="step-card-desc">Generates master secret <span class="text-gold">R</span>, binds OS hardware keyring, and prints emergency paper kit.</p>
+              <p class="step-card-desc">Generates master secret <span class="text-gold">R</span>, protects local keys (Windows DPAPI, or a private key file elsewhere), and prints the emergency paper kit.</p>
               <div class="step-cmd">cv init</div>
             </div>
 
@@ -2660,7 +2627,7 @@ irm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scrip
               <div class="plain-faq-card">
                 <div class="faq-question">Can anyone else see my passwords or API keys?</div>
                 <div class="faq-answer">
-                  <strong>Never.</strong> Secrets are client-encrypted on your physical hardware before leaving your machine. Only your master key can decrypt them.
+                  <strong>Never.</strong> Secrets are client-encrypted on your machine before they leave it. Only your master key can decrypt them.
                 </div>
               </div>
 

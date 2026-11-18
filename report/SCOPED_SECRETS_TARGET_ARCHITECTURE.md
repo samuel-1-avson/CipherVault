@@ -1,6 +1,6 @@
 # Deliverable C — Target Architecture Specification: Hierarchical Resource-Scoped Secrets
 
-**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** [SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md](./SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md) (§9, §10, §13–§15, §24; supplements S1–S5)
+**Version:** 2.5.0 · **Date:** 2026-09-27 · **Parent report:** SCOPED_SECRET_MANAGEMENT_RESEARCH_REPORT.md (internal research report, not published) (§9, §10, §13–§15, §24; supplements S1–S5)
 
 All content below is `[Proposed design]`. All example values are synthetic placeholders.
 

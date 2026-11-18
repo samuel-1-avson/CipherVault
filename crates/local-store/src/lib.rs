@@ -16,4 +16,4 @@ pub use db::{
     PendingUpload, PendingUploadSummary, RecoveryDescriptors, ScopedContext,
 };
 pub use error::LocalStoreError;
-pub use keyring::{protect_secret, unprotect_secret};
+pub use keyring::{active_keyring_backend, protect_secret, unprotect_secret};

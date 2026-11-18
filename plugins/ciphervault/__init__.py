@@ -19,17 +19,20 @@ Design rules (also in skills/ciphervault/SKILL.md):
     SHA256SUMS.txt), never bundled in this repo (catalog rule 17).
 """
 
+import atexit
 import hashlib
 import ipaddress
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -392,6 +395,134 @@ def _run_cli_json(args, cwd, timeout=120, input_text=None):
     return {"success": True, "data": payload, "binary": res.get("binary")}
 
 
+_ORIG_RUN_CLI = _run_cli
+_ORIG_RUN_CLI_JSON = _run_cli_json
+_BRIDGE_LOCK = threading.Lock()
+_BRIDGE_POOL = {}
+_NO_STDIO_BINARIES = set()
+_MAX_BRIDGES = 8
+
+
+class _StdioBridge:
+    """Persistent `ciphervault redact --stdio` worker with bounded
+    per-request timeout via a background stdout reader thread."""
+
+    def __init__(self, binary, cwd):
+        self.binary = binary
+        self.cwd = cwd
+        self.proc = subprocess.Popen(
+            [binary, "redact", "--stdio"],
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=_minimal_env(),
+        )
+        self._lines = queue.Queue()
+        self._req_lock = threading.Lock()
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    def _read_loop(self):
+        try:
+            assert self.proc.stdout is not None
+            for line in self.proc.stdout:
+                self._lines.put(line)
+        except Exception:
+            pass
+        finally:
+            self._lines.put(None)
+
+    def request(self, payload, timeout=15):
+        with self._req_lock:
+            if self.proc.poll() is not None or self.proc.stdin is None:
+                return None
+            try:
+                self.proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                self.proc.stdin.flush()
+                line = self._lines.get(timeout=timeout)
+            except Exception:
+                return None
+            if line is None:
+                return None
+            try:
+                resp = json.loads(line)
+            except Exception:
+                return None
+            return resp if isinstance(resp, dict) else None
+
+    def close(self):
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+def _close_all_bridges():
+    with _BRIDGE_LOCK:
+        for bridge in _BRIDGE_POOL.values():
+            bridge.close()
+        _BRIDGE_POOL.clear()
+
+
+atexit.register(_close_all_bridges)
+
+
+def _bridge_request(cwd, payload, timeout=15):
+    """Send one JSON request over a persistent `ciphervault redact --stdio`
+    pipe. Returns None when unavailable or unsupported (e.g. legacy CLI or
+    unit tests that monkeypatch `_run_cli` / `_run_cli_json`), so callers fall
+    back cleanly."""
+    if _run_cli is not _ORIG_RUN_CLI or _run_cli_json is not _ORIG_RUN_CLI_JSON:
+        return None
+    binary, _src = find_binary()
+    if not binary:
+        return None
+    resolved_cwd = str(cwd or os.getcwd())
+    key = (binary, resolved_cwd)
+    with _BRIDGE_LOCK:
+        if binary in _NO_STDIO_BINARIES:
+            return None
+        bridge = _BRIDGE_POOL.get(key)
+        if bridge is not None and bridge.proc.poll() is not None:
+            bridge.close()
+            _BRIDGE_POOL.pop(key, None)
+            bridge = None
+        if bridge is None:
+            if len(_BRIDGE_POOL) >= _MAX_BRIDGES:
+                oldest_key = next(iter(_BRIDGE_POOL))
+                _BRIDGE_POOL.pop(oldest_key).close()
+            try:
+                bridge = _StdioBridge(binary, resolved_cwd)
+            except Exception:
+                return None
+            _BRIDGE_POOL[key] = bridge
+    resp = bridge.request(payload, timeout=timeout)
+    if resp is None:
+        with _BRIDGE_LOCK:
+            if _BRIDGE_POOL.get(key) is bridge:
+                _BRIDGE_POOL.pop(key, None)
+            bridge.close()
+            # Probe failed before producing valid JSON (e.g. older CLI without --stdio).
+            if payload.get("op") != "ping":
+                _NO_STDIO_BINARIES.add(binary)
+    return resp
+
+
 _CLI_CAPABILITIES = (
     (("status",), ("--json",)),
     (("hook", "check"), ("--json", "--deep", "--fix")),
@@ -481,12 +612,27 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
     correctness depends on the receipt (scrub proofs) must fail
     closed on False instead of letting absence go ambiguous."""
     try:
+        vault_cwd = _vault_cwd(cwd)
+        detail_str = json.dumps(detail)[:500] if detail else "{}"
+        resp = _bridge_request(
+            vault_cwd,
+            {
+                "op": "audit",
+                "tool": str(tool),
+                "decision": str(decision),
+                "path": str(path)[:300],
+                "detail": detail_str,
+            },
+            timeout=5,
+        )
+        if resp and resp.get("ok"):
+            return True
         args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
         if path:
             args += ["--path", str(path)[:300]]
         if detail:
-            args += ["--detail", json.dumps(detail)[:500]]
-        res = _run_cli(args, _vault_cwd(cwd), timeout=10)
+            args += ["--detail", detail_str]
+        res = _run_cli(args, vault_cwd, timeout=10)
         return bool(res and res.get("success"))
     except Exception:
         return False
@@ -538,13 +684,28 @@ def cli_redact(text, cwd, timeout=15):
     pass through unlogged."""
     if not text:
         return text, 0, True
-    res = _run_cli_json(["redact", "--json"], _vault_cwd(cwd), timeout=timeout,
+    vault_cwd = _vault_cwd(cwd)
+    require_vault = _vault_present(cwd)
+    resp = _bridge_request(vault_cwd, {"op": "redact", "text": text}, timeout=timeout)
+    if resp and resp.get("ok") and _complete_redact_response(resp, require_vault=require_vault):
+        return resp["text"], resp["redactions"], True
+    res = _run_cli_json(["redact", "--json"], vault_cwd, timeout=timeout,
                         input_text=text)
     if res.get("success"):
         data = res.get("data")
-        if _complete_redact_response(data, require_vault=_vault_present(cwd)):
+        if _complete_redact_response(data, require_vault=require_vault):
             return data["text"], data["redactions"], True
     return scrub(text), 0, False
+
+
+_ORIG_CLI_REDACT = cli_redact
+
+
+def _call_cli_redact(text, cwd, timeout=15):
+    """Call exact+shape redaction via `cli_redact` (preserving 3-tuple return)."""
+    if not text:
+        return text, 0, True
+    return cli_redact(text, cwd, timeout=timeout)
 
 
 # ---------------------------------------------------------------- tools
@@ -563,6 +724,18 @@ def _tool_scan(params, **kwargs):
     return json.dumps(_run_cli_json(args, params.get("cwd")))
 
 
+def _effective_no_net(params):
+    """Default to network isolation on Linux/macOS where kernel `--no-net`
+    is supported unprivileged; Windows defaults False unless explicitly requested
+    (so unsupported hosts fail closed only when asked). When `proxy` is enabled,
+    loopback access is required so `no_net` defaults False unless explicitly set."""
+    if isinstance(params, dict) and params.get("no_net") is not None:
+        return bool(params["no_net"])
+    if isinstance(params, dict) and (params.get("proxy") or params.get("proxy_upstream")):
+        return False
+    return sys.platform.startswith("linux") or sys.platform == "darwin"
+
+
 def _tool_run(params, **kwargs):
     params = params or {}
     cmd = params.get("command") or []
@@ -577,6 +750,20 @@ def _tool_run(params, **kwargs):
         args += ["--project", params["project"]]
     if params.get("env"):
         args += ["--env", params["env"]]
+    allow_keys = params.get("allow_keys")
+    if allow_keys is not None:
+        keys = [str(k).strip() for k in allow_keys if str(k).strip()]
+        if not keys:
+            return json.dumps({"success": False, "error": "allow_keys cannot be empty when provided"})
+        args += ["--allow-keys", ",".join(keys)]
+    if params.get("proxy"):
+        args.append("--proxy")
+    for spec in (params.get("proxy_upstream") or []):
+        s = str(spec).strip()
+        if s:
+            args += ["--proxy-upstream", s]
+    if _effective_no_net(params):
+        args.append("--no-net")
     args.append("--")
     args += list(cmd)
     res = _run_cli_json(args, params.get("cwd"), timeout=300)
@@ -948,14 +1135,31 @@ def _tool_drill(params, **kwargs):
 # ---------------------------------------------------------------- hooks
 
 _SECRET_FILE_RE = re.compile(
-    r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|[\w.-]+\.(pem|key)|id_rsa|id_ed25519|"
-    r"credentials\.json|secrets\.json|"
+    r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|\.envrc|\.npmrc|\.pypirc|"
+    r"[\w.-]+\.(pem|key|p12|pfx)|id_rsa|id_ed25519|"
+    r"credentials\.json|secrets\.(json|ya?ml|toml)|"
     # Source/docs about kits (recovery_kit.rs, recovery_kit.md) are not kits.
     r"recovery_kit(?![\w-]*\.(?:rs|py|pyi|js|jsx|ts|tsx|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|md|toml|ya?ml|lock)\b)[\w.-]*|"
     r"[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
 )
-_READ_CMD_RE = re.compile(r"(?i)\b(cat|type|get-content|gc|more|head|tail|less|bat)\b")
+_SHELL_CHAIN_RE = re.compile(r"[;&|`$<>]|\r|\n")
+_SAFE_SECRET_PATH_CMD_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"(?:ciphervault|cv)(?:\.exe)?\s+(?:status|track|untrack|push|hook|init|audit|agent-log|diff|rekey|prune)\b|"
+    r"git(?:\.exe)?\s+(?:status|check-ignore|rm\s+--cached|ls-files)\b"
+    r")"
+)
+_EXPORT_ENV_RE = re.compile(r"(?i)\b(?:ciphervault|cv)(?:\.exe)?\s+export-env\b")
 _GIT_DANGER_RE = re.compile(r"(?i)\bgit\s+(commit|push|add)\b")
+_REDACT_CHUNK_CHARS = 262_144
+_REDACT_SEAM_OVERLAP = 4_096
+
+
+def _is_safe_terminal_secret_ref(text):
+    return (
+        not _SHELL_CHAIN_RE.search(text)
+        and bool(_SAFE_SECRET_PATH_CMD_RE.search(text))
+    )
 
 
 def _iter_strings(value):
@@ -969,11 +1173,53 @@ def _iter_strings(value):
             yield from _iter_strings(v)
 
 
+def _scrub_full_text(text, cwd, timeout=15):
+    """Scrub arbitrarily large text across all chunks + join seams.
+    Returns (scrubbed_text, total_redactions, cli_ok, changed)."""
+    if len(text) <= _REDACT_CHUNK_CHARS:
+        cleaned, n, ok = _call_cli_redact(text, cwd, timeout=timeout)
+        return cleaned, n, ok, (cleaned != text)
+
+    parts = []
+    seam_centers = []
+    total_n = 0
+    all_ok = True
+    any_changed = False
+    pos = 0
+    while pos < len(text):
+        chunk = text[pos:pos + _REDACT_CHUNK_CHARS]
+        cleaned, n, ok = _call_cli_redact(chunk, cwd, timeout=timeout)
+        if not ok:
+            all_ok = False
+        if cleaned != chunk:
+            any_changed = True
+        total_n += int(n)
+        parts.append(cleaned)
+        pos += _REDACT_CHUNK_CHARS
+        if pos < len(text):
+            seam_centers.append(sum(len(p) for p in parts))
+
+    assembled = "".join(parts)
+    for center in reversed(seam_centers):
+        start = max(0, center - _REDACT_SEAM_OVERLAP)
+        end = min(len(assembled), center + _REDACT_SEAM_OVERLAP)
+        seam = assembled[start:end]
+        cleaned_seam, n_seam, ok_seam = _call_cli_redact(seam, cwd, timeout=timeout)
+        if not ok_seam:
+            all_ok = False
+        if cleaned_seam != seam:
+            any_changed = True
+            total_n += int(n_seam)
+            assembled = assembled[:start] + cleaned_seam + assembled[end:]
+    return assembled, total_n, all_ok, any_changed
+
+
 def on_pre_tool_call(tool_name, args, **kwargs):
     """Leak guard. Blocks secret-file reads into chat, secret-shaped
     content handed to other tools, and git add/commit/push while the
-    CipherVault hook check reports violations. Fail-open on internal
-    errors (Hermes isolates hook exceptions too)."""
+    CipherVault hook check reports violations. Fails closed when a
+    CipherVault workspace is present and redaction cannot run."""
+    cwd = ((args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()) if isinstance(args, dict) else os.getcwd()
     try:
         if tool_name == "ciphervault_run":
             # Running an arbitrary command with vault secrets in its
@@ -981,37 +1227,65 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # (same gate as dangerous shell commands). Output scrubbing
             # alone cannot stop a command from exfiltrating the values
             # it was given. Every ciphervault_run call is gated.
+            vault_cwd = _vault_cwd(cwd)
+            allow_keys = (args or {}).get("allow_keys") if isinstance(args, dict) else None
+            no_net = _effective_no_net(args)
+            proxy_on = bool(isinstance(args, dict) and (args.get("proxy") or args.get("proxy_upstream")))
+            detail = {
+                "program": ((args or {}).get("command") or [""])[0],
+                "no_net": no_net,
+                "proxy": proxy_on,
+            }
+            if allow_keys:
+                detail["allow_keys"] = [str(k) for k in allow_keys][:20]
             _audit("ciphervault_run", "approval_requested",
-                   detail={"program": ((args or {}).get("command") or [""])[0]},
-                   cwd=(args or {}).get("cwd") or os.getcwd())
+                   detail=detail,
+                   cwd=vault_cwd)
             # Cadence: checkpoint the chain head — this grant included —
             # to the fleet BEFORE the approved command can run, so a
             # run that goes badly cannot rewrite the grant away.
-            _anchor_async((args or {}).get("cwd") or os.getcwd())
+            _anchor_async(vault_cwd)
             # Narrow grant grain: the rule key names the program, so a
             # session/always grant in Hermes's approval UI covers that
             # program only — never every command the model may run.
             program = str(((args or {}).get("command") or ["run"])[0])
+            scope_note = (
+                f" (allow_keys: {', '.join(str(k) for k in allow_keys)})"
+                if allow_keys else " (all vault secrets)"
+            )
+            net_note = (
+                " [proxy: real keys stay in parent]" if proxy_on
+                else (" [network: isolated (--no-net)]" if no_net else " [network: UNRESTRICTED]")
+            )
             return {"action": "approve",
-                    "message": ("CipherVault: run a command with vault secrets "
+                    "message": (f"CipherVault: run a command with vault secrets{scope_note}{net_note} "
                                 "injected in RAM? The command receives the values; "
                                 "approve only if you trust it."),
                     "rule_key": f"ciphervault_run:{program}"}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
-        cwd = args.get("cwd") or args.get("workdir") or os.getcwd()
         texts = list(_iter_strings(args))
+
+        if tool_name == "terminal":
+            for text in texts:
+                if _EXPORT_ENV_RE.search(text):
+                    _audit(tool_name, "blocked", path=text[:300],
+                           detail={"reason": "export_env_terminal"}, cwd=cwd)
+                    return {"action": "block", "message": (
+                        "CipherVault guard: `ciphervault export-env` prints plaintext secrets "
+                        "and cannot run in terminal. Use ciphervault_run instead."
+                    )}
 
         if tool_name in ("terminal", "execute_code", "read_file", "browser_exec"):
             for text in texts:
-                if _SECRET_FILE_RE.search(text) and (
-                    tool_name == "read_file" or _READ_CMD_RE.search(text) or tool_name != "terminal"
-                ):
+                if _SECRET_FILE_RE.search(text):
+                    if tool_name == "terminal" and _is_safe_terminal_secret_ref(text):
+                        continue
                     _audit(tool_name, "blocked", path=text[:300],
                            detail={"reason": "secret_file_read"}, cwd=cwd)
                     return {"action": "block", "message": (
-                        "CipherVault guard: reading a secret/kit file into the chat would leak it. "
+                        "CipherVault guard: accessing a secret/kit file from this tool could leak it. "
                         "Use ciphervault_run (RAM-only injection), ciphervault_redact (masked), or "
                         "ciphervault_status (names only). Paths are fine; contents are not."
                     )}
@@ -1021,8 +1295,17 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # Check against every vault the call touches, not only the
             # cwd's (vaultless calls still get the CLI's shape pass).
             for root in _scrub_roots(args, cwd) or [cwd]:
-                cleaned, n, _exact = cli_redact(joined, root, timeout=10)
-                if n > 0 or cleaned != joined:
+                cleaned, n, exact, changed = _scrub_full_text(joined, root, timeout=10)
+                if not exact and _vault_present(root) and tool_name in (
+                    "terminal", "execute_code", "read_file", "write_file", "patch", "browser_exec"
+                ):
+                    _audit(tool_name, "blocked",
+                           detail={"reason": "redact_unavailable_fail_closed"}, cwd=root)
+                    return {"action": "block", "message": (
+                        "CipherVault guard: exact-value redaction check failed/timed out inside "
+                        "a vault workspace; failing closed. Verify `ciphervault` binary health."
+                    )}
+                if n > 0 or changed:
                     _audit(tool_name, "blocked",
                            detail={"reason": "secret_shaped_payload", "redactions": n}, cwd=root)
                     return {"action": "block", "message": (
@@ -1051,6 +1334,11 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                     break
         return None
     except Exception:
+        if _has_vault(cwd):
+            return {"action": "block", "message": (
+                "CipherVault guard: internal error during security check inside a vault "
+                "workspace; failing closed."
+            )}
         return None
 
 
@@ -1480,6 +1768,10 @@ _TOOLS = [
      "Run a command with vault secrets injected into its environment in RAM only (nothing written to disk). Output is exact-value + shape scrubbed before return. Never prints plaintext secrets.",
      {"command": {"type": "array", "items": {"type": "string"}, "description": "Command, e.g. ['npm','test']"},
       "env_file": {"type": "string"}, "project": {"type": "string"}, "env": {"type": "string"},
+      "allow_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional allowlist of variable names to inject (least-privilege scoping)"},
+      "no_net": {"type": "boolean", "description": "Block child outbound/inbound network access (defaults true on Linux/macOS, false on Windows)"},
+      "proxy": {"type": "boolean", "default": False, "description": "Run loopback credential proxy in parent so real API keys never enter child env"},
+      "proxy_upstream": {"type": "array", "items": {"type": "string"}, "description": "Optional VAR=https://host[@HeaderName] mappings for proxy mode"},
       "dry_run": {"type": "boolean", "default": False, "description": "List variable names without executing"},
       "cwd": {"type": "string"}}),
     ("ciphervault_push", _tool_push,

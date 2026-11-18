@@ -130,6 +130,39 @@ class PackageManifestUpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing checksum"):
                 update_manifests(dist, sums, "v1.0.28")
 
+    def test_syncs_hermes_plugin_cross_os_checksums(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist, sums = self.fixture(root)
+            plugin = root / "__init__.py"
+            plugin.write_text(
+                "\n".join(
+                    [
+                        'RELEASE_VERSION = "1.0.26"',
+                        f'RELEASE_BINARY_SHA256 = "{"0" * 64}"',
+                        "RELEASE_BINARY_SHA256S = {",
+                        f'    "ciphervault.exe": "{"0" * 64}",',
+                        "}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            win_sha = hashlib.sha256(b"win").hexdigest()
+            lin_sha = hashlib.sha256(b"lin").hexdigest()
+            mac_sha = hashlib.sha256(b"mac").hexdigest()
+            with sums.open("a", encoding="utf-8") as fh:
+                fh.write(f"{win_sha} *ciphervault.exe\n")
+                fh.write(f"{lin_sha} *ciphervault-linux-amd64\n")
+                fh.write(f"{mac_sha} *ciphervault-macos-arm64\n")
+
+            update_manifests(dist, sums, "v1.0.28", plugin_path=plugin)
+            updated = plugin.read_text(encoding="utf-8")
+            self.assertIn('RELEASE_VERSION = "1.0.28"', updated)
+            self.assertIn(f'RELEASE_BINARY_SHA256 = "{win_sha}"', updated)
+            self.assertIn(f'"ciphervault-linux-amd64": "{lin_sha}"', updated)
+            self.assertIn(f'"ciphervault-macos-arm64": "{mac_sha}"', updated)
+
 
 if __name__ == "__main__":
     unittest.main()

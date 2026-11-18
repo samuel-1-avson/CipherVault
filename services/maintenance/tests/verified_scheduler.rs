@@ -78,6 +78,7 @@ fn inventory_fixture() -> (MaintenanceInventory, Vec<Vec<u8>>) {
         closure_digest: closure.compute_base_closure_digest().unwrap().to_vec(),
         device_id: snapshot.device_id,
         device_counter: 1,
+        authority_generation: None,
         signature: vec![],
     };
     head.sign(&device).unwrap();

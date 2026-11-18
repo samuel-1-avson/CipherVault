@@ -1,6 +1,6 @@
 # 🛡️ CipherVault: Master Documentation Hub
 
-**Release track:** `v1.0.30`; see the [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) for publication and live verification.
+**Release track:** `v1.0.31`; see the [release notes](../dist/RELEASE_NOTES.md) and the [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) for publication and live verification.
 **Classification:** Enterprise System Architecture, Protocol Specification & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)  
 
@@ -43,7 +43,7 @@ flowchart TB
             Plan["DON_IMPLEMENTATION_PLAN.md\n(7-Phase Engineering Roadmap)"]
             Testnet["TESTNET.md\n(Public Testnet Fleet)"]
             Deploy["DEPLOYMENT_RUNBOOK.md\n(Production GCP/Docker Cluster)"]
-            Mainnet["MAINNET_ANCHOR_PROMOTION.md\n(Arbitrum One L2 Settlement)"]
+            Genesis["GENESIS_CEREMONY_RUNBOOK.md\n(CipherChain Genesis & Rotation)"]
         end
 
         subgraph TrackD ["4. API Reference & Decision Records"]
@@ -51,13 +51,13 @@ flowchart TB
             ApiRef["API_REFERENCE.md\n(Operator HTTP & P2P RPC)"]
             DashRef["DASHBOARD_API_REFERENCE.md\n(Web Dashboard & Explorer)"]
             Platforms["PLATFORM_SUPPORT.md\n(OS Keyrings & Token Drivers)"]
-            ADR["adr/ (001 - 011)\n(Architecture Decision Records)"]
+            ADR["adr/ (001 - 013)\n(Architecture Decision Records)"]
             Diagrams["diagrams/ (01 - 07)\n(Publication-Grade SVGs)"]
         end
 
         subgraph TrackE ["5. Audits, Evidence & Archive"]
             direction TB
-            Reports["report/\n(Live Ratings & Audit Reports)"]
+            Reports["report/\n(Curated Evidence & Scoped-Secret Specs)"]
             Archive["archive/\n(Historical RFCs & Spikes)"]
         end
     end
@@ -70,7 +70,7 @@ flowchart TB
 
     class Setup,Workflow,Onboard,Playbooks,CICD g1;
     class Arch,DON,Crypto,Acct,Keys g2;
-    class Repair,Plan,Testnet,Deploy,Mainnet g3;
+    class Repair,Plan,Testnet,Deploy,Genesis g3;
     class ApiRef,DashRef,Platforms,ADR,Diagrams g4;
     class Reports,Archive g5;
 ```
@@ -109,7 +109,7 @@ flowchart TB
 | [**`DON_IMPLEMENTATION_PLAN.md`**](./DON_IMPLEMENTATION_PLAN.md) | **Core Engineering Team** | **7-Phase DON Implementation Plan**: Gated milestones from transport abstraction (Phase 1) and libp2p connectivity (Phase 2) to capability vouchers (Phase 3), authenticated repair (Phase 4), and production cutover. |
 | [**`TESTNET.md`**](./TESTNET.md) | **Beta Testers & Operators** | **Public Testnet Guide**: Official testnet seed endpoints, join ceremonies, peer discovery, reset pathways, and known operational caveats. |
 | [**`DEPLOYMENT_RUNBOOK.md`**](./DEPLOYMENT_RUNBOOK.md) | **DevOps & Infrastructure Leads** | **Master Cloud VPS & Docker Runbook**: Multi-region GCP Compute Engine cluster provisioning (`e2-micro`), Caddy TLS reverse-proxy hardening, HSTS security headers, rate limiting, and systemd maintenance services. |
-| [**`MAINNET_ANCHOR_PROMOTION.md`**](./MAINNET_ANCHOR_PROMOTION.md) | **Protocol Leads & Smart Contract Devs** | **Mainnet Anchor Promotion Plan**: Promotion gates, deployer key ceremonies, Arbitrum Sepolia to Arbitrum One migration, and rollback procedures. |
+| [**`GENESIS_CEREMONY_RUNBOOK.md`**](./GENESIS_CEREMONY_RUNBOOK.md) | **Protocol Leads & Validator Operators** | **CipherChain Genesis Ceremony & Validator Rotation**: Network bootstrapping and validator lifecycle for the sovereign CipherChain ledger. |
 | [**`LOAD_SOAK_VALIDATION.md`**](./LOAD_SOAK_VALIDATION.md) | **Performance Engineers & SREs** | **Load & Soak Validation**: `push_bench` harness, sustained iteration benchmarks, rate limiter tuning, and live cluster soak evidence. |
 | [**`RELEASE_PROCESS.md`**](./RELEASE_PROCESS.md) | **Release Engineers** | **Release Engineering & Cadence**: Semver policy, multi-architecture cross-compilation matrix, SBOM/SLSA generation, cosign keyless signatures, and automated package manager distribution. |
 | [**`CRYPTO_DONATION_PLAN.md`**](./CRYPTO_DONATION_PLAN.md) | **Community & Contributors** | **Cryptocurrency Donation Integration**: Multi-chain EVM address configuration (Arbitrum One ETH/ARB/USDT and Ethereum Mainnet), smart contract verification links, and non-intrusive UI integration. |
@@ -143,6 +143,8 @@ Historical architectural decisions are permanently recorded as ADRs:
 | [`009-membership-openness.md`](./adr/009-membership-openness.md) | Progressive Network Openness | Defined roadmap from permissioned founding fleet to open federated community nodes. |
 | [`010-incentives-sla-abuse.md`](./adr/010-incentives-sla-abuse.md) | Node SLA & Abuse Vocabulary | Codified peer quarantine rules, DoS defense limits, and rate-limiting enforcement. |
 | [`011-quorum-admission.md`](./adr/011-quorum-admission.md) | Multi-Party Quorum Admission | Required $K$-of-$N$ fleet keyholder approval for admitting new storage nodes to eliminate central gatekeepers. |
+| [`012-unified-login-split-custody.md`](./adr/012-unified-login-split-custody.md) | Unified Login, Split Custody | One login experience over a preserved account/vault cryptographic split. |
+| [`013-chain-liveness.md`](./adr/013-chain-liveness.md) | CipherChain Liveness Under Split Votes | Mitigations for block production under split validator votes; view-change designed, not yet implemented. |
 
 ---
 
@@ -160,28 +162,19 @@ Interactive, publication-grade vector graphics illustrating key system workflows
 
 ---
 
-## 📊 7. Verified System Evaluation Reports (`report/`)
+## 📊 7. Published Evidence & Scoped-Secret Specs (`report/`)
 
-Empirical system evaluation reports, live-fire audit ratings, and soak validation proofs are maintained in [`report/`](../report/):
-
-* [`CIPHERVAULT_DEEP_DIVE_REPORT.md`](../report/CIPHERVAULT_DEEP_DIVE_REPORT.md) — Architectural deep-dive audit and system verification report.
-* [`EXPLORER_DEEP_ANALYSIS_2026-09-21.md`](../report/EXPLORER_DEEP_ANALYSIS_2026-09-21.md) — Comprehensive Web Explorer & Dashboard security and architectural analysis.
-* [`EXTERNAL_REHEARSAL_PROOF_2026-09-20.md`](../report/EXTERNAL_REHEARSAL_PROOF_2026-09-20.md) — Live-fire drill evidence: fleet seed rotation and 3/3 probation join rehearsal.
-* [`TESTNET_READINESS_2026-09-20.md`](../report/TESTNET_READINESS_2026-09-20.md) — Public testnet operational readiness checklist and drill scorecard.
-* [`SYSTEM_AUDIT_RATING_2026-09-18.md`](../report/SYSTEM_AUDIT_RATING_2026-09-18.md) & [`SYSTEM_AUDIT_RATING_2026-09-19.md`](../report/SYSTEM_AUDIT_RATING_2026-09-19.md) — Comprehensive security audit ratings.
-* [`PROJECT_RATING_2026-09-23.md`](../report/PROJECT_RATING_2026-09-23.md) & [`PROGRESS_RATING_2026-09-24.md`](../report/PROGRESS_RATING_2026-09-24.md) — Progress ratings and milestone dispositions.
-* [`PRODUCTION_READINESS_2026-09-24.md`](../report/PRODUCTION_READINESS_2026-09-24.md) & [`OPERATOR_NETWORK_2026-09-24.md`](../report/OPERATOR_NETWORK_2026-09-24.md) — Production readiness and live operator network reports.
+[`report/`](../report/) publishes only the curated evidence that current documents, code comments and tooling cite: the 2026-09-30 audit/remediation/deployment ledgers, the October assurance and capacity evidence, release test evidence, and the scoped-secrets design specs. See the [`report/README.md`](../report/README.md) index. Dated working notes (ratings, status reports, plans, drafts) are kept locally and are not published.
 
 ---
 
 ## 🏛️ 8. Historical Specifications & Spikes Archive (`docs/archive/`)
 
-Early design RFCs (Phase 01 through Phase 10), completed research spikes, and historical audit notes are permanently preserved in [`docs/archive/`](./archive/) for full architectural provenance:
+Early design RFCs (Phase 01 through Phase 10), completed research spikes and decision packets are preserved in [`docs/archive/`](./archive/) for architectural provenance:
 
 * **Foundational RFCs**: [`01-product-and-requirements.md`](./archive/01-product-and-requirements.md) through [`10-recovery-milestone.md`](./archive/10-recovery-milestone.md)
 * **Completed Spikes**: [`D6_OBJECT_STORE_SPIKE.md`](./archive/D6_OBJECT_STORE_SPIKE.md) (redb selection) and [`D7_ERASURE_SPIKE.md`](./archive/D7_ERASURE_SPIKE.md) (erasure coding decline)
-* **Historical Drills & Audits**: [`NAT_HOLEPUNCH_DRILL.md`](./archive/NAT_HOLEPUNCH_DRILL.md), [`CHAOS_LOG.md`](./archive/CHAOS_LOG.md), [`CIPHERVAULT_AUDIT_2026-09-12.md`](./archive/CIPHERVAULT_AUDIT_2026-09-12.md), [`PROJECT_AUDIT_2026-09-16.md`](./archive/PROJECT_AUDIT_2026-09-16.md)
-* **Transition Records**: [`SPLIT_PLAN.md`](./archive/SPLIT_PLAN.md), [`DON_SPEC_CORRECTIONS.md`](./archive/DON_SPEC_CORRECTIONS.md), [`DON_ECONOMICS_DECISION.md`](./archive/DON_ECONOMICS_DECISION.md), [`LANDING_PAGE_PLAN_AND_REPORT.md`](./archive/LANDING_PAGE_PLAN_AND_REPORT.md)
+* **Decision Records & Drills**: [`DON_ECONOMICS_DECISION.md`](./archive/DON_ECONOMICS_DECISION.md), [`DON_SPEC_CORRECTIONS.md`](./archive/DON_SPEC_CORRECTIONS.md), [`NAT_HOLEPUNCH_DRILL.md`](./archive/NAT_HOLEPUNCH_DRILL.md)
 
 ---
 

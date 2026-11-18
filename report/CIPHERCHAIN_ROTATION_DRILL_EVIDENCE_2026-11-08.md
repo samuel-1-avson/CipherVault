@@ -81,8 +81,8 @@ Tested via `services/operator/tests/swarm_chain.rs` and `services/operator/tests
 
 ## 5. Artifacts & Reference
 
-* Genesis Runbook: [`docs/GENESIS_CEREMONY_RUNBOOK.md`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/docs/GENESIS_CEREMONY_RUNBOOK.md)
-* Architectural Model: [`report/CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/report/CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html)
-* Audit Analysis: [`report/CIPHERVAULT_SOVEREIGN_CHAIN_AUDIT_2026-11-07.md`](file:///c:/Users/samue/OneDrive/Desktop/projects/CipherVault/report/CIPHERVAULT_SOVEREIGN_CHAIN_AUDIT_2026-11-07.md)
+* Genesis Runbook: [`docs/GENESIS_CEREMONY_RUNBOOK.md`](../docs/GENESIS_CEREMONY_RUNBOOK.md)
+* Architectural Model: [`CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html`](./CIPHERVAULT_SOVEREIGN_CHAIN_ARCHITECTURE.html)
+* Audit Analysis: `CIPHERVAULT_SOVEREIGN_CHAIN_AUDIT_2026-11-07.md` (internal, not published)
 
 **Exit Criteria Met:** All P6 requirements satisfied. Ready to archive obsolete EVM components and proceed to external review.

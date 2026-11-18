@@ -682,7 +682,10 @@ pub(crate) async fn cmd_doctor(json: bool) -> Result<()> {
         Some(opened) if opened == probe => checks.push(DoctorCheck {
             name: "keyring",
             ok: true,
-            detail: "protect/unprotect round-trip ok".to_string(),
+            detail: format!(
+                "protect/unprotect round-trip ok ({})",
+                ciphervault_local_store::active_keyring_backend()
+            ),
         }),
         _ => checks.push(DoctorCheck {
             name: "keyring",

@@ -1,0 +1,26 @@
+CipherVault — "Sealed" (ciphervault-film.mp4, ciphervault-film-90s.mp4)
+Third-party material in the film, with sources and licences.
+
+MUSIC SAMPLES
+Piano: "Salamander Grand Piano V3" by Alexander Holm, licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)
+Drums: "MuldjordKit" by Lars Muldjord (drumgizmo.org), FreePats version, licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+Samples (CC0): Versilian Studios VCSL (glockenspiel, vibraphone, bowed vibraphone, claps, shaker), Karoryfer Samples (Sneakybass jazz double bass), FreePats
+Original score, chiptune voice and all sound effects synthesised in code for this film.
+
+VOICE
+Narration: Kokoro-82M text-to-speech (Apache License 2.0, hexgrad/Kokoro-82M) via kokoro-onnx (MIT), voice "am_michael".
+Speech check: faster-whisper (MIT) — used to verify every line; not heard in the film.
+
+FONTS
+Inter — SIL Open Font License 1.1, The Inter Project Authors (github.com/rsms/inter)
+JetBrains Mono — SIL Open Font License 1.1, JetBrains (github.com/JetBrains/JetBrainsMono)
+
+INTERFACE
+The Hermes Desktop interface (Nous Research) is redrawn in HTML/CSS to show the CipherVault plugin running inside it.
+No screenshots, footage or logos of Hermes are used; the wordmark is not shown. The CipherVault pane, tool names, JSON
+fields, guard messages and CLI output are copied from this repository's source (plugins/ciphervault, apps/cli).
+The vault mascot is an original pixel character made for this film. All secrets on screen are fake (test_value_123456).
+
+TOOLS
+Rendered entirely in code with the Lemo-Opuscar toolkit (MIT, github.com/lemomo-ai/lemo-opuscar), headless Chromium
+(Playwright) and ffmpeg. No video-generation model and no stock footage.

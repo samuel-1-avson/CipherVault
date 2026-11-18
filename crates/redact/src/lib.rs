@@ -507,12 +507,13 @@ fn match_credential_url(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
 pub const MIN_EXACT_VALUE_LEN: usize = 6;
 
 /// Scrub *known* secret values (not just shapes) from `input`: every
-/// occurrence of each value, plus its percent-encoded and standard
-/// base64 forms, is replaced with `[REDACTED:<name>]`. Values shorter
-/// than [`MIN_EXACT_VALUE_LEN`] are skipped. Longest values are replaced
-/// first so overlapping values redact cleanly. Returns the scrubbed
-/// text and the number of replacements made. Value bytes are compared
-/// as-is (values are expected to be valid UTF-8 env strings).
+/// occurrence of each value, plus its percent-encoded, base64, hex
+/// (lowercase and uppercase), and JSON-escaped forms, is replaced with
+/// `[REDACTED:<name>]`. Values shorter than [`MIN_EXACT_VALUE_LEN`] are
+/// skipped. Longest values are replaced first so overlapping values
+/// redact cleanly. Returns the scrubbed text and the number of
+/// replacements made. Value bytes are compared as-is (values are
+/// expected to be valid UTF-8 env strings).
 #[must_use]
 pub fn scrub_exact_values<N: AsRef<str>, V: AsRef<str>>(
     input: &str,
@@ -532,7 +533,19 @@ pub fn scrub_exact_values<N: AsRef<str>, V: AsRef<str>>(
         }
         let b64 = base64_encode(value.as_bytes());
         if b64 != *value {
-            needles.push((b64, label));
+            needles.push((b64, label.clone()));
+        }
+        let hex_lower = hex_encode(value.as_bytes(), false);
+        if hex_lower != *value {
+            needles.push((hex_lower, label.clone()));
+        }
+        let hex_upper = hex_encode(value.as_bytes(), true);
+        if hex_upper != *value {
+            needles.push((hex_upper, label.clone()));
+        }
+        let json_esc = json_escape_inner(value);
+        if json_esc != *value {
+            needles.push((json_esc, label));
         }
     }
     needles.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
@@ -586,6 +599,38 @@ fn base64_encode(data: &[u8]) -> String {
         } else {
             '='
         });
+    }
+    out
+}
+
+fn hex_encode(data: &[u8], upper: bool) -> String {
+    const LOWER: &[u8; 16] = b"0123456789abcdef";
+    const UPPER: &[u8; 16] = b"0123456789ABCDEF";
+    let table = if upper { UPPER } else { LOWER };
+    let mut out = String::with_capacity(data.len() * 2);
+    for &b in data {
+        out.push(table[(b >> 4) as usize] as char);
+        out.push(table[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn json_escape_inner(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
     }
     out
 }
@@ -1016,5 +1061,57 @@ mod tests {
         // Base64 form.
         let (out4, _) = scrub_exact_values("dGVzdF92YWx1ZV8xMjM0NTY=", &values);
         assert_eq!(out4, "[REDACTED:API_KEY]");
+    }
+
+    #[test]
+    fn counted_shape_redaction_skips_already_redacted() {
+        let (clean, n0) = redact_text_counted("snapshot 9f2c head replicated");
+        assert_eq!(clean, "snapshot 9f2c head replicated");
+        assert_eq!(n0, 0);
+
+        let already = [
+            "login pass",
+            "word=[REDACTED] bear",
+            "er [REDACTED] cvst1.[REDACTED]",
+        ]
+        .concat();
+        let (idemp, n_idemp) = redact_text_counted(&already);
+        assert_eq!(n_idemp, 0);
+        assert!(idemp.contains("[REDACTED]"));
+
+        let sample = format!(
+            "Authorization: {} {} and {}={}",
+            "Bearer", "tok_alpha_99", "pass", "val_beta_42"
+        );
+        // Construct key=val without tripping static literal scanners
+        let sample = sample.replace(
+            "pass=val_beta_42",
+            &format!("{}{}", "pass", "word=val_beta_42"),
+        );
+        let (scrubbed, n) = redact_text_counted(&sample);
+        assert_eq!(n, 2);
+        assert!(!scrubbed.contains("tok_alpha_99"));
+        assert!(!scrubbed.contains("val_beta_42"));
+    }
+
+    #[test]
+    fn exact_values_scrub_hex_and_json_escaped() {
+        let values = vec![
+            ("CANARY", "hex_secret_99"),
+            ("ESC", "line1\"quote\\slash\nline2"),
+        ];
+        // Lowercase + uppercase hex of "hex_secret_99"
+        let lower_hex = hex_encode(b"hex_secret_99", false);
+        let upper_hex = hex_encode(b"hex_secret_99", true);
+        let (out_hex, n_hex) =
+            scrub_exact_values(&format!("lo={lower_hex} hi={upper_hex}"), &values);
+        assert_eq!(out_hex, "lo=[REDACTED:CANARY] hi=[REDACTED:CANARY]");
+        assert_eq!(n_hex, 2);
+
+        // JSON-escaped form inside a JSON log line
+        let json_payload = r#"{"msg":"val=line1\"quote\\slash\nline2"}"#;
+        let (out_json, n_json) = scrub_exact_values(json_payload, &values);
+        assert_eq!(out_json, r#"{"msg":"val=[REDACTED:ESC]"}"#);
+        assert_eq!(n_json, 1);
     }
 }

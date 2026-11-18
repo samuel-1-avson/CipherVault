@@ -375,8 +375,300 @@ pub mod portable_keystore {
 }
 
 #[cfg(not(windows))]
+mod os_keyring {
+    use super::*;
+    use rand::RngCore;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::sync::Mutex;
+    use zeroize::Zeroizing;
+
+    static PROVISION_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn decode_hex_key(raw: &str) -> Option<[u8; 32]> {
+        let trimmed = raw.trim();
+        let bytes = Zeroizing::new(hex::decode(trimmed).ok()?);
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        Some(key)
+    }
+
+    pub fn require_strict() -> bool {
+        matches!(
+            std::env::var("CIPHERVAULT_REQUIRE_OS_KEYRING").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn backend_name() -> &'static str {
+        "macos-keychain"
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn backend_name() -> &'static str {
+        "linux-secret-service"
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub fn backend_name() -> &'static str {
+        "portable-file-keystore"
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn lookup_key() -> Option<[u8; 32]> {
+        let output = Command::new("/usr/bin/security")
+            .args([
+                "find-generic-password",
+                "-s",
+                "io.ciphervault.local-store",
+                "-a",
+                "master-key",
+                "-w",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = Zeroizing::new(String::from_utf8_lossy(&output.stdout).into_owned());
+        decode_hex_key(&stdout)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn store_key(key: &[u8; 32]) -> Result<(), LocalStoreError> {
+        let hex_key = Zeroizing::new(hex::encode(key));
+        let mut child = Command::new("/usr/bin/security")
+            .arg("-i")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                LocalStoreError::KeyProtectionError(format!(
+                    "Failed to launch macOS security tool: {e}"
+                ))
+            })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // Omit -U so concurrent process provisioners cannot silently overwrite
+            // an already-persisted Keychain item.
+            let cmd = Zeroizing::new(format!(
+                "add-generic-password -s io.ciphervault.local-store -a master-key -w {}\n",
+                hex_key.as_str()
+            ));
+            stdin.write_all(cmd.as_bytes()).map_err(|e| {
+                LocalStoreError::KeyProtectionError(format!(
+                    "Failed to write key to macOS security stdin: {e}"
+                ))
+            })?;
+        }
+        let out = child.wait_with_output().map_err(|e| {
+            LocalStoreError::KeyProtectionError(format!("macOS security wait failed: {e}"))
+        })?;
+        if !out.status.success() {
+            return Err(LocalStoreError::KeyProtectionError(format!(
+                "macOS Keychain add-generic-password failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn lookup_key() -> Option<[u8; 32]> {
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none_or(|v| v.is_empty()) {
+            return None;
+        }
+        let output = Command::new("secret-tool")
+            .args(["lookup", "service", "ciphervault", "account", "master-key"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = Zeroizing::new(String::from_utf8_lossy(&output.stdout).into_owned());
+        decode_hex_key(&stdout)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn store_key(key: &[u8; 32]) -> Result<(), LocalStoreError> {
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none_or(|v| v.is_empty()) {
+            return Err(LocalStoreError::KeyProtectionError(
+                "DBUS_SESSION_BUS_ADDRESS not set; Linux Secret Service unavailable".into(),
+            ));
+        }
+        let hex_key = Zeroizing::new(hex::encode(key));
+        let mut child = Command::new("secret-tool")
+            .args([
+                "store",
+                "--label=CipherVault Local Keystore",
+                "service",
+                "ciphervault",
+                "account",
+                "master-key",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                LocalStoreError::KeyProtectionError(format!("Failed to launch secret-tool: {e}"))
+            })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(hex_key.as_bytes()).map_err(|e| {
+                LocalStoreError::KeyProtectionError(format!(
+                    "Failed to write key to secret-tool stdin: {e}"
+                ))
+            })?;
+        }
+        let out = child.wait_with_output().map_err(|e| {
+            LocalStoreError::KeyProtectionError(format!("secret-tool wait failed: {e}"))
+        })?;
+        if !out.status.success() {
+            return Err(LocalStoreError::KeyProtectionError(format!(
+                "secret-tool store failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub fn lookup_key() -> Option<[u8; 32]> {
+        None
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub fn store_key(_key: &[u8; 32]) -> Result<(), LocalStoreError> {
+        Err(LocalStoreError::KeyProtectionError(
+            "No native OS keyring backend on this platform".into(),
+        ))
+    }
+
+    pub fn provision_or_get_key() -> Result<[u8; 32], LocalStoreError> {
+        let _guard = PROVISION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = lookup_key() {
+            return Ok(existing);
+        }
+        let mut generated = Zeroizing::new([0u8; 32]);
+        rand::thread_rng().fill_bytes(&mut *generated);
+        match store_key(&generated) {
+            Ok(()) => {}
+            Err(err) => {
+                // Another process may have inserted the entry first (e.g. errSecDuplicateItem).
+                if let Some(existing) = lookup_key() {
+                    return Ok(existing);
+                }
+                return Err(err);
+            }
+        }
+        // Read-back confirms persistence in the OS keyring rather than a silent no-op.
+        lookup_key().ok_or_else(|| {
+            LocalStoreError::KeyProtectionError(format!(
+                "{} stored key but read-back returned empty",
+                backend_name()
+            ))
+        })
+    }
+}
+
+#[cfg(not(windows))]
 mod platform {
-    pub use super::portable_keystore::{protect, unprotect};
+    use super::os_keyring;
+    use super::portable_keystore;
+    use super::LocalStoreError;
+    use zeroize::Zeroizing;
+
+    fn has_explicit_override() -> bool {
+        std::env::var_os("CIPHERVAULT_MASTER_KEY").is_some()
+            || std::env::var_os("CIPHERVAULT_KEYSTORE_PATH").is_some()
+    }
+
+    pub fn active_backend() -> &'static str {
+        if std::env::var_os("CIPHERVAULT_MASTER_KEY").is_some() {
+            return "env-master-key";
+        }
+        if std::env::var_os("CIPHERVAULT_KEYSTORE_PATH").is_some() {
+            return "file-keystore-override";
+        }
+        if os_keyring::lookup_key().is_some() {
+            return os_keyring::backend_name();
+        }
+        "portable-file-keystore"
+    }
+
+    pub fn protect(bytes: &[u8]) -> Result<Vec<u8>, LocalStoreError> {
+        if has_explicit_override() {
+            return portable_keystore::protect(bytes);
+        }
+        if let Some(key) = os_keyring::lookup_key() {
+            let key = Zeroizing::new(key);
+            return portable_keystore::protect_with_key(&key, bytes);
+        }
+        // Preserve backward compatibility with already-provisioned local file keystores
+        // unless strict OS keyring custody is explicitly required.
+        let legacy_exists = portable_keystore::get_default_keyfile_path()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        if legacy_exists && !os_keyring::require_strict() {
+            return portable_keystore::protect(bytes);
+        }
+        match os_keyring::provision_or_get_key() {
+            Ok(key) => {
+                let key = Zeroizing::new(key);
+                portable_keystore::protect_with_key(&key, bytes)
+            }
+            Err(err) => {
+                if os_keyring::require_strict() {
+                    return Err(err);
+                }
+                portable_keystore::protect(bytes)
+            }
+        }
+    }
+
+    pub fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, LocalStoreError> {
+        if has_explicit_override() {
+            return portable_keystore::unprotect(ciphertext);
+        }
+        if let Some(key) = os_keyring::lookup_key() {
+            let key = Zeroizing::new(key);
+            if let Ok(plain) = portable_keystore::unprotect_with_key(&key, ciphertext) {
+                return Ok(plain);
+            }
+        }
+        if os_keyring::require_strict() {
+            return Err(LocalStoreError::KeyProtectionError(format!(
+                "CIPHERVAULT_REQUIRE_OS_KEYRING=1 set, but {} could not decrypt key blob",
+                os_keyring::backend_name()
+            )));
+        }
+        portable_keystore::unprotect(ciphertext)
+    }
+}
+
+/// Returns the active OS key-custody backend identifier.
+pub fn active_keyring_backend() -> &'static str {
+    #[cfg(windows)]
+    {
+        "windows-dpapi"
+    }
+    #[cfg(not(windows))]
+    {
+        platform::active_backend()
+    }
 }
 
 /// Protects raw key bytes using the host operating system key facility.
@@ -482,5 +774,19 @@ mod tests {
         // Correct key must succeed
         let recovered = portable_keystore::unprotect_with_key(&key, &protected).unwrap();
         assert_eq!(recovered, secret);
+    }
+
+    #[test]
+    fn active_keyring_backend_reports_known_identifier() {
+        let backend = active_keyring_backend();
+        assert!([
+            "windows-dpapi",
+            "env-master-key",
+            "file-keystore-override",
+            "macos-keychain",
+            "linux-secret-service",
+            "portable-file-keystore",
+        ]
+        .contains(&backend));
     }
 }

@@ -1386,3 +1386,217 @@ def test_doctor_accepts_capable_cli_but_reports_version_drift(fake_cli, tmp_path
     assert out["version_matches_target"] is False
     assert out["missing_capabilities"] == []
     assert "warning" in out
+
+
+# ------------------------------------------------------------ phase 1 hardening
+
+def test_scrub_full_text_past_256k_and_across_chunk_boundary(ctx, tmp_path, monkeypatch):
+    canary = "super_exact_canary_999"
+    monkeypatch.setattr(
+        cv,
+        "cli_redact",
+        lambda text, cwd, timeout=10: (
+            text.replace(canary, "[REDACTED:EXACT]"),
+            text.count(canary),
+            True,
+        ),
+    )
+    # Case 1: clean prefix > 256 KiB, canary at byte ~280,000
+    payload_tail = ("a" * 280_000) + canary + ("b" * 100)
+    out_tail, _, ok_tail, _ = cv._scrub_full_text(payload_tail, str(tmp_path))
+    assert ok_tail is True
+    assert out_tail is not None
+    assert canary not in out_tail
+    assert "[REDACTED:EXACT]" in out_tail
+
+    # Case 2: canary straddles the 262,144-byte chunk boundary
+    half = len(canary) // 2
+    payload_seam = ("x" * (cv._REDACT_CHUNK_CHARS - half)) + canary + ("y" * 50)
+    out_seam, _, ok_seam, _ = cv._scrub_full_text(payload_seam, str(tmp_path))
+    assert ok_seam is True
+    assert out_seam is not None
+    assert canary not in out_seam
+    assert "[REDACTED:EXACT]" in out_seam
+
+
+@pytest.mark.parametrize("cmd", [
+    "python -c \"print(open('.env').read())\"",
+    "node -e \"console.log(require('fs').readFileSync('.env','utf8'))\"",
+    "base64 .env",
+    "sed -n '1,20p' .env",
+    "jq . secrets.json",
+    "ciphervault export-env",
+    "ciphervault track .env && cat .env",
+])
+def test_guard_blocks_shell_secret_bypasses(ctx, monkeypatch, cmd):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    out = cv.on_pre_tool_call("terminal", {"command": cmd})
+    assert out and out["action"] == "block"
+
+
+@pytest.mark.parametrize("cmd", [
+    "ciphervault track .env",
+    "cv status",
+    "git check-ignore .env",
+])
+def test_guard_allows_safe_vault_and_git_commands(ctx, monkeypatch, cmd):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    assert cv.on_pre_tool_call("terminal", {"command": cmd}) is None
+
+
+def test_hooks_fail_closed_inside_vault_when_cli_unavailable(ctx, tmp_path, monkeypatch):
+    (tmp_path / ".ciphervault").mkdir()
+    (tmp_path / ".ciphervault" / "vault.db").touch()
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+
+    pre = cv.on_pre_tool_call("terminal", {"command": "echo hi", "cwd": str(tmp_path)})
+    assert pre and pre["action"] == "block"
+
+    res = cv.on_transform_tool_result("terminal", {"cwd": str(tmp_path)}, "raw stdout")
+    assert res is not None and "withheld" in res
+
+
+def test_hooks_fail_open_outside_vault_when_cli_missing(ctx, tmp_path, monkeypatch):
+    monkeypatch.setattr(cv, "find_binary", lambda: (None, "missing"))
+    monkeypatch.delenv("CIPHERVAULT_VAULT_DB", raising=False)
+
+    assert cv.on_pre_tool_call("terminal", {"command": "echo hi", "cwd": str(tmp_path)}) is None
+    assert cv.on_transform_tool_result("terminal", {"cwd": str(tmp_path)}, "clean stdout") is None
+
+
+# ------------------------------------------------------------ phase 2
+
+def test_stdio_bridge_reuses_single_process(ctx, tmp_path, monkeypatch):
+    cv._close_all_bridges()
+    cv._NO_STDIO_BINARIES.clear()
+    spawn_count_file = tmp_path / "spawns.txt"
+    bridge_script = tmp_path / "bridge_cli.py"
+    bridge_script.write_text(
+        "import json, sys\n"
+        f"open({str(spawn_count_file)!r}, 'a').write('1\\n')\n"
+        "if sys.argv[1:3] == ['redact', '--stdio']:\n"
+        "    for line in sys.stdin:\n"
+        "        req = json.loads(line)\n"
+        "        if req.get('op') == 'redact':\n"
+        "            txt = req.get('text', '')\n"
+        "            out = txt.replace('bridge_canary_88', '[REDACTED:CANARY]')\n"
+        "            print(json.dumps({'ok': True, 'text': out, 'redactions': txt.count('bridge_canary_88'), 'exact_values_loaded': 1, 'exact_values_complete': True, 'vault': True}), flush=True)\n"
+        "        elif req.get('op') == 'audit':\n"
+        "            print(json.dumps({'ok': True}), flush=True)\n"
+        "    raise SystemExit(0)\n"
+    )
+    if os.name == "nt":
+        exe = tmp_path / "ciphervault_stdio.bat"
+        exe.write_text(f'@echo off\n"{sys.executable}" "{bridge_script}" %*\n')
+    else:
+        exe = tmp_path / "ciphervault_stdio"
+        exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{bridge_script}" "$@"\n')
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+
+    monkeypatch.setattr(cv, "find_binary", lambda: (str(exe), "test-stdio"))
+    try:
+        for i in range(3):
+            out, n, ok = cv._call_cli_redact(f"call {i} bridge_canary_88", str(tmp_path))
+            assert ok is True and n == 1 and "bridge_canary_88" not in out
+        assert len(spawn_count_file.read_text().splitlines()) == 1
+    finally:
+        cv._close_all_bridges()
+
+
+def test_stdio_bridge_falls_back_on_legacy_cli(ctx, fake_cli, tmp_path):
+    cv._close_all_bridges()
+    cv._NO_STDIO_BINARIES.clear()
+    try:
+        out, n, ok = cv._call_cli_redact("x test_value_123456 y", str(tmp_path))
+        assert ok is True and n == 1 and "test_value_123456" not in out
+        assert str(fake_cli) in cv._NO_STDIO_BINARIES
+    finally:
+        cv._close_all_bridges()
+        cv._NO_STDIO_BINARIES.clear()
+
+
+def test_run_allow_keys_forwarded_and_validated(ctx, monkeypatch):
+    seen = {}
+
+    def fake_run_json(args, cwd, timeout=300):
+        seen["args"] = args
+        return {"success": True, "data": {"status": "success"}}
+
+    monkeypatch.setattr(cv, "_run_cli_json", fake_run_json)
+    out = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest"],
+        "allow_keys": ["PORT", "DB_HOST"],
+    }))
+    assert out["success"] is True
+    assert "--allow-keys" in seen["args"]
+    idx = seen["args"].index("--allow-keys")
+    assert seen["args"][idx + 1] == "PORT,DB_HOST"
+
+    bad = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest"],
+        "allow_keys": ["  "],
+    }))
+    assert bad["success"] is False
+
+    appr = cv.on_pre_tool_call("ciphervault_run", {
+        "command": ["pytest"],
+        "allow_keys": ["PORT"],
+    })
+    assert appr and appr["action"] == "approve" and "PORT" in appr["message"]
+
+
+def test_run_no_net_defaults_and_forwarding(ctx, monkeypatch):
+    seen = {}
+
+    def fake_run_json(args, cwd, timeout=300):
+        seen["args"] = args
+        return {"success": True, "data": {"status": "success"}}
+
+    monkeypatch.setattr(cv, "_run_cli_json", fake_run_json)
+
+    # Explicit True forwards --no-net on any OS and surfaces in approval prompt
+    out = json.loads(ctx.tools["ciphervault_run"][1]({"command": ["pytest"], "no_net": True}))
+    assert out["success"] is True and "--no-net" in seen["args"]
+    appr_iso = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "no_net": True})
+    assert appr_iso and "isolated (--no-net)" in appr_iso["message"]
+
+    # Explicit False omits --no-net and warns UNRESTRICTED in approval prompt
+    seen.clear()
+    out2 = json.loads(ctx.tools["ciphervault_run"][1]({"command": ["pytest"], "no_net": False}))
+    assert out2["success"] is True and "--no-net" not in seen["args"]
+    appr_open = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "no_net": False})
+    assert appr_open and "UNRESTRICTED" in appr_open["message"]
+
+    # Platform defaults: Linux/macOS default True, Windows defaults False
+    monkeypatch.setattr(cv.sys, "platform", "linux")
+    assert cv._effective_no_net({}) is True
+    monkeypatch.setattr(cv.sys, "platform", "darwin")
+    assert cv._effective_no_net({}) is True
+    monkeypatch.setattr(cv.sys, "platform", "win32")
+    assert cv._effective_no_net({}) is False
+
+
+def test_run_proxy_forwarding_and_no_net_interaction(ctx, monkeypatch):
+    seen = {}
+
+    def fake_run_json(args, cwd, timeout=300):
+        seen["args"] = args
+        return {"success": True, "data": {"status": "success"}}
+
+    monkeypatch.setattr(cv, "_run_cli_json", fake_run_json)
+    monkeypatch.setattr(cv.sys, "platform", "linux")
+
+    out = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest"],
+        "proxy": True,
+        "proxy_upstream": ["MY_VAR=https://api.example.com"],
+    }))
+    assert out["success"] is True
+    assert "--proxy" in seen["args"]
+    assert "--proxy-upstream" in seen["args"]
+    assert "MY_VAR=https://api.example.com" in seen["args"]
+    # proxy implies loopback access on Linux/macOS unless no_net explicitly passed
+    assert "--no-net" not in seen["args"]
+
+    appr = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "proxy": True})
+    assert appr and "proxy: real keys stay in parent" in appr["message"]

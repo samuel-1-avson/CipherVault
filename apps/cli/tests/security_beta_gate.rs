@@ -189,6 +189,7 @@ async fn test_canary_leak_defense_across_operators_and_db() {
         closure_digest: closure_digest.to_vec(),
         device_id: device_id.to_vec(),
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
     head.sign(&device_sk).unwrap();
@@ -564,6 +565,7 @@ async fn test_unauthorized_caller_cannot_append_to_existing_vault_log() {
         closure_digest: vec![0x88u8; 32],
         device_id: vec![0x77u8; 32],
         device_counter: 1,
+        authority_generation: None,
         signature: Vec::new(),
     };
     attacker_head.sign(&attacker_sk).unwrap();

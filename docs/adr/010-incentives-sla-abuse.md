@@ -37,7 +37,7 @@ natural first bilateral counterparties.
 ### C. On-chain lease escrow (D3 Option B, still gated)
 
 Staking registry, Merkle batcher, challenge/adjudication/slash loop on
-Arbitrum One per `docs/DON_ECONOMICS_DECISION.md`. Gates unchanged: DON
+Arbitrum One per `docs/archive/DON_ECONOMICS_DECISION.md`. Gates unchanged: DON
 Q2 answered (staking asset + chain confirmation), named gas payer,
 completed griefing analysis, external audit. No new input from this
 record; path B does not pre-empt it — bilateral accounting transfers to

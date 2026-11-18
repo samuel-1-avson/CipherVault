@@ -9,6 +9,8 @@ use ed25519_dalek::SigningKey;
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Independently versioned chunk-wire encryption/addressing protocol.
 pub const CHUNK_WIRE_VERSION_V2: u32 = 2;
+/// Head record version encoding explicit `authority_generation`.
+pub const HEAD_RECORD_VERSION_V2: u32 = 2;
 
 /// Genesis record establishing a new vault.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -374,11 +376,28 @@ pub struct HeadRecord {
     #[serde(with = "serde_bytes")]
     pub device_id: Vec<u8>,
     pub device_counter: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_generation: Option<u64>,
     #[serde(with = "serde_bytes")]
     pub signature: Vec<u8>,
 }
 
 impl HeadRecord {
+    pub fn validate_version_and_generation(&self) -> Result<(), FormatError> {
+        match (self.version, self.authority_generation) {
+            (PROTOCOL_VERSION, None) | (HEAD_RECORD_VERSION_V2, Some(_)) => Ok(()),
+            (PROTOCOL_VERSION, Some(_)) => Err(FormatError::MalformedRecord(
+                "HeadRecord v1 cannot encode authority_generation".into(),
+            )),
+            (HEAD_RECORD_VERSION_V2, None) => Err(FormatError::MalformedRecord(
+                "HeadRecord v2 requires authority_generation".into(),
+            )),
+            (other, _) => Err(FormatError::MalformedRecord(format!(
+                "Unsupported HeadRecord version {other}"
+            ))),
+        }
+    }
+
     pub fn unsigned_bytes(&self) -> Result<Vec<u8>, FormatError> {
         let mut unsigned = self.clone();
         unsigned.signature = Vec::new();
@@ -386,6 +405,7 @@ impl HeadRecord {
     }
 
     pub fn sign(&mut self, device_sk: &SigningKey) -> Result<(), FormatError> {
+        self.validate_version_and_generation()?;
         let unsigned = self.unsigned_bytes()?;
         let sig = sign_with_domain(device_sk, b"head_record", &unsigned);
         self.signature = sig.to_vec();
@@ -397,6 +417,7 @@ impl HeadRecord {
         hsm: &dyn HardwareSecurityModule,
         slot: HsmSlot,
     ) -> Result<(), FormatError> {
+        self.validate_version_and_generation()?;
         let unsigned = self.unsigned_bytes()?;
         let sig = hsm
             .sign_message(slot, b"head_record", &unsigned)
@@ -406,6 +427,7 @@ impl HeadRecord {
     }
 
     pub fn verify(&self, device_pk_bytes: &[u8; 32]) -> Result<(), FormatError> {
+        self.validate_version_and_generation()?;
         if self.signature.len() != 64 {
             return Err(FormatError::MalformedRecord(
                 "Invalid signature length in head record".into(),

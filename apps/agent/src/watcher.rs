@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
-use ciphervault_format::{to_canonical_cbor, HeadRecord, PROTOCOL_VERSION};
+use ciphervault_format::{to_canonical_cbor, HeadRecord, HEAD_RECORD_VERSION_V2};
 use ciphervault_local_store::LocalVaultStore;
 use ciphervault_snapshot::create_snapshot;
 use ciphervault_storage::MultiOperatorPool;
@@ -297,13 +297,14 @@ impl VaultWatcher {
         let record_cid = output.record.compute_record_cid()?;
 
         let mut head = HeadRecord {
-            version: PROTOCOL_VERSION,
+            version: HEAD_RECORD_VERSION_V2,
             vault_id: vault_id.to_vec(),
             snapshot_id: record_cid.to_vec(),
             parent_snapshot_ids: output.record.parent_snapshot_ids.clone(),
             closure_digest: recovery_set.closure.compute_base_closure_digest()?.to_vec(),
             device_id: device_id.to_vec(),
             device_counter: counter + 1,
+            authority_generation: Some(authority_generation),
             signature: Vec::new(),
         };
         head.sign(&device_sk)?;

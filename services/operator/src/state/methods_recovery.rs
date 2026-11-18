@@ -139,7 +139,7 @@ impl OperatorState {
         // 3. HeadRecord: Must be signed by an authorized device key or recovery authority
         if !is_authorized {
             if let Ok(head) = from_canonical_cbor::<HeadRecord>(record) {
-                if head.version == PROTOCOL_VERSION && head.snapshot_id.len() == 32 {
+                if head.validate_version_and_generation().is_ok() && head.snapshot_id.len() == 32 {
                     for d_pk in &authorized_device_pks {
                         if head.verify(d_pk).is_ok() {
                             is_authorized = true;

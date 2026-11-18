@@ -43,8 +43,16 @@ pub(crate) async fn cmd_run(
     quiet: bool,
     json: bool,
     set_overrides: Option<Vec<String>>,
+    allow_keys: Option<Vec<String>>,
+    no_net: bool,
+    proxy: bool,
+    proxy_upstream: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
+    let proxy_enabled = proxy || !proxy_upstream.is_empty();
+    if proxy_enabled && no_net {
+        bail!("--proxy and --no-net cannot be combined");
+    }
     if command.is_empty() && !dry_run {
         bail!("No command specified to execute. Usage: ciphervault run [OPTIONS] -- <COMMAND> [ARGS]... (or pass --dry-run with no command to only list secret keys)");
     }
@@ -84,6 +92,10 @@ pub(crate) async fn cmd_run(
             quiet,
             json,
             set_overrides,
+            allow_keys,
+            no_net,
+            proxy_enabled,
+            proxy_upstream,
             command,
         )
         .await;
@@ -97,6 +109,10 @@ pub(crate) async fn cmd_run(
         quiet,
         json,
         set_overrides,
+        allow_keys,
+        no_net,
+        proxy_enabled,
+        proxy_upstream,
         command,
     )
     .await
@@ -128,6 +144,10 @@ async fn cmd_run_scoped(
     quiet: bool,
     json: bool,
     set_overrides: Option<Vec<String>>,
+    allow_keys: Option<Vec<String>>,
+    no_net: bool,
+    proxy: bool,
+    proxy_upstream: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
     let endpoint = resolve_endpoint(endpoint_flag)?;
@@ -185,6 +205,22 @@ async fn cmd_run_scoped(
         names.push((name.to_string(), version, status));
     }
     names.sort_by(|a, b| a.0.cmp(&b.0));
+    if let Some(allowed) = normalize_allow_keys(allow_keys.as_deref())? {
+        let present: std::collections::HashSet<&str> =
+            names.iter().map(|(n, _, _)| n.as_str()).collect();
+        let missing: Vec<&str> = allowed
+            .iter()
+            .map(String::as_str)
+            .filter(|k| !present.contains(*k))
+            .collect();
+        if !missing.is_empty() {
+            bail!(
+                "--allow-keys requested variable(s) not present in {scope_label}: {}",
+                missing.join(", ")
+            );
+        }
+        names.retain(|(n, _, _)| allowed.contains(n));
+    }
 
     if dry_run {
         if json {
@@ -308,6 +344,9 @@ async fn cmd_run_scoped(
         &command,
         deduped_vars,
         no_inherit,
+        no_net,
+        proxy,
+        &proxy_upstream,
         quiet,
         json,
         &scope_label,
@@ -466,6 +505,10 @@ async fn cmd_run_snapshot(
     quiet: bool,
     json: bool,
     set_overrides: Option<Vec<String>>,
+    allow_keys: Option<Vec<String>>,
+    no_net: bool,
+    proxy: bool,
+    proxy_upstream: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
     let store = get_vault_store()?;
@@ -578,6 +621,9 @@ async fn cmd_run_snapshot(
         }
     }
 
+    // Apply least-privilege allowlist before --set overrides, zeroizing filtered-out values.
+    filter_loaded_vars_by_allow_keys(&mut loaded_vars, allow_keys.as_deref())?;
+
     // Apply additional --set overrides, then deduplicate (last wins).
     let deduped_vars = apply_overrides(loaded_vars, set_overrides)?;
 
@@ -645,36 +691,175 @@ async fn cmd_run_snapshot(
     }
 
     let label = format!("snapshot {}", &hex::encode(snapshot_id)[..8]);
-    spawn_with_env(&command, deduped_vars, no_inherit, quiet, json, &label).await
+    spawn_with_env(
+        &command,
+        deduped_vars,
+        no_inherit,
+        no_net,
+        proxy,
+        &proxy_upstream,
+        quiet,
+        json,
+        &label,
+    )
+    .await
 }
 
-/// Shared child spawn: injects `vars`, honors `--no-inherit`/`--quiet`/`--json`,
-/// and propagates the child exit code. `label` names the secret source.
+/// Shared child spawn: injects `vars` (or starts loopback credential proxy when `proxy` is true),
+/// honors `--no-inherit`/`--no-net`/`--quiet`/`--json`, and propagates the child exit code.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_with_env(
     command: &[String],
     vars: std::collections::BTreeMap<String, Zeroizing<String>>,
     no_inherit: bool,
+    no_net: bool,
+    proxy: bool,
+    proxy_upstream: &[String],
     quiet: bool,
     json: bool,
     label: &str,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
     let num_secrets = vars.len();
+    let proxy_enabled = proxy || !proxy_upstream.is_empty();
+    if proxy_enabled && no_net {
+        bail!("--proxy and --no-net cannot be combined");
+    }
 
     // Configure Child Command
     let exe = &command[0];
     let raw_args = &command[1..];
 
     #[cfg(target_os = "windows")]
-    let (target_bin, prefix_args) = resolve_windows_command(exe);
+    let (resolved_bin, resolved_prefix) = resolve_windows_command(exe);
     #[cfg(not(target_os = "windows"))]
-    let (target_bin, prefix_args): (String, Vec<String>) = (exe.clone(), Vec::new());
+    let (resolved_bin, resolved_prefix): (String, Vec<String>) = (exe.clone(), Vec::new());
+
+    // Preflight and apply `--no-net` BEFORE placing secrets into the child env
+    // so unsupported/restricted hosts fail closed without populating secrets.
+    let (target_bin, full_args) = if no_net {
+        apply_no_net_sandbox(&resolved_bin, &resolved_prefix, raw_args)?
+    } else {
+        let mut combined = resolved_prefix;
+        combined.extend(raw_args.iter().cloned());
+        (resolved_bin, combined)
+    };
+
+    if proxy_enabled {
+        let explicit_opt = (!proxy_upstream.is_empty()).then_some(proxy_upstream);
+        let routes = super::run_proxy::build_proxy_routes(&vars, explicit_opt)?;
+        let num_proxied = routes.len();
+        let exact_values: Vec<(String, Zeroizing<String>)> = vars
+            .iter()
+            .map(|(k, v)| (k.clone(), Zeroizing::new(v.as_str().to_string())))
+            .collect();
+        drop(vars);
+
+        let running_proxy = super::run_proxy::start_credential_proxy(routes).await?;
+
+        let mut cmd = tokio::process::Command::new(&target_bin);
+        if !full_args.is_empty() {
+            cmd.args(&full_args);
+        }
+        if no_inherit {
+            cmd.env_clear();
+            for (k, v) in std::env::vars() {
+                let k_upper = k.to_uppercase();
+                if k_upper == "PATH"
+                    || k_upper == "SYSTEMROOT"
+                    || k_upper == "TEMP"
+                    || k_upper == "TMP"
+                    || k_upper == "USERPROFILE"
+                    || k_upper == "HOME"
+                    || k_upper == "COMSPEC"
+                    || k_upper == "PATHEXT"
+                {
+                    cmd.env(k, v);
+                }
+            }
+        }
+        for (key, _) in std::env::vars_os() {
+            if is_control_credential(&key.to_string_lossy()) {
+                cmd.env_remove(key);
+            }
+        }
+        for (k, v) in &running_proxy.child_env {
+            cmd.env(k, v);
+        }
+
+        if json {
+            let output = cmd
+                .output()
+                .await
+                .with_context(|| format!("Failed to spawn command '{}'", exe))?;
+            running_proxy.shutdown().await;
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            let raw_stdout = String::from_utf8_lossy(&output.stdout);
+            let raw_stderr = String::from_utf8_lossy(&output.stderr);
+            let (exact_stdout, n_out) =
+                ciphervault_redact::scrub_exact_values(&raw_stdout, &exact_values);
+            let (exact_stderr, n_err) =
+                ciphervault_redact::scrub_exact_values(&raw_stderr, &exact_values);
+            let (redacted_stdout, n_out_shape) =
+                ciphervault_redact::redact_text_counted(&exact_stdout);
+            let (redacted_stderr, n_err_shape) =
+                ciphervault_redact::redact_text_counted(&exact_stderr);
+            let redactions = n_out + n_out_shape + n_err + n_err_shape;
+            let exit_code = output.status.code().unwrap_or(1);
+            let payload = serde_json::json!({
+                "status": if exit_code == 0 { "success" } else { "failed" },
+                "exit_code": exit_code,
+                "command": command,
+                "source": label,
+                "no_net": false,
+                "proxy": true,
+                "secrets_injected_count": 0,
+                "secrets_proxied_count": num_proxied,
+                "stdout": redacted_stdout,
+                "stderr": redacted_stderr,
+                "redactions": redactions,
+                "duration_ms": duration_ms
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            return Ok(());
+        }
+
+        if !quiet {
+            eprintln!(
+                "{} Proxied {} secret(s) from {} via 127.0.0.1 for '{}' (zero real secrets in child env)",
+                "[ciphervault]".bold().cyan(),
+                num_proxied.to_string().bold().green(),
+                label.yellow(),
+                exe.white()
+            );
+        }
+
+        cmd.stdin(std::process::Stdio::inherit());
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn command '{}'", exe))?;
+        drop(cmd);
+        let status = child
+            .wait()
+            .await
+            .with_context(|| format!("Failed to wait on child process '{}'", exe))?;
+        running_proxy.shutdown().await;
+        let exit_code = status.code().unwrap_or(1);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
 
     let mut cmd = std::process::Command::new(&target_bin);
-    if !prefix_args.is_empty() {
-        cmd.args(&prefix_args);
+    if !full_args.is_empty() {
+        cmd.args(&full_args);
     }
-    cmd.args(raw_args);
 
     if no_inherit {
         cmd.env_clear();
@@ -734,10 +919,10 @@ async fn spawn_with_env(
             ciphervault_redact::scrub_exact_values(&raw_stdout, &exact_values);
         let (exact_stderr, n_err) =
             ciphervault_redact::scrub_exact_values(&raw_stderr, &exact_values);
-        let (redacted_stdout, s_out) = ciphervault_redact::redact_text_counted(&exact_stdout);
-        let (redacted_stderr, s_err) = ciphervault_redact::redact_text_counted(&exact_stderr);
+        let (redacted_stdout, n_out_shape) = ciphervault_redact::redact_text_counted(&exact_stdout);
+        let (redacted_stderr, n_err_shape) = ciphervault_redact::redact_text_counted(&exact_stderr);
         // Count shape-only rewrites too; receipts must not under-report.
-        let redactions = n_out + n_err + s_out + s_err;
+        let redactions = n_out + n_out_shape + n_err + n_err_shape;
 
         let exit_code = output.status.code().unwrap_or(1);
         let payload = serde_json::json!({
@@ -745,6 +930,7 @@ async fn spawn_with_env(
             "exit_code": exit_code,
             "command": command,
             "source": label,
+            "no_net": no_net,
             "secrets_injected_count": num_secrets,
             "stdout": redacted_stdout,
             "stderr": redacted_stderr,
@@ -847,4 +1033,198 @@ pub(crate) fn resolve_windows_command(exe: &str) -> (String, Vec<String>) {
         "cmd.exe".to_string(),
         vec!["/c".to_string(), exe.to_string()],
     )
+}
+
+fn normalize_allow_keys(
+    allow_keys: Option<&[String]>,
+) -> Result<Option<std::collections::BTreeSet<String>>> {
+    let Some(raw) = allow_keys else {
+        return Ok(None);
+    };
+    let mut set = std::collections::BTreeSet::new();
+    for item in raw {
+        let key = item.trim();
+        if !key.is_empty() {
+            set.insert(key.to_string());
+        }
+    }
+    if set.is_empty() {
+        bail!("--allow-keys requires at least one non-empty variable name");
+    }
+    Ok(Some(set))
+}
+
+fn filter_loaded_vars_by_allow_keys(
+    loaded_vars: &mut Vec<(String, Zeroizing<String>)>,
+    allow_keys: Option<&[String]>,
+) -> Result<()> {
+    let Some(allowed) = normalize_allow_keys(allow_keys)? else {
+        return Ok(());
+    };
+    let present: std::collections::HashSet<&str> =
+        loaded_vars.iter().map(|(k, _)| k.as_str()).collect();
+    let missing: Vec<&str> = allowed
+        .iter()
+        .map(String::as_str)
+        .filter(|k| !present.contains(*k))
+        .collect();
+    if !missing.is_empty() {
+        loaded_vars.clear();
+        bail!(
+            "--allow-keys requested variable(s) not present in vault snapshot: {}",
+            missing.join(", ")
+        );
+    }
+    loaded_vars.retain(|(k, _)| allowed.contains(k));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_no_net_sandbox(
+    resolved_bin: &str,
+    resolved_prefix: &[String],
+    raw_args: &[String],
+) -> Result<(String, Vec<String>)> {
+    let mut preflight = std::process::Command::new("unshare");
+    preflight.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        preflight.env("PATH", path);
+    }
+    let status = preflight
+        .args(["--user", "--map-root-user", "--net", "--", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .context(
+            "--no-net requires `unshare` (util-linux) on Linux, which could not be executed",
+        )?;
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        bail!(
+            "--no-net sandbox preflight failed (unprivileged user/network namespaces may be restricted): {}",
+            stderr.trim()
+        );
+    }
+    let mut args = vec![
+        "--user".to_string(),
+        "--map-root-user".to_string(),
+        "--net".to_string(),
+        "--".to_string(),
+        resolved_bin.to_string(),
+    ];
+    args.extend(resolved_prefix.iter().cloned());
+    args.extend(raw_args.iter().cloned());
+    Ok(("unshare".to_string(), args))
+}
+
+#[cfg(target_vendor = "apple")]
+const MACOS_NO_NET_SANDBOX_PROFILE: &str = "(version 1)(allow default)\
+(deny network-outbound (remote ip))\
+(deny network-inbound (local ip))\
+(deny network-bind (local ip))\
+(deny network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\
+(deny network-outbound (remote unix-socket (path-literal \"/var/run/mDNSResponder\")))";
+
+#[cfg(target_vendor = "apple")]
+fn apply_no_net_sandbox(
+    resolved_bin: &str,
+    resolved_prefix: &[String],
+    raw_args: &[String],
+) -> Result<(String, Vec<String>)> {
+    let mut preflight = std::process::Command::new("/usr/bin/sandbox-exec");
+    preflight.env_clear();
+    let status = preflight
+        .args(["-p", MACOS_NO_NET_SANDBOX_PROFILE, "/usr/bin/true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .context("--no-net requires /usr/bin/sandbox-exec on macOS, which could not be executed")?;
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        bail!(
+            "--no-net sandbox preflight failed on macOS: {}",
+            stderr.trim()
+        );
+    }
+    let mut args = vec![
+        "-p".to_string(),
+        MACOS_NO_NET_SANDBOX_PROFILE.to_string(),
+        resolved_bin.to_string(),
+    ];
+    args.extend(resolved_prefix.iter().cloned());
+    args.extend(raw_args.iter().cloned());
+    Ok(("/usr/bin/sandbox-exec".to_string(), args))
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+fn apply_no_net_sandbox(
+    _resolved_bin: &str,
+    _resolved_prefix: &[String],
+    _raw_args: &[String],
+) -> Result<(String, Vec<String>)> {
+    bail!(
+        "--no-net network sandboxing is not supported without unprivileged network namespaces on this OS \
+         (supported on Linux via `unshare` and macOS via `sandbox-exec`). Refusing to run with unrestricted network access."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allow_keys_filters_and_rejects_missing_or_empty() {
+        let mut vars = vec![
+            ("PORT".to_string(), Zeroizing::new("8080".to_string())),
+            (
+                "DB_PASS".to_string(),
+                Zeroizing::new("val_db_99".to_string()),
+            ),
+            (
+                "PROD_KEY".to_string(),
+                Zeroizing::new("val_prod_88".to_string()),
+            ),
+        ];
+        filter_loaded_vars_by_allow_keys(&mut vars, Some(&["PORT".to_string()])).unwrap();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].0, "PORT");
+
+        let mut vars2 = vec![("PORT".to_string(), Zeroizing::new("8080".to_string()))];
+        let err = filter_loaded_vars_by_allow_keys(&mut vars2, Some(&["MISSING".to_string()]))
+            .unwrap_err();
+        assert!(err.to_string().contains("MISSING"));
+        assert!(vars2.is_empty());
+
+        let empty_err = normalize_allow_keys(Some(&["  ".to_string()])).unwrap_err();
+        assert!(empty_err.to_string().contains("at least one"));
+    }
+
+    #[test]
+    fn no_net_sandbox_fails_closed_when_unsupported() {
+        #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+        {
+            let err = apply_no_net_sandbox("echo", &[], &["hi".to_string()]).unwrap_err();
+            assert!(err.to_string().contains("--no-net"));
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            if std::path::Path::new("/usr/bin/sandbox-exec").exists() {
+                if let Ok((bin, args)) =
+                    apply_no_net_sandbox("/usr/bin/true", &[], &["arg1".to_string()])
+                {
+                    assert_eq!(bin, "/usr/bin/sandbox-exec");
+                    assert!(args.iter().any(|a| a.contains("network-outbound")));
+                    assert_eq!(args.last().map(String::as_str), Some("arg1"));
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok((bin, args)) = apply_no_net_sandbox("true", &[], &["arg1".to_string()]) {
+                assert_eq!(bin, "unshare");
+                assert!(args.contains(&"--net".to_string()));
+                assert_eq!(args.last().map(String::as_str), Some("arg1"));
+            }
+        }
+    }
 }
