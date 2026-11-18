@@ -5,7 +5,8 @@
 //!   secret material removed — vault values by exact match (plus their
 //!   percent-encoded / base64 forms) and credential shapes by pattern.
 //!   It never prints a secret value. With no vault present it still
-//!   applies shape redaction and exits 0.
+//!   applies shape redaction and exits 0. An expected vault that cannot
+//!   be opened/listed, or any unreadable tracked file, fails without output.
 //! * `ciphervault export-env --json` prints decrypted `{"VAR": "value"}`
 //!   for secret-manager integrations (e.g. a Hermes secret source). It
 //!   DOES print secret values by design, so it refuses to write to a
@@ -20,7 +21,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::util::{get_vault_store, get_workspace_root};
+use crate::util::{get_active_vault_path, get_vault_store, get_workspace_root};
 
 /// Extract (name, value) pairs from secret-file bytes: dotenv
 /// assignments, JSON string leaves, YAML/TOML/INI assignments, PEM
@@ -140,6 +141,7 @@ fn collect_json_leaves(
 fn local_snapshot_values(
     store: &LocalVaultStore,
     missing_paths: &HashSet<String>,
+    covered_paths: &mut HashSet<String>,
 ) -> Vec<(String, Zeroizing<String>)> {
     let mut out = Vec::new();
     let Ok(vault_id) = store.get_vault_id() else {
@@ -207,6 +209,7 @@ fn local_snapshot_values(
     for file in &mut files {
         let norm = file.relative_path.replace('\\', "/");
         if missing_paths.is_empty() || missing_paths.contains(&norm) {
+            covered_paths.insert(norm.clone());
             out.extend(parse_secret_values(&file.plaintext, &norm));
         }
         file.plaintext.zeroize();
@@ -214,43 +217,88 @@ fn local_snapshot_values(
     out
 }
 
-/// Values from the working copies of tracked files, falling back to locally
-/// cached active-snapshot files when a tracked working file is absent on disk
-/// (best effort: a missing vault yields fewer values, never an error —
-/// redaction must stay usable outside a vault).
-fn working_copy_values() -> Vec<(String, Zeroizing<String>)> {
+struct WorkingCopyValues {
+    values: Vec<(String, Zeroizing<String>)>,
+    vault: bool,
+}
+
+/// Load every tracked working copy (falling back to locally cached active
+/// snapshot bytes only when a tracked file is absent on disk and present in the
+/// local snapshot). Only absence of `.ciphervault/vault.db` is shape-only mode;
+/// any store or tracked file that cannot be read fails closed so
+/// `exact_values_complete: true` is never reported on partial data.
+fn working_copy_values() -> Result<WorkingCopyValues> {
+    match std::fs::symlink_metadata(get_active_vault_path()) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(WorkingCopyValues {
+                values: Vec::new(),
+                vault: false,
+            });
+        }
+        result => {
+            result.context("Cannot inspect vault for complete exact-value loading")?;
+        }
+    }
+    let store = get_vault_store().context("Cannot open vault for complete exact-value loading")?;
+    let tracked = store
+        .list_tracked_files()
+        .context("Cannot list tracked files for complete exact-value loading")?;
+    let root = get_workspace_root().context("Cannot resolve exact-value workspace")?;
     let mut out = Vec::new();
-    let Ok(store) = get_vault_store() else {
-        return out;
-    };
-    let Ok(tracked) = store.list_tracked_files() else {
-        return out;
-    };
-    let root = get_workspace_root().ok();
     let mut missing = HashSet::new();
     for (rel_path, _) in &tracked {
         let norm = rel_path.to_string_lossy().replace('\\', "/");
-        if let Some(root_dir) = &root {
-            let full = root_dir.join(rel_path);
-            if let Ok(mut bytes) = std::fs::read(&full) {
+        let full = root.join(rel_path);
+        match std::fs::read(&full) {
+            Ok(mut bytes) => {
                 out.extend(parse_secret_values(&bytes, &norm));
                 bytes.zeroize();
-                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.insert(norm);
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "Cannot read tracked file '{}' for complete exact-value loading",
+                        rel_path.display()
+                    )
+                });
             }
         }
-        missing.insert(norm);
     }
-    if !missing.is_empty() || tracked.is_empty() {
-        out.extend(local_snapshot_values(&store, &missing));
+    if !missing.is_empty() {
+        let mut covered = HashSet::new();
+        let snap_vals = local_snapshot_values(&store, &missing, &mut covered);
+        if let Some(uncovered) = missing.difference(&covered).next() {
+            bail!(
+                "Cannot read tracked file '{}' from disk or local snapshot for complete exact-value loading",
+                uncovered
+            );
+        }
+        out.extend(snap_vals);
+    } else if tracked.is_empty() {
+        let mut ignored = HashSet::new();
+        out.extend(local_snapshot_values(&store, &missing, &mut ignored));
     }
-    out
+    Ok(WorkingCopyValues {
+        values: out,
+        vault: true,
+    })
 }
 
 /// `ciphervault redact [--json] [--stdio]`: stdin -> redacted stdout.
 /// JSON mode prints `{"text": ..., "redactions": N,
-/// "exact_values_loaded": N, "vault": bool}`.
-/// `--stdio` runs a persistent JSON-lines bridge (`redact` / `audit` / `ping`)
-/// over stdin/stdout so agent hooks avoid per-call process spawn overhead.
+/// "exact_values_loaded": N, "exact_values_complete": true, "vault": bool}`.
+/// Completeness attests that every tracked working copy was loaded, not
+/// merely that the response is valid JSON. `--stdio` runs a persistent
+/// JSON-lines bridge (`redact` / `audit` / `ping`) over stdin/stdout so agent
+/// hooks avoid per-call process spawn overhead.
 pub(crate) fn cmd_redact(json: bool, stdio: bool) -> Result<()> {
     if stdio {
         return run_stdio_bridge();
@@ -260,8 +308,7 @@ pub(crate) fn cmd_redact(json: bool, stdio: bool) -> Result<()> {
         .read_to_end(&mut input)
         .context("failed to read stdin")?;
     let text = String::from_utf8_lossy(&input);
-    let values = working_copy_values();
-    let vault = !values.is_empty() || get_vault_store().is_ok();
+    let WorkingCopyValues { values, vault } = working_copy_values()?;
     let loaded = values.len();
     let refs: Vec<(&str, &str)> = values
         .iter()
@@ -269,6 +316,7 @@ pub(crate) fn cmd_redact(json: bool, stdio: bool) -> Result<()> {
         .collect();
     let (exact, n_exact) = ciphervault_redact::scrub_exact_values(&text, &refs);
     let (scrubbed, n_shape) = ciphervault_redact::redact_text_counted(&exact);
+    // Count shape-only rewrites too; receipts must not under-report.
     let redactions = n_exact + n_shape;
     if json {
         println!(
@@ -277,6 +325,7 @@ pub(crate) fn cmd_redact(json: bool, stdio: bool) -> Result<()> {
                 "text": scrubbed,
                 "redactions": redactions,
                 "exact_values_loaded": loaded,
+                "exact_values_complete": true,
                 "vault": vault,
             }))?
         );
@@ -291,6 +340,8 @@ type CacheFingerprint = Vec<(String, Option<std::time::SystemTime>, u64)>;
 pub(crate) struct BridgeSecretCache {
     pub(crate) values: Vec<(String, Zeroizing<String>)>,
     pub(crate) vault: bool,
+    pub(crate) complete: bool,
+    pub(crate) last_error: Option<String>,
     fingerprint: Option<CacheFingerprint>,
 }
 
@@ -299,6 +350,8 @@ impl BridgeSecretCache {
         Self {
             values: Vec::new(),
             vault: false,
+            complete: true,
+            last_error: None,
             fingerprint: None,
         }
     }
@@ -336,9 +389,21 @@ impl BridgeSecretCache {
             return;
         }
         self.clear();
-        self.values = working_copy_values();
-        self.vault = !self.values.is_empty() || get_vault_store().is_ok();
-        self.fingerprint = Some(fp);
+        match working_copy_values() {
+            Ok(wc) => {
+                self.values = wc.values;
+                self.vault = wc.vault;
+                self.complete = true;
+                self.last_error = None;
+                self.fingerprint = Some(fp);
+            }
+            Err(e) => {
+                self.vault = true;
+                self.complete = false;
+                self.last_error = Some(e.to_string());
+                self.fingerprint = None;
+            }
+        }
     }
 
     pub(crate) fn scrub_text(&mut self, text: &str) -> (String, usize, usize, bool) {
@@ -383,6 +448,13 @@ fn handle_stdio_line(line: &str, cache: &mut BridgeSecretCache) -> serde_json::V
         Some("redact") => {
             let text = req.get("text").and_then(|v| v.as_str()).unwrap_or("");
             cache.refresh_if_needed();
+            if !cache.complete {
+                return serde_json::json!({
+                    "ok": false,
+                    "exact_values_complete": false,
+                    "error": cache.last_error.as_deref().unwrap_or("exact-value loading incomplete"),
+                });
+            }
             let refs: Vec<(&str, &str)> = cache
                 .values
                 .iter()
@@ -395,6 +467,7 @@ fn handle_stdio_line(line: &str, cache: &mut BridgeSecretCache) -> serde_json::V
                 "text": scrubbed,
                 "redactions": n_exact + n_shape,
                 "exact_values_loaded": cache.values.len(),
+                "exact_values_complete": true,
                 "vault": cache.vault,
             })
         }
@@ -476,7 +549,7 @@ pub(crate) async fn cmd_export_env(
                 "vault has no snapshots yet; pass --allow-working-copy to export from working files instead"
             );
         }
-        for (k, v) in working_copy_values() {
+        for (k, v) in working_copy_values()?.values {
             map.insert(k, serde_json::Value::String(v.as_str().to_string()));
         }
     }

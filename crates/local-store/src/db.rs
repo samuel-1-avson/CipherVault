@@ -1279,8 +1279,10 @@ impl LocalVaultStore {
     ) -> Result<AgentAuditEntry, LocalStoreError> {
         use ed25519_dalek::Signer;
         use sha2::Digest;
-        let prev_hash: String = self
-            .conn
+        // Single transaction: reading the previous head and inserting
+        // must be atomic, or two concurrent appenders fork the chain.
+        let tx = self.conn.unchecked_transaction()?;
+        let prev_hash: String = tx
             .query_row(
                 "SELECT entry_hash FROM agent_audit ORDER BY id DESC LIMIT 1",
                 [],
@@ -1295,11 +1297,12 @@ impl LocalVaultStore {
         let entry_hash = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
         let (_, device_sk, _, _) = self.get_device_state()?;
         let signature = hex::encode(device_sk.sign(entry_hash.as_bytes()).to_bytes());
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![now, tool, decision, path, detail_json, prev_hash, entry_hash, signature],
         )?;
-        let id = self.conn.last_insert_rowid();
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
         Ok(AgentAuditEntry {
             id,
             created_at_utc: now,
@@ -1339,15 +1342,48 @@ impl LocalVaultStore {
     }
 
     /// Finds the newest audit entry whose detail records the given
-    /// scrubbed-output SHA-256 (proof an output passed the scrub).
+    /// scrubbed-output SHA-256 as its `output_sha256` field, or as its
+    /// `content_sha256` field (the hash of the text a person sees, such
+    /// as a terminal result's `output`, inside the tool-result envelope).
+    /// Exact field equality, never substring matching, so a forged or
+    /// unrelated row containing the digest proves nothing.
     pub fn find_agent_audit_by_output_hash(
         &self,
         output_sha256: &str,
     ) -> Result<Option<AgentAuditEntry>, LocalStoreError> {
         let entries = self.list_agent_audit(usize::MAX)?;
-        Ok(entries
-            .into_iter()
-            .find(|e| e.detail_json.contains(output_sha256)))
+        Ok(entries.into_iter().find(|e| {
+            serde_json::from_str::<serde_json::Value>(&e.detail_json)
+                .ok()
+                .map(|v| {
+                    ["output_sha256", "content_sha256"]
+                        .iter()
+                        .any(|field| v.get(field).and_then(|h| h.as_str()) == Some(output_sha256))
+                })
+                .unwrap_or(false)
+        }))
+    }
+
+    /// Entry hash at a 1-based position in chain order (position 1 is
+    /// the genesis entry), or None when the chain is shorter. Used to
+    /// check that a fleet-anchored head is an ancestor of the local
+    /// chain rather than merely equal in count.
+    pub fn agent_audit_entry_hash_at(
+        &self,
+        position: usize,
+    ) -> Result<Option<String>, LocalStoreError> {
+        if position == 0 {
+            return Ok(None);
+        }
+        let hash = self
+            .conn
+            .query_row(
+                "SELECT entry_hash FROM agent_audit ORDER BY id ASC LIMIT 1 OFFSET ?1",
+                params![(position - 1) as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(hash)
     }
 
     /// Walks the chain from genesis recomputing every hash and
@@ -1678,6 +1714,69 @@ impl LocalVaultStore {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// After `snapshot_id` has been replicated, drops the queued uploads
+    /// of its ancestors: the fleet now holds a newer complete state, and
+    /// replicating an older snapshot afterwards would republish a stale
+    /// head. The superseded snapshots keep their rows (and their state:
+    /// they were never replicated); only the upload debt is cleared, so
+    /// `prune` may later remove them. Snapshots on other branches stay
+    /// queued. Returns how many queued uploads were cleared.
+    pub fn supersede_pending_ancestors(
+        &self,
+        snapshot_id: &[u8; 32],
+    ) -> Result<usize, LocalStoreError> {
+        use std::collections::{HashMap, HashSet};
+
+        let records = self.list_snapshots()?;
+        // Parents may name a snapshot by id or by record CID (both are
+        // stored as aliases), so index every record under both keys.
+        let mut by_key: HashMap<Vec<u8>, usize> = HashMap::new();
+        for (index, record) in records.iter().enumerate() {
+            by_key.insert(record.snapshot_id.clone(), index);
+            if let Ok(cid) = record.compute_record_cid() {
+                by_key.insert(cid.to_vec(), index);
+            }
+        }
+        let Some(&head) = by_key.get(snapshot_id.as_slice()) else {
+            return Ok(0);
+        };
+        let mut ancestors: HashSet<Vec<u8>> = HashSet::new();
+        let mut seen: HashSet<usize> = HashSet::from([head]);
+        let mut frontier: Vec<Vec<u8>> = records[head].parent_snapshot_ids.clone();
+        while let Some(parent) = frontier.pop() {
+            ancestors.insert(parent.clone());
+            if let Some(&index) = by_key.get(&parent) {
+                if seen.insert(index) {
+                    let record = &records[index];
+                    ancestors.insert(record.snapshot_id.clone());
+                    if let Ok(cid) = record.compute_record_cid() {
+                        ancestors.insert(cid.to_vec());
+                    }
+                    frontier.extend(record.parent_snapshot_ids.iter().cloned());
+                }
+            }
+        }
+        let superseded: Vec<[u8; 32]> = self
+            .list_pending_uploads()?
+            .into_iter()
+            .filter(|p| {
+                p.snapshot_id != *snapshot_id
+                    && (ancestors.contains(p.snapshot_id.as_slice())
+                        || ancestors.contains(p.record_cid.as_slice()))
+            })
+            .map(|p| p.snapshot_id)
+            .collect();
+        let tx = self.conn.unchecked_transaction()?;
+        for id in &superseded {
+            tx.execute(
+                "DELETE FROM pending_uploads WHERE snapshot_id = ?1",
+                params![id.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(superseded.len())
     }
 
     /// Deletes the given snapshots (by record CID) with fail-closed guards:
@@ -2680,6 +2779,32 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_audit_find_by_visible_content_hash() {
+        // Receipts also carry the hash of the text a person actually
+        // sees (a terminal result's `output` field), so a lookup works
+        // without reconstructing the tool-result JSON envelope.
+        let store = agent_audit_store();
+        store
+            .append_agent_audit(
+                "terminal",
+                "scrubbed_result",
+                "",
+                r#"{"redactions":0,"output_sha256":"envelope01","content_sha256":"visible01"}"#,
+            )
+            .unwrap();
+        let hit = store.find_agent_audit_by_output_hash("visible01").unwrap();
+        assert_eq!(hit.map(|e| e.decision), Some("scrubbed_result".to_string()));
+        assert!(store
+            .find_agent_audit_by_output_hash("envelope01")
+            .unwrap()
+            .is_some());
+        assert!(store
+            .find_agent_audit_by_output_hash("visible0")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn test_agent_audit_find_by_output_hash() {
         let store = agent_audit_store();
         store
@@ -2697,6 +2822,62 @@ mod tests {
             .find_agent_audit_by_output_hash("missing0")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_agent_audit_find_requires_exact_output_field() {
+        let store = agent_audit_store();
+        // A forged/irrelevant row that merely CONTAINS the digest in
+        // another field must not count as scrub proof.
+        store
+            .conn
+            .execute(
+                "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (1, 'terminal', 'executed', '', '{\"note\":\"deadbeef\"}', 'x', 'y', 'z')",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .find_agent_audit_by_output_hash("deadbeef")
+            .unwrap()
+            .is_none());
+        // Prefix/substring of a real field must not match either.
+        store
+            .append_agent_audit(
+                "terminal",
+                "scrubbed_result",
+                "",
+                r#"{"output_sha256":"deadbeefcafe"}"#,
+            )
+            .unwrap();
+        assert!(store
+            .find_agent_audit_by_output_hash("deadbeef")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_agent_audit_by_output_hash("deadbeefcafe")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn test_agent_audit_entry_hash_at_position() {
+        let store = agent_audit_store();
+        let e1 = store
+            .append_agent_audit("terminal", "executed", "a", "{}")
+            .unwrap();
+        let e2 = store
+            .append_agent_audit("terminal", "executed", "b", "{}")
+            .unwrap();
+        assert_eq!(
+            store.agent_audit_entry_hash_at(1).unwrap().as_deref(),
+            Some(e1.entry_hash.as_str())
+        );
+        assert_eq!(
+            store.agent_audit_entry_hash_at(2).unwrap().as_deref(),
+            Some(e2.entry_hash.as_str())
+        );
+        assert!(store.agent_audit_entry_hash_at(3).unwrap().is_none());
+        assert!(store.agent_audit_entry_hash_at(0).unwrap().is_none());
     }
 
     #[test]
@@ -2791,6 +2972,48 @@ mod tests {
         store.mark_upload_completed(&snap_id).unwrap();
         let pending_after_complete = store.list_pending_uploads().unwrap();
         assert!(pending_after_complete.is_empty());
+    }
+
+    fn queued_snapshot(store: &LocalVaultStore, id: u8, parents: &[u8], at: u64) {
+        let record = SnapshotRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vec![0x11u8; 32],
+            snapshot_id: vec![id; 32],
+            parent_snapshot_ids: parents.iter().map(|p| vec![*p; 32]).collect(),
+            device_id: vec![0x33u8; 32],
+            device_counter: u64::from(id),
+            authority_generation: 1,
+            epoch: 1,
+            encrypted_manifest_cid: vec![0x22u8; 32],
+            encrypted_manifest_len: 4,
+            advisory_timestamp_utc: at,
+            signature: Vec::new(),
+        };
+        store.save_snapshot(&record, b"manifest", &[]).unwrap();
+    }
+
+    #[test]
+    fn replicated_head_supersedes_queued_ancestors_only() {
+        let store = LocalVaultStore::open(":memory:").unwrap();
+        // 0xA1 <- 0xA2 <- 0xA3 (replicated); 0xB1 is an unrelated branch.
+        queued_snapshot(&store, 0xA1, &[], 1000);
+        queued_snapshot(&store, 0xA2, &[0xA1], 1001);
+        queued_snapshot(&store, 0xB1, &[], 1002);
+        queued_snapshot(&store, 0xA3, &[0xA2], 1003);
+        store.mark_upload_completed(&[0xA3; 32]).unwrap();
+
+        let cleared = store.supersede_pending_ancestors(&[0xA3; 32]).unwrap();
+        assert_eq!(cleared, 2);
+        let left: Vec<[u8; 32]> = store
+            .list_pending_uploads()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.snapshot_id)
+            .collect();
+        assert_eq!(left, vec![[0xB1; 32]], "non-ancestors stay queued");
+        // Superseded snapshots keep their rows; only the upload debt goes.
+        assert!(store.get_snapshot(&[0xA1; 32]).is_ok());
+        assert_eq!(store.supersede_pending_ancestors(&[0xA3; 32]).unwrap(), 0);
     }
 
     #[test]

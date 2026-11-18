@@ -50,7 +50,7 @@ jobs:
       - name: Upload Artifact
         # HELD at v3: v4+ excludes dotfiles from the artifact, which would
         # drop apps/landing/.nojekyll and change Pages build behavior.
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: 'apps/landing'
 

@@ -30,9 +30,10 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
    deletes the plaintext — trust the manifest, don't re-read files).
 5. **Redacted means redacted.** Output marked `[REDACTED]` was a real
    value. Never try to reconstruct, guess, or ask for it.
-6. **Binary missing?** Say so and point to `hermes ciphervault
-   bootstrap` (Windows) or `$CIPHERVAULT_BIN`. Never invent tool output,
-   scan results, or hashes.
+6. **Binary missing or withheld output?** Say so and point to
+   `hermes ciphervault doctor`; a compatible CLI (source build or a
+   release with `exact_values_complete`) goes in `$CIPHERVAULT_BIN`.
+   Never invent tool output, scan results, or hashes.
 7. **The audit log is the receipt.** Blocks, approvals, scrubs, and
    your writes are hash-chained and device-signed in the vault. When
    a user asks what you touched, answer from `ciphervault_audit` —

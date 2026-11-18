@@ -921,6 +921,7 @@ async fn spawn_with_env(
             ciphervault_redact::scrub_exact_values(&raw_stderr, &exact_values);
         let (redacted_stdout, n_out_shape) = ciphervault_redact::redact_text_counted(&exact_stdout);
         let (redacted_stderr, n_err_shape) = ciphervault_redact::redact_text_counted(&exact_stderr);
+        // Count shape-only rewrites too; receipts must not under-report.
         let redactions = n_out + n_out_shape + n_err + n_err_shape;
 
         let exit_code = output.status.code().unwrap_or(1);
