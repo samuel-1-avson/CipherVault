@@ -47,6 +47,17 @@ function usePendingPrompts(ctx, enabled) {
   })
 }
 
+function useEnvHealth(ctx, enabled) {
+  const cwd = useValue(host.state.cwd)
+  return useQuery({
+    queryKey: [ID, 'env-health', String(cwd || '')],
+    enabled: Boolean(enabled),
+    retry: false,
+    refetchInterval: 30000,
+    queryFn: async () => ctx.rest('/env-health?cwd=' + encodeURIComponent(String(cwd || '')))
+  })
+}
+
 function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
   const t = usePluginI18n(ID)
   const pendingKeys = Array.isArray(pendingQ.data?.keys) ? pendingQ.data.keys : []
@@ -238,6 +249,7 @@ function StatusBody(ctx) {
   const vaultReady = Boolean(q.data && q.data.vault)
   const auditQ = useVaultAudit(ctx, vaultReady)
   const pendingQ = usePendingPrompts(ctx, vaultReady)
+  const healthQ = useEnvHealth(ctx, vaultReady)
   const [sealing, setSealing] = useState(false)
   const copy = (text, label) => {
     try {
@@ -339,6 +351,39 @@ function StatusBody(ctx) {
             })
           : null,
         jsx(SecretEntryDrawer, { ctx, cwd, q, pendingQ }),
+        healthQ.data && healthQ.data.success
+          ? jsxs('div', {
+              className: 'mt-2 rounded-lg border border-(--ui-stroke-secondary) p-2',
+              children: [
+                jsxs('div', {
+                  className: 'flex items-center justify-between gap-2',
+                  children: [
+                    jsx('span', { className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)', children: 'Env Health' }),
+                    jsx('span', {
+                      className: cn(
+                        'text-[0.6875rem] font-medium',
+                        (healthQ.data.missing_in_vault?.length || 0) === 0 && (healthQ.data.value_anomalies?.length || 0) === 0
+                          ? 'text-emerald-400'
+                          : 'text-amber-400'
+                      ),
+                      children:
+                        (healthQ.data.missing_in_vault?.length || 0) === 0 && (healthQ.data.value_anomalies?.length || 0) === 0
+                          ? 'healthy'
+                          : `${healthQ.data.missing_in_vault?.length || 0} missing · ${healthQ.data.value_anomalies?.length || 0} lint`
+                    })
+                  ]
+                }),
+                ...(healthQ.data.missing_in_vault || []).slice(0, 6).map(k => jsx('div', {
+                  className: 'truncate py-0.5 text-[0.6875rem] text-amber-300',
+                  children: `missing: ${k}`
+                }, `m-${k}`)),
+                ...(healthQ.data.value_anomalies || []).slice(0, 4).map(a => jsx('div', {
+                  className: 'truncate py-0.5 text-[0.6875rem] text-amber-300',
+                  children: `${a.key}: ${a.issue}`
+                }, `a-${a.key}-${a.issue}`))
+              ]
+            })
+          : null,
         paths.length
           ? jsxs('div', {
               className: 'mt-2',

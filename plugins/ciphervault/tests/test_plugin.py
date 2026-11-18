@@ -116,7 +116,7 @@ def test_all_tools_registered(ctx):
         "ciphervault_push", "ciphervault_recovery_drill", "ciphervault_redact",
         "ciphervault_audit", "ciphervault_env_doctor",
         "ciphervault_secret_generate", "ciphervault_diff",
-        "ciphervault_secret_prompt",
+        "ciphervault_proxy_doctor", "ciphervault_secret_prompt",
     }
 
 
@@ -2414,3 +2414,88 @@ def test_cli_setup_subcommand_parses_and_runs_dry_run(tmp_path, monkeypatch, cap
     assert out["success"] is True
     assert out["vault_initialized"] is False
     assert out["hermes_secret_source"]["action"] == "would_wire_secret_source"
+
+
+def test_proxy_doctor_reports_providers_policy_and_unmapped_without_values(tmp_path, monkeypatch):
+    vault = tmp_path / "proj"
+    (vault / ".ciphervault").mkdir(parents=True)
+    (vault / ".ciphervault" / "vault.db").write_bytes(b"")
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[profiles.eval]\n[profiles.eval.upstreams]\nCUSTOM_KEY = "https://gw.example.com"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cv,
+        "_run_cli_json",
+        lambda args, cwd, timeout=30: {
+            "success": True,
+            "data": {
+                "secrets": [
+                    {"name": "OPENAI_API_KEY"},
+                    {"name": "CUSTOM_KEY"},
+                    {"name": "DATABASE_URL"},
+                ]
+            },
+        },
+    )
+    out = json.loads(cv._tool_proxy_doctor({"cwd": str(vault), "profile": "eval"}))
+    assert out["success"] is True
+    assert out["proxy_ready"] is True
+    assert [p["key"] for p in out["mapped_providers"]] == ["OPENAI_API_KEY"]
+    assert out["mapped_policy_upstreams"] == [{"key": "CUSTOM_KEY", "upstream": "https://gw.example.com"}]
+    assert out["unmapped_keys"] == ["DATABASE_URL"]
+
+
+def test_on_tool_request_emits_ambient_posture_once_per_workspace(tmp_path, monkeypatch):
+    vault = tmp_path / "proj"
+    (vault / ".ciphervault").mkdir(parents=True)
+    (vault / ".ciphervault" / "vault.db").write_bytes(b"")
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[vault]\nsealed_mode = true\n[profiles.test]\nno_net = true\n',
+        encoding="utf-8",
+    )
+    cv._POSTURE_SEEN.clear()
+    first = cv.on_tool_request("ciphervault_status", {"cwd": str(vault)}, {"cwd": str(vault)})
+    assert first is not None
+    assert "posture:" in first["reason"]
+    assert "sealed_mode=True" in first["reason"]
+    assert "['test']" in first["reason"]
+
+    second = cv.on_tool_request("ciphervault_status", {"cwd": str(vault)}, {"cwd": str(vault)})
+    assert second is None
+
+
+def test_audit_hmac_hex_not_leaked_in_minimal_env():
+    assert "CIPHERVAULT_AUDIT_HMAC_KEY" not in cv._minimal_env()
+    tag1 = cv._audit_hmac_hex("terminal", "blocked", ".env", '{"reason":"x"}')
+    tag2 = cv._audit_hmac_hex("terminal", "blocked", ".env", '{"reason":"x"}')
+    assert len(tag1) == 64
+    assert tag1 == tag2
+
+
+def test_dashboard_plugin_api_env_health_endpoint(tmp_path, monkeypatch):
+    import importlib.util
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    spec = importlib.util.spec_from_file_location(
+        "cv_plugin_api_health",
+        Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py",
+    )
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "app.py").write_text("import os\na = os.getenv('NEEDED_KEY')\nb = os.getenv('HAVE_KEY')\n", encoding="utf-8")
+    (proj / ".env").write_text("HAVE_KEY=real_val\nEMPTY_KEY=\n", encoding="utf-8")
+    monkeypatch.setattr(api, "_find_binary", lambda: None)
+
+    app = FastAPI()
+    app.include_router(api.router)
+    client = TestClient(app)
+    res = client.get("/env-health", params={"cwd": str(proj)}).json()
+    assert res["success"] is True
+    assert "real_val" not in json.dumps(res)
+    assert res["missing_in_vault"] == ["NEEDED_KEY"]
+    assert {"key": "EMPTY_KEY", "file": ".env", "issue": "EMPTY_VALUE"} in res["value_anomalies"]

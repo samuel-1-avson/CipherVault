@@ -381,6 +381,111 @@ def _set_secret(
     }
 
 
+def _env_health(cwd: str | None) -> dict:
+    """Zero-knowledge environment diagnostics for the desktop pane.
+    Returns variable names and structural issue flags only, never values."""
+    safe_cwd = _safe_cwd(cwd)
+    if safe_cwd is None:
+        return {"success": False, "error": "invalid or non-directory cwd"}
+    root = Path(safe_cwd)
+    code_patterns = (
+        re.compile(r"(?:process\.env|import\.meta\.env)\.([A-Za-z_][A-Za-z0-9_]*)"),
+        re.compile(r"os\.environ(?:\.get)?\s*[\[(]\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
+        re.compile(r"os\.getenv\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
+        re.compile(r"std::env::var(?:_os)?\s*\(\s*\"([A-Za-z_][A-Za-z0-9_]*)\""),
+    )
+    skip_dirs = {".git", ".ciphervault", "node_modules", "target", ".venv", "venv", "__pycache__", "dist"}
+    code_exts = {".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".yml", ".yaml"}
+    referenced = set()
+    scanned_files = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fname in filenames:
+            if scanned_files >= 400:
+                break
+            fpath = Path(dirpath) / fname
+            if fpath.suffix.lower() not in code_exts and fname != "Dockerfile":
+                continue
+            scanned_files += 1
+            try:
+                text = fpath.read_text(encoding="utf-8", errors="replace")[:131072]
+            except OSError:
+                continue
+            for pat in code_patterns:
+                referenced.update(pat.findall(text))
+
+    vault_keys = set()
+    anomalies = []
+    for env_name in (".env", ".env.local", ".env.development", ".env.production"):
+        env_path = root / env_name
+        if not env_path.is_file():
+            continue
+        try:
+            lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            k, v = stripped.split("=", 1)
+            k = k.removeprefix("export ").strip()
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+                continue
+            vault_keys.add(k)
+            val_unquoted = v.strip()
+            if not val_unquoted:
+                anomalies.append({"key": k, "file": env_name, "issue": "EMPTY_VALUE"})
+            elif val_unquoted.lower() in ("changeme", "your_api_key_here", "xxx", "todo"):
+                anomalies.append({"key": k, "file": env_name, "issue": "PLACEHOLDER_VALUE"})
+
+    example_keys = set()
+    ex_path = root / ".env.example"
+    if ex_path.is_file():
+        try:
+            for line in ex_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#") and "=" in s:
+                    ek = s.split("=", 1)[0].removeprefix("export ").strip()
+                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ek):
+                        example_keys.add(ek)
+        except OSError:
+            pass
+
+    if not vault_keys:
+        binary = _find_binary()
+        if binary:
+            try:
+                proc = subprocess.run(
+                    [binary, "run", "--dry-run", "--json", "--", "echo", "ok"],
+                    cwd=safe_cwd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    env=_minimal_env(),
+                )
+                if proc.returncode == 0:
+                    dry = json.loads(proc.stdout or "{}")
+                    for item in dry.get("secrets") or []:
+                        if isinstance(item, dict) and item.get("name"):
+                            vault_keys.add(str(item["name"]))
+            except Exception:
+                pass
+
+    expected = referenced | example_keys
+    return {
+        "success": True,
+        "vault_keys": sorted(vault_keys),
+        "referenced_in_code": sorted(referenced),
+        "example_keys": sorted(example_keys),
+        "missing_in_vault": sorted(expected - vault_keys),
+        "unreferenced_in_code": sorted(vault_keys - expected),
+        "value_anomalies": anomalies,
+    }
+
+
 if router is not None:
 
     @router.get("/status")
@@ -394,6 +499,10 @@ if router is not None:
     @router.get("/audit")
     def audit(cwd: str | None = None, limit: int = 10):
         return _audit_trail(cwd, limit=limit)
+
+    @router.get("/env-health")
+    def env_health(cwd: str | None = None):
+        return _env_health(cwd)
 
     @router.get("/pending-prompts")
     def pending_prompts(cwd: str | None = None):

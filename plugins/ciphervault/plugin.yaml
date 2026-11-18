@@ -18,6 +18,7 @@ provides_tools:
   - ciphervault_env_doctor
   - ciphervault_secret_generate
   - ciphervault_diff
+  - ciphervault_proxy_doctor
   - ciphervault_secret_prompt
 provides_hooks:
   - pre_tool_call

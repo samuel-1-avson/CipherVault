@@ -546,6 +546,12 @@ fn handle_stdio_line(line: &str, cache: &mut BridgeSecretCache) -> serde_json::V
                 Some(other) => other.to_string(),
                 None => "{}".to_string(),
             };
+            let hmac_hex = req.get("hmac").and_then(|v| v.as_str());
+            if let Err(e) = super::agent_log::verify_audit_caller_hmac(
+                tool, decision, path, &detail, hmac_hex,
+            ) {
+                return serde_json::json!({ "ok": false, "error": e.to_string() });
+            }
             match get_vault_store() {
                 Ok(store) => match store.append_agent_audit(tool, decision, path, &detail) {
                     Ok(_) => serde_json::json!({ "ok": true }),

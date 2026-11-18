@@ -2024,6 +2024,8 @@ enum AgentLogSubcommand {
         path: String,
         #[arg(long, default_value = "{}", help = "JSON detail (counts/reasons only)")]
         detail: String,
+        #[arg(long, help = "Optional HMAC-SHA256 hex tag authenticating parent-process caller")]
+        hmac: Option<String>,
     },
     /// List audit entries, newest first
     Show {

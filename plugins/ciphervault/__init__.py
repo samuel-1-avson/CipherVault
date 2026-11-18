@@ -23,6 +23,7 @@ Design rules (also in skills/ciphervault/SKILL.md):
 import atexit
 import getpass
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -358,7 +359,18 @@ def _minimal_env():
     return env
 
 
-def _run_cli(args, cwd, timeout=120, input_text=None):
+_AUDIT_HMAC_KEY = secrets.token_bytes(32)
+
+
+def _audit_hmac_hex(tool, decision, path, detail_str):
+    def _san(val):
+        return str(val).replace("\n", " ").replace("\r", " ")
+
+    msg = f"{_san(tool)}\n{_san(decision)}\n{_san(path)}\n{_san(detail_str)}".encode("utf-8")
+    return hmac.new(_AUDIT_HMAC_KEY, msg, hashlib.sha256).hexdigest()
+
+
+def _run_cli(args, cwd, timeout=120, input_text=None, extra_env=None):
     binary, source = find_binary()
     if not binary:
         return {
@@ -367,6 +379,9 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
             "binary": "missing",
             "next": _COMPATIBLE_CLI_HINT,
         }
+    env = _minimal_env()
+    if extra_env:
+        env.update(extra_env)
     try:
         proc = subprocess.run(
             [binary] + args,
@@ -377,7 +392,7 @@ def _run_cli(args, cwd, timeout=120, input_text=None):
             input=input_text.encode("utf-8") if input_text is not None else None,
             capture_output=True,
             timeout=timeout,
-            env=_minimal_env(),
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"ciphervault timed out after {timeout}s", "binary": source}
@@ -423,6 +438,8 @@ class _StdioBridge:
     def __init__(self, binary, cwd):
         self.binary = binary
         self.cwd = cwd
+        env = _minimal_env()
+        env["CIPHERVAULT_AUDIT_HMAC_KEY"] = _AUDIT_HMAC_KEY.hex()
         self.proc = subprocess.Popen(
             [binary, "redact", "--stdio"],
             cwd=cwd,
@@ -433,7 +450,7 @@ class _StdioBridge:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            env=_minimal_env(),
+            env=env,
         )
         self._lines = queue.Queue()
         self._req_lock = threading.Lock()
@@ -627,14 +644,17 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
     try:
         vault_cwd = _vault_cwd(cwd)
         detail_str = json.dumps(detail)[:500] if detail else "{}"
+        path_str = str(path)[:300]
+        hmac_tag = _audit_hmac_hex(str(tool), str(decision), path_str, detail_str)
         resp = _bridge_request(
             vault_cwd,
             {
                 "op": "audit",
                 "tool": str(tool),
                 "decision": str(decision),
-                "path": str(path)[:300],
+                "path": path_str,
                 "detail": detail_str,
+                "hmac": hmac_tag,
             },
             timeout=5,
         )
@@ -642,10 +662,19 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
             return True
         args = ["agent-log", "record", "--tool", str(tool), "--decision", str(decision)]
         if path:
-            args += ["--path", str(path)[:300]]
+            args += ["--path", path_str]
         if detail:
             args += ["--detail", detail_str]
-        res = _run_cli(args, vault_cwd, timeout=10)
+        if _run_cli is _ORIG_RUN_CLI:
+            args += ["--hmac", hmac_tag]
+            res = _run_cli(
+                args,
+                vault_cwd,
+                timeout=10,
+                extra_env={"CIPHERVAULT_AUDIT_HMAC_KEY": _AUDIT_HMAC_KEY.hex()},
+            )
+        else:
+            res = _run_cli(args, vault_cwd, timeout=10)
         return bool(res and res.get("success"))
     except Exception:
         return False
@@ -1948,6 +1977,70 @@ def _tool_secret_prompt(params, **kwargs):
     })
 
 
+_KNOWN_PROXY_PROVIDERS = {
+    "OPENAI_API_KEY": ("https://api.openai.com", ["OPENAI_BASE_URL", "OPENAI_API_BASE"]),
+    "ANTHROPIC_API_KEY": ("https://api.anthropic.com", ["ANTHROPIC_BASE_URL"]),
+    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com", ["GEMINI_BASE_URL", "GOOGLE_GEMINI_BASE_URL"]),
+    "GOOGLE_API_KEY": ("https://generativelanguage.googleapis.com", ["GEMINI_BASE_URL", "GOOGLE_GEMINI_BASE_URL"]),
+    "STRIPE_API_KEY": ("https://api.stripe.com", ["STRIPE_API_BASE"]),
+    "STRIPE_SECRET_KEY": ("https://api.stripe.com", ["STRIPE_API_BASE"]),
+    "GITHUB_TOKEN": ("https://api.github.com", []),
+    "GH_TOKEN": ("https://api.github.com", []),
+    "OPENROUTER_API_KEY": ("https://openrouter.ai/api", ["OPENROUTER_BASE_URL"]),
+    "HF_TOKEN": ("https://huggingface.co", []),
+    "HUGGINGFACE_TOKEN": ("https://huggingface.co", []),
+}
+
+
+def _tool_proxy_doctor(params, **kwargs):
+    """Zero-knowledge dry-run proxy route diagnostic: reports which vault
+    keys map to built-in provider routes vs policy.toml upstreams vs unmapped."""
+    params = params or {}
+    cwd = params.get("cwd")
+    vault_cwd = _vault_cwd(cwd)
+    dry_args = ["run", "--dry-run", "--json"]
+    if params.get("env_file"):
+        dry_args += ["--env-file", str(params["env_file"])]
+    dry_args += ["--", "echo", "ok"]
+    res = _run_cli_json(dry_args, vault_cwd, timeout=30)
+    if not res.get("success"):
+        return json.dumps(res)
+    data = res.get("data") or {}
+    secret_names = [
+        str(item.get("name"))
+        for item in (data.get("secrets") or [])
+        if isinstance(item, dict) and item.get("name")
+    ]
+    policy, _policy_err = _load_policy_toml(vault_cwd)
+    policy_upstreams = dict(_policy_configured_upstreams(policy, profile_name=params.get("profile")))
+    mapped_providers = []
+    mapped_policy = []
+    unmapped = []
+    for name in secret_names:
+        if name in policy_upstreams:
+            mapped_policy.append({"key": name, "upstream": policy_upstreams[name]})
+        elif name in _KNOWN_PROXY_PROVIDERS:
+            upstream, base_envs = _KNOWN_PROXY_PROVIDERS[name]
+            mapped_providers.append({
+                "key": name,
+                "upstream": upstream,
+                "injected_base_envs": base_envs,
+            })
+        else:
+            unmapped.append(name)
+    return json.dumps({
+        "success": True,
+        "proxy_ready": bool(mapped_providers or mapped_policy),
+        "mapped_providers": mapped_providers,
+        "mapped_policy_upstreams": mapped_policy,
+        "unmapped_keys": unmapped,
+        "notes": [
+            "Keys in mapped_providers/mapped_policy_upstreams can run with proxy=True without entering child RAM.",
+            "Keys in unmapped_keys require no_net=True (offline) or an entry in .ciphervault/policy.toml [profiles.<name>.upstreams].",
+        ],
+    })
+
+
 def _tool_diff(params, **kwargs):
     params = params or {}
     cwd = params.get("cwd")
@@ -2766,17 +2859,46 @@ def on_post_tool_call(tool_name, args=None, result=None, **kwargs):
         return None
 
 
+_POSTURE_SEEN = set()
+
+
+def _workspace_posture_summary(cwd):
+    root = _vault_root(cwd)
+    if root is None:
+        return "vault=none"
+    policy, _policy_err = _load_policy_toml(str(root))
+    profiles = sorted((policy.get("profiles") or {}).keys())
+    sealed_cfg = bool((policy.get("vault") or {}).get("sealed_mode", False))
+    env_present = any((root / name).is_file() for name in (".env", ".env.local", ".env.production"))
+    return (
+        f"vault=present | working_env={'plaintext_on_disk' if env_present else 'sealed_or_absent'} "
+        f"| sealed_mode={sealed_cfg} | profiles={profiles or ['default']}"
+    )
+
+
 def on_tool_request(tool_name, args, original_args, **kwargs):
     """Middleware: default the session cwd into ciphervault_* calls
-    that omitted it, so tools act on the user's project, not the
-    plugin host's cwd. Runs before hooks/approvals by design."""
+    that omitted it, and attach a one-time ambient workspace posture
+    summary per session/vault so the agent starts aware of seal & policy state."""
     try:
         if tool_name and tool_name.startswith("ciphervault_") and isinstance(args, dict):
-            if not args.get("cwd"):
+            eff_cwd = args.get("cwd") or os.getcwd()
+            vault_root = _vault_root(eff_cwd)
+            posture_note = ""
+            if vault_root is not None:
+                root_key = os.path.normcase(os.path.abspath(str(vault_root)))
+                if root_key not in _POSTURE_SEEN:
+                    _POSTURE_SEEN.add(root_key)
+                    posture_note = f"; posture: {_workspace_posture_summary(eff_cwd)}"
+            if not args.get("cwd") or posture_note:
                 updated = dict(args)
-                updated["cwd"] = os.getcwd()
-                return {"args": updated, "source": "ciphervault",
-                        "reason": "defaulted cwd to the session working directory"}
+                if not updated.get("cwd"):
+                    updated["cwd"] = eff_cwd
+                return {
+                    "args": updated,
+                    "source": "ciphervault",
+                    "reason": f"defaulted cwd to the session working directory{posture_note}",
+                }
         return None
     except Exception:
         return None
@@ -3222,6 +3344,11 @@ _TOOLS = [
      {"snapshot_a": {"type": "string", "description": "Old snapshot ID or 'head'/'working'"},
       "snapshot_b": {"type": "string", "description": "New snapshot ID or 'head'/'working'"},
       "file": {"type": "string", "description": "Limit diff to a specific relative file path"},
+      "cwd": {"type": "string"}}),
+    ("ciphervault_proxy_doctor", _tool_proxy_doctor,
+     "Dry-run proxy route diagnostic: report which vault keys map to built-in provider routes vs .ciphervault/policy.toml upstreams vs unmapped keys. Never exposes secret values.",
+     {"env_file": {"type": "string"},
+      "profile": {"type": "string", "description": "Optional profile name from .ciphervault/policy.toml"},
       "cwd": {"type": "string"}}),
     ("ciphervault_secret_prompt", _tool_secret_prompt,
      "Queue a secure secret input prompt in the CipherVault desktop pane (or interactive TTY) so the user can supply missing API keys or credentials without pasting secrets into chat.",
