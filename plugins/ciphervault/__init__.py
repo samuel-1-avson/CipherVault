@@ -2947,6 +2947,168 @@ def quickstart(progress=print, keep=False):
             shutil.rmtree(demo, ignore_errors=True)
 
 
+_STARTER_POLICY_TOML = """\
+[vault]
+sealed_mode = {sealed_mode}
+default_no_net = true
+
+[profiles.test]
+commands = ["pytest", "python", "npm", "npx", "node", "cargo", "vitest"]
+allow_keys = ["DATABASE_URL", "REDIS_URL", "TEST_*"]
+no_net = true
+
+[profiles.llm_eval]
+commands = ["python", "node"]
+allow_keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
+proxy = true
+"""
+
+
+def _upsert_hermes_secret_source(config_path: Path, vault_path: str) -> dict:
+    """Safely enable `secrets.ciphervault` in `$HERMES_HOME/config.yaml`
+    without touching or logging any secret values."""
+    existing = ""
+    if config_path.is_file():
+        existing = config_path.read_text(encoding="utf-8", errors="replace")
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(existing) if existing.strip() else {}
+        if not isinstance(data, dict):
+            return {"updated": False, "error": f"{config_path} is not a YAML mapping"}
+        secrets_cfg = data.setdefault("secrets", {})
+        if not isinstance(secrets_cfg, dict):
+            return {"updated": False, "error": "config.yaml `secrets` section is not a mapping"}
+        secrets_cfg["ciphervault"] = {
+            "enabled": True,
+            "vault_path": str(vault_path),
+            "allow_working_copy": False,
+        }
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        return {"updated": True, "path": str(config_path), "vault_path": str(vault_path)}
+    except ImportError:
+        if "ciphervault:" in existing:
+            return {"updated": False, "already_configured": True, "path": str(config_path)}
+        snippet = (
+            f"\nsecrets:\n"
+            f"  ciphervault:\n"
+            f"    enabled: true\n"
+            f"    vault_path: {json.dumps(str(vault_path))}\n"
+            f"    allow_working_copy: false\n"
+        )
+        if re.search(r"(?m)^secrets:\s*$", existing):
+            updated = re.sub(
+                r"(?m)^secrets:\s*$",
+                "secrets:\n  ciphervault:\n    enabled: true\n"
+                f"    vault_path: {json.dumps(str(vault_path))}\n"
+                "    allow_working_copy: false",
+                existing,
+                count=1,
+            )
+        else:
+            updated = existing + snippet
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(updated, encoding="utf-8")
+        return {"updated": True, "path": str(config_path), "vault_path": str(vault_path)}
+
+
+def setup_workspace(
+    cwd=None,
+    sealed=True,
+    bootstrap=True,
+    wire_hermes_config=False,
+    force=False,
+    dry_run=False,
+    progress=print,
+):
+    """One-command setup wizard: verify/bootstrap binary, scaffold
+    `.ciphervault/policy.toml` inside an initialized vault, and optionally
+    wire `secrets.ciphervault` in `$HERMES_HOME/config.yaml`."""
+    target_dir = Path(cwd or os.getcwd()).resolve()
+    binary, source = find_binary()
+    binary_info = {"binary": binary, "source": source, "bootstrapped": False}
+    if not binary:
+        if bootstrap and not dry_run:
+            boot = bootstrap_binary(progress=progress)
+            if not boot.get("success"):
+                return {
+                    "success": False,
+                    "step": "bootstrap",
+                    "error": boot.get("error", "binary bootstrap failed"),
+                    "binary": binary_info,
+                }
+            binary = boot.get("binary")
+            binary_info = {"binary": binary, "source": "bootstrapped", "bootstrapped": True}
+        elif bootstrap and dry_run:
+            binary_info["action"] = "would_bootstrap"
+        else:
+            return {
+                "success": False,
+                "step": "binary",
+                "error": "ciphervault binary not found (run without --no-bootstrap or set CIPHERVAULT_BIN)",
+                "binary": binary_info,
+            }
+
+    vault_root = _vault_root(str(target_dir))
+    policy_info = {"written": False, "path": None}
+    next_steps = []
+
+    if vault_root is None:
+        next_steps.append(
+            f"Initialize a vault in your terminal: cd {target_dir} && ciphervault init && ciphervault track .env && ciphervault push --local --shred"
+        )
+    else:
+        policy_path = Path(vault_root) / ".ciphervault" / "policy.toml"
+        policy_info["path"] = str(policy_path)
+        if policy_path.exists() and not force:
+            policy_info["already_exists"] = True
+        elif dry_run:
+            policy_info["action"] = "would_write"
+        else:
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(
+                _STARTER_POLICY_TOML.format(sealed_mode="true" if sealed else "false"),
+                encoding="utf-8",
+            )
+            policy_info["written"] = True
+
+    hermes_cfg_path = _hermes_home() / "config.yaml"
+    hermes_info = {"path": str(hermes_cfg_path), "updated": False}
+    if wire_hermes_config:
+        vault_ref = str(vault_root or target_dir)
+        if dry_run:
+            hermes_info["action"] = "would_wire_secret_source"
+            hermes_info["vault_path"] = vault_ref
+        else:
+            hermes_info = _upsert_hermes_secret_source(hermes_cfg_path, vault_ref)
+            if hermes_info.get("error"):
+                return {
+                    "success": False,
+                    "step": "wire_hermes",
+                    "error": hermes_info["error"],
+                    "binary": binary_info,
+                    "policy": policy_info,
+                    "hermes_secret_source": hermes_info,
+                }
+    else:
+        next_steps.append(
+            "Optional: re-run with `--wire-hermes` to configure Hermes's own `secrets.ciphervault` source."
+        )
+
+    return {
+        "success": True,
+        "dry_run": bool(dry_run),
+        "cwd": str(target_dir),
+        "vault_initialized": vault_root is not None,
+        "vault_root": str(vault_root) if vault_root is not None else None,
+        "binary": binary_info,
+        "policy": policy_info,
+        "hermes_secret_source": hermes_info,
+        "next_steps": next_steps,
+    }
+
+
 def _cli_setup(parser):
     # Hermes hands us the `hermes ciphervault` subparser itself.
     sp = parser.add_subparsers(dest="ciphervault_cmd")
@@ -2955,12 +3117,30 @@ def _cli_setup(parser):
     sp.add_parser("doctor", help="Check binary, vault, and wiring")
     qs = sp.add_parser("quickstart", help="Two-minute guided demo in a throwaway vault")
     qs.add_argument("--keep", action="store_true", help="Keep the demo directory")
+    su = sp.add_parser("setup", help="Setup wizard: binary + .ciphervault/policy.toml + Hermes secret source")
+    su.add_argument("--cwd", default=None, help="Target workspace directory (default: current directory)")
+    su.add_argument("--no-bootstrap", action="store_true", help="Do not download binary if missing")
+    su.add_argument("--unsealed", action="store_true", help="Set sealed_mode = false in starter policy.toml")
+    su.add_argument("--wire-hermes", action="store_true", help="Enable secrets.ciphervault in $HERMES_HOME/config.yaml")
+    su.add_argument("--force", action="store_true", help="Overwrite existing .ciphervault/policy.toml")
+    su.add_argument("--dry-run", action="store_true", help="Show planned setup actions without writing files")
 
 
 def _cli_handler(args):
     cmd = getattr(args, "ciphervault_cmd", None) or "status"
     if cmd == "bootstrap":
         result = bootstrap_binary()
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("success") else 1
+    if cmd == "setup":
+        result = setup_workspace(
+            cwd=getattr(args, "cwd", None),
+            sealed=not bool(getattr(args, "unsealed", False)),
+            bootstrap=not bool(getattr(args, "no_bootstrap", False)),
+            wire_hermes_config=bool(getattr(args, "wire_hermes", False)),
+            force=bool(getattr(args, "force", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
         print(json.dumps(result, indent=2))
         return 0 if result.get("success") else 1
     if cmd == "quickstart":

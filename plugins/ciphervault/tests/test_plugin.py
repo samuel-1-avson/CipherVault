@@ -2351,3 +2351,66 @@ def test_dashboard_plugin_api_set_and_pending_prompts(tmp_path, monkeypatch):
 
         pending_after = client.get("/pending-prompts", params={"cwd": str(vault)}).json()
         assert [k["name"] for k in pending_after["keys"]] == ["OTHER_KEY"]
+
+
+def test_setup_workspace_scaffolds_policy_and_wires_hermes_config(tmp_path, monkeypatch):
+    vault = tmp_path / "proj"
+    (vault / ".ciphervault").mkdir(parents=True)
+    (vault / ".ciphervault" / "vault.db").write_bytes(b"")
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(cv, "find_binary", lambda: ("/bin/ciphervault", "configured"))
+
+    dry = cv.setup_workspace(cwd=str(vault), wire_hermes_config=True, dry_run=True)
+    assert dry["success"] is True
+    assert dry["dry_run"] is True
+    assert dry["policy"]["action"] == "would_write"
+    assert dry["hermes_secret_source"]["action"] == "would_wire_secret_source"
+    assert not (vault / ".ciphervault" / "policy.toml").exists()
+    assert not (hermes_home / "config.yaml").exists()
+
+    res = cv.setup_workspace(cwd=str(vault), sealed=True, wire_hermes_config=True)
+    assert res["success"] is True
+    assert res["vault_initialized"] is True
+    assert res["policy"]["written"] is True
+    assert res["hermes_secret_source"]["updated"] is True
+
+    policy_text = (vault / ".ciphervault" / "policy.toml").read_text(encoding="utf-8")
+    assert "sealed_mode = true" in policy_text
+    assert "[profiles.test]" in policy_text
+    assert "[profiles.llm_eval]" in policy_text
+
+    cfg_text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    assert "ciphervault" in cfg_text
+    assert "allow_working_copy: false" in cfg_text
+
+    # Re-running without force preserves existing policy.toml.
+    (vault / ".ciphervault" / "policy.toml").write_text("# custom\n", encoding="utf-8")
+    res2 = cv.setup_workspace(cwd=str(vault), wire_hermes_config=False)
+    assert res2["success"] is True
+    assert res2["policy"]["already_exists"] is True
+    assert (vault / ".ciphervault" / "policy.toml").read_text(encoding="utf-8") == "# custom\n"
+
+    # Re-running with force overwrites policy.toml.
+    res3 = cv.setup_workspace(cwd=str(vault), sealed=False, force=True)
+    assert res3["policy"]["written"] is True
+    assert "sealed_mode = false" in (vault / ".ciphervault" / "policy.toml").read_text(encoding="utf-8")
+
+
+def test_cli_setup_subcommand_parses_and_runs_dry_run(tmp_path, monkeypatch, capsys):
+    import argparse
+
+    vault = tmp_path / "proj"
+    vault.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+    monkeypatch.setattr(cv, "find_binary", lambda: ("/bin/ciphervault", "configured"))
+
+    parser = argparse.ArgumentParser()
+    cv._cli_setup(parser)
+    args = parser.parse_args(["setup", "--cwd", str(vault), "--dry-run", "--wire-hermes"])
+    rc = cv._cli_handler(args)
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["success"] is True
+    assert out["vault_initialized"] is False
+    assert out["hermes_secret_source"]["action"] == "would_wire_secret_source"
