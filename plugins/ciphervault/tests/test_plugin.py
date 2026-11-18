@@ -121,7 +121,13 @@ def test_all_tools_registered(ctx):
 
 
 def test_hooks_middleware_source_commands_registered(ctx):
-    assert set(ctx.hooks) == {"pre_tool_call", "transform_tool_result", "post_tool_call"}
+    assert set(ctx.hooks) == {
+        "on_session_start",
+        "pre_llm_call",
+        "pre_tool_call",
+        "transform_tool_result",
+        "post_tool_call",
+    }
     assert set(ctx.middleware) == {"tool_request"}
     assert ctx.secret_source is not None
     assert ctx.secret_source.name == "ciphervault"
@@ -1607,7 +1613,14 @@ def test_run_no_net_defaults_and_forwarding(ctx, monkeypatch):
     assert cv._effective_no_net({}) is True
 
 
-def test_run_proxy_forwarding_and_no_net_interaction(ctx, monkeypatch):
+def test_run_proxy_forwarding_and_no_net_interaction(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[profiles.api]\n'
+        'proxy = true\n'
+        'upstreams = { MY_VAR = "https://api.example.com" }\n',
+        encoding="utf-8",
+    )
     seen = {}
 
     def fake_run_json(args, cwd, timeout=300):
@@ -1617,10 +1630,11 @@ def test_run_proxy_forwarding_and_no_net_interaction(ctx, monkeypatch):
     monkeypatch.setattr(cv, "_run_cli_json", fake_run_json)
     monkeypatch.setattr(cv.sys, "platform", "linux")
 
+    # Policy-configured proxy upstream is forwarded and disables --no-net.
     out = json.loads(ctx.tools["ciphervault_run"][1]({
         "command": ["pytest"],
-        "proxy": True,
-        "proxy_upstream": ["MY_VAR=https://api.example.com"],
+        "profile": "api",
+        "cwd": str(vault),
     }))
     assert out["success"] is True
     assert "--proxy" in seen["args"]
@@ -1628,6 +1642,16 @@ def test_run_proxy_forwarding_and_no_net_interaction(ctx, monkeypatch):
     assert "MY_VAR=https://api.example.com" in seen["args"]
     # proxy implies loopback access on Linux/macOS unless no_net explicitly passed
     assert "--no-net" not in seen["args"]
+
+    # Agent-supplied proxy_upstream is rejected (policy.toml-only, matching ciphervault mcp).
+    rejected = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest"],
+        "proxy": True,
+        "proxy_upstream": ["MY_VAR=https://api.example.com"],
+        "cwd": str(vault),
+    }))
+    assert rejected["success"] is False
+    assert "policy.toml" in rejected["error"]
 
     appr = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "proxy": True})
     assert appr and "proxy: real keys stay in parent" in appr["message"]
@@ -1861,12 +1885,38 @@ def test_policy_toml_profiles_and_sealed_mode(ctx, tmp_path, monkeypatch):
     assert appr and appr["action"] == "approve"
     assert appr["rule_key"] == "ciphervault_run:profile=test:net=no_net:keys=DATABASE_URL,TEST_KEY"
 
+    # When CLI supports --profile, delegate profile upper-bound allow_keys to --profile
+    monkeypatch.setattr(cv, "_cli_supports_run_profile", lambda: True)
     res = json.loads(ctx.tools["ciphervault_run"][1]({
         "command": ["pytest", "-q"],
         "profile": "test",
         "cwd": str(vault),
     }))
     assert res["success"] is True
+    assert "--profile" in seen["args"]
+    assert "--no-net" in seen["args"]
+    assert "--allow-keys" not in seen["args"]
+
+    # Explicit narrowing allow_keys IS forwarded alongside --profile
+    seen.clear()
+    res_narrow = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest", "-q"],
+        "profile": "test",
+        "allow_keys": ["TEST_KEY"],
+        "cwd": str(vault),
+    }))
+    assert res_narrow["success"] is True
+    assert seen["args"][seen["args"].index("--allow-keys") + 1] == "TEST_KEY"
+
+    # Legacy CLI without --profile forwards profile allow_keys explicitly
+    seen.clear()
+    monkeypatch.setattr(cv, "_cli_supports_run_profile", lambda: False)
+    res_legacy = json.loads(ctx.tools["ciphervault_run"][1]({
+        "command": ["pytest", "-q"],
+        "profile": "test",
+        "cwd": str(vault),
+    }))
+    assert res_legacy["success"] is True
     assert "--no-net" in seen["args"]
     assert seen["args"][seen["args"].index("--allow-keys") + 1] == "DATABASE_URL,TEST_KEY"
 
@@ -2200,13 +2250,22 @@ def test_secret_prompt_queued_and_interactive(ctx, tmp_path, monkeypatch):
     assert stored["keys"][0]["expected_prefix"] == "sk-"
     assert "requested_at" in stored
 
-    # Interactive TTY mode with mocked getpass
+    # Interactive TTY mode with mocked getpass (legacy unsealed CLI fallback)
     monkeypatch.setenv("CIPHERVAULT_INTERACTIVE_PROMPT", "1")
     monkeypatch.setattr(cv.sys.stdin, "isatty", lambda: True)
     cli_calls = []
 
-    def fake_run_cli(args, cwd, timeout=300):
-        cli_calls.append((args, cwd))
+    def fake_run_cli(args, cwd, timeout=300, input_text=None):
+        cli_calls.append((args, cwd, input_text))
+        if args[:2] == ["status", "--json"]:
+            return {
+                "success": True,
+                "output": json.dumps({
+                    "vault": True,
+                    "working_tree_sealed": False,
+                    "tracked_paths": [],
+                }),
+            }
         return {"success": True, "output": "ok"}
 
     monkeypatch.setattr(cv, "_run_cli", fake_run_cli)
@@ -2220,7 +2279,7 @@ def test_secret_prompt_queued_and_interactive(ctx, tmp_path, monkeypatch):
     assert mismatch["success"] is False
     assert "wrong_prefix_secret_xyz" not in json.dumps(mismatch)
 
-    # Valid interactive entry writes .env, runs track + push --local --shred, never leaks value
+    # Valid interactive entry on unsealed legacy CLI writes .env, runs track + push --local --shred
     secret_val = "sk-test-interactive-secret-999"
     monkeypatch.setattr(cv.getpass, "getpass", lambda _p: secret_val)
     ok = json.loads(ctx.tools["ciphervault_secret_prompt"][1]({
@@ -2234,9 +2293,9 @@ def test_secret_prompt_queued_and_interactive(ctx, tmp_path, monkeypatch):
     assert ok["sealed"] is True
     assert secret_val not in json.dumps(ok)
     assert f"OPENAI_API_KEY={secret_val}" in (vault / ".env").read_text(encoding="utf-8")
-    assert cli_calls[0][0] == ["track", ".env"]
-    assert cli_calls[1][0][:3] == ["push", "--local", "-m"]
-    assert "--shred" in cli_calls[1][0]
+    assert ["track", ".env"] in [c[0] for c in cli_calls]
+    push_calls = [c[0] for c in cli_calls if c[0][:3] == ["push", "--local", "-m"]]
+    assert push_calls and "--shred" in push_calls[0]
 
 
 def test_run_passes_profile_flag_when_supported(ctx, tmp_path, monkeypatch):
@@ -2305,7 +2364,17 @@ def test_dashboard_plugin_api_set_and_pending_prompts(tmp_path, monkeypatch):
             self.returncode = returncode
 
     def fake_subprocess_run(argv, **kwargs):
-        calls.append(argv)
+        calls.append((argv, kwargs.get("input")))
+        if argv[1:4] == ["vault", "generate", "--help"]:
+            return FakeProc("Usage: ciphervault vault generate --overwrite --seal --json")
+        if argv[1:3] == ["vault", "set"]:
+            return FakeProc(json.dumps({
+                "success": True,
+                "name": argv[3],
+                "env_file": ".env",
+                "sealed": True,
+                "snapshot_head": "deadbeef" * 8,
+            }))
         if argv[1] == "status":
             return FakeProc(json.dumps({"vault": True, "working_tree_sealed": True, "tracked_paths": [".env"]}))
         return FakeProc("ok")
@@ -2343,11 +2412,18 @@ def test_dashboard_plugin_api_set_and_pending_prompts(tmp_path, monkeypatch):
         assert body["success"] is True
         assert body["key"] == "OPENAI_API_KEY"
         assert body["sealed"] is True
+        assert body["snapshot_head"] == "deadbeef" * 8
         assert secret_val not in resp.text
 
-        assert f"OPENAI_API_KEY={secret_val}" in (vault / ".env").read_text(encoding="utf-8")
-        assert ["/bin/ciphervault", "track", ".env"] in calls
-        assert ["/bin/ciphervault", "push", "--local", "-m", "Set OPENAI_API_KEY via desktop", "--shred"] in calls
+        # Native `vault set --stdin` never writes plaintext `.env` from Python!
+        assert not (vault / ".env").exists()
+        set_calls = [(argv, inp) for argv, inp in calls if argv[1:3] == ["vault", "set"]]
+        assert len(set_calls) == 1
+        assert set_calls[0][0] == [
+            "/bin/ciphervault", "vault", "set", "OPENAI_API_KEY",
+            "--stdin", "--env-file", ".env", "--json", "--seal",
+        ]
+        assert set_calls[0][1] == secret_val
 
         pending_after = client.get("/pending-prompts", params={"cwd": str(vault)}).json()
         assert [k["name"] for k in pending_after["keys"]] == ["OTHER_KEY"]
@@ -2599,3 +2675,702 @@ def test_real_cli_env_doctor_works_on_sealed_shredded_vault(real_vault):
     assert ("OPENAI_API_KEY", "PREFIX_MISMATCH") in issues
     assert ("EMPTY_ONE", "EMPTY_VALUE") in issues
     assert "workspace_posture" in out
+
+
+# ------------------------------------------------------------ v0.7.1 hardening, sealed-vault fix & lifecycle hooks
+
+
+def test_plugin_yaml_declares_v071_and_new_lifecycle_hooks():
+    yaml_text = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    assert 'version: "0.7.1"' in yaml_text
+    for hook in ("on_session_start", "pre_llm_call", "pre_tool_call", "transform_tool_result", "post_tool_call"):
+        assert f"- {hook}" in yaml_text
+    assert cv.PLUGIN_VERSION == "0.7.1"
+
+
+def test_secret_generate_prefers_native_vault_generate_without_writing_disk(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    seen = []
+
+    def fake_run_json(args, cwd, timeout=120, input_text=None):
+        seen.append((list(args), cwd))
+        return {
+            "success": True,
+            "data": {
+                "success": True,
+                "name": "APP_SECRET",
+                "format": "hex",
+                "length_chars": 64,
+                "sha256_prefix": "a1b2c3d4",
+                "env_file": ".env",
+                "sealed": True,
+                "snapshot_head": "cafebabe" * 8,
+            },
+        }
+
+    audit_calls = _capture_audit(monkeypatch)
+    monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: True)
+    monkeypatch.setattr(cv, "_run_cli_json", fake_run_json)
+
+    raw = ctx.tools["ciphervault_secret_generate"][1]({
+        "name": "APP_SECRET",
+        "format": "hex",
+        "bytes": 32,
+        "env_file": ".env",
+        "seal": True,
+        "cwd": str(vault),
+    })
+    out = json.loads(raw)
+    assert out["success"] is True
+    assert out["name"] == "APP_SECRET"
+    assert out["length_chars"] == 64
+    assert out["sha256_prefix"] == "a1b2c3d4"
+    assert out["sealed"] is True
+    assert out["snapshot_head"] == "cafebabe" * 8
+    assert not (vault / ".env").exists(), "native vault generate must never write plaintext .env in Python"
+    assert seen[0][0] == [
+        "vault", "generate", "APP_SECRET",
+        "--format", "hex", "--bytes", "32", "--env-file", ".env", "--json", "--seal",
+    ]
+    assert "--overwrite" not in seen[0][0]
+    assert any(c[:2] == ["agent-log", "record"] and "ciphervault_secret_generate" in c for c in audit_calls)
+
+    # Explicit overwrite=True forwards --overwrite
+    seen.clear()
+    out2 = json.loads(ctx.tools["ciphervault_secret_generate"][1]({
+        "name": "APP_SECRET",
+        "overwrite": True,
+        "seal": False,
+        "cwd": str(vault),
+    }))
+    assert out2["success"] is True
+    assert "--overwrite" in seen[0][0]
+    assert "--seal" not in seen[0][0]
+
+
+def test_secret_generate_legacy_fallback_fails_closed_on_sealed_vault_and_refuses_overwrite(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: False)
+
+    # 1. Sealed vault with legacy CLI MUST fail closed without writing .env or calling push
+    cli_calls = []
+
+    def fake_sealed_cli(args, cwd, timeout=120, input_text=None):
+        cli_calls.append(list(args))
+        if args[:2] == ["status", "--json"]:
+            return {
+                "success": True,
+                "output": json.dumps({
+                    "vault": True,
+                    "working_tree_sealed": True,
+                    "tracked_paths": [".env"],
+                }),
+            }
+        raise AssertionError(f"legacy fallback must not run {args} on a sealed vault")
+
+    monkeypatch.setattr(cv, "_run_cli", fake_sealed_cli)
+    res_sealed = json.loads(ctx.tools["ciphervault_secret_generate"][1]({
+        "name": "NEW_KEY",
+        "cwd": str(vault),
+    }))
+    assert res_sealed["success"] is False
+    assert "sealed" in res_sealed["error"].lower()
+    assert "vault generate" in res_sealed["error"]
+    assert not (vault / ".env").exists()
+    assert cli_calls == [["status", "--json"]]
+
+    # 2. Status failure inside a vault MUST also fail closed
+    monkeypatch.setattr(cv, "_run_cli", lambda args, cwd, timeout=120, input_text=None: {"success": False, "error": "boom"})
+    res_err = json.loads(ctx.tools["ciphervault_secret_generate"][1]({
+        "name": "NEW_KEY",
+        "cwd": str(vault),
+    }))
+    assert res_err["success"] is False
+    assert not (vault / ".env").exists()
+
+    # 3. Unsealed vault with existing key refuses overwrite by default, allows with overwrite=True
+    (vault / ".env").write_text("EXISTING_KEY=original-value\n", encoding="utf-8")
+    unsealed_calls = []
+
+    def fake_unsealed_cli(args, cwd, timeout=120, input_text=None):
+        unsealed_calls.append(list(args))
+        if args[:2] == ["status", "--json"]:
+            return {
+                "success": True,
+                "output": json.dumps({
+                    "vault": True,
+                    "working_tree_sealed": False,
+                    "tracked_paths": [".env"],
+                }),
+            }
+        return {"success": True, "output": "ok"}
+
+    monkeypatch.setattr(cv, "_run_cli", fake_unsealed_cli)
+    dup = json.loads(ctx.tools["ciphervault_secret_generate"][1]({
+        "name": "EXISTING_KEY",
+        "cwd": str(vault),
+    }))
+    assert dup["success"] is False
+    assert "overwrite" in dup["error"].lower()
+    assert (vault / ".env").read_text(encoding="utf-8") == "EXISTING_KEY=original-value\n"
+
+    rot = json.loads(ctx.tools["ciphervault_secret_generate"][1]({
+        "name": "EXISTING_KEY",
+        "overwrite": True,
+        "cwd": str(vault),
+    }))
+    assert rot["success"] is True
+    assert "original-value" not in (vault / ".env").read_text(encoding="utf-8")
+
+
+def test_secret_generate_overwrite_requires_pre_tool_call_approval(ctx, tmp_path, monkeypatch):
+    calls = _capture_audit(monkeypatch)
+    assert cv.on_pre_tool_call("ciphervault_secret_generate", {"name": "NEW_KEY", "cwd": str(tmp_path)}) is None
+    assert cv.on_pre_tool_call(
+        "ciphervault_secret_generate", {"name": "NEW_KEY", "overwrite": False, "cwd": str(tmp_path)}
+    ) is None
+
+    appr = cv.on_pre_tool_call(
+        "ciphervault_secret_generate", {"name": "EXISTING_KEY", "overwrite": True, "cwd": str(tmp_path)}
+    )
+    assert appr and appr["action"] == "approve"
+    assert "EXISTING_KEY" in appr["message"]
+    assert "overwrite" in appr["rule_key"]
+    assert any(c[:2] == ["agent-log", "record"] and "approval_requested" in c for c in calls)
+
+
+def test_secret_prompt_tty_native_vault_set_and_sealed_legacy_fail_closed(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    monkeypatch.setenv("CIPHERVAULT_INTERACTIVE_PROMPT", "1")
+    monkeypatch.setattr(cv.sys.stdin, "isatty", lambda: True)
+    secret_val = "sk-native-tty-secret-999"
+    monkeypatch.setattr(cv.getpass, "getpass", lambda _p: secret_val)
+
+    # 1. Native `ciphervault vault set <NAME> --stdin`: zero plaintext written to disk
+    seen_native = []
+
+    def fake_native_json(args, cwd, timeout=120, input_text=None):
+        seen_native.append((list(args), cwd, input_text))
+        return {
+            "success": True,
+            "data": {
+                "success": True,
+                "name": "OPENAI_API_KEY",
+                "env_file": ".env",
+                "sealed": True,
+                "snapshot_head": "abcd1234" * 8,
+            },
+        }
+
+    _capture_audit(monkeypatch)
+    monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: True)
+    monkeypatch.setattr(cv, "_run_cli_json", fake_native_json)
+
+    res = json.loads(ctx.tools["ciphervault_secret_prompt"][1]({
+        "keys": [{"name": "OPENAI_API_KEY", "expected_prefix": "sk-"}],
+        "env_file": ".env",
+        "seal": True,
+        "cwd": str(vault),
+    }))
+    assert res["success"] is True
+    assert res["configured"] == ["OPENAI_API_KEY"]
+    assert res["snapshot_head"] == "abcd1234" * 8
+    assert secret_val not in json.dumps(res)
+    assert not (vault / ".env").exists()
+    assert seen_native[0][0] == ["vault", "set", "OPENAI_API_KEY", "--stdin", "--env-file", ".env", "--json", "--seal"]
+    assert seen_native[0][2] == secret_val
+
+    # 2. Legacy CLI fallback on sealed vault MUST fail closed without writing .env or leaking secret
+    monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: False)
+    monkeypatch.setattr(
+        cv,
+        "_run_cli_json",
+        lambda args, cwd, timeout=20, input_text=None: {
+            "success": True,
+            "data": {"vault": True, "working_tree_sealed": True, "tracked_paths": [".env"]},
+        },
+    )
+    res_sealed = json.loads(ctx.tools["ciphervault_secret_prompt"][1]({
+        "keys": [{"name": "OPENAI_API_KEY", "expected_prefix": "sk-"}],
+        "env_file": ".env",
+        "seal": True,
+        "cwd": str(vault),
+    }))
+    assert res_sealed["success"] is False
+    assert "sealed" in res_sealed["error"].lower()
+    assert secret_val not in json.dumps(res_sealed)
+    assert not (vault / ".env").exists()
+
+
+def test_proxy_upstream_removed_from_schema_and_dns_error_fails_closed(ctx, tmp_path, monkeypatch):
+    run_props = ctx.tools["ciphervault_run"][0]["parameters"]["properties"]
+    assert "proxy_upstream" not in run_props
+
+    gen_props = ctx.tools["ciphervault_secret_generate"][0]["parameters"]["properties"]
+    assert "overwrite" in gen_props and gen_props["overwrite"]["default"] is False
+
+    # _is_unsafe_upstream_host MUST fail CLOSED on DNS OSError and empty resolution
+    def raise_dns(*a, **k):
+        raise OSError("NXDOMAIN")
+
+    monkeypatch.setattr(cv.socket, "getaddrinfo", raise_dns)
+    assert cv._is_unsafe_upstream_host("unresolvable.example.com", 443) is True
+
+    monkeypatch.setattr(cv.socket, "getaddrinfo", lambda *a, **k: [])
+    assert cv._is_unsafe_upstream_host("empty-dns.example.com", 443) is True
+
+    monkeypatch.setattr(
+        cv.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(cv.socket.AF_INET, cv.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    assert cv._is_unsafe_upstream_host("api.example.com", 443) is False
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("search_files", {"path": ".env", "pattern": "KEY"}),
+    ("search_files", {"glob": "*.env", "pattern": "API"}),
+    ("search_files", {"glob": "**/*.pem", "pattern": "PRIVATE"}),
+    ("search_files", {"glob": ".ciphervault/*", "pattern": "allow_keys"}),
+    ("search_files", {"path": ".ciphervault/policy.toml", "pattern": "upstreams"}),
+    ("browser_cdp", {"url": "file:///proj/.env"}),
+    ("browser_navigate", {"url": "file:///proj/secrets.json"}),
+    ("browser_eval", {"script": "fetch('http://127.0.0.1:8080/api/diff?reveal=true')"}),
+    ("browser_read", {"path": "/proj/id_ed25519"}),
+])
+def test_guard_blocks_search_files_and_browser_tools_on_secrets(ctx, monkeypatch, tool, args):
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    _capture_audit(monkeypatch)
+    blk = cv.on_pre_tool_call(tool, args)
+    assert blk and blk["action"] == "block", f"expected {tool}({args}) to block"
+
+
+def test_guard_search_files_allows_clean_and_fails_closed_in_vault(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    assert cv.on_pre_tool_call("search_files", {"path": "src/", "pattern": "API_KEY", "cwd": str(vault)}) is None
+
+    # Fail closed inside vault when exact redaction fails
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, False))
+    _capture_audit(monkeypatch)
+    blk_s = cv.on_pre_tool_call("search_files", {"path": "src/", "pattern": "foo", "cwd": str(vault)})
+    blk_b = cv.on_pre_tool_call("browser_cdp", {"action": "snapshot", "cwd": str(vault)})
+    assert blk_s and blk_s["action"] == "block"
+    assert blk_b and blk_b["action"] == "block"
+
+    # post_tool_call audits browser_* tools too
+    audit_calls = _capture_audit(monkeypatch)
+    cv.on_post_tool_call("browser_cdp", {"url": "https://example.com", "cwd": str(vault)}, "ok")
+    assert any(c[:2] == ["agent-log", "record"] and "browser_cdp" in c for c in audit_calls)
+
+
+@pytest.mark.parametrize("cmd", [
+    ["bash", "-lc", "echo $SECRET"],
+    ["sh", "-xc", "env"],
+    ["zsh", "-euoc", "printenv"],
+    ["node", "--eval", "console.log(process.env)"],
+    ["node", "-p", "process.env.API_KEY"],
+    ["node", "--print", "process.env.API_KEY"],
+    ["node", "--input-type", "module", "-e", "console.log(1)"],
+    ["env", "FOO=1", "python", "-c", "import os; print(os.environ)"],
+    ["env", "-S", "bash -lc 'env'"],
+    ["uv", "run", "python", "-c", "print(1)"],
+    ["uv", "run", "--with", "pytest", "python3", "-c", "print(1)"],
+    ["npx", "node", "--eval", "console.log(1)"],
+    ["npx", "-c", "printenv"],
+    ["pwsh", "-Enc", "QQ=="],
+])
+def test_inline_interpreter_hardening_catches_shells_node_and_wrappers(cmd):
+    assert cv._is_inline_interpreter_cmd(cmd) is True, f"expected inline detection for {cmd!r}"
+    key = cv._compute_run_rule_key(cmd, None, True, False, None)
+    assert ":inline=" in key
+
+
+@pytest.mark.parametrize("cmd", [
+    ["python", "-m", "pytest", "-c", "pytest.ini"],
+    ["uv", "run", "pytest", "-q"],
+    ["npx", "vitest", "run"],
+    ["node", "scripts/check.js", "-e", "prod"],
+    ["bash", "scripts/test.sh"],
+])
+def test_inline_interpreter_hardening_allows_non_inline_commands(cmd):
+    assert cv._is_inline_interpreter_cmd(cmd) is False, f"unexpected inline detection for {cmd!r}"
+
+
+@pytest.mark.parametrize("git_cmd", [
+    "git -C repo push",
+    "git --no-pager commit -m hi",
+    "git -c user.name=bot add .",
+    "git --git-dir=.git --work-tree=. push origin main",
+    'git.exe -C "sub dir" commit -m test',
+])
+def test_git_danger_flags_and_fail_closed_hook_check_in_vault(ctx, tmp_path, monkeypatch, git_cmd):
+    vault = _marker_vault(tmp_path)
+    monkeypatch.setattr(cv, "cli_redact", lambda text, cwd, timeout=10: (text, 0, True))
+    _capture_audit(monkeypatch)
+
+    # 1. Fail CLOSED when `hook check` fails or times out inside a vault
+    monkeypatch.setattr(
+        cv,
+        "_run_cli_json",
+        lambda args, cwd, timeout=30: {"success": False, "error": "timed out"},
+    )
+    blk_fail = cv.on_pre_tool_call("terminal", {"command": git_cmd, "cwd": str(vault)})
+    assert blk_fail and blk_fail["action"] == "block"
+    assert "failing closed" in blk_fail["message"]
+
+    # 2. Blocks when violations exist
+    monkeypatch.setattr(
+        cv,
+        "_run_cli_json",
+        lambda args, cwd, timeout=30: {
+            "success": True,
+            "data": {"violations_count": 1, "violations": [{"path": ".env"}]},
+        },
+    )
+    blk_sprawl = cv.on_pre_tool_call("terminal", {"command": git_cmd, "cwd": str(vault)})
+    assert blk_sprawl and blk_sprawl["action"] == "block"
+    assert ".env" in blk_sprawl["message"]
+
+    # 3. Passes when hook check succeeds with 0 violations
+    monkeypatch.setattr(
+        cv,
+        "_run_cli_json",
+        lambda args, cwd, timeout=30: {"success": True, "data": {"violations_count": 0, "violations": []}},
+    )
+    assert cv.on_pre_tool_call("terminal", {"command": git_cmd, "cwd": str(vault)}) is None
+
+
+def test_policy_toml_wildcards_require_keys_explicit_approval_and_starter(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path)
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[vault]\n'
+        'sealed_mode = true\n'
+        'description = "Project vault"\n'
+        'sandbox_read_paths = [".venv"]\n\n'
+        '[profiles.test]\n'
+        'description = "Test profile"\n'
+        'commands = ["pytest"]\n'
+        'allow_keys = ["DATABASE_URL", "TEST_*", "*_TOKEN"]\n'
+        'require_keys = ["DATABASE_URL"]\n'
+        'no_net = true\n'
+        'require_explicit_approval = true\n'
+        'sandbox_read_paths = [".venv", "node_modules"]\n',
+        encoding="utf-8",
+    )
+    _capture_audit(monkeypatch)
+
+    # Wildcard narrowing: concrete match and narrower glob match are allowed
+    eff1, err1 = cv._resolve_run_policy(
+        {"command": ["pytest"], "profile": "test", "allow_keys": ["DATABASE_URL", "TEST_API_KEY"]},
+        str(vault),
+    )
+    assert err1 is None and eff1["allow_keys"] == ["DATABASE_URL", "TEST_API_KEY"]
+
+    eff2, err2 = cv._resolve_run_policy(
+        {"command": ["pytest"], "profile": "test", "allow_keys": ["DATABASE_URL", "TEST_DB_*"]},
+        str(vault),
+    )
+    assert err2 is None and eff2["allow_keys"] == ["DATABASE_URL", "TEST_DB_*"]
+
+    # Dropping a required key fails
+    _eff3, err3 = cv._resolve_run_policy(
+        {"command": ["pytest"], "profile": "test", "allow_keys": ["TEST_API_KEY"]},
+        str(vault),
+    )
+    assert err3 and "required key" in err3
+
+    # Widening beyond profile allow_keys fails
+    for wider in (["DATABASE_URL", "PROD_SECRET"], ["DATABASE_URL", "*"], ["DATABASE_URL", "PROD_*"]):
+        _eff_w, err_w = cv._resolve_run_policy(
+            {"command": ["pytest"], "profile": "test", "allow_keys": wider},
+            str(vault),
+        )
+        assert err_w and "exceeds" in err_w
+
+    # require_explicit_approval=true produces unique one-shot rule keys
+    a1 = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "profile": "test", "cwd": str(vault)})
+    a2 = cv.on_pre_tool_call("ciphervault_run", {"command": ["pytest"], "profile": "test", "cwd": str(vault)})
+    assert a1["action"] == "approve" and a2["action"] == "approve"
+    assert ":oneshot=" in a1["rule_key"]
+    assert a1["rule_key"] != a2["rule_key"]
+
+    # Unknown key in policy.toml fails closed
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[profiles.test]\nunknown_setting = true\n',
+        encoding="utf-8",
+    )
+    _pol, perr = cv._load_policy_toml(str(vault))
+    assert perr and "unknown key" in perr
+
+    # Starter policy.toml validates cleanly
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        cv._STARTER_POLICY_TOML.format(sealed_mode="true"),
+        encoding="utf-8",
+    )
+    pol_ok, perr_ok = cv._load_policy_toml(str(vault))
+    assert perr_ok is None
+    assert "TEST_*" in pol_ok["profiles"]["test"]["allow_keys"]
+
+
+def test_slash_ciphervault_version_and_argument_parsing(ctx, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(ctx, "dispatch_tool", lambda name, params: dispatched.append((name, params)) or "ok")
+    monkeypatch.setattr(cv, "find_binary", lambda: ("/bin/ciphervault", "configured"))
+
+    ver = cv._slash_ciphervault("version")
+    assert f"plugin v{cv.PLUGIN_VERSION}" in ver
+    assert f"v{cv.RELEASE_VERSION}" in ver
+    assert cv.PLUGIN_VERSION != cv.RELEASE_VERSION
+
+    # run with flags + command
+    assert cv._slash_ciphervault("run --profile test --dry-run --allow-keys A,B -- pytest -q") == "ok"
+    assert dispatched[-1] == (
+        "ciphervault_run",
+        {"profile": "test", "dry_run": True, "allow_keys": ["A", "B"], "command": ["pytest", "-q"]},
+    )
+    assert "Usage:" in cv._slash_ciphervault("run")
+
+    # redact preserves text payload
+    assert cv._slash_ciphervault("redact Bearer token-abc-123") == "ok"
+    assert dispatched[-1] == ("ciphervault_redact", {"text": "Bearer token-abc-123"})
+    assert "Usage:" in cv._slash_ciphervault("redact")
+
+    # drill supports positional kit path, --shares, and --via
+    assert cv._slash_ciphervault("drill /tmp/recovery.kit --via https://op1.cipherv.online") == "ok"
+    assert dispatched[-1] == (
+        "ciphervault_recovery_drill",
+        {"kit": "/tmp/recovery.kit", "via": ["https://op1.cipherv.online"]},
+    )
+    assert cv._slash_ciphervault("drill --shares s1.txt s2.txt") == "ok"
+    assert dispatched[-1] == ("ciphervault_recovery_drill", {"shares": ["s1.txt", "s2.txt"]})
+    assert "Usage:" in cv._slash_ciphervault("drill")
+
+
+def test_session_start_and_pre_llm_call_ambient_posture_and_audit_session_id(ctx, tmp_path, monkeypatch):
+    non_vault = tmp_path / "plain"
+    non_vault.mkdir()
+    vault = _marker_vault(tmp_path / "proj")
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[vault]\nsealed_mode = true\n[profiles.test]\nno_net = true\n',
+        encoding="utf-8",
+    )
+
+    try:
+        cv.on_session_start(session_id="sess-turn1-xyz", platform="desktop")
+        # Non-vault cwd returns None
+        assert cv.pre_llm_call(cwd=str(non_vault), session_id="sess-turn1-xyz") is None
+
+        # Turn 1 inside a vault injects 1-line workspace posture
+        first = cv.pre_llm_call(cwd=str(vault), session_id="sess-turn1-xyz")
+        assert isinstance(first, dict) and "context" in first
+        assert "vault=present" in first["context"]
+        assert "sealed_mode=True" in first["context"]
+        assert "['test']" in first["context"]
+
+        # Turn 2 with unchanged workspace state returns None (cached)
+        assert cv.pre_llm_call(cwd=str(vault), session_id="sess-turn1-xyz") is None
+
+        # State change (pending prompt queued) invalidates cache and re-injects posture
+        (vault / ".ciphervault" / "pending_secret_prompts.json").write_text(
+            json.dumps({"keys": [{"name": "OPENAI_API_KEY"}]}),
+            encoding="utf-8",
+        )
+        changed = cv.pre_llm_call(cwd=str(vault), session_id="sess-turn1-xyz")
+        assert changed and "OPENAI_API_KEY" in changed["context"]
+        assert cv.pre_llm_call(cwd=str(vault), session_id="sess-turn1-xyz") is None
+
+        # New session resets posture cache and updates audit session_id
+        cv.on_session_start(session_id="sess-new-456", platform="cli")
+        again = cv.pre_llm_call(cwd=str(vault), session_id="sess-new-456")
+        assert again and "vault=present" in again["context"]
+
+        calls = _capture_audit(monkeypatch)
+        assert cv._audit("ciphervault_status", "ok", detail={"k": 1}, cwd=str(vault)) is True
+        rec = [c for c in calls if c[:2] == ["agent-log", "record"]][-1]
+        detail = json.loads(rec[rec.index("--detail") + 1])
+        assert detail["session_id"] == "sess-new-456"
+    finally:
+        cv.on_session_start()
+
+
+def test_dashboard_plugin_api_shares_binary_resolver_status_profiles_and_generate(tmp_path, monkeypatch):
+    import importlib.util as _ilu
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    api_spec = _ilu.spec_from_file_location("cv_plugin_api_v071", PLUGIN_DIR / "dashboard" / "plugin_api.py")
+    api = _ilu.module_from_spec(api_spec)
+    api_spec.loader.exec_module(api)
+
+    # Deduplication: shares _minimal_env directly with plugin package
+    assert api._minimal_env is cv._minimal_env
+
+    # Binary resolution respects ctx `binary_path` config and NEVER falls back to bare `cv`
+    fake_bin = tmp_path / "custom-ciphervault"
+    fake_bin.write_bytes(b"#!/bin/sh\n")
+
+    class CfgCtx(FakeCtx):
+        def get_config(self, key, default=None):
+            return str(fake_bin) if key == "binary_path" else default
+
+    prev_ctx = cv._ctx["ctx"]
+    try:
+        cv._ctx["ctx"] = CfgCtx()
+        assert api._find_binary() == str(fake_bin)
+        cv._ctx["ctx"] = None
+        monkeypatch.delenv("CIPHERVAULT_BIN", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty-hermes"))
+        which_queries = []
+        monkeypatch.setattr(cv.shutil, "which", lambda name: (which_queries.append(name), None)[1])
+        # Point repo checkout check away by testing find_binary does not query "cv"
+        api._find_binary()
+        assert "cv" not in which_queries
+    finally:
+        cv._ctx["ctx"] = prev_ctx
+
+    # GET /status includes policy_profiles matching desktop contract
+    vault = _marker_vault(tmp_path / "vault")
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        '[vault]\nsealed_mode = true\n\n'
+        '[profiles.test]\n'
+        'description = "Offline unit tests"\n'
+        'commands = ["pytest", "python"]\n'
+        'allow_keys = ["DATABASE_URL", "TEST_*"]\n'
+        'require_keys = ["DATABASE_URL"]\n'
+        'no_net = true\n\n'
+        '[profiles.llm_eval]\n'
+        'description = "Proxy eval"\n'
+        'allow_keys = ["OPENAI_API_KEY"]\n'
+        'proxy = true\n'
+        'upstreams = { OPENAI_API_KEY = "https://gw.example.com" }\n',
+        encoding="utf-8",
+    )
+    (vault / ".ciphervault" / "pending_secret_prompts.json").write_text(
+        json.dumps({"keys": [{"name": "SESSION_SECRET"}], "env_file": ".env", "seal": True}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(api, "_find_binary", lambda: "/bin/ciphervault")
+
+    class FakeProc:
+        def __init__(self, stdout, returncode=0, stderr=""):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+
+    native_calls = []
+
+    def fake_native_run(argv, **kwargs):
+        native_calls.append(argv)
+        if argv[1:4] == ["vault", "generate", "--help"]:
+            return FakeProc("Usage: ciphervault vault generate --overwrite --seal --json")
+        if argv[1:3] == ["vault", "generate"]:
+            return FakeProc(json.dumps({
+                "success": True,
+                "name": argv[3],
+                "format": "base64url",
+                "length_chars": 43,
+                "sha256_prefix": "1234abcd",
+                "env_file": ".env",
+                "sealed": True,
+                "snapshot_head": "feedface" * 8,
+            }))
+        if argv[1] == "status":
+            return FakeProc(json.dumps({
+                "vault": True,
+                "cli_version": "1.0.36",
+                "tracked_paths": [".env"],
+                "tracked_files": 1,
+                "working_tree_sealed": True,
+                "working_tree_plaintext_files": 0,
+                "operators": [],
+            }))
+        return FakeProc("{}")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_native_run)
+    app = FastAPI()
+    app.include_router(api.router)
+    client = TestClient(app)
+
+    st = client.get("/status", params={"cwd": str(vault)}).json()
+    assert st["vault"] is True
+    assert len(st["policy_profiles"]) == 2
+    by_name = {p["name"]: p for p in st["policy_profiles"]}
+    assert by_name["test"] == {
+        "name": "test",
+        "description": "Offline unit tests",
+        "commands": ["pytest", "python"],
+        "allow_keys": ["DATABASE_URL", "TEST_*"],
+        "allow_keys_count": 2,
+        "require_keys": ["DATABASE_URL"],
+        "no_net": True,
+        "proxy": False,
+        "upstreams": [],
+    }
+    assert by_name["llm_eval"]["proxy"] is True
+    assert by_name["llm_eval"]["upstreams"] == ["OPENAI_API_KEY=https://gw.example.com"]
+
+    # POST /generate uses native `vault generate`, clears pending prompt, never touches disk
+    gen = client.post(
+        "/generate",
+        params={"cwd": str(vault)},
+        json={"name": "SESSION_SECRET", "format": "base64url", "bytes": 32, "env_file": ".env", "seal": True},
+    ).json()
+    assert gen["success"] is True
+    assert gen["name"] == "SESSION_SECRET"
+    assert gen["length_chars"] == 43
+    assert gen["sha256_prefix"] == "1234abcd"
+    assert gen["sealed"] is True
+    assert gen["snapshot_head"] == "feedface" * 8
+    assert isinstance(gen["status"], dict) and gen["status"]["vault"] is True
+    assert not (vault / ".env").exists()
+    gen_cmd = [c for c in native_calls if c[1:3] == ["vault", "generate"] and "--help" not in c][0]
+    assert gen_cmd == [
+        "/bin/ciphervault", "vault", "generate", "SESSION_SECRET",
+        "--format", "base64url", "--bytes", "32", "--env-file", ".env", "--json", "--seal",
+    ]
+    assert client.get("/pending-prompts", params={"cwd": str(vault)}).json()["keys"] == []
+
+    # Legacy CLI on a SEALED vault MUST fail closed for BOTH POST /set and POST /generate
+    def fake_legacy_sealed(argv, **kwargs):
+        if argv[1:4] == ["vault", "generate", "--help"]:
+            return FakeProc("", returncode=2, stderr="unrecognized subcommand")
+        if argv[1] == "status":
+            return FakeProc(json.dumps({
+                "vault": True,
+                "working_tree_sealed": True,
+                "tracked_paths": [".env"],
+            }))
+        raise AssertionError(f"legacy sealed vault must not run {argv}")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_legacy_sealed)
+    set_blk = client.post(
+        "/set",
+        params={"cwd": str(vault)},
+        json={"key": "OPENAI_API_KEY", "value": "sk-never-write", "env_file": ".env", "seal": True},
+    ).json()
+    assert set_blk["success"] is False and "sealed" in set_blk["error"].lower()
+    assert "sk-never-write" not in json.dumps(set_blk)
+    assert not (vault / ".env").exists()
+
+    gen_blk = client.post(
+        "/generate",
+        params={"cwd": str(vault)},
+        json={"name": "ANOTHER_SECRET", "env_file": ".env", "seal": True},
+    ).json()
+    assert gen_blk["success"] is False and "sealed" in gen_blk["error"].lower()
+    assert not (vault / ".env").exists()
+
+    # Invalid POST /generate inputs rejected cleanly
+    assert client.post("/generate", params={"cwd": str(vault)}, json={"name": "123BAD"}).json()["success"] is False
+    assert client.post("/generate", params={"cwd": str(vault)}, json={"name": "OK_KEY", "bytes": 8}).json()["success"] is False
+    assert client.post("/generate", params={"cwd": str(vault)}, json={"name": "OK_KEY", "env_file": "../x"}).json()["success"] is False
+
+    # Invalid policy.toml surfaces policy_error with empty policy_profiles
+    (vault / ".ciphervault" / "policy.toml").write_text("[bad_section]\nx = 1\n", encoding="utf-8")
+    st_bad_pol = client.get("/status", params={"cwd": str(vault)}).json()
+    assert st_bad_pol["policy_profiles"] == []
+    assert "policy_error" in st_bad_pol
+
+

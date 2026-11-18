@@ -264,3 +264,99 @@ def test_real_subdirectory_output_is_scrubbed_and_receipted_at_root(real_vault):
     assert fake_value not in transformed
     audit = json.loads(cv._tool_audit({"cwd": str(root), "check_text": transformed}))
     assert audit["success"] and audit["check"]["found"] is True
+
+
+def test_real_sealed_vault_generate_preserves_existing_keys(real_vault):
+    root, _kit, fake_value = real_vault
+    cwd = str(root)
+    cv._VAULT_SECRET_SUPPORT_CACHE.clear()
+    if not cv._cli_supports_vault_secret(cwd):
+        pytest.skip("resolved CLI does not ship native `ciphervault vault generate` yet")
+
+    pushed = json.loads(cv._tool_push({
+        "cwd": cwd,
+        "local_only": True,
+        "shred_working_copy": True,
+        "message": "seal before generate",
+    }))
+    assert pushed["success"] is True
+    assert not (root / ".env").exists(), "working tree must be sealed before generate"
+
+    gen1 = json.loads(cv._tool_secret_generate({
+        "cwd": cwd,
+        "name": "GENERATED_TOKEN",
+        "format": "base64url",
+        "bytes": 32,
+        "seal": True,
+    }))
+    assert gen1["success"] is True, gen1
+    assert gen1["sealed"] is True
+    assert len(gen1["sha256_prefix"]) == 8
+    assert not (root / ".env").exists(), "native vault generate must keep working tree sealed"
+
+    # Both the original sealed DEMO_VALUE and the newly generated GENERATED_TOKEN must exist.
+    dry = json.loads(cv._tool_run({"cwd": cwd, "dry_run": True, "command": ["echo", "ok"]}))
+    assert dry["success"] is True, dry
+    names = {item["name"] for item in dry["data"].get("secrets") or [] if isinstance(item, dict)}
+    assert {"DEMO_VALUE", "GENERATED_TOKEN"} <= names, names
+    assert fake_value not in json.dumps(dry)
+
+    # Default overwrite=False refuses to clobber an existing key.
+    dup = json.loads(cv._tool_secret_generate({
+        "cwd": cwd,
+        "name": "GENERATED_TOKEN",
+        "seal": True,
+    }))
+    assert dup["success"] is False
+
+    # Explicit overwrite=True requires approval in pre_tool_call and rotates the key.
+    appr = cv.on_pre_tool_call("ciphervault_secret_generate", {
+        "cwd": cwd,
+        "name": "GENERATED_TOKEN",
+        "overwrite": True,
+    })
+    assert appr and appr["action"] == "approve"
+    gen2 = json.loads(cv._tool_secret_generate({
+        "cwd": cwd,
+        "name": "GENERATED_TOKEN",
+        "overwrite": True,
+        "seal": True,
+    }))
+    assert gen2["success"] is True, gen2
+    assert gen2["sha256_prefix"] != gen1["sha256_prefix"]
+
+
+def test_real_wildcard_profile_run_injects_optional_matching_keys(real_vault):
+    root, _kit, fake_value = real_vault
+    cwd = str(root)
+    cv._CLI_PROFILE_SUPPORT.clear()
+    if not cv._cli_supports_run_profile():
+        pytest.skip("resolved CLI does not support `run --profile`")
+
+    pushed = json.loads(cv._tool_push({"cwd": cwd, "local_only": True, "message": "profile fixture"}))
+    assert pushed["success"] is True
+
+    python_name = Path(sys.executable).name
+    (root / ".ciphervault" / "policy.toml").write_text(
+        "[vault]\n"
+        "sealed_mode = false\n\n"
+        "[profiles.wildtest]\n"
+        'description = "Wildcard + optional keys test"\n'
+        f"commands = [{json.dumps(python_name)}, {json.dumps(sys.executable)}]\n"
+        'allow_keys = ["DEMO_*", "OPTIONAL_ABSENT_KEY"]\n'
+        "no_net = true\n",
+        encoding="utf-8",
+    )
+    ran = json.loads(cv._tool_run({
+        "cwd": cwd,
+        "profile": "wildtest",
+        "command": [
+            sys.executable,
+            "-c",
+            "import os; print('HAS_DEMO=' + str('DEMO_VALUE' in os.environ), 'VAL=' + os.environ['DEMO_VALUE'])",
+        ],
+    }))
+    assert ran["success"] is True, ran
+    assert "HAS_DEMO=True" in ran["data"]["stdout"]
+    assert fake_value not in ran["data"]["stdout"]
+
