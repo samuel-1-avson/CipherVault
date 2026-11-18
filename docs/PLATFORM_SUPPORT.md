@@ -1,46 +1,61 @@
 # CipherVault Platform Support Matrix (R16/R17)
 
-Explicit support statement for hardware-bound factors, OS key protection, and
-editor/git integration. Anything marked "Gap" below is specified (with
-requirements) rather than silently missing.
+Explicit support statement for hardware-bound factors, OS key protection,
+agent network sandboxing, and editor/git integration. Last reviewed for
+v1.0.35.
 
-## 1. Hardware-bound factors (R16)
+**How to read the status words.** *Supported* means implemented and exercised
+on that OS. *Implemented, unverified* means the code path exists and compiles
+for that target, but has not been run on a real host of that OS (hosted CI,
+the only automated non-Windows coverage, is currently paused). *Gap* means not
+built. Do not rely on an *unverified* path for production secrets until it
+has been run and recorded in the release notes.
+
+## 1. Hardware-bound factors and OS protections (R16)
 
 | Factor | Windows | macOS | Linux |
 |---|---|---|---|
-| PIV smartcard / YubiKey (`--hardware-token`) | Supported (WinSCard PC/SC FFI in `crates/crypto/src/piv.rs`) | Gap: clean empty-reader list, `HsmError` on use | Gap: same as macOS |
-| OS keyring for epoch/device keys | DPAPI (user-bound) | Gap: 0600 file keystore (see below) | Gap: 0600 file keystore |
+| PIV smartcard / YubiKey (`--hardware-token`) | Supported (WinSCard PC/SC FFI in `crates/crypto/src/piv.rs`) | Implemented, unverified (`PCSC.framework`) | Implemented, unverified (`libpcsclite`, loaded at runtime) |
+| OS keyring for epoch/device keys | Supported: DPAPI (user-bound) | Implemented, unverified: Keychain via `/usr/bin/security`; falls back to the 0600 file keystore | Implemented, unverified: Secret Service via `secret-tool`; falls back to the 0600 file keystore |
+| `run --no-net` network sandbox | Supported: AppContainer | Implemented, unverified: `sandbox-exec` | Implemented, unverified: `unshare` |
 | Touch ID / Windows Hello | Gap | Gap | n/a |
 | Hosted WebAuthn (account service) | Supported (server-issued options) | Supported | Supported |
 
 Notes:
 
-- The PC/SC transport is `#[cfg(windows)]`-gated by construction: non-Windows
-  builds enumerate zero readers and fail token operations with a descriptive
-  `HsmError` instead of crashing or misbehaving.
-- The non-Windows keystore (`portable_keystore`) is real AEAD, but its key
-  lives in a 0600 file at `CIPHERVAULT_KEYSTORE_PATH` or
+- The PC/SC transport is selected per OS. A host without a PC/SC library
+  (for example no `libpcsclite.so.1` on Linux) fails token operations with a
+  descriptive `HsmError` instead of crashing or misbehaving.
+- On non-Windows hosts the key order is: explicit `CIPHERVAULT_MASTER_KEY` /
+  `CIPHERVAULT_KEYSTORE_PATH`, then the OS credential store, then the
+  `portable_keystore` file. A fresh install provisions a credential-store key
+  when it can; set `CIPHERVAULT_REQUIRE_OS_KEYRING=1` to fail instead of
+  falling back to the file. The file keystore is real AEAD, but its key lives
+  in a 0600 file at `CIPHERVAULT_KEYSTORE_PATH` or
   `$HOME/.config/ciphervault/keystore.key`. Provisioning is exclusive and
-  non-destructive; malformed/unreadable existing keys fail closed. Threat model: protects against
-  offline casual reads and cross-user snooping on multi-user machines; it does
-  NOT bind to OS identity or a TPM the way DPAPI/Hello/Keychain do. Do not
-  claim equal device binding across platforms until the gaps below close.
+  non-destructive; malformed/unreadable existing keys fail closed. Its threat
+  model protects against offline casual reads and cross-user snooping on
+  multi-user machines; it does NOT bind to OS identity or a TPM. Do not claim
+  equal device binding across platforms until the unverified paths are run.
+- `run --no-net` fails closed: where no sandbox is available the command is
+  refused rather than run with network access. On Windows the child runs in an
+  AppContainer, so programs that need files outside its readable locations
+  (for example third-party Python packages) can fail to start; use `--proxy`
+  or run them without `--no-net`.
 
-### macOS/Linux PC/SC parity requirements
+### macOS/Linux: gates before claiming support
 
-1. New `#[cfg(target_vendor = "apple")]` / `#[cfg(target_os = "linux")]` FFI
-   module mirroring the 7 WinSCard entry points already abstracted
-   (`establish/release/list/connect/disconnect/transmit` + IO-request struct),
-   bound against pcsclite (`libpcsclite`) on Linux and PCSC.framework on macOS.
-2. Reader-enumeration parity: same empty-vs-error semantics as
-   `list_pcsc_readers` (context failure yields an empty list, never a panic).
-3. PIN entry reuse: the existing `rpassword` prompt + `CIPHERVAULT_PIN` /
-   `CIPHERVAULT_READER` env contract, unchanged.
-4. CI without hardware: extend the existing `SoftwareHsmSimulator` path
-   (`crates/crypto/src/hsm.rs`) so the full init/restore/push token flow runs
-   green on all three OS jobs with no reader attached.
-5. Manual gate before claiming support: YubiKey 5 sign/unwrap round-trip on
-   each OS, recorded in the release notes.
+The macOS and Linux PC/SC FFI modules, the Keychain and Secret Service key
+backends, and the `unshare` / `sandbox-exec` sandboxes are implemented. These
+gates remain open:
+
+1. CI without hardware: the existing `SoftwareHsmSimulator` path
+   (`crates/crypto/src/hsm.rs`) should run the full init/restore/push token
+   flow green on all three OS jobs with no reader attached.
+2. Manual gate: a YubiKey 5 sign/unwrap round-trip on each OS, recorded in the
+   release notes.
+3. A live run of the Keychain, Secret Service and `--no-net` paths on real
+   macOS and Linux hosts.
 
 ### Touch ID / Windows Hello requirements (alternate factor)
 
@@ -93,7 +108,9 @@ Minimum viable gutter, in priority order:
 ## 3. General platform notes (from `cfg` evidence)
 
 - Release self-update, `run` command spawning, and browser opening carry
-  explicit Windows/Unix/macOS branches and are covered by CI on all three OSs.
+  explicit Windows/Unix/macOS branches. They are meant to be covered by CI on
+  all three OSs, but hosted CI is currently paused, so the non-Windows branches
+  are unverified for v1.0.35.
 - The file watcher uses OS-native hooks (`ReadDirectoryChangesW`/inotify via
   `notify`) with interval-poll fallback, identical logic on all platforms.
 - Line endings: Rust sources are pinned LF (`.gitattributes`); UI files carry

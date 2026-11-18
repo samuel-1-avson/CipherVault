@@ -6,21 +6,22 @@
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
-[![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens--yubikey-piv)
+[![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens-yubikey-piv)
+[![Hermes Plugin: v0.7.0](https://img.shields.io/badge/Hermes%20Plugin-v0.7.0-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
 [![Verification](https://img.shields.io/badge/Verification-Quality%20Gates-blue.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
 [![Contributing: DCO](https://img.shields.io/badge/Contributions-DCO%20Signed--off-blueviolet.svg)](CONTRIBUTING.md)
 
-**Client-encrypted secret backup, version control, and clean-machine disaster recovery for confidential development files.**
+**Client-encrypted secret backup, version control, and clean-machine disaster recovery for confidential development files, with built-in guardrails for AI coding agents.**
 
-Captures default to [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) featuring content-defined chunk deduplication across edits, keyed identifiers (eliminating candidate-file confirmation attacks), and domain-isolated HKDF-SHA256 derivations. Legacy chunk v1 remains supported for backward compatibility (or via CIPHERVAULT_CHUNK_V2_WRITE=0); both versions remain transparently readable. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
+Captures default to [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) featuring content-defined chunk deduplication across edits, keyed identifiers (public candidate-file hashes no longer match v2 metadata), and domain-isolated HKDF-SHA256 derivations. Legacy chunk v1 remains supported for backward compatibility (or via CIPHERVAULT_CHUNK_V2_WRITE=0); both versions remain transparently readable. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
 
-Use version 1.0.28 or newer for complete Protocol v2 defaults and Agentic AI in-memory credential protections. Upgrade reader nodes before deployment; older binaries cannot read newer v2 chunks.
+**Current release: v1.0.35.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles, the tamper-evident agent audit log, and the [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.7.0. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
-[The Problem It Solves](#-the-problem-ciphervault-solves) • [Architecture](#-system-architecture--trust-boundaries) • [Key Features](#-important-features) • [Installation](#-installation-guide) • [Setup Guide](docs/SETUP_GUIDE.md) • [Quickstart Guide](#-quickstart-guide) • [CLI Reference](#-complete-cli-command-reference) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [Docker Deployment](#-docker-compose--self-hosting) • [Docs Hub](docs/README.md) • [Contributing](CONTRIBUTING.md) • [Trademark](TRADEMARK.md)
+[The Problem It Solves](#-the-problem-ciphervault-solves) • [Architecture](#-system-architecture--trust-boundaries) • [Key Features](#-important-features) • [What's New](#-whats-new-since-v1029) • [Installation](#-installation-guide) • [Setup Guide](docs/SETUP_GUIDE.md) • [Quickstart Guide](#-quickstart-guide) • [Disaster Recovery](#-clean-machine-disaster-recovery) • [AI Agents & Hermes](#-ai-agent-safety--the-hermes-plugin) • [CLI Reference](#-complete-cli-command-reference) • [Docker Deployment](#-docker-compose--self-hosting) • [Project Status](#-project-status--known-limits) • [Docs Hub](docs/README.md) • [Contributing](CONTRIBUTING.md) • [Trademark](TRADEMARK.md)
 
 </div>
 
@@ -65,16 +66,17 @@ Developers are taught from day one: **never commit secrets to Git**. We dutifull
 Think of CipherVault as a **sovereign, decentralized safety deposit box and time machine for confidential files**:
 
 1. **Client Encryption**: CipherVault encrypts tracked file content using `XChaCha20-Poly1305` before uploading it. Epoch keys leave the device only inside encrypted recovery envelopes.
-2. **Content-Defined Chunks (FastCDC)**: Opt-in v2 captures reuse the same encrypted object when padded chunk content is unchanged within a vault and epoch. Reuse depends on the edit and chunk boundaries; small files may fit in a single chunk. Default v1 reuses unchanged whole-file versions.
+2. **Content-Defined Chunks (FastCDC)**: Default v2 captures reuse the same encrypted object when padded chunk content is unchanged within a vault and epoch. Reuse depends on the edit and chunk boundaries; small files may fit in a single chunk. Legacy v1 captures (`CIPHERVAULT_CHUNK_V2_WRITE=0`) reuse only unchanged whole-file versions.
 3. **Storage Operators**: Encrypted chunks are replicated across configured storage nodes. Paths and contents stay encrypted. Operators can observe public vault/epoch headers, chunk equality, object sizes, counts and access patterns; a node count alone does not establish independent failure domains.
 4. **Clean-Machine Disaster Recovery**: An offline recovery kit or enough matching guardian shares can reconstruct a remotely replicated snapshot, provided its operators remain reachable and hold the complete recovery set. Signed device authority and ancestry are checked before selecting a recovery head.
 5. **Environment Injection**: `ciphervault run` supplies decrypted values to the child process without creating a plaintext secrets file. The child, operating system, crash dumps and swap remain outside this file-writing guarantee.
+6. **Agent-Safe by Design**: AI coding agents (through the [Hermes plugin](#-ai-agent-safety--the-hermes-plugin), the built-in `ciphervault mcp` server, or the `hook agent-pre`/`agent-post` guardrails) can scan, run, diff and back up secrets without secret values entering the model context. Output is exact-value scrubbed, the child's network can be sandboxed off, and every guarded action lands in a hash-chained, device-signed audit log you can verify afterwards.
 
 ---
 
 ## 🏛 System Architecture & Trust Boundaries
 
-[![CipherVault System Architecture](docs/diagrams/01_system_architecture.svg)](docs/diagrams/01_system_architecture.svg)
+> **Diagram note:** the diagram below is the current architecture. The older SVGs in [`docs/diagrams/`](docs/README.md#-6-system-architecture-diagrams-docsdiagrams) predate the move to sovereign-only anchoring and still draw a removed Ethereum/Arbitrum L2 settlement lane.
 
 ```mermaid
 flowchart TB
@@ -121,7 +123,13 @@ flowchart TB
         Approval["Method C: Out-of-Band Multi-Party Signoff"]
     end
 
+    subgraph Agents ["AI Coding Agents"]
+        AgentGuard["Hermes plugin / ciphervault mcp / hook agent-pre,post\n(leak guard, result scrubber, approval gate)"]
+    end
+
     Crypto -.->|Capacitive Touch Presence| YubiKey
+    AgentGuard ==>|"CLI calls: secret values never enter model context"| Crypto
+    AgentGuard -.->|"Signed audit-log checkpoints"| Operators
     Crypto ==>|Encrypted Chunks & PoS Challenges| Operators
     MaintDaemon -.->|Durability Audits & Re-replication| Operators
     Crypto -.->|State Commitments| CipherChain
@@ -140,6 +148,8 @@ flowchart TB
     class Maintenance,MaintDaemon maint;
     class Settlement,CipherChain l2;
     class Recovery,PaperKit,Shamir,Approval rec;
+    classDef agent fill:#831843,stroke:#f472b6,stroke-width:2px,color:#f8fafc;
+    class Agents,AgentGuard agent;
 ```
 
 ### Core Security Invariants
@@ -171,6 +181,10 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 | **Maintenance Fleet** | `services/maintenance` | Rust (Tokio, Rusqlite) | Periodic replication auditor, node latency monitor, and autonomous self-repair scheduler. |
 | **Account Service** | `services/account` | Rust (Axum, WebAuthn) | Optional self-hosted multi-device synchronization, passkey enrollment, and TOTP alternate login. |
 | **Sovereign Ledger** | `crates/chain` | Rust (Ed25519, Sha2) | Zero-gas Proof-of-Authority consensus ledger, Merkle state accumulator, and sub-millisecond light client verifier. |
+| **Redaction Engine** | `crates/redact` | Rust | Exact-value and credential-shape scrubbing (raw, base64/base64url, hex, percent- and JSON-escaped variants) behind `run --json`, `redact`, the agent bridge and audit paths. |
+| **File Locking** | `crates/file-lock` | Rust (advapi32 FFI on Windows) | Locks secret files down to the current user (Unix `0600`; protected owner-only DACL on Windows) with no `icacls` shell-out. |
+| **Hermes Plugin** | `plugins/ciphervault` | Python | Native [Hermes Agent](https://hermes-agent.nousresearch.com) plugin: 12 tools, leak-guard hooks, result scrubber, secret source and desktop pane. See [AI Agent Safety](#-ai-agent-safety--the-hermes-plugin). |
+| **MCP Servers** | `ciphervault mcp` (in `apps/cli`), `services/mcp` | Rust / Python | Stdio Model Context Protocol server for Claude Code, Codex and Cursor (7 tools). Prefer the native `ciphervault mcp`; `services/mcp` is the older Python implementation. |
 | **EVM Legacy (removed)** | *deleted in Phase 1* | Sovereign migration | Contracts/Foundry deleted; historical anchors in git tag `last-evm-anchor`. |
 
 ---
@@ -179,7 +193,7 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 
 ### 🔐 Cryptographic Sovereignty
 * **Authenticated Client Encryption**: File payloads use `XChaCha20-Poly1305` (256-bit key, 192-bit nonce); header fields are authenticated and whole-file digest/order/length checks precede restore.
-* **Opaque v2 Identifiers (Opt-In)**: Operators address encrypted CBOR objects by SHA-256 CID. Keyed v2 identifiers prevent public candidate-file hashing from matching v2 metadata; deterministic equality, object lengths, epoch/vault and access patterns remain visible. Default v1 and old snapshots retain their public candidate-confirmation limitation; enabling v2 does not erase history.
+* **Opaque v2 Identifiers (Default Writer)**: Operators address encrypted CBOR objects by SHA-256 CID. Keyed v2 identifiers prevent public candidate-file hashing from matching v2 metadata; deterministic equality, object lengths, epoch/vault and access patterns remain visible. Snapshots written as legacy v1 (`CIPHERVAULT_CHUNK_V2_WRITE=0`) and snapshots made before v2 became the default keep their public candidate-confirmation limitation; v2 does not rewrite history. The v2 construction has not yet had external review (see [Project Status](#-project-status--known-limits)).
 * **Memory Scrubbing**: Sensitive owned buffers use zeroization on release and error paths. This reduces retention; it does not prevent the OS or child processes from copying secrets.
 
 ### 🧩 Content-Defined Chunking (FastCDC)
@@ -195,6 +209,18 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 * **In-Memory Environment Injection**: Launch child processes (`npm start`, `cargo run`, `python app.py`, `docker compose up`) with decrypted secrets directly injected into their volatile process environment.
 * **Zero Plaintext on Disk**: No plaintext `.env` files ever touch physical storage media.
 * **Hermetic Isolation**: Strip existing host environment variables (`--no-inherit`) or inject runtime overrides (`--set PORT=8080`).
+* **Least-Privilege Scoping**: Inject only the variables a command needs (`--allow-keys DATABASE_URL,REDIS_URL`) and cut off the child's network (`--no-net`: Linux `unshare`, macOS `sandbox-exec`, Windows AppContainer; refuses to run if the sandbox is unavailable).
+* **Credential Proxy**: With `--proxy`, a loopback HTTP proxy in the parent process injects API keys into outbound requests so the real keys never enter the child's environment.
+* **Execution Profiles**: Name reusable run policies in `.ciphervault/policy.toml` and apply them with `--profile` (see [Workspace policy](#workspace-policy-ciphervaultpolicytoml)).
+
+### 🤖 AI Agent Safety
+* **Hermes Plugin**: Twelve agent-safe tools, a `pre_tool_call` leak guard, a result scrubber and a Hermes secret source. Secret values never enter the model context ([details](#-ai-agent-safety--the-hermes-plugin)).
+* **Native MCP Server**: `ciphervault mcp` serves status, scan, redact, run, push, diff and audit over stdio for Claude Code, Codex and Cursor.
+* **Cross-Agent Guardrails**: `ciphervault hook agent-pre` / `agent-post` block secret-file reads, `export-env`, secret-bearing arguments and unguarded commits, and scrub tool results.
+* **Redaction Filter**: `ciphervault redact` masks vault-exact values (raw, base64/base64url, hex, percent- and JSON-escaped) plus credential shapes from any text on stdin.
+* **Tamper-Evident Audit Log**: `ciphervault agent-log` keeps a hash-chained, device-signed record of what agents touched, anchored to your operator fleet, so you can verify afterwards instead of trusting.
+* **Zero-Knowledge Diagnostics**: `ciphervault env-doctor` compares code references and `.env.example` against vault keys and flags malformed values without printing any value.
+* **Sealed Working Tree**: `ciphervault push --shred` (alias `--seal`) zero-fills and removes tracked plaintext from disk once the snapshot is sealed in the vault.
 
 ### 👁️ Shoulder-Surfing Safe Secret Diffing (`ciphervault diff`)
 * **Masked by Default**: Inspect additions, deletions, and key modifications between snapshots or your working tree without exposing plaintext secret values on screen.
@@ -226,10 +252,27 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 
 ---
 
+## 🆕 What's New Since v1.0.29
+
+Highlights of v1.0.30 through v1.0.35. The [release notes](dist/RELEASE_NOTES.md) have the full list and upgrade notes.
+
+| Area | What changed |
+|---|---|
+| 🤖 **AI agents** | Native **Hermes plugin** (now v0.7.0, 12 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
+| 🔒 **Running secrets** | `run --allow-keys`, `--no-net` sandboxing (Linux, macOS, Windows), `--proxy` credential proxy, and `--profile` execution profiles from `.ciphervault/policy.toml`. |
+| 🧹 **Sealing** | `push --shred` (`--seal`) removes plaintext from the working tree after sealing; `[vault] sealed_mode = true` makes it the default. |
+| 🩺 **Diagnostics** | `env-doctor` zero-knowledge environment and schema checks; `status --json` reports sealed state. |
+| ⛓️ **Sovereign chain** | Ethereum/Arbitrum anchoring removed. CipherChain only: validator rotation, recoverable anchor salts, and the multi-party `genesis propose/sign/assemble` ceremony. |
+| 🛰️ **Operators** | Loopback-by-default API, 32-character minimum service tokens, signed Proof-of-Storage dedup receipts, guided `node setup`, and per-operator build-version drift visibility. |
+| 🛟 **Recovery** | Threshold-aware Shamir recombination, SHA-256 kit checksums (old kits still load), passphrase-sealed key backups (`recovery key-backup` / `key-restore`). |
+| 🖥️ **Platforms** | macOS Keychain, Linux Secret Service and PC/SC smartcard support on Linux/macOS are implemented but not yet exercised on real hosts ([status](#-project-status--known-limits)). |
+
+---
+
 ## 📦 Installation Guide
 
 ### Prerequisites
-* **Operating System**: Windows 10/11, macOS (Apple Silicon or Intel), or Linux (Ubuntu, Debian, Fedora, Arch).
+* **Operating System**: Windows 10/11 (the verified path), macOS (Apple Silicon or Intel), or Linux (Ubuntu, Debian, Fedora, Arch). See [Project Status](#-project-status--known-limits) for what has been verified on which OS.
 * **Rust Toolchain**: Rust `1.89.0` or newer (if building from source).
 * **PC/SC Smartcard Service**: (Optional, only for YubiKey PIV hardware token features). Enabled by default on Windows (`winscard`); install `pcscd` on Linux.
 
@@ -401,6 +444,12 @@ ciphervault run --legacy --no-inherit -- python script.py
 
 # Dry-run inspection (view decrypted variable keys without exposing values)
 ciphervault run --legacy --dry-run -- node server.js
+
+# Least privilege: inject only these variables and cut off the child's network
+ciphervault run --legacy --allow-keys DATABASE_URL,REDIS_URL --no-net -- pytest -q
+
+# Named execution profile from .ciphervault/policy.toml (see "Workspace policy" below)
+ciphervault run --legacy --profile test -- pytest -q
 ```
 
 ---
@@ -565,6 +614,171 @@ cv approve sign <CHALLENGE_ID>
 
 ---
 
+## 🤖 AI Agent Safety & the Hermes Plugin
+
+AI coding agents are useful and dangerous around secrets: they read `.env` files, echo values into logs, and `git add` things they should not. Once a secret enters a model's context it cannot be taken back. CipherVault's agent surfaces keep values on your machine, inside the CLI process, and let you **verify afterwards** what the agent touched.
+
+### Pick an integration
+
+| Integration | Best for | What you get |
+|---|---|---|
+| **[Hermes plugin](#the-hermes-plugin)** (`plugins/ciphervault`) | [Hermes Agent](https://hermes-agent.nousresearch.com) users | 12 tools, leak-guard and scrubbing hooks, a Hermes secret source, a desktop pane, and a setup wizard. The most complete integration. |
+| **[`ciphervault mcp`](#claude-code-codex-and-cursor-mcp-and-hooks)** | Claude Code, Codex, Cursor | A stdio MCP server with 7 tools (status, scan, redact, run, push, diff, audit). |
+| **[`hook agent-pre` / `agent-post`](#claude-code-codex-and-cursor-mcp-and-hooks)** | Any agent with tool-call hooks | Blocks secret reads and unsafe commits before they happen; scrubs results after. |
+
+### The Hermes plugin
+
+The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.7.0**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
+
+```mermaid
+flowchart LR
+    Agent["Hermes agent / model"] -->|"tool call"| Pre["pre_tool_call\nleak guard + approval gate"]
+    Pre -.->|"blocked: secret read, secret-dumping command,\nunsafe git add / commit / push"| Agent
+    Pre -->|"allowed"| Tool["ciphervault_* tools\nor any other tool"]
+    Tool --> CLI["ciphervault CLI\n(secret values stay inside this process)"]
+    CLI --> Vault[("Encrypted vault\n+ hash-chained audit log")]
+    Tool -->|"raw result"| Scrub["transform_tool_result\nexact-value + shape scrub"]
+    Scrub -->|"scrubbed result only"| Agent
+    Scrub -.->|"SHA-256 receipt of what the model saw"| Vault
+```
+
+#### Install
+
+**Quickest path to try it:** `hermes ciphervault quickstart` runs the whole loop in a throwaway vault in about two minutes.
+
+**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. When this README was updated, that catalog entry was still **v0.6.5 (7 tools)**. To get **v0.7.0 (all 12 tools)**, install from this repository:
+
+```bash
+# from a CipherVault checkout; use $HERMES_HOME instead of ~/.hermes if you set it
+cp -r plugins/ciphervault ~/.hermes/plugins/ciphervault
+hermes plugins enable ciphervault
+hermes ciphervault bootstrap   # downloads the pinned, checksum-verified CLI (v1.0.35)
+hermes ciphervault doctor      # confirms the CLI is compatible; exits nonzero if not
+# restart Hermes: the ciphervault_* tools appear
+```
+
+```powershell
+# Windows PowerShell equivalent of the copy step
+Copy-Item -Recurse plugins\ciphervault "$HOME\.hermes\plugins\ciphervault"
+```
+
+`hermes ciphervault setup` is a guided wizard for the binary, `.ciphervault/policy.toml`, and (with `--wire-hermes`) pointing Hermes' own provider keys at the vault.
+
+> [!NOTE]
+> **Platform status:** `bootstrap` pins a CLI binary for Windows x64, Linux x64 and macOS 13+ (Apple Silicon and Intel). Windows is the verified path. The Linux and macOS binaries are cross-built and have not yet been exercised on real hosts, so treat those platforms as unverified until [Project Status](#-project-status--known-limits) says otherwise. You can always build the CLI yourself (`cargo build --release -p ciphervault-cli`) and point `$CIPHERVAULT_BIN` at it.
+
+#### The 12 tools
+
+| Tool | What it does | What the model sees |
+|---|---|---|
+| `ciphervault_status` | Vault status: tracked file **paths**, sealed state, head, operator count, CLI version, workspace posture. | Paths and counts |
+| `ciphervault_scan` | Masked secret-sprawl scan of the workspace and staged diffs; `fix` appends findings to `.gitignore`. | Masked findings |
+| `ciphervault_run` | Runs a command with secrets injected in RAM only. `--no-net` by default where supported, optional `--proxy`, optional `profile`. **Every call needs human approval.** | Scrubbed output |
+| `ciphervault_push` | Encrypted snapshot of tracked secrets (local by default). `shred_working_copy=true` seals and removes plaintext; `local_only=false` replicates. | Result metadata |
+| `ciphervault_recovery_drill` | Restores a kit or shares into a temp directory the tool creates, returns a SHA-256 manifest, then deletes it. | Hashes only |
+| `ciphervault_redact` | Masks text with vault-exact and credential-shape redaction before you quote it. | Masked text |
+| `ciphervault_audit` | Reads and verifies the agent audit log; `check_text` tells you whether a given output passed the scrubber. | Hashes and metadata |
+| `ciphervault_env_doctor` | Finds missing and unused keys, `.env.example` drift and malformed values, even on sealed vaults; `sync_env_example` updates `.env.example`. | Key names and anomaly codes |
+| `ciphervault_secret_generate` | Generates a random secret inside the vault (`base64url`, `hex`, `uuid`, `alphanumeric`) and seals it. | Name, format, length, short hash |
+| `ciphervault_diff` | Masked key-level diff between snapshots or against the working tree (never `--reveal`). | Masked diff |
+| `ciphervault_proxy_doctor` | Dry run: which vault keys map to built-in provider routes, policy upstreams, or nothing. | Key names |
+| `ciphervault_secret_prompt` | Asks the **human** for a secret out of band (desktop drawer or hidden terminal prompt) so nobody pastes secrets into chat. | Nothing |
+
+A typical agent session follows this path: `env_doctor` → `scan` → fix sprawl → `secret_generate` or `secret_prompt` (if a key is missing) → `run` (dry run or profile first) → `diff` → `push` → `recovery_drill` after kit or share changes.
+
+#### Hooks, middleware and extras
+
+| Surface | What it does |
+|---|---|
+| `pre_tool_call` hook | **Leak guard.** Blocks reads and writes of secret files and the policy file, secret-dumping CLI commands, secret-shaped payloads sent to other tools, and `git add` / `commit` / `push` while sprawl violations exist. It also runs the approval gate for `ciphervault_run`. |
+| `transform_tool_result` hook | Scrubs every other tool's result before it reaches the model, in 256 KB chunks with 4 KB seam overlaps up to 4 MB (`CIPHERVAULT_MAX_RESULT_CHARS`). Where a vault is present it fails closed: if the scrub or its audit receipt fails, the output is withheld. |
+| `post_tool_call` hook | Records write and exec tool completions in the audit log. |
+| `tool_request` middleware | Defaults the session working directory into `ciphervault_*` calls and attaches a one-time workspace posture summary. |
+| Secret source `ciphervault` | Lets Hermes' own environment variables come from a vault at startup (see below). |
+| `/ciphervault` and `hermes ciphervault …` | A chat slash command, and terminal commands `bootstrap`, `setup`, `status`, `doctor` and `quickstart`. |
+| Desktop pane | Live vault status, a one-click **Seal & shred `.env`**, a masked **Secret Entry Drawer**, an **Env Health** card and a verified **Agent Audit** feed. |
+
+To source Hermes' own environment from a vault, add this to your Hermes config:
+
+```yaml
+secrets:
+  ciphervault:
+    enabled: true
+    vault_path: C:/path/to/project   # the folder that contains .ciphervault/
+```
+
+#### Workspace policy (`.ciphervault/policy.toml`)
+
+A human-owned file that defines what agents may run. The CLI enforces it, and the leak guard blocks agent edits to it. Unknown keys are rejected, so typos fail loudly.
+
+```toml
+[vault]
+sealed_mode = true        # every push also removes tracked plaintext from the working tree
+default_no_net = true     # default to network-off child processes
+
+[profiles.test]
+commands = ["pytest", "cargo", "npm"]     # command allowlist for this profile
+allow_keys = ["DATABASE_URL", "REDIS_URL"]  # inject only these variables
+no_net = true
+
+[profiles.llm_eval]
+commands = ["python", "node"]
+allow_keys = ["OPENAI_API_KEY"]
+proxy = true              # real keys stay in the loopback proxy, outside the child
+                          # (proxy and no_net cannot combine, so default_no_net is skipped here)
+
+[profiles.llm_eval.upstreams]   # human-pinned proxy upstreams the agent cannot change
+CUSTOM_GATEWAY_KEY = "https://gateway.example.com"
+```
+
+An agent then calls `ciphervault_run` with `profile="test"`, or you run `ciphervault run --profile test -- pytest -q` yourself. Approval prompts become scoped grants instead of a wall of flags.
+
+#### What the plugin does, and what it does not
+
+* **Approval is never bypassed.** Every `ciphervault_run` goes through Hermes' human-approval gate. An "always" grant covers only the same execution envelope: program, profile, inline-code hash, network mode and `allow_keys`. Approving an offline test run never covers inline code or wider access.
+* **Provable, not just promised.** Every block, approval request, scrubbed result and agent write is appended to a hash-chained, device-signed audit log. Each scrubbed result records the SHA-256 of the exact output that reached the model. The chain head is anchored to your operator fleet on replicated pushes and when a run approval is requested. Verify with `ciphervault agent-log verify` and `ciphervault agent-log verify-remote`.
+* **Minimal network use.** The plugin makes no network calls except two you trigger: `bootstrap` (downloads the pinned CLI and checks its SHA-256) and the audit-head checkpoint (entry count and head hash only, no contents) sent to your own configured operators. No telemetry.
+* **Honest limits.** `ciphervault_run` still gives the approved child process the secrets it asked for: approve consciously, and prefer `allow_keys`, `--no-net` or `--proxy`. Scrubbing is exact-value plus credential-shape matching, not magic. The plugin has not had an external security audit, and the Linux and macOS paths are unverified (see above).
+
+#### Requirements and validation
+
+The plugin needs a CLI whose `redact --json` reports `exact_values_complete`. The pinned **v1.0.35** release does; v1.0.32 and earlier do not, and the plugin withholds vault-scoped output with them. Run `hermes ciphervault doctor` to check.
+
+```bash
+hermes plugins validate ./plugins/ciphervault --install-deps
+hermes plugins doctor ciphervault
+python3 -m pytest plugins/ciphervault/tests -q
+```
+
+More detail: [plugin README](plugins/ciphervault/README.md) (full disclosure), [agent skill rules](plugins/ciphervault/skills/ciphervault/SKILL.md), [demo script](plugins/ciphervault/DEMO.md), the [agent audit pattern](docs/audit/AGENT_AUDIT_PATTERN.md), and the [security review and roadmap](docs/SECURITY_AND_HERMES_PLUGIN_ROADMAP.md).
+
+### Claude Code, Codex and Cursor (MCP and hooks)
+
+Add the native MCP server to your agent's MCP configuration (for example `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "ciphervault": { "command": "ciphervault", "args": ["mcp"] }
+  }
+}
+```
+
+Its `ciphervault_run` tool defaults to `--no-net` on Linux, macOS and Windows, and it never forwards an agent-supplied `proxy_upstream`. To block secret reads and unsafe commits before they happen, wire the hooks into an agent that supports tool-call hooks. For Claude Code that looks like:
+
+```json
+{
+  "hooks": {
+    "PreToolUse":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "ciphervault hook agent-pre --json-decision" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "ciphervault hook agent-post" }] }]
+  }
+}
+```
+
+`agent-pre` reads the tool call as JSON on stdin and denies by exiting with status 2 (or, with `--json-decision`, by returning a Claude Code `permissionDecision`). `agent-post` scrubs the tool result. The older Python server in `services/mcp` still works for existing configurations; new setups should use `ciphervault mcp`.
+
+---
+
 ## 💻 Complete CLI Command Reference
 
 | Command | Key Arguments & Flags | Description |
@@ -572,12 +786,17 @@ cv approve sign <CHALLENGE_ID>
 | `ciphervault init` | `[-f/--force] [-o/--operators <URL...>] [--save-kit <PATH>] [--hardware-token] [-i/--import-gitignore] [--reader <NAME>] [--pin <PIN>]` | Initializes a new vault, derives key hierarchy, prints paper recovery kit, and scans `.gitignore` for secrets. |
 | `ciphervault track` | `[PATH...] [--from-gitignore] [--no-gitignore] [--allow-planned]` | Registers confidential files for snapshot tracking; automatically appends to `.gitignore` to prevent leaks. Missing paths are an error unless `--allow-planned`. |
 | `ciphervault untrack` | `<PATH...>` | Stops tracking specified confidential files. |
-| `ciphervault status` | `[--json] [--overview]` | Displays active vault metadata, tracked files, and active epoch. `--overview` adds snapshots, files, leases, anchors, and recent activity. |
-| `ciphervault push` | `[-m/--message <MSG>] [--touch] [--local] [--anchor] [--concurrency <N>] [--replicas <N>] [--reader <NAME>] [--pin <PIN>]` | Slices files with FastCDC, encrypts, and replicates across operators with mandatory PoS readback verification; hardware touch optional. |
+| `ciphervault status` | `[--json] [--overview]` | Displays active vault metadata, tracked files, and active epoch. `--overview` adds snapshots, files, leases, anchors, and recent activity. `--json` also reports whether the working tree is sealed (`working_tree_sealed`). |
+| `ciphervault push` | `[-m/--message <MSG>] [--touch] [--local] [--anchor] [--concurrency <N>] [--replicas <N>] [--shred/--seal] [--reader <NAME>] [--pin <PIN>]` | Slices files with FastCDC, encrypts, and replicates across operators with mandatory PoS readback verification; hardware touch optional. `--shred` (alias `--seal`) zero-fills and removes tracked plaintext from the working tree after sealing; `[vault] sealed_mode = true` in the workspace policy makes this the default. |
 | `ciphervault pull` | `[-d/--dry-run] [-f/--force]` | Pulls and applies latest verified snapshots from storage operators. `--dry-run` checks without modifying local files. |
 | `ciphervault history` | *None* | Displays the snapshot commit DAG history. |
-| `ciphervault run` | `[-s/--snapshot <HEX>] [-e/--env-file <FILE>] [--project <SLUG>] [--env <ENV>] [--revision <64HEX>] [--endpoint <URL>] [--token <TOK>] [--legacy] [--no-inherit] [--dry-run] [-q/--quiet] [--json] [--set <K=V...>] -- <CMD...>` | Injects decrypted secrets directly into child process environment in volatile RAM (zero disk exposure). Scoped mode (`--project/--env`, optional `--revision`) fetches from the account service; `--legacy` keeps snapshot mode explicitly. |
+| `ciphervault run` | `[-s/--snapshot <HEX>] [-e/--env-file <FILE>] [--project <SLUG>] [--env <ENV>] [--revision <64HEX>] [--endpoint <URL>] [--token <TOK>] [--legacy] [--no-inherit] [--dry-run] [-q/--quiet] [--json] [--set <K=V...>] [--allow-keys <K1,K2>] [--no-net \| --proxy [--proxy-upstream <VAR=https://host[@Header]>...]] [--profile <NAME>] -- <CMD...>` | Injects decrypted secrets directly into child process environment in volatile RAM (zero disk exposure). Scoped mode (`--project/--env`, optional `--revision`) fetches from the account service; `--legacy` keeps snapshot mode explicitly. `--json` exact-value scrubs captured output (for AI agents). `--allow-keys` injects only the named variables; `--no-net` sandboxes the child's network (Linux `unshare`, macOS `sandbox-exec`, Windows AppContainer; refuses to run if unsupported); `--proxy` keeps real API keys in a loopback credential proxy outside the child (conflicts with `--no-net`); `--profile` applies a profile from `.ciphervault/policy.toml`. |
 | `ciphervault diff` | `[<SNAPSHOT_A>] [<SNAPSHOT_B>] [-f/--file <PATH>] [--reveal] [--json]` | Compares confidential file changes with shoulder-surfing masking enabled by default. |
+| `ciphervault env-doctor` | `[--env-file <PATH>] [--sync-env-example] [--json]` | Zero-knowledge environment diagnostics: compares env references in code and `.env.example` against vault keys and flags malformed values (empty, whitespace-wrapped, unstripped quotes, placeholders, invalid URL/JSON, prefix mismatch) without printing any value. `--sync-env-example` safely updates `.env.example`. |
+| `ciphervault redact` | `[--json] [--stdio]` | Filters stdin through vault-exact and credential-shape redaction; never prints a secret value. `--json` adds redaction counts and `exact_values_loaded`; `--stdio` runs a persistent JSON-lines bridge (redact + agent-log) for agent plugins. |
+| `ciphervault export-env` | `[--env-file <FILE>] [--snapshot <HEX>] [--allow-working-copy] [--force-tty]` | **Prints decrypted values as JSON** for secret-manager integrations such as the Hermes secret source. Refuses to write to a terminal unless `--force-tty`. Never use it from an agent or in chat. |
+| `ciphervault mcp` | *(none)* | Stdio Model Context Protocol server (7 tools: status, scan, redact, run, push, diff, audit) for Claude Code, Codex and Cursor. |
+| `ciphervault agent-log` | `show [--limit <N>] [--json]` / `verify` / `check --output-sha256 <HEX>` / `anchor` / `verify-remote` / `export [--out <FILE>]` / `record …` | Tamper-evident, hash-chained, device-signed record of agent actions around the vault. `check` looks up the hash of an output that reached the model; `anchor`/`verify-remote` checkpoint and verify the chain head on the operator fleet. `record` is used by plugins and hooks. |
 | `ciphervault restore` | `[-s/--snapshot <HEX>] [-t/--to <DIR>] [--dry-run] [--force] [--hardware-token] [--reader <NAME>] [--pin <PIN>]` | Verifies a historical snapshot, previews without writes or publishes a journaled merge restore. Restoring into the workspace refuses on dirty files unless `--force`. |
 | `ciphervault recover` | `[-k/--kit <PATH>] [--shares <PATH...>] -t/--to <DIR> [--require-approval] [--approver-key <HEX...>] [--force]` | Reconstructs confidential files on a clean machine using a paper kit or $M$-of-$N$ threshold guardian shares. `--approver-key` (repeatable) pins whose receipts are accepted with `--require-approval`. |
 | `ciphervault recovery split` | `-t/--threshold <M> -s/--shares <N> [--kit <PATH>] [-o/--out-dir <DIR>] [--stdout]` | Splits master recovery secret $R$ into printable Shamir paper guardian sheets. Requires `--out-dir` (or explicit `--stdout`); never retypes the secret by hand. |
@@ -608,6 +827,7 @@ cv approve sign <CHALLENGE_ID>
 | `ciphervault token` | `status/probe/list/slots [-r/--reader <NAME>]` + `pin [-p/--pin <PIN>] [--test] [--clear]` + `select [-r/--reader <NAME>]` | Inspects attached PC/SC smartcard readers, PIV slots, and touch policies; tests/caches or clears the cached PIN; persists the default reader. |
 | `ciphervault hook install` | `[--force]` | Installs the Git pre-commit hook; refuses to clobber a foreign hook unless `--force` (backed up first). |
 | `ciphervault hook check` | `[-d/--deep] [-f/--fix] [--json]` | Checks staged confidential files, secret sprawl, and unbacked modifications; `--fix` appends discoveries to `.gitignore`. |
+| `ciphervault hook agent-pre` / `agent-post` | `agent-pre [--json-decision]` | Cross-agent PreToolUse / PostToolUse guardrails: block secret-file reads, `export-env`, secret-bearing arguments and unguarded git commits, and scrub tool results. |
 | `ciphervault auth` | `init [--name <NAME>]` / `connect [--endpoint <URL>] [--label <STR>] [--vault-alias <STR>]` / `login` / `logout` / `status` | Manages the optional local account and device identity; `connect` registers with the hosted account service. |
 | `ciphervault device` | `list` / `revoke <DEVICE_ID_32BHEX>` / `export-key <OUT>` (refuses to overwrite) / `import-keys <BUNDLE>` | Lists or revokes enrolled devices; exports/imports a passphrase-sealed device + epoch-key bundle. |
 | `ciphervault vault` | `link [--alias <NAME>]` / `unlink` | Binds or removes the local vault from the account registry. |
@@ -618,6 +838,7 @@ cv approve sign <CHALLENGE_ID>
 | `ciphervault migrate` | `plan [--vault <DIR>] --project <SLUG> [--default-env <ENV>] [--ack-production] [--dry-run] [--snapshot <HEX>]` / `apply --migration-id <ID>` / `verify --migration-id <ID>` / `resolve --migration-id <ID> --entry <ID> [--rename <NAME>] [--env <ENV>]` / `shred-legacy --confirm <SLUG>` | Migrates a legacy vault into scoped secrets (ledgered: plan, apply, verify, resolve, shred). |
 | `ciphervault completions` | `<bash/elvish/fish/powershell/zsh>` | Emits native shell autocompletion for the name invoked (`cv` vs `ciphervault` have separate scripts). |
 | `ciphervault update` | `[--check] [--reinstall]` | Checks for and installs the latest signed GitHub release. `--reinstall` repairs even when already current. |
+| `ciphervault release` | `sign --tag <TAG> --sums <FILE> [--out <FILE>] [--key-file <FILE>]` / `verify --tag <TAG> --sums <FILE> --sig <FILE>` | Release engineering: signs and verifies `SHA256SUMS.txt` against the pinned trust roots. |
 
 ---
 
@@ -646,6 +867,9 @@ open http://localhost:8080
 | `maintenance` | `ciphervault-maintenance` | Internal | Periodic replication auditor & SQLite `fleet.db` self-repair daemon |
 | `account` | `ciphervault-account` | `8300` | Optional self-hosted account plane with WebAuthn passkeys & TOTP alternate login |
 | `dashboard` | `ciphervault-dashboard` | `8080` | Self-contained visual explorer & dashboard |
+| `public-feed-publisher` | `ciphervault-public-feed-publisher` | Internal | Optional (`--profile public-feed`): signs and refreshes the public checkpoint feed, keeping the signing key out of the public explorer process |
+
+All published ports bind to `127.0.0.1` only. Put a reverse proxy in front of anything you expose beyond the host.
 
 ### Self-Hosted Multi-Server Deployment
 For production deployments across independent servers or private clouds, deploy `ciphervault-operator` across 3+ distinct physical or virtual machines behind an HTTPS reverse proxy (such as Caddy or Nginx) with mutual TLS or bearer token authorization. Each operator requires only a persistent data directory and a single open port.
@@ -675,7 +899,7 @@ Historical x86_64 release measurements below describe the earlier implementation
 CipherVault enforces strict zero-warning compilation and comprehensive multi-layer testing across cryptography, networking, and UI:
 
 ```bash
-# Execute the current workspace test suite; consult CI for the actual result
+# Execute the current workspace test suite (hosted CI is currently paused, so run the gates locally)
 cargo test --workspace --locked
 
 # Strict static analysis & linter enforcement (zero warnings policy)
@@ -692,24 +916,44 @@ node apps/ui/csp.browser.test.cjs
 
 # Sovereign CipherChain regression suite
 cargo test -p ciphervault-chain -p ciphervault-cli
+
+# Hermes plugin tests (Python)
+python3 -m pytest plugins/ciphervault/tests -q
+
+# Confirm the README badge and UI version strings match Cargo.toml
+node scripts/sync-version.cjs --check
 ```
 
 ---
 
-## 🤖 Use with Hermes Agent
+## 📌 Project Status & Known Limits
 
-CipherVault ships a native [Hermes Agent](https://hermes-agent.nousresearch.com) plugin (`plugins/ciphervault/`): six tools (status, sprawl scan, RAM-only run, encrypted push, recovery drill, redact), a `pre_tool_call` leak guard that blocks secret reads and dirty git operations, a result scrubber, and a secret source so Hermes' own environment can come from your vault. Values never enter the model context.
+CipherVault is a working, actively developed system. It is **not yet independently certified**, so read this table before you depend on it for production secrets.
 
-```bash
-hermes plugins install ciphervault
-hermes ciphervault bootstrap   # pinned, checksum-verified CLI (Windows)
-```
+| Area | Status |
+|---|---|
+| **External cryptographic audit** | Not yet performed. An engagement pack is in [`docs/audit/`](docs/audit/README.md). An independent *internal* reviewer pass (2026-11-10, against v1.0.32) found and fixed two HIGH findings. See [`SECURITY.md`](SECURITY.md). |
+| **Chunk protocol v2** | The default writer since v1.0.29, but the construction is still awaiting external review. Legacy v1 remains readable and writable (`CIPHERVAULT_CHUNK_V2_WRITE=0`). |
+| **Windows** | The verified platform. Release binaries and the Hermes plugin bootstrap are exercised here. |
+| **Linux and macOS** | The v1.0.35 binaries are cross-built. Network sandboxing (`unshare`, `sandbox-exec`), macOS Keychain, Linux Secret Service and PC/SC smartcards on these systems are implemented but have not yet been run on real hosts, and hosted CI is currently paused. See [`docs/PLATFORM_SUPPORT.md`](docs/PLATFORM_SUPPORT.md). |
+| **Hardware tokens** | Software-simulator regressions verify the YubiKey PIV flow. Physical-token behavior has not been established on every platform. |
+| **Proof-of-Storage** | Proves an operator can produce an object at challenge time (a readback check), not storage over time. |
+| **Account plane** | Single-writer SQLite (LiteFS optional). The documented PostgreSQL topology is not implemented and fails closed. |
+| **Releases** | v1.0.35 is a GitHub pre-release built locally, and its `SHA256SUMS.txt` is not signed (see the [audit pack](docs/audit/README.md)). The Hermes plugin compensates by verifying the CLI against SHA-256 pins in its own source. |
 
-See [plugins/ciphervault/README.md](plugins/ciphervault/README.md) for the full disclosure and demo script.
+The authoritative lists are [`docs/CURRENT_SECURITY_GUARANTEES.md`](docs/CURRENT_SECURITY_GUARANTEES.md) (what is and is not guaranteed) and the [release notes](dist/RELEASE_NOTES.md).
+
+---
 
 ## 📚 Further Documentation
 
-For deep technical specifications, audit reports, and deployment guides, explore the documentation hub in [`docs/`](docs/README.md):
+Start with [**`CURRENT_SECURITY_GUARANTEES.md`**](docs/CURRENT_SECURITY_GUARANTEES.md), which states exactly what CipherVault does and does not guarantee. For deep technical specifications, audit reports, and deployment guides, explore the documentation hub in [`docs/`](docs/README.md):
+
+* [**`SETUP_GUIDE.md`**](docs/SETUP_GUIDE.md) — Two-track setup for developers and node operators.
+* [**`plugins/ciphervault/README.md`**](plugins/ciphervault/README.md) — Hermes plugin: full disclosure, binary resolution, MFA notes and validation.
+* [**`PLATFORM_SUPPORT.md`**](docs/PLATFORM_SUPPORT.md) — What is verified on Windows, macOS and Linux (keyrings, smartcards, sandboxing).
+* [**`SECURITY_AND_HERMES_PLUGIN_ROADMAP.md`**](docs/SECURITY_AND_HERMES_PLUGIN_ROADMAP.md) — Agent-security review of the CLI and plugin, with the status of each finding.
+* [**`docs/audit/`**](docs/audit/README.md) — External-auditor engagement pack, threat model and the agent audit pattern.
 
 * [**`WORKFLOW_GUIDE.md`**](docs/WORKFLOW_GUIDE.md) — Operator network overview, day-to-day user flow, and the run-a-node guide (Part 3).
 * [**`OPERATOR_PLAYBOOKS.md`**](docs/OPERATOR_PLAYBOOKS.md) — Fleet operations: restart, mesh, vouchers, backup/restore, and the verified-join ceremony (§10).

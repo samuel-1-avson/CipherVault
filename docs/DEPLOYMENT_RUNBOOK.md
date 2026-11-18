@@ -206,7 +206,7 @@ web box itself (SSH), needs no runners, and is the supported way to ship
 sudo bash scripts/deploy-web.sh status
 
 # 2. Ship the landing (verify -> backup -> swap -> health-check -> rollback on fail)
-sudo bash scripts/deploy-web.sh landing --expect v1.0.30
+sudo bash scripts/deploy-web.sh landing --expect v1.0.35
 
 # 3. Ship the dashboard (local image build; see warning below)
 sudo bash scripts/deploy-web.sh dashboard --allow-unsigned

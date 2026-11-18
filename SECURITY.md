@@ -20,8 +20,10 @@ gap itself:
 | Automated dependency scanning | `cargo audit` (pinned, time-limited documented exceptions) + gitleaks in CI. |
 
 The largest open cryptographic question is the legacy custom
-Blake2b KDF (audit-pack item C1); the v2 chunk protocol ships
-opt-in until it has had external review (item C3). If you are an
+Blake2b KDF (audit-pack item C1); the v2 chunk protocol is the
+default writer but has not yet had external review (item C3), and
+the agent-safety surfaces and Hermes plugin have had internal review
+only. If you are an
 auditor or firm: the pack in `docs/audit/` has scope, invariants,
 and reproduction commands, and asks for a quote.
 

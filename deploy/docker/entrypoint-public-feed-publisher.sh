@@ -5,7 +5,7 @@ set -eu
 # signing key is read from the container environment and is never printed.
 : "${CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX:?CIPHERVAULT_PUBLIC_CHECKPOINT_SIGNING_KEY_HEX must be configured}"
 FEED_OUTPUT="${CIPHERVAULT_PUBLIC_FEED_OUTPUT:-/var/lib/ciphervault-ui/public-checkpoint-feed.json}"
-FEED_NETWORK="${CIPHERVAULT_PUBLIC_FEED_NETWORK:-Arbitrum One}"
+FEED_NETWORK="${CIPHERVAULT_PUBLIC_FEED_NETWORK:-CipherChain}"
 INTERVAL_SECS="${CIPHERVAULT_PUBLIC_FEED_INTERVAL_SECS:-60}"
 
 echo "Starting CipherVault signed public checkpoint publisher"

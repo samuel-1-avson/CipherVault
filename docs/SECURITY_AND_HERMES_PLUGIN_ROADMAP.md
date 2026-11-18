@@ -4,6 +4,40 @@
 
 ---
 
+## Status update (18 November 2026, CLI v1.0.35, Hermes plugin v0.7.0)
+
+This document is the point-in-time review that drove the v1.0.33 to v1.0.35 work. **Most of what it recommends has since shipped.** The sections below are kept as written, so their file and line references describe the code as it was reviewed, before the fixes. Use this table, not those line numbers, to see where things stand. "Verified" means checked against the current code in this pass; it is not a re-audit.
+
+### Findings
+
+| Finding | Status | What the current code shows |
+|---|---|---|
+| **Vuln-1** Agent-controlled `proxy_upstream` | **Mitigated** | `ciphervault mcp` never forwards an agent-supplied `proxy_upstream` (covered by tests). The plugin still accepts it but only for public HTTPS, non-provider hosts, rejects loopback/private/link-local hosts and known-provider overrides, and merges human-pinned upstreams from `.ciphervault/policy.toml`. Residual: it is validated, not removed from the plugin schema; CLI-side loopback restrictions were not re-checked. |
+| **Vuln-2** Blank `proxy_upstream` disables `--no-net` | **Fixed** | One `_clean_proxy_upstreams` helper feeds the effective-`no_net`, approval-prompt and run paths. |
+| **Vuln-3** Coarse approval `rule_key` | **Fixed** | Grants bind program, profile, inline-code hash, network mode and `allow_keys` (see the plugin README). |
+| **Vuln-4** Audit forgery and permissive safe-command regex | **Fixed** | The safe-command pattern now allows only `status`, `track`, `push`, `hook`, `audit`, `diff` and read-only `agent-log show/verify/check`; `init`, `rekey`, `prune`, `untrack`, `export-env`, and `agent-log record/anchor` are blocked from unapproved agent shells. Audit entries are signed under the domain `CipherVault-AgentAudit-v1`, and callers authenticate with a per-vault `audit_hmac.key`. Strict-verification details were not re-checked. |
+| **Vuln-5** Scrubbing gaps | **Mostly fixed** | Verified: base64url forms, every PEM private-key block and bare body lines, and `#` treated as a comment only after whitespace (with tests). **Not confirmed:** shifted-base64 alignments, and `vault.db-wal` in the bridge cache fingerprint (no reference found). Treat those two as open. |
+| **Vuln-6** `ui --local` unauthenticated session | **Fixed** | A bootstrap token or private session is required for `/api/context`; plaintext diff reveal over HTTP is disabled unless `CIPHERVAULT_UI_ALLOW_REVEAL=1`. |
+| **Vuln-7** Legacy Python MCP and dashboard plugin API | **Partly fixed** | `plugin_api.py` now rejects UNC and non-directory `cwd`, uses a minimal environment, and exposes the sealed-state fields. The Python MCP server now goes through `ciphervault run --json`, uses a minimal environment and defaults to `--no-net`, but it is still a separate implementation rather than a launcher for `ciphervault mcp`. |
+
+### Roadmap items
+
+| Item | Status | Notes |
+|---|---|---|
+| `ciphervault_env_doctor` | **Shipped** | Native `ciphervault env-doctor`, exposed as a plugin tool. Differences from the sketch: no `EXPIRED_JWT` / `EXPIRING_CERT` lints, and no cross-environment drift report. |
+| `ciphervault_secret_generate` | **Shipped** | Formats `base64url`, `hex`, `uuid`, `alphanumeric` (no `password` or `ed25519`). Returns name, format, length, short hash and sealed state. |
+| `ciphervault_diff` | **Shipped** | Never passes `--reveal`. |
+| `ciphervault_proxy_doctor` | **Shipped** | |
+| `ciphervault_secret_prompt` and the desktop pane | **Shipped** | Secret Entry Drawer, Seal & shred `.env`, Env Health card, Agent Audit feed. |
+| `.ciphervault/policy.toml` profiles and `sealed_mode` | **Shipped** | `[vault]` and `[profiles.*]` with `commands`, `allow_keys`, `no_net`, `proxy`, `upstreams`. The sketch's `description` and `require_explicit_approval` keys are **not** accepted (unknown keys are rejected). There is no `ciphervault policy init` command. |
+| Ambient workspace posture | **Shipped** | `workspace_posture` on status and tool results, via the `tool_request` middleware. |
+| `hermes ciphervault setup` wizard | **Shipped** | Binary, policy and `--wire-hermes`. |
+| Windows `--no-net` | **Shipped** | AppContainer. Third-party Python packages can still fail to start under it; see [PLATFORM_SUPPORT.md](PLATFORM_SUPPORT.md). |
+| Live CI on macOS and desktop Linux | **Open** | The Linux and macOS code paths exist but have not run on real hosts, and hosted CI is currently paused. |
+| Install of v0.7.0 through the Hermes catalog | **Open** | The upstream catalog entry lagged at v0.6.5 when this was checked; v0.7.0 installs from this repository. |
+
+---
+
 ## 1. Executive Summary & Honest Assessment
 
 CipherVault's **cryptographic foundation and defensive redaction layer are genuinely strong**. Primitives (`XChaCha20-Poly1305`, `HKDF-SHA256`, `Argon2id`, strict `Ed25519`, `X25519`, Shamir `GF(2^8)`), journaled crash-safe snapshot restoration (`crates/snapshot/src/restore.rs`), fail-closed exact + shape scrubbing (`crates/redact`, `plugins/ciphervault/__init__.py`), and native OS `--no-net` sandboxing (Linux `unshare`, macOS `sandbox-exec`, Windows AppContainer) put it well ahead of typical `.env` wrappers and naive agent plugins.

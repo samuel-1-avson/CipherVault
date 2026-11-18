@@ -5,7 +5,7 @@
 # Runs ON the web box (e.g. cv-web-ui over SSH). No GitHub Actions required.
 #
 #   sudo bash scripts/deploy-web.sh status
-#   sudo bash scripts/deploy-web.sh landing [--ref main] [--expect v1.0.30]
+#   sudo bash scripts/deploy-web.sh landing [--ref main] [--expect v1.0.35]
 #   sudo bash scripts/deploy-web.sh dashboard --allow-unsigned [--ref main]
 #
 # Design rules (do not weaken):

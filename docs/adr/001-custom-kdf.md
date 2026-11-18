@@ -2,7 +2,7 @@
 
 Date: 2026-09-12 (recorded 2026-09-18) · Status: Accepted
 
-30 September 2026 update: this decision remains the compatibility contract for recovery descriptors, manifest keys and v1 chunks. Opt-in chunk v2 uses HKDF-SHA256 with fixed-width versioned vault/epoch bindings; its writer is gated by `CIPHERVAULT_CHUNK_V2_WRITE=1` pending independent review. Default captures remain v1. See [CHUNK_PROTOCOL_V2.md](../../crates/snapshot/CHUNK_PROTOCOL_V2.md). This ADR is not independent cryptographic certification.
+30 September 2026 update: this decision remains the compatibility contract for recovery descriptors, manifest keys and v1 chunks. Chunk v2 uses HKDF-SHA256 with fixed-width versioned vault/epoch bindings. *(When this note was written, the v2 writer was gated by `CIPHERVAULT_CHUNK_V2_WRITE=1` and captures defaulted to v1; the amendment below supersedes that, and v2 is now the default writer.)* See [CHUNK_PROTOCOL_V2.md](../../crates/snapshot/CHUNK_PROTOCOL_V2.md). This ADR is not independent cryptographic certification.
 
 ## Context
 

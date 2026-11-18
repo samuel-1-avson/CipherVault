@@ -6,6 +6,12 @@ independent review. An internal source review, including another AI agent's
 cross-check, does not establish independent certification. No external reviewer
 has been assigned and no completed external audit is claimed.
 
+> **Note (v1.0.35):** this package records the v1.0.26 baseline. Since v1.0.29,
+> chunk v2 is the default writer, so where the text below says "default v1" or
+> "opt-in v2", read "legacy v1 and pre-v2 history" and "default v2". Later work
+> is described in [CURRENT_SECURITY_GUARANTEES.md](CURRENT_SECURITY_GUARANTEES.md)
+> and the [audit pack](audit/README.md).
+
 ## Reference and evidence
 
 Released baseline: **v1.0.26**, commit

@@ -133,7 +133,15 @@ cargo test --workspace --all-features
 cargo test -p ciphervault-chain -p ciphervault-cli
 ```
 
-### 5. SPDX Headers
+### 5. Hermes Plugin and Version Checks
+Changes under `plugins/ciphervault/` need the plugin tests, and a release bump needs the version single-source check:
+```bash
+python3 -m pytest plugins/ciphervault/tests -q
+node scripts/sync-version.cjs --check
+```
+Hosted CI is currently paused, so run these gates locally and say so in your pull request.
+
+### 6. SPDX Headers
 Every new `.rs` or `.sol` source file should include the project's standard SPDX header at the top:
 ```rust
 // Copyright (c) 2026 Samuel Avornyoh and CipherVault Contributors

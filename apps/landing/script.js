@@ -1814,7 +1814,7 @@ function initLiveTelemetryStream() {
    ============================================================================== */
 const REPL_RESPONSES = {
   help: [
-    'CipherVault console (v1.0.31) — real CLI syntax, live where a browser can measure:',
+    'CipherVault console (v1.0.35) — real CLI syntax, live where a browser can measure:',
     '  Short alias: cv and ciphervault are the same tool — examples below use cv.',
     '  Scoped secrets & enterprise management (v1.0.31):',
     '    project <list|show|use> - List and inspect scoped secret projects',
@@ -2253,12 +2253,12 @@ function closeReplDrawer() {
    10. Install Snippet Tabs & One-Click Copy
    ============================================================================== */
 const INSTALL_SNIPPETS = {
-  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.31)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.31)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
-  cargo: `# Build and install standalone CLI directly from Git source (v1.0.31)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
+  win: `# Install CipherVault for Windows via PowerShell (Release v1.0.35)\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
+  nix: `# Install CipherVault on Linux or macOS via Bash (Release v1.0.35)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
+  cargo: `# Build and install standalone CLI directly from Git source (v1.0.35)\ncargo install --locked --git https://github.com/samuel-1-avson/CipherVault ciphervault-cli`,
   brew: `# Homebrew/Scoop/Winget packages are not published yet (manifests live in dist/package-managers).\n# Use the installer instead (macOS/Linux):\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash`,
   scoop: `# Winget/Scoop packages are not published yet (manifests live in dist/package-managers).\n# Use the PowerShell installer instead (Windows):\nirm https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.ps1 | iex`,
-  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.31)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
+  docker: `# Spin up sovereign 3-node quorum with local management UI (v1.0.35)\ncurl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/docker-compose.yml -o docker-compose.yml\ndocker compose up -d`
 };
 
 function initInstallSnippets() {

@@ -61,9 +61,9 @@ proof. Browser verification cannot authorize the CLI's separate session.
 After protected setup, connect creates a device-bound browser handoff;
 the browser still needs its own fresh MFA proof for sensitive actions.
 Codes and managed session credentials must not be passed in command-line
-arguments, environment variables, agent tool inputs, or chat. The published
-v1.0.32 CLI predates this connection fix; use a source build until a newer
-release containing it is available.
+arguments, environment variables, agent tool inputs, or chat. This connection
+fix ships in v1.0.33 and later (including v1.0.35). v1.0.32 and earlier CLIs
+predate it; upgrade, or use a source build.
 
 ### Account policy
 

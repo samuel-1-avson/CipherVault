@@ -1,3 +1,177 @@
+# CipherVault 1.0.35
+
+The agent-safety release. It completes the AI-agent guardrail set (network
+sandboxing, execution profiles, sealed working trees, zero-knowledge
+diagnostics) and pairs with Hermes plugin v0.7.0, which pins this release.
+v1.0.35 is published as a GitHub pre-release.
+
+## Highlights
+
+- **`run` for agents.** `--allow-keys` injects only the named variables.
+  `--no-net` cuts off the child's network (Linux `unshare`, macOS
+  `sandbox-exec`, Windows AppContainer) and refuses to run if the sandbox is
+  unavailable. `--proxy` runs a loopback credential proxy in the parent so real
+  API keys never enter the child's environment; `--proxy-upstream VAR=URL`
+  pins upstreams. `--profile NAME` applies a profile from
+  `.ciphervault/policy.toml`.
+- **Workspace policy.** `.ciphervault/policy.toml` holds `[vault]`
+  (`sealed_mode`, `default_no_net`) and `[profiles.NAME]` (`commands`,
+  `allow_keys`, `no_net`, `proxy`, `upstreams`). Unknown keys are rejected.
+- **Sealed working tree.** `push --shred` (alias `--seal`) zero-fills and
+  removes tracked plaintext after the snapshot is sealed; `sealed_mode = true`
+  makes it the default. `status --json` reports `working_tree_sealed`.
+- **`env-doctor`.** Zero-knowledge environment diagnostics: missing and unused
+  keys, `.env.example` drift, and malformed values (empty, whitespace-wrapped,
+  unstripped quotes, placeholders, invalid URL or JSON, prefix mismatch), with
+  no value ever printed. `--sync-env-example` updates `.env.example`.
+- **Tamper-evident agent audit log.** Entries are hash-chained and signed with
+  an audit-specific domain (`CipherVault-AgentAudit-v1`); writes from callers
+  are authenticated with a per-vault `audit_hmac.key`. Tool results carry a
+  `workspace_posture` summary.
+- **Redaction.** Exact-value scrubbing covers raw, base64 and base64url, hex,
+  percent- and JSON-escaped forms, every PEM private-key block, and YAML/TOML
+  values that contain `#`. `redact --json` attests `exact_values_complete`
+  when every tracked working copy was loaded.
+- **Agent integrations.** `ciphervault mcp` (stdio MCP server, 7 tools),
+  `hook agent-pre` / `agent-post` cross-agent guardrails, and the
+  `redact --stdio` JSON-lines bridge. Agent-supplied `proxy_upstream` is never
+  forwarded over MCP.
+- **Local dashboard.** `ui --local` requires a bootstrap token or private
+  session before it opens `/api/context`.
+- **Cross-OS key custody and smartcards.** macOS Keychain (`security`) and
+  Linux Secret Service (`secret-tool`) key backends, and PC/SC smartcard
+  drivers for Linux (`libpcsclite`) and macOS (`PCSC.framework`), join the
+  existing Windows DPAPI and WinSCard paths.
+- **Hermes plugin v0.7.0** (12 tools) pins this release and its per-platform
+  SHA-256 values. See [the plugin README](../plugins/ciphervault/README.md).
+
+## Upgrade notes
+
+- **Checksums are unsigned.** Like v1.0.31 and v1.0.32, this release was built
+  locally while hosted CI was unavailable, so `SHA256SUMS.txt` is not signed
+  (a standing limitation recorded in the [audit pack](../docs/audit/README.md)).
+  The Hermes plugin compensates by pinning each binary's SHA-256 in its own
+  source.
+- The Hermes plugin withholds vault-scoped output unless the CLI's
+  `redact --json` attests `exact_values_complete`. v1.0.32 and earlier lack that
+  attestation and v1.0.35 ships it, so plugin users must upgrade (or build from
+  source and set `$CIPHERVAULT_BIN`). Run `hermes ciphervault doctor`.
+- **Platforms.** Windows x64 is the verified platform. The Linux and macOS
+  binaries are cross-built, and the platform-specific paths above (network
+  sandboxing, Keychain, Secret Service, PC/SC) have not yet been run on real
+  hosts; hosted CI was unavailable for this release. Treat them as unverified.
+- On Windows, `--no-net` runs the child in an AppContainer. Programs that need
+  files outside the sandbox's readable locations, such as third-party Python
+  packages, can fail to start under it; use `--proxy` or run them without
+  `--no-net`.
+- `--proxy` and `--no-net` cannot be combined. A policy profile with
+  `proxy = true` overrides `default_no_net`.
+- Required-MFA accounts need a CLI with the hosted MFA step-up fix (v1.0.33 or
+  later) to use `auth connect`; keep MFA enabled.
+- Chunk protocol v2 remains the default writer and still awaits external
+  review; reader requirements are unchanged from v1.0.29.
+
+---
+
+# CipherVault 1.0.33 and 1.0.34
+
+Two quick follow-ups on the agent-safety work, released before v1.0.35. The
+agent features listed under 1.0.35 landed across the 1.0.33 to 1.0.35 series;
+these items are the ones documented against a specific tag.
+
+- **1.0.33:** hosted MFA step-up for `auth connect` (a fresh authenticator code
+  is entered in your own terminal, input hidden). Exact whole-result
+  `agent-log check` lookups.
+- **1.0.34:** `agent-log check` matches `content_sha256`, so a lookup of the
+  visible text of a terminal output works, not only the whole result envelope.
+
+---
+
+# CipherVault 1.0.32
+
+Introduces the tamper-evident agent audit log and fixes pending-upload
+accounting. Built locally while hosted CI was unavailable; its
+`SHA256SUMS.txt` is not signed. Prebuilt Linux and macOS assets remained at
+v1.0.28.
+
+## Highlights
+
+- **Agent audit log.** `ciphervault agent-log` (`show`, `verify`, `check`,
+  `anchor`, `verify-remote`, `export`, `record`) keeps a hash-chained,
+  device-signed record of what agent tools did around the vault's secrets.
+  Scrubbed results record the SHA-256 of the exact output the model received,
+  so `agent-log check` can prove an output passed the scrubber.
+- **Fleet-anchored audit head.** A replicated push sends a signed checkpoint
+  (entry count and head hash only) to your operators; `agent-log verify-remote`
+  compares the local chain with it.
+- **Pending uploads.** A verified remote push now clears queued uploads of the
+  older local-only snapshots it supersedes, instead of growing the pending
+  count by one per push.
+- Hermes plugin v0.3.0 to v0.4.2: audit-log tool, per-program approval grants,
+  and audit anchoring at approval-request time.
+
+---
+
+# CipherVault 1.0.31
+
+Brings the first Hermes plugin, the canonical quickstart, and a round of
+operator and recovery hardening. Built locally; its `SHA256SUMS.txt` is not
+signed.
+
+## Highlights
+
+- **Agent bridge.** `run --json` scrubs captured output against the injected
+  values themselves (raw, percent-encoded, base64). `redact` filters stdin with
+  the same exact-plus-shape redaction. `export-env` is for machine consumers
+  only and refuses to write to a terminal.
+- **Hermes plugin v0.2.0**: JSON tools, a `pre_tool_call` leak guard, result
+  scrubbing, a `tool_request` middleware, a Hermes secret source, a pinned
+  bootstrap and a live desktop pane.
+- **Operators.** HTTP API binds loopback unless `0.0.0.0` is explicit;
+  service tokens under 32 characters refuse startup; pre-upload dedup
+  challenges verify the operator's signed Proof-of-Storage receipt.
+- **Recovery.** Shamir recombination rejects below-threshold share sets; new
+  kits add a SHA-256 checksum next to the legacy CRC32 (old kits still load);
+  PIN and KEK material is zeroized; keystore salts are random; local database
+  permissions are locked down.
+- **Anchoring.** With a multi-validator set the CLI publishes the proposal and
+  reports `PROPOSED — awaiting fleet quorum` instead of committing a local
+  fork. Opt-in private commitment transactions
+  (`CIPHERVAULT_ANCHOR_TX_VERSION=2`) put only a commitment and a per-anchor
+  pseudonym on-chain.
+- **UX.** Canonical five-minute quickstart, a no-vault onboarding panel in the
+  TUI, `ui --port` implies `--local`, and `hook check` spawns git portably.
+- **CipherChain liveness.** ADR-013 records behavior under split validator
+  votes; a view change is designed but not yet implemented.
+- **Single-sourced version.** `scripts/sync-version.cjs` keeps the README badge
+  and UI strings in step with `Cargo.toml`.
+- **CI hardening.** Dependabot, CodeQL, gitleaks, coverage, a pinned
+  `cargo-audit` and build-provenance attestation.
+
+---
+
+# CipherVault 1.0.30
+
+Moves CipherVault to a sovereign-only anchoring model and hardens the operator
+fleet and onboarding.
+
+## Highlights
+
+- **Sovereign-only anchoring.** Ethereum and Arbitrum anchoring was removed.
+  CipherChain is the only ledger: recoverable anchor salts, validator rotation
+  (`anchor --rotate-to`), a hub replica with catch-up and median time, and the
+  multi-party `genesis propose` / `sign` / `assemble` ceremony. Historical EVM
+  anchors remain under git tag `last-evm-anchor`.
+- **Operator audit.** Findings R1 to R13 were fixed, per-operator build-version
+  drift is now visible, and the guided `node setup` wizard replaces manual
+  first-run steps.
+- **Maintainability and supply chain.** Large modules were split, hygiene gates
+  added, an HA decision recorded, and alerting and supply-chain checks
+  expanded.
+- **Release.** Windows binaries only; Linux and macOS assets stayed at v1.0.28.
+
+---
+
 # CipherVault 1.0.29
 
 This release ships the `cv` short alias for the CLI, a sovereign

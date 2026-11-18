@@ -118,12 +118,19 @@ hermes ciphervault doctor
 # restart Hermes — ciphervault_* tools appear
 ```
 
+The catalog installs the version it pins, which can lag this repository (it was
+v0.6.5 with 7 tools when last checked, 18 November 2026). For v0.7.0 and all 12
+tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
+(default `~/.hermes`), then run `hermes plugins enable ciphervault`.
+
 This plugin version requires a CLI whose `redact --json` attests
 `exact_values_complete` — every tracked working copy was loaded, so a
 shape-blind vault value cannot slip through an unreadable file. The
 pinned v1.0.35 release ships that attestation, so
 `hermes ciphervault bootstrap` installs it on Windows x64, Linux x64, and
-macOS 13+ (Apple Silicon and Intel).
+macOS 13+ (Apple Silicon and Intel). Windows x64 is the verified platform: the
+Linux and macOS binaries are cross-built and have not yet been run on real
+hosts, so treat those platforms as unverified.
 Older CLIs (v1.0.32 and earlier) lack it: the plugin withholds
 vault-scoped output with them, so upgrade, or build the CLI from source
 (`cargo build --release -p ciphervault-cli`) and set

@@ -19,7 +19,7 @@
 | :--- | :--- | :--- | :--- |
 | **Symmetric AEAD** | draft-irtf-cfrg-xchacha | XChaCha20-Poly1305 (256-bit key, 192-bit/24-byte nonce, 128-bit MAC tag) | Chunk payload & manifest encryption |
 | **Legacy Key Derivation** | CipherVault custom (not libsodium-compatible) | Blake2b-512 with `CipherVault-KDF-v1` prefix + 8-byte context + LE index, truncated to 32 bytes | Recovery descriptors, manifest keys, v1 file keys and nonces |
-| **Opt-in v2 Chunk Derivation** | HKDF-SHA256 | Versioned salt; length-prefixed domain plus fixed-width vault/epoch/binding | Keyed opaque IDs, per-chunk key and nonce; independent review pending |
+| **v2 Chunk Derivation (default writer)** | HKDF-SHA256 | Versioned salt; length-prefixed domain plus fixed-width vault/epoch/binding | Keyed opaque IDs, per-chunk key and nonce; independent review pending |
 | **Content Addressing** | FIPS 180-4 | SHA-256 (32-byte digest) over canonical CBOR | Chunk Content Identifiers (CIDs) |
 | **Digital Signatures** | RFC 8032 | Ed25519 (EdDSA over Curve25519) | Snapshot records, head commitments, device certs |
 | **Key Agreement (ECDH)** | RFC 7748 | X25519 | Clean-machine sealed envelopes & recovery |

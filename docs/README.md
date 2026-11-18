@@ -1,6 +1,6 @@
 # 🛡️ CipherVault: Master Documentation Hub
 
-**Release track:** `v1.0.31`; see the [release notes](../dist/RELEASE_NOTES.md) and the [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) for publication and live verification.
+**Release track:** `v1.0.35` (Hermes plugin `v0.7.0`); the [release notes](../dist/RELEASE_NOTES.md) list what each release changed. The [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) records the earlier 1.0.26 production deployment.
 **Classification:** Enterprise System Architecture, Protocol Specification & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)  
 
@@ -12,7 +12,9 @@ CipherVault provides client-encrypted file backup and hosted scoped-secret manag
 
 Start with the [remediation ledger](../report/AUDIT_REMEDIATION_2026-09-30.md), [account service behavior](../services/account/README.md), [chunk v2 design](../crates/snapshot/CHUNK_PROTOCOL_V2.md), [installer signature requirements](../dist/INSTALLER_SIGNATURES.md), and [dependency audit policy](DEPENDENCY_AUDIT.md). Older design documents and deployment reports describe their recorded versions; these current behavior notes take precedence where they differ.
 
-This documentation suite is organized into tracks for core protocol engineers, security auditors, operators and application developers. Start with [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md): default v1 capture limitations, gated v2 writing, journaled restore, watcher retries, operator enrollment/pins and scoped batch execution. Older reports and diagrams preserve historical design context and are not current release certification.
+CipherVault also ships guardrails for AI coding agents: a native Hermes plugin, a Model Context Protocol server and cross-agent hooks. Those documents have their own track, [AI Agents & the Hermes Plugin](#-ai-agents--the-hermes-plugin), below.
+
+This documentation suite is organized into tracks for core protocol engineers, security auditors, operators, application developers and agent users. Start with [current security and operational guarantees](./CURRENT_SECURITY_GUARANTEES.md): legacy v1 capture limitations, chunk v2 as the default writer, journaled restore, watcher retries, operator enrollment/pins, scoped batch execution and the agent-safety surfaces. Older reports and diagrams preserve historical design context and are not current release certification.
 
 ```mermaid
 flowchart TB
@@ -58,7 +60,16 @@ flowchart TB
         subgraph TrackE ["5. Audits, Evidence & Archive"]
             direction TB
             Reports["report/\n(Curated Evidence & Scoped-Secret Specs)"]
+            AuditPack["audit/\n(External Review Pack & Threat Model)"]
             Archive["archive/\n(Historical RFCs & Spikes)"]
+        end
+
+        subgraph TrackF ["6. AI Agents & Hermes Plugin"]
+            direction TB
+            PluginDoc["plugins/ciphervault/README.md\n(Hermes Plugin v0.7.0)"]
+            Skill["SKILL.md\n(Agent Rules)"]
+            Mcp["services/mcp/README.md\n(MCP Server)"]
+            AgentRoadmap["SECURITY_AND_HERMES_PLUGIN_ROADMAP.md\n(Agent Security Review)"]
         end
     end
 
@@ -72,7 +83,9 @@ flowchart TB
     class Arch,DON,Crypto,Acct,Keys g2;
     class Repair,Plan,Testnet,Deploy,Genesis g3;
     class ApiRef,DashRef,Platforms,ADR,Diagrams g4;
-    class Reports,Archive g5;
+    class Reports,AuditPack,Archive g5;
+    classDef g6 fill:#831843,stroke:#f472b6,stroke-width:2px,color:#f8fafc;
+    class PluginDoc,Skill,Mcp,AgentRoadmap g6;
 ```
 
 ---
@@ -89,12 +102,43 @@ flowchart TB
 
 ---
 
+## 🤖 AI Agents & the Hermes Plugin
+
+Guardrails that let AI coding agents scan, run, diff and back up secrets without secret values entering the model context, plus a verifiable record of what the agent touched. Start with the plugin README.
+
+| Document | Audience | Scope & Key Topics Covered |
+|---|---|---|
+| [**`plugins/ciphervault/README.md`**](../plugins/ciphervault/README.md) | **Hermes users & reviewers** | **Hermes plugin v0.7.0**: all 12 tools, hooks and middleware, desktop pane, secret source, binary resolution, MFA notes, validation commands, and the full process/network/audit disclosure. |
+| [**`SKILL.md`**](../plugins/ciphervault/skills/ciphervault/SKILL.md) | **Agents & plugin authors** | The hard rules an agent follows around secrets: paths not contents, never wrap `init`, the guard hooks are load-bearing, and the preferred tool order. |
+| [**`DEMO.md`**](../plugins/ciphervault/DEMO.md) | **Presenters** | Rehearsed 90-second demo script against a throwaway vault. |
+| [**`services/mcp/README.md`**](../services/mcp/README.md) | **Claude Code, Codex & Cursor users** | The native `ciphervault mcp` server (7 tools) and the older Python server. |
+| [**`SECURITY_AND_HERMES_PLUGIN_ROADMAP.md`**](./SECURITY_AND_HERMES_PLUGIN_ROADMAP.md) | **Security reviewers** | Agent-security review of the CLI and plugin: seven findings with remediation status, and what shipped from the roadmap. |
+| [**`audit/AGENT_AUDIT_PATTERN.md`**](./audit/AGENT_AUDIT_PATTERN.md) | **Agent-host & tooling authors** | The pattern behind the verifiable agent audit log: deny at the tool boundary, gate execution narrowly, scrub results, and chain-and-anchor the receipts. |
+| [**`CURRENT_SECURITY_GUARANTEES.md`**](./CURRENT_SECURITY_GUARANTEES.md#agent-safety-surfaces-v1032-to-v1035) | **Everyone** | Exactly what the agent surfaces guarantee, and what they do not. |
+
+---
+
+## 🔐 Security, Assurance & Release Integrity
+
+| Document | Audience | Scope & Key Topics Covered |
+|---|---|---|
+| [**`CURRENT_SECURITY_GUARANTEES.md`**](./CURRENT_SECURITY_GUARANTEES.md) | **Everyone (start here)** | The working implementation's guarantees and stated limits. Takes precedence over older reports where they differ. |
+| [**`audit/README.md`**](./audit/README.md) | **External auditors** | Engagement pack: scope (C1 to C8), claimed invariants, reproduction commands and known limitations, with the [threat model](./audit/THREAT_MODEL.md) and the [2026-11-10 independent reviewer pass](./audit/INDEPENDENT_REVIEW_2026-11-10.md). |
+| [**`SECURITY_AUDIT_READINESS.md`**](./SECURITY_AUDIT_READINESS.md) | **Security leads** | Audit readiness package and baseline evidence. |
+| [**`ENFORCED_MFA.md`**](./ENFORCED_MFA.md) and [**`MFA_ROLLOUT.md`**](./MFA_ROLLOUT.md) | **Account owners & operators** | Enforced second-factor policy for the account plane, and its rollout. |
+| [**`UPDATER_SIGNATURE_VERIFICATION.md`**](./UPDATER_SIGNATURE_VERIFICATION.md) | **Release engineers** | Signed-update verification, pinned trust roots and the key-rotation record. |
+| [**`DEPENDENCY_AUDIT.md`**](./DEPENDENCY_AUDIT.md) | **Maintainers** | Dependency audit policy and documented exceptions. |
+| [**`PASSPHRASE_KEY_BACKUP.md`**](./PASSPHRASE_KEY_BACKUP.md) | **Users & custodians** | Passphrase-sealed recovery key backups (`recovery key-backup` / `key-restore`). |
+| [**`ACCOUNT_BACKUP_AND_RECOVERY.md`**](./ACCOUNT_BACKUP_AND_RECOVERY.md) and [**`INDEPENDENT_RECOVERY_CUSTODY.md`**](./INDEPENDENT_RECOVERY_CUSTODY.md) | **Operators & custodians** | Account backup and isolated restore rehearsal, and independent recovery custody. |
+
+---
+
 ## 🏛 2. Core Architecture & Cryptographic Specifications
 
 | Specification | Primary Audience | Scope & Key Topics Covered |
 |---|---|---|
-| [**`SYSTEM_WORKFLOW.md`**](./SYSTEM_WORKFLOW.md) | **Architects, Engineers, Auditors** | **Master System Architecture & Workflows**: End-to-end component topology, Blake2b KDF key hierarchy, 7 operational workflows (Init, Watch, Push, L2 Rollup, Self-Repair, Disaster Recovery, YubiKey PIV), and verification invariants. |
-| [**`DECENTRALIZED_ARCHITECTURE_SPEC.md`**](./DECENTRALIZED_ARCHITECTURE_SPEC.md) | **Protocol Engineers & Core Devs** | **Decentralized Operator Network (DON v2.0)**: Multi-plane architecture, Kademlia DHT routing, libp2p Gossipsub swarm, DCUtR NAT holepunching, Arbitrum L2 batch settlement, and backward-compatible storage abstractions. |
+| [**`SYSTEM_WORKFLOW.md`**](./SYSTEM_WORKFLOW.md) | **Architects, Engineers, Auditors** | **Master System Architecture & Workflows**: End-to-end component topology, Blake2b KDF key hierarchy, 7 operational workflows (Init, Watch, Push, Sovereign Anchoring, Self-Repair, Disaster Recovery, YubiKey PIV), and verification invariants. The old L2 settlement workflow is marked superseded in the document. |
+| [**`DECENTRALIZED_ARCHITECTURE_SPEC.md`**](./DECENTRALIZED_ARCHITECTURE_SPEC.md) | **Protocol Engineers & Core Devs** | **Decentralized Operator Network (DON v2.0)**: Multi-plane architecture, Kademlia DHT routing, libp2p Gossipsub swarm, DCUtR NAT holepunching, and backward-compatible storage abstractions. Its Arbitrum settlement plane is superseded by the sovereign CipherChain (see the migration note at the top of the document). |
 | [**`CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md`**](./CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md) | **Cryptographers & Security Auditors** | **Formal Cryptographic Specification**: Mathematical proofs, branchless constant-time $\text{GF}(2^8)$ arithmetic, domain-separated Blake2b KDF tree, memory zeroization compiler fences (`ZeroizeOnDrop`), and native ISO 7816-4 smartcard driver. |
 | [**`ACCOUNT_IDENTITY_DESIGN.md`**](./ACCOUNT_IDENTITY_DESIGN.md) | **Security Architects & Fullstack Devs** | **Account & Device Identity Control Plane**: Optional control plane for multi-device sync, WebAuthn passkey registration/authentication (Ed25519/ES256), TOTP MFA, and instant cryptographic device revocation. |
 | [**`KEY_CEREMONIES_AND_BACKUPS.md`**](./KEY_CEREMONIES_AND_BACKUPS.md) | **Security Leads & Node Admins** | **Key Ceremonies, Custody & Backups**: Inventory of all signing and encryption keys, custody rules, emergency offline paper recovery kit generation, $M$-of-$N$ Shamir threshold guardians, and operator key rotation. |
@@ -122,7 +166,7 @@ flowchart TB
 |---|---|
 | [**`API_REFERENCE.md`**](./API_REFERENCE.md) | **Operator HTTP & P2P RPC Reference**: Endpoints, request/response payloads, authentication headers (`Authorization: Bearer`, `X-CipherVault-Id`), size limits, rate limiting (50 req/s), and error envelopes. |
 | [**`DASHBOARD_API_REFERENCE.md`**](./DASHBOARD_API_REFERENCE.md) | **Web Dashboard & Explorer Reference**: Embedded Axum HTTP routes (`/api/overview`, `/api/vaults`, `/api/chunks`, `/api/leases`, `/api/peers`), WebSocket/SSE streams, and client contracts. |
-| [**`PLATFORM_SUPPORT.md`**](./PLATFORM_SUPPORT.md) | **Platform & Keyring Matrix**: Supported OS platforms (Windows 10/11, Ubuntu/Debian/Fedora, macOS Apple Silicon/Intel), credential vaults (Windows DPAPI, Linux SecretService, macOS Keychain), and PC/SC smartcard drivers. |
+| [**`PLATFORM_SUPPORT.md`**](./PLATFORM_SUPPORT.md) | **Platform & Keyring Matrix**: What is implemented versus verified on Windows 10/11, Linux and macOS: key custody (Windows DPAPI, Linux Secret Service, macOS Keychain, portable file keystore), PC/SC smartcard drivers, and `--no-net` sandboxing. |
 
 ---
 
@@ -150,15 +194,20 @@ Historical architectural decisions are permanently recorded as ADRs:
 
 ## 🎨 6. System Architecture Diagrams (`docs/diagrams/`)
 
-Interactive, publication-grade vector graphics illustrating key system workflows and boundary models:
+Publication-grade vector graphics illustrating key system workflows and boundary models.
 
-* [**`01_system_architecture.svg`**](./diagrams/01_system_architecture.svg) — End-to-end topology across Workstation, Storage Operators, Maintenance Fleet, and Arbitrum L2.
+> **Historical settlement lane:** diagrams `01`, `08`, `09` and `10` were drawn before Phase 1 and still show an Arbitrum One L2 settlement lane. That path was removed; anchoring is now the sovereign CipherChain (see the current mermaid diagram in the [root README](../README.md#-system-architecture--trust-boundaries) and Workflow 3 in [`SYSTEM_WORKFLOW.md`](./SYSTEM_WORKFLOW.md)). The rest of each diagram is still accurate.
+
+* [**`01_system_architecture.svg`**](./diagrams/01_system_architecture.svg) — End-to-end topology across Workstation, Storage Operators, Maintenance Fleet, and the (removed) L2 settlement lane.
 * [**`02_key_hierarchy.svg`**](./diagrams/02_key_hierarchy.svg) — Cryptographic key derivation hierarchy branching from Master Recovery Secret $R$.
 * [**`03_vault_init_flow.svg`**](./diagrams/03_vault_init_flow.svg) — Vault initialization sequence, paper recovery kit emission, and RAM zeroization.
 * [**`04_push_dedup_flow.svg`**](./diagrams/04_push_dedup_flow.svg) — FastCDC dual-mask chunking, client-side encryption, and Proof-of-Storage quorum replication.
 * *05_* settlement flow diagram — removed Phase 1 with the EVM path; the sovereign flow is Workflow 3 in SYSTEM_WORKFLOW.md (propose → quorum → commit → publish → verify).*
 * [**`06_maintenance_self_repair.svg`**](./diagrams/06_maintenance_self_repair.svg) — Autonomous fleet probing, degraded replica detection, and self-repair pipeline.
 * [**`07_disaster_recovery_flow.svg`**](./diagrams/07_disaster_recovery_flow.svg) — Clean replacement machine reconstruction from Paper Recovery Kit or $M$-of-$N$ Shamir Guardian Shares.
+* [**`08_network_topology.svg`**](./diagrams/08_network_topology.svg) — Network topology (the L2 settlement lane is historical, see above).
+* [**`09_architectural_blueprint.svg`**](./diagrams/09_architectural_blueprint.svg) — Architectural blueprint (the L2 settlement lane is historical).
+* [**`10_data_lifecycle_flow.svg`**](./diagrams/10_data_lifecycle_flow.svg) — Data lifecycle flow (its L2 anchoring step is historical).
 
 ---
 
@@ -194,7 +243,7 @@ CipherVault adheres to rigorous open-source governance and intellectual property
 ## 🛡️ Non-Negotiable Architectural Invariants
 
 1. **Protected Local Keys**: Windows uses DPAPI; other platforms use an AEAD envelope backed by a configured master key or private key file. Files and metadata still require separate disk protection.
-2. **Encrypted Operator Payloads**: File paths reside in encrypted manifests. Default v1 still permits public candidate-file confirmation; opt-in v2 hides public candidate hashes, while equality, lengths and traffic remain visible.
+2. **Encrypted Operator Payloads**: File paths reside in encrypted manifests. Legacy v1 captures (and history written before v2 became the default) still permit public candidate-file confirmation; the default v2 hides public candidate hashes, while equality, lengths and traffic remain visible.
 3. **Zero-Disk Master Secret ($R$)**: The master recovery secret $R$ is never persisted unencrypted to physical disk. Memory buffers holding $R$ are explicitly zeroized on drop.
 4. **Autonomous Durability**: Replication requires real-time Proof-of-Storage verification (461-byte cryptographic challenge readback), and autonomous daemons maintain quorum across independent multi-region VPS nodes.
 5. **Clean-Machine Recovery**: Offline recovery material can reconstruct a complete remotely replicated recovery set while enough operators remain reachable. Certified incomparable branches require fork resolution; withholding newer history needs independent freshness evidence.

@@ -42,7 +42,7 @@ limits: `docs/CURRENT_SECURITY_GUARANTEES.md`; threat model:
 |---|---|---|---|
 | C1 | Legacy custom KDF (Blake2b-512, `CipherVault-KDF-v1` prefix + 8-byte context, truncated 32 B) | `crates/crypto`, spec §3 | Is the construction sound as a PRF/KDF for key separation? Any cross-domain collisions? |
 | C2 | Deterministic file keys + chunk nonces (`CV_FVERS`/`CV_CNONC`) | `crates/snapshot`, `crates/crypto` | Leakage model of v1 (candidate-file confirmation) — is our documented leakage complete? Nonce-reuse conditions? |
-| C3 | Opt-in v2 chunk protocol (HKDF-SHA256, keyed opaque IDs) | `crates/snapshot/CHUNK_PROTOCOL_V2.md` | Does v2 actually close the v1 confirmation leak? Domain separation correctness. (Ships opt-in *pending this review*.) |
+| C3 | v2 chunk protocol (HKDF-SHA256, keyed opaque IDs) | `crates/snapshot/CHUNK_PROTOCOL_V2.md` | Does v2 actually close the v1 confirmation leak? Domain separation correctness. (The default writer since v1.0.29, *pending this review*; `CIPHERVAULT_CHUNK_V2_WRITE=0` opts out to v1.) |
 | C4 | Shamir M-of-N over GF(2^8), branchless `gf_mul`, Fermat inversion | `crates/recovery`, spec §4 | Share privacy below threshold; side-channel claims scoped correctly? |
 | C5 | Recovery kit format (v1 + v2 checksum), passphrase backup (Argon2id, `CVKB1`) | `crates/recovery` | Kit integrity, downgrade paths, KDF parameters. |
 | C6 | Sealed epoch envelopes (X25519 sealed box), device certificates, recovery signing | `crates/format`, `crates/local-store` | Envelope binding, cert authority generations, replay/rollback of heads. |
@@ -53,7 +53,7 @@ limits: `docs/CURRENT_SECURITY_GUARANTEES.md`; threat model:
 
 In scope (Rust workspace, ~14 crates): `crates/crypto`,
 `crates/format`, `crates/snapshot`, `crates/recovery`,
-`crates/local-store`, `crates/storage`, `crates/chain`,
+`crates/local-store`, `crates/redact`, `crates/storage`, `crates/chain`,
 `services/operator`, the CLI surfaces that touch key material
 (`apps/cli/src/commands/{recover,recovery_*,push,agent_log,run}.rs`),
 and the Hermes plugin's guard/scrub layer
@@ -95,7 +95,7 @@ chunk-protocol vectors in `crates/snapshot`.
 ## 7. Known limitations (we will not ask you to rediscover these)
 
 - v1 chunking leaks candidate-file confirmation + length/access
-  patterns (documented; v2 is the opt-in fix, §3-C3).
+  patterns (documented; v2, now the default writer, is the fix, §3-C3).
 - Same-OS-user attacker is out of scope for the local audit chain
   (hardware keys via YubiKey PIV are the mitigation).
 - Release `SHA256SUMS.txt` is built locally and unsigned while
