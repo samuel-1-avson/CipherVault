@@ -159,14 +159,18 @@ pub(crate) fn verify_audit_caller_hmac(
     detail: &str,
     hmac_hex: Option<&str>,
 ) -> Result<()> {
+    let key_file_path = get_vault_directory().join("audit_hmac.key");
     let key_raw = match std::env::var("CIPHERVAULT_AUDIT_HMAC_KEY") {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => {
-            if std::env::var("CIPHERVAULT_REQUIRE_AUDIT_HMAC").as_deref() == Ok("1") {
-                bail!("agent-log record rejected: CIPHERVAULT_AUDIT_HMAC_KEY is required");
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => match std::fs::read_to_string(&key_file_path) {
+            Ok(file_key) if !file_key.trim().is_empty() => file_key.trim().to_string(),
+            _ => {
+                if std::env::var("CIPHERVAULT_REQUIRE_AUDIT_HMAC").as_deref() == Ok("1") {
+                    bail!("agent-log record rejected: CIPHERVAULT_AUDIT_HMAC_KEY is required");
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
+        },
     };
     let key_bytes = if key_raw.len() == 64 && key_raw.bytes().all(|b| b.is_ascii_hexdigit()) {
         hex::decode(&key_raw)?

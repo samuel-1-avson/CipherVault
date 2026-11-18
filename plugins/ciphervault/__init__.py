@@ -362,12 +362,45 @@ def _minimal_env():
 _AUDIT_HMAC_KEY = secrets.token_bytes(32)
 
 
-def _audit_hmac_hex(tool, decision, path, detail_str):
+def _vault_audit_hmac_key_bytes(cwd=None):
+    """Return the per-vault HMAC key from `<vault_root>/.ciphervault/audit_hmac.key`
+    (creating it on first use so the Rust CLI enforces HMAC even if an attacker
+    omits `CIPHERVAULT_AUDIT_HMAC_KEY` from its environment). Falls back to the
+    in-memory key when no vault exists."""
+    try:
+        root = _vault_root(cwd)
+    except Exception:
+        root = None
+    if root is None:
+        return _AUDIT_HMAC_KEY
+    key_path = Path(root) / ".ciphervault" / "audit_hmac.key"
+    try:
+        if key_path.is_file():
+            raw = key_path.read_text(encoding="utf-8", errors="replace").strip()
+            if len(raw) == 64 and all(c in "0123456789abcdefABCDEF" for c in raw):
+                return bytes.fromhex(raw)
+            if raw:
+                return raw.encode("utf-8")
+        key_hex = secrets.token_bytes(32).hex()
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_text(key_hex + "\n", encoding="utf-8")
+        if os.name != "nt":
+            try:
+                key_path.chmod(0o600)
+            except OSError:
+                pass
+        return bytes.fromhex(key_hex)
+    except OSError:
+        return _AUDIT_HMAC_KEY
+
+
+def _audit_hmac_hex(tool, decision, path, detail_str, cwd=None):
     def _san(val):
         return str(val).replace("\n", " ").replace("\r", " ")
 
+    key_bytes = _vault_audit_hmac_key_bytes(cwd)
     msg = f"{_san(tool)}\n{_san(decision)}\n{_san(path)}\n{_san(detail_str)}".encode("utf-8")
-    return hmac.new(_AUDIT_HMAC_KEY, msg, hashlib.sha256).hexdigest()
+    return hmac.new(key_bytes, msg, hashlib.sha256).hexdigest()
 
 
 def _run_cli(args, cwd, timeout=120, input_text=None, extra_env=None):
@@ -439,7 +472,7 @@ class _StdioBridge:
         self.binary = binary
         self.cwd = cwd
         env = _minimal_env()
-        env["CIPHERVAULT_AUDIT_HMAC_KEY"] = _AUDIT_HMAC_KEY.hex()
+        env["CIPHERVAULT_AUDIT_HMAC_KEY"] = _vault_audit_hmac_key_bytes(cwd).hex()
         self.proc = subprocess.Popen(
             [binary, "redact", "--stdio"],
             cwd=cwd,
@@ -645,7 +678,7 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
         vault_cwd = _vault_cwd(cwd)
         detail_str = json.dumps(detail)[:500] if detail else "{}"
         path_str = str(path)[:300]
-        hmac_tag = _audit_hmac_hex(str(tool), str(decision), path_str, detail_str)
+        hmac_tag = _audit_hmac_hex(str(tool), str(decision), path_str, detail_str, cwd=vault_cwd)
         resp = _bridge_request(
             vault_cwd,
             {
@@ -671,7 +704,7 @@ def _audit(tool, decision, path="", detail=None, cwd=None):
                 args,
                 vault_cwd,
                 timeout=10,
-                extra_env={"CIPHERVAULT_AUDIT_HMAC_KEY": _AUDIT_HMAC_KEY.hex()},
+                extra_env={"CIPHERVAULT_AUDIT_HMAC_KEY": _vault_audit_hmac_key_bytes(vault_cwd).hex()},
             )
         else:
             res = _run_cli(args, vault_cwd, timeout=10)
@@ -752,8 +785,25 @@ def _call_cli_redact(text, cwd, timeout=15):
 
 # ---------------------------------------------------------------- tools
 
+def _attach_posture(payload: dict, cwd):
+    """Attach `workspace_posture` directly to tool result JSON so the model
+    reliably receives the workspace posture even if middleware `reason` is not
+    shown to the model."""
+    if not isinstance(payload, dict):
+        return payload
+    try:
+        if _vault_root(cwd) is not None:
+            payload = dict(payload)
+            payload["workspace_posture"] = _workspace_posture_summary(cwd)
+    except Exception:
+        pass
+    return payload
+
+
 def _tool_status(params, **kwargs):
-    return json.dumps(_run_cli_json(["status", "--json"], (params or {}).get("cwd")))
+    cwd = (params or {}).get("cwd")
+    res = _run_cli_json(["status", "--json"], cwd)
+    return json.dumps(_attach_posture(res, cwd))
 
 
 def _tool_scan(params, **kwargs):
@@ -1548,6 +1598,25 @@ def _inspect_dotenv_file_in_memory(env_path):
     return keys, anomalies
 
 
+_ENV_DOCTOR_SUPPORT_CACHE = {}
+
+
+def _cli_supports_env_doctor(cwd=None):
+    """True when the resolved native CLI binary supports `ciphervault env-doctor --json`."""
+    if _run_cli is not _ORIG_RUN_CLI or _run_cli_json is not _ORIG_RUN_CLI_JSON:
+        return False
+    binary, _src = find_binary()
+    if not binary:
+        return False
+    cached = _ENV_DOCTOR_SUPPORT_CACHE.get(binary)
+    if cached is not None:
+        return cached
+    probe = _ORIG_RUN_CLI(["env-doctor", "--help"], cwd, timeout=10)
+    ok = bool(probe.get("success") and "--sync-env-example" in (probe.get("output") or ""))
+    _ENV_DOCTOR_SUPPORT_CACHE[binary] = ok
+    return ok
+
+
 def _tool_env_doctor(params, **kwargs):
     params = params or {}
     cwd = params.get("cwd") or os.getcwd()
@@ -1556,6 +1625,20 @@ def _tool_env_doctor(params, **kwargs):
         return json.dumps({"success": False, "error": f"workspace directory does not exist: {cwd}"})
     resolved_root = root_path.resolve()
     vault_cwd = _vault_cwd(cwd)
+
+    if _cli_supports_env_doctor(vault_cwd):
+        cli_args = ["env-doctor", "--json"]
+        if params.get("env_file"):
+            rel = str(params["env_file"]).strip()
+            cand = (resolved_root / rel).resolve()
+            if not cand.is_relative_to(resolved_root):
+                return json.dumps({"success": False, "error": "env_file must stay inside workspace cwd"})
+            cli_args += ["--env-file", rel]
+        if params.get("sync_env_example"):
+            cli_args.append("--sync-env-example")
+        res = _run_cli_json(cli_args, str(resolved_root), timeout=30)
+        if res.get("success") and isinstance(res.get("data"), dict):
+            return json.dumps(_attach_posture(res["data"], cwd))
 
     tracked_paths = []
     sealed = False
@@ -1649,7 +1732,7 @@ def _tool_env_doctor(params, **kwargs):
         out["env_example_added"] = to_add
         out["example_keys"] = sorted(pre_example_keys | set(to_add))
 
-    return json.dumps(out)
+    return json.dumps(_attach_posture(out, cwd))
 
 
 _ENV_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -2028,7 +2111,7 @@ def _tool_proxy_doctor(params, **kwargs):
             })
         else:
             unmapped.append(name)
-    return json.dumps({
+    return json.dumps(_attach_posture({
         "success": True,
         "proxy_ready": bool(mapped_providers or mapped_policy),
         "mapped_providers": mapped_providers,
@@ -2038,7 +2121,7 @@ def _tool_proxy_doctor(params, **kwargs):
             "Keys in mapped_providers/mapped_policy_upstreams can run with proxy=True without entering child RAM.",
             "Keys in unmapped_keys require no_net=True (offline) or an entry in .ciphervault/policy.toml [profiles.<name>.upstreams].",
         ],
-    })
+    }, cwd))
 
 
 def _tool_diff(params, **kwargs):
@@ -2366,13 +2449,13 @@ _SECRET_FILE_RE = re.compile(
     r"(?i)(^|[\s\\/\"'=])(\.env(?!(?:\.(?:example|sample|template))\b)(\.[\w.-]*)?|\.envrc|\.npmrc|\.pypirc|"
     r"[\w.-]+\.(pem|key|p12|pfx)|id_rsa|id_ed25519|"
     r"credentials\.json|secrets\.(json|ya?ml|toml)|"
-    r"vault\.db|keystore\.(?:key|salt)|policy\.toml|"
+    r"vault\.db|keystore\.(?:key|salt)|audit_hmac\.key|policy\.toml|"
     # Source/docs about kits (recovery_kit.rs, recovery_kit.md) are not kits.
     r"recovery_kit(?![\w-]*\.(?:rs|py|pyi|js|jsx|ts|tsx|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|md|toml|ya?ml|lock)\b)[\w.-]*|"
     r"[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
 )
 _PROTECTED_CONFIG_RE = re.compile(
-    r"(?i)(^|[\s\\/\"'=])(?:\.?ciphervault[\\/])?(?:policy\.toml|operators\.json|vault\.db|keystore\.(?:key|salt))(\b|$)"
+    r"(?i)(^|[\s\\/\"'=])(?:\.?ciphervault[\\/])?(?:policy\.toml|operators\.json|vault\.db|keystore\.(?:key|salt)|audit_hmac\.key)(\b|$)"
 )
 _SHELL_CHAIN_RE = re.compile(r"[;&|`$<>]|\r|\n")
 _SAFE_SECRET_PATH_CMD_RE = re.compile(

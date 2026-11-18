@@ -836,6 +836,494 @@ pub(crate) async fn cmd_doctor(json: bool) -> Result<()> {
     }
 }
 
+fn is_valid_env_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn strip_dotenv_inline_comment(val: &str) -> &str {
+    let mut best = val.len();
+    for marker in [" #", "\t#"] {
+        if let Some(pos) = val.find(marker) {
+            if pos < best {
+                best = pos;
+            }
+        }
+    }
+    &val[..best]
+}
+
+fn is_placeholder_value(val: &str) -> bool {
+    let lower = val.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "changeme"
+            | "change_me"
+            | "change-me"
+            | "your_api_key"
+            | "your_api_key_here"
+            | "your-api-key"
+            | "your-key-here"
+            | "your_secret_here"
+            | "replace_me"
+            | "replaceme"
+            | "todo"
+            | "tbd"
+            | "xxx"
+            | "xxxx"
+            | "xxxxx"
+            | "placeholder"
+            | "<insert>"
+    ) || lower.starts_with("your_")
+        || lower.starts_with("your-")
+        || lower.starts_with("<your")
+}
+
+fn expected_key_prefixes(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "OPENAI_API_KEY" => Some(&["sk-"]),
+        "ANTHROPIC_API_KEY" => Some(&["sk-ant-"]),
+        "GEMINI_API_KEY" | "GOOGLE_API_KEY" => Some(&["AIza"]),
+        "STRIPE_SECRET_KEY" | "STRIPE_API_KEY" => Some(&["sk_live_", "sk_test_", "rk_live_", "rk_test_"]),
+        "STRIPE_PUBLISHABLE_KEY" => Some(&["pk_live_", "pk_test_"]),
+        "GITHUB_TOKEN" | "GH_TOKEN" => Some(&["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]),
+        "HF_TOKEN" | "HUGGINGFACE_TOKEN" => Some(&["hf_"]),
+        "OPENROUTER_API_KEY" => Some(&["sk-or-"]),
+        _ => None,
+    }
+}
+
+pub(crate) fn lint_dotenv_bytes(
+    bytes: &[u8],
+    keys_out: &mut std::collections::BTreeSet<String>,
+    anomalies_out: &mut Vec<serde_json::Value>,
+    seen_pairs: &mut std::collections::BTreeSet<(String, String)>,
+) {
+    use zeroize::Zeroize;
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    for raw_line in text.split_inclusive('\n') {
+        let line_no_bom = raw_line.trim_start_matches('\u{feff}');
+        let trimmed = line_no_bom.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let body = line_no_bom.trim_start();
+        let body = body.strip_prefix("export ").map(str::trim_start).unwrap_or(body);
+        let Some((raw_key, raw_rhs)) = body.split_once('=') else {
+            continue;
+        };
+        let key = raw_key.trim();
+        if !is_valid_env_ident(key) {
+            continue;
+        }
+        keys_out.insert(key.to_string());
+
+        let mut issues: Vec<&'static str> = Vec::new();
+        let raw_no_nl = raw_rhs.strip_suffix('\n').unwrap_or(raw_rhs);
+        let (raw_no_nl, had_cr) = match raw_no_nl.strip_suffix('\r') {
+            Some(s) => (s, true),
+            None => (raw_no_nl, false),
+        };
+        let stripped = raw_no_nl.trim();
+        let val: String = if (stripped.starts_with('"') && stripped.ends_with('"') && stripped.len() >= 2)
+            || (stripped.starts_with('\'') && stripped.ends_with('\'') && stripped.len() >= 2)
+        {
+            let inner = &stripped[1..stripped.len() - 1];
+            if inner != inner.trim() || had_cr {
+                issues.push("WHITESPACE_WRAPPED");
+            }
+            if (inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2)
+                || (inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2)
+            {
+                issues.push("UNSTRIPPED_QUOTES");
+            }
+            inner.to_string()
+        } else {
+            let before_comment = strip_dotenv_inline_comment(raw_no_nl);
+            let before_comment = if before_comment.starts_with('#') {
+                ""
+            } else {
+                before_comment
+            };
+            if !before_comment.is_empty()
+                && (before_comment != before_comment.trim_matches([' ', '\t']) || had_cr)
+            {
+                issues.push("WHITESPACE_WRAPPED");
+            }
+            let v = before_comment.trim();
+            if (v.starts_with('"') && !v.ends_with('"'))
+                || (v.ends_with('"') && !v.starts_with('"'))
+                || (v.starts_with('\'') && !v.ends_with('\''))
+                || (v.ends_with('\'') && !v.starts_with('\''))
+                || v == "\""
+                || v == "'"
+            {
+                issues.push("UNSTRIPPED_QUOTES");
+            }
+            v.to_string()
+        };
+
+        let val_trimmed = val.trim();
+        if val_trimmed.is_empty() {
+            issues.push("EMPTY_VALUE");
+        } else if is_placeholder_value(val_trimmed) {
+            issues.push("PLACEHOLDER_VALUE");
+        } else {
+            if key.ends_with("_URL")
+                || key.ends_with("_URI")
+                || key.ends_with("_ENDPOINT")
+                || key.ends_with("_DSN")
+            {
+                let url_ok = if val_trimmed.chars().any(char::is_whitespace) {
+                    false
+                } else if let Some((scheme, rest)) = val_trimmed.split_once("://") {
+                    let scheme_ok = !scheme.is_empty()
+                        && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                        && scheme
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+                    let host_ok = !rest.is_empty() && !rest.starts_with('/');
+                    let file_ok =
+                        matches!(scheme.to_ascii_lowercase().as_str(), "sqlite" | "file") && !rest.is_empty();
+                    scheme_ok && (host_ok || file_ok)
+                } else {
+                    false
+                };
+                if !url_ok {
+                    issues.push("INVALID_URL");
+                }
+            }
+            if key.ends_with("_JSON") && serde_json::from_str::<serde_json::Value>(val_trimmed).is_err() {
+                issues.push("INVALID_JSON");
+            }
+            if let Some(prefixes) = expected_key_prefixes(key) {
+                if !prefixes.iter().any(|p| val.starts_with(p)) {
+                    issues.push("PREFIX_MISMATCH");
+                }
+            }
+        }
+        let mut zeroize_val = val;
+        zeroize_val.zeroize();
+
+        for issue in issues {
+            let pair = (key.to_string(), issue.to_string());
+            if seen_pairs.insert(pair) {
+                anomalies_out.push(serde_json::json!({
+                    "key": key,
+                    "issue": issue,
+                }));
+            }
+        }
+    }
+    text.zeroize();
+}
+
+fn extract_ident_after(haystack: &str, needle: &str, out: &mut std::collections::BTreeSet<String>) {
+    let mut rest = haystack;
+    while let Some(pos) = rest.find(needle) {
+        let after = &rest[pos + needle.len()..];
+        let ident_len = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if ident_len > 0 {
+            let cand = &after[..ident_len];
+            if is_valid_env_ident(cand) {
+                out.insert(cand.to_string());
+            }
+        }
+        rest = &after[ident_len..];
+    }
+}
+
+fn extract_quoted_arg_after(
+    haystack: &str,
+    needle: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    let mut rest = haystack;
+    while let Some(pos) = rest.find(needle) {
+        let after = rest[pos + needle.len()..].trim_start();
+        let first = after.chars().next();
+        if matches!(first, Some('"' | '\'')) {
+            let q = first.unwrap();
+            let inner = &after[1..];
+            if let Some(end) = inner.find(q) {
+                let cand = &inner[..end];
+                if is_valid_env_ident(cand) {
+                    out.insert(cand.to_string());
+                }
+            }
+        }
+        rest = &rest[pos + needle.len()..];
+    }
+}
+
+fn scan_code_env_refs(root: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let mut refs = std::collections::BTreeSet::new();
+    let skip_dirs = [
+        ".git",
+        ".ciphervault",
+        "node_modules",
+        "target",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+    ];
+    let exts = ["py", "js", "ts", "tsx", "jsx", "rs", "go", "rb", "sh", "yml", "yaml"];
+    let mut stack = vec![root.to_path_buf()];
+    let mut files_seen = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        sorted.sort_by_key(|e| e.file_name());
+        for entry in sorted {
+            if files_seen >= 400 {
+                return refs;
+            }
+            let path = entry.path();
+            let fname = entry.file_name();
+            let fname_str = fname.to_string_lossy();
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                if !skip_dirs.contains(&fname_str.as_ref()) {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            let is_docker = fname_str == "Dockerfile" || fname_str.starts_with("Dockerfile.");
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            if !is_docker && !exts.contains(&ext.as_str()) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.len() > 512 * 1024 {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            files_seen += 1;
+            extract_ident_after(&content, "process.env.", &mut refs);
+            extract_ident_after(&content, "import.meta.env.", &mut refs);
+            extract_quoted_arg_after(&content, "os.environ.get(", &mut refs);
+            extract_quoted_arg_after(&content, "os.environ[", &mut refs);
+            extract_quoted_arg_after(&content, "os.getenv(", &mut refs);
+            extract_quoted_arg_after(&content, "std::env::var(", &mut refs);
+            extract_quoted_arg_after(&content, "std::env::var_os(", &mut refs);
+            extract_quoted_arg_after(&content, "env::var(", &mut refs);
+            extract_quoted_arg_after(&content, "os.Getenv(", &mut refs);
+            if matches!(ext.as_str(), "yml" | "yaml") || is_docker {
+                let mut slice = content.as_str();
+                while let Some(pos) = slice.find("${") {
+                    let after = &slice[pos + 2..];
+                    let ident_len = after
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .map(char::len_utf8)
+                        .sum::<usize>();
+                    if ident_len > 0 {
+                        let cand = &after[..ident_len];
+                        if cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                            && is_valid_env_ident(cand)
+                        {
+                            refs.insert(cand.to_string());
+                        }
+                    }
+                    slice = &after[ident_len..];
+                }
+            }
+        }
+    }
+    refs
+}
+
+pub(crate) fn cmd_env_doctor(
+    env_file: Option<String>,
+    sync_env_example: bool,
+    json: bool,
+) -> Result<()> {
+    use zeroize::Zeroize;
+    let root = crate::util::get_workspace_root().unwrap_or_else(|_| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+    let mut vault_keys = std::collections::BTreeSet::new();
+    let mut anomalies = Vec::new();
+    let mut seen_pairs = std::collections::BTreeSet::new();
+    let mut sealed = false;
+
+    let store_opt = get_vault_store().ok();
+    let tracked: Vec<String> = store_opt
+        .as_ref()
+        .and_then(|s| s.list_tracked_files().ok())
+        .map(|list| {
+            list.into_iter()
+                .map(|(p, _)| p.to_string_lossy().replace('\\', "/"))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let target_rel_files: Vec<String> = if let Some(ref rel) = env_file {
+        let clean = rel.trim().replace('\\', "/");
+        if clean.is_empty() || clean.starts_with('/') || clean.split('/').any(|p| p == "..") {
+            bail!("env_file must stay inside workspace cwd");
+        }
+        vec![clean]
+    } else if !tracked.is_empty() {
+        tracked
+            .iter()
+            .filter(|rel| {
+                let name = rel.rsplit('/').next().unwrap_or(rel);
+                (name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
+                    && !name.ends_with(".example")
+                    && !name.ends_with(".sample")
+                    && !name.ends_with(".template")
+            })
+            .cloned()
+            .collect()
+    } else {
+        [".env", ".env.local", ".env.development", ".env.production", ".env.test"]
+            .iter()
+            .filter(|name| root.join(name).is_file())
+            .map(|s| (*s).to_string())
+            .collect()
+    };
+
+    let mut any_on_disk = false;
+    for rel in &target_rel_files {
+        let full = root.join(rel);
+        if let Ok(mut bytes) = fs::read(&full) {
+            any_on_disk = true;
+            lint_dotenv_bytes(&bytes, &mut vault_keys, &mut anomalies, &mut seen_pairs);
+            bytes.zeroize();
+        }
+    }
+
+    if !any_on_disk {
+        if let Some(ref store) = store_opt {
+            if let Ok(mut bundle) = super::run::load_local_snapshot_bundle_sync(store) {
+                sealed = !tracked.is_empty();
+                for file in &mut bundle.files {
+                    let norm = file.relative_path.replace('\\', "/");
+                    let matches_target = if let Some(ref want) = env_file {
+                        norm == want.trim().replace('\\', "/")
+                    } else {
+                        let name = norm.rsplit('/').next().unwrap_or(&norm);
+                        name == ".env" || name.starts_with(".env.") || name.ends_with(".env")
+                    };
+                    if matches_target {
+                        lint_dotenv_bytes(
+                            &file.plaintext,
+                            &mut vault_keys,
+                            &mut anomalies,
+                            &mut seen_pairs,
+                        );
+                    }
+                    file.plaintext.zeroize();
+                }
+            }
+        }
+    }
+
+    let referenced = scan_code_env_refs(&root);
+    let example_path = root.join(".env.example");
+    let mut example_keys = std::collections::BTreeSet::new();
+    if let Ok(ex_text) = fs::read_to_string(&example_path) {
+        for raw_line in ex_text.lines() {
+            let line = raw_line.trim().trim_start_matches('\u{feff}');
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let line = line.strip_prefix("export ").map(str::trim_start).unwrap_or(line);
+            if let Some((k, _)) = line.split_once('=') {
+                let k = k.trim();
+                if is_valid_env_ident(k) {
+                    example_keys.insert(k.to_string());
+                }
+            }
+        }
+    }
+
+    let mut expected = referenced.clone();
+    expected.extend(example_keys.iter().cloned());
+    let missing_in_vault: Vec<String> = expected.difference(&vault_keys).cloned().collect();
+    let unreferenced_in_code: Vec<String> = vault_keys.difference(&referenced).cloned().collect();
+
+    let mut synced_added: Vec<String> = Vec::new();
+    if sync_env_example {
+        let mut desired = vault_keys.clone();
+        desired.extend(referenced.iter().cloned());
+        for k in &desired {
+            if !example_keys.contains(k) {
+                synced_added.push(k.clone());
+                example_keys.insert(k.clone());
+            }
+        }
+        if !synced_added.is_empty() || !example_path.exists() {
+            let mut existing = fs::read_to_string(&example_path).unwrap_or_default();
+            if !existing.is_empty() && !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            for k in &synced_added {
+                existing.push_str(&format!("{k}= # [required]\n"));
+            }
+            fs::write(&example_path, existing)?;
+        }
+    }
+
+    let mut out = serde_json::json!({
+        "success": true,
+        "sealed": sealed,
+        "vault_keys": vault_keys.into_iter().collect::<Vec<_>>(),
+        "referenced_in_code": referenced.into_iter().collect::<Vec<_>>(),
+        "example_keys": example_keys.into_iter().collect::<Vec<_>>(),
+        "missing_in_vault": missing_in_vault,
+        "unreferenced_in_code": unreferenced_in_code,
+        "value_anomalies": anomalies,
+    });
+    if sync_env_example {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("env_example_synced".to_string(), serde_json::Value::Bool(true));
+            obj.insert(
+                "env_example_added".to_string(),
+                serde_json::json!(synced_added),
+            );
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!("{}", "CipherVault Environment Doctor".bold());
+        println!("  Vault keys:       {}", out["vault_keys"].as_array().map(|a| a.len()).unwrap_or(0));
+        println!("  Missing keys:     {}", out["missing_in_vault"].as_array().map(|a| a.len()).unwrap_or(0));
+        println!("  Value anomalies:  {}", out["value_anomalies"].as_array().map(|a| a.len()).unwrap_or(0));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,5 +1506,24 @@ mod tests {
         assert_eq!(report["status"], "degraded");
         assert_eq!(report["failures"], 1);
         assert_eq!(report["checks"][0]["name"], "vault");
+    }
+
+    #[test]
+    fn lint_dotenv_bytes_detects_structural_anomalies_without_leaking_values() {
+        let sample = b"EMPTY_VAR=\nPLACEHOLDER_VAR=CHANGEME\nWRAP_VAR=\" padded_secret_123 \"\nQUOTE_VAR=\"\"double_quoted\"\"\nDATABASE_URL=not-a-valid-url\nCFG_JSON={bad_json\nOPENAI_API_KEY=wrong_prefix_secret_999\n";
+        let mut keys = std::collections::BTreeSet::new();
+        let mut anomalies = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        lint_dotenv_bytes(sample, &mut keys, &mut anomalies, &mut seen);
+        let serialized = serde_json::to_string(&anomalies).unwrap();
+        assert!(!serialized.contains("padded_secret_123"));
+        assert!(!serialized.contains("wrong_prefix_secret_999"));
+        assert!(seen.contains(&("EMPTY_VAR".to_string(), "EMPTY_VALUE".to_string())));
+        assert!(seen.contains(&("PLACEHOLDER_VAR".to_string(), "PLACEHOLDER_VALUE".to_string())));
+        assert!(seen.contains(&("WRAP_VAR".to_string(), "WHITESPACE_WRAPPED".to_string())));
+        assert!(seen.contains(&("QUOTE_VAR".to_string(), "UNSTRIPPED_QUOTES".to_string())));
+        assert!(seen.contains(&("DATABASE_URL".to_string(), "INVALID_URL".to_string())));
+        assert!(seen.contains(&("CFG_JSON".to_string(), "INVALID_JSON".to_string())));
+        assert!(seen.contains(&("OPENAI_API_KEY".to_string(), "PREFIX_MISMATCH".to_string())));
     }
 }

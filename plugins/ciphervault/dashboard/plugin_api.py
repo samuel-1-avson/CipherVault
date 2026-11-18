@@ -383,10 +383,30 @@ def _set_secret(
 
 def _env_health(cwd: str | None) -> dict:
     """Zero-knowledge environment diagnostics for the desktop pane.
-    Returns variable names and structural issue flags only, never values."""
+    Prefers `ciphervault env-doctor --json` so `.env` values are inspected
+    and zeroized inside the Rust CLI rather than read in Python."""
     safe_cwd = _safe_cwd(cwd)
     if safe_cwd is None:
         return {"success": False, "error": "invalid or non-directory cwd"}
+    binary = _find_binary()
+    if binary:
+        try:
+            proc = subprocess.run(
+                [binary, "env-doctor", "--json"],
+                cwd=safe_cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                env=_minimal_env(),
+            )
+            if proc.returncode == 0:
+                payload = json.loads(proc.stdout or "{}")
+                if isinstance(payload, dict) and payload.get("success"):
+                    return payload
+        except Exception:
+            pass
     root = Path(safe_cwd)
     code_patterns = (
         re.compile(r"(?:process\.env|import\.meta\.env)\.([A-Za-z_][A-Za-z0-9_]*)"),

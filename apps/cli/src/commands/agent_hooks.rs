@@ -68,6 +68,8 @@ fn is_secret_filename(path_str: &str) -> bool {
         || name == "vault.db"
         || name == "keystore.key"
         || name == "keystore.salt"
+        || name == "audit_hmac.key"
+        || name == "policy.toml"
         || name.starts_with("recovery_kit")
         || name.starts_with("service_account")
         || name.starts_with("service-account")

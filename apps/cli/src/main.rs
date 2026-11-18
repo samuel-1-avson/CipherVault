@@ -42,6 +42,7 @@ Developer: vault & secrets:
   track                Add confidential files to vault tracking (e.g. .env, keys)
   untrack              Remove confidential files from vault tracking
   status               Display current vault status and tracked files
+  env-doctor           Zero-knowledge environment & schema diagnostics (code refs vs .env.example vs vault)
   push                 Create, encrypt, and replicate a snapshot across independent operators
   pull                 Pull the latest snapshot from independent operators and update local files
   history              Display snapshot history DAG
@@ -229,6 +230,21 @@ enum Commands {
             help = "Show the full My Data overview: snapshots, files, leases, anchors, recent activity"
         )]
         overview: bool,
+    },
+
+    /// Zero-knowledge environment & schema diagnostics (code refs vs .env.example vs vault)
+    EnvDoctor {
+        #[arg(long, help = "Optional specific .env file relative to workspace")]
+        env_file: Option<String>,
+
+        #[arg(
+            long,
+            help = "Create/update .env.example with safe KEY= # [required] placeholders"
+        )]
+        sync_env_example: bool,
+
+        #[arg(long, help = "Emit machine-readable JSON")]
+        json: bool,
     },
 
     /// Create, encrypt, and replicate a snapshot across independent operators

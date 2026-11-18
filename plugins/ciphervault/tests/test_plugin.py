@@ -2499,3 +2499,103 @@ def test_dashboard_plugin_api_env_health_endpoint(tmp_path, monkeypatch):
     assert "real_val" not in json.dumps(res)
     assert res["missing_in_vault"] == ["NEEDED_KEY"]
     assert {"key": "EMPTY_KEY", "file": ".env", "issue": "EMPTY_VALUE"} in res["value_anomalies"]
+
+
+def test_workspace_posture_included_in_tool_result_json(tmp_path, monkeypatch):
+    vault = tmp_path / "proj"
+    (vault / ".ciphervault").mkdir(parents=True)
+    (vault / ".ciphervault" / "vault.db").write_bytes(b"")
+    (vault / ".ciphervault" / "policy.toml").write_text(
+        "[vault]\nsealed_mode = true\n[profiles.unit]\nno_net = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cv,
+        "_run_cli_json",
+        lambda args, cwd, timeout=120: {"success": True, "data": {"vault": True}},
+    )
+    status_out = json.loads(cv._tool_status({"cwd": str(vault)}))
+    assert "workspace_posture" in status_out
+    assert "sealed_mode=True" in status_out["workspace_posture"]
+    assert "['unit']" in status_out["workspace_posture"]
+
+
+@pytest.fixture
+def real_vault(tmp_path, monkeypatch):
+    import subprocess
+
+    binary = os.environ.get("CV_TEST_BINARY")
+    if not binary or not Path(binary).is_file():
+        pytest.skip("set CV_TEST_BINARY for real CLI vault integration checks")
+    monkeypatch.setattr(cv, "find_binary", lambda: (binary, "integration test"))
+    vault = tmp_path / "real_vault"
+    vault.mkdir()
+    subprocess.run([binary, "init"], cwd=str(vault), check=True, capture_output=True, env=cv._minimal_env())
+    yield binary, vault
+    cv._close_all_bridges()
+
+
+def test_per_vault_audit_hmac_key_enforced_without_env_var_and_protected(real_vault):
+    import subprocess
+    binary, vault = real_vault
+    key_bytes = cv._vault_audit_hmac_key_bytes(str(vault))
+    assert len(key_bytes) == 32
+    key_file = vault / ".ciphervault" / "audit_hmac.key"
+    assert key_file.is_file()
+
+    # Guard blocks reading or writing .ciphervault/audit_hmac.key
+    r_block = cv.on_pre_tool_call("read_file", {"path": str(key_file), "cwd": str(vault)})
+    w_block = cv.on_pre_tool_call("write_file", {"path": str(key_file), "content": "x", "cwd": str(vault)})
+    assert r_block and r_block["action"] == "block"
+    assert w_block and w_block["action"] == "block"
+
+    # Even with CIPHERVAULT_AUDIT_HMAC_KEY absent from env, direct `agent-log record`
+    # without --hmac is rejected by the Rust CLI because .ciphervault/audit_hmac.key exists!
+    env = cv._minimal_env()
+    env.pop("CIPHERVAULT_AUDIT_HMAC_KEY", None)
+    unauth = subprocess.run(
+        [binary, "agent-log", "record", "--tool", "forged", "--decision", "scrubbed_result"],
+        cwd=str(vault),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert unauth.returncode != 0
+    assert "missing --hmac" in (unauth.stderr + unauth.stdout)
+
+    # Meanwhile the plugin's own _audit() succeeds using the key.
+    assert cv._audit("ciphervault_status", "ok", cwd=str(vault)) is True
+
+
+def test_real_cli_env_doctor_works_on_sealed_shredded_vault(real_vault):
+    import subprocess
+    binary, vault = real_vault
+    (vault / "app.py").write_text(
+        "import os\nx = os.getenv('OPENAI_API_KEY')\ny = os.getenv('MISSING_FROM_VAULT')\n",
+        encoding="utf-8",
+    )
+    (vault / ".env").write_text(
+        "OPENAI_API_KEY=wrong_prefix_secret_value_999\nEMPTY_ONE=\n",
+        encoding="utf-8",
+    )
+    subprocess.run([binary, "track", ".env"], cwd=str(vault), check=True, env=cv._minimal_env())
+    subprocess.run(
+        [binary, "push", "--local", "--shred", "-m", "seal for env-doctor"],
+        cwd=str(vault),
+        check=True,
+        env=cv._minimal_env(),
+    )
+    assert not (vault / ".env").exists()
+
+    cv._ENV_DOCTOR_SUPPORT_CACHE.clear()
+    raw = cv._tool_env_doctor({"cwd": str(vault)})
+    assert "wrong_prefix_secret_value_999" not in raw
+    out = json.loads(raw)
+    assert out["success"] is True
+    assert out["sealed"] is True
+    assert "OPENAI_API_KEY" in out["vault_keys"]
+    assert "MISSING_FROM_VAULT" in out["missing_in_vault"]
+    issues = {(a["key"], a["issue"]) for a in out["value_anomalies"]}
+    assert ("OPENAI_API_KEY", "PREFIX_MISMATCH") in issues
+    assert ("EMPTY_ONE", "EMPTY_VALUE") in issues
+    assert "workspace_posture" in out
