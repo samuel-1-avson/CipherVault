@@ -7,7 +7,7 @@ maintainer: samuel-1-avson
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.5.4"
+version: "0.7.0"
 readme: true
 capabilities:
   provides_tools:
@@ -18,6 +18,11 @@ capabilities:
     - ciphervault_recovery_drill
     - ciphervault_redact
     - ciphervault_audit
+    - ciphervault_env_doctor
+    - ciphervault_secret_generate
+    - ciphervault_diff
+    - ciphervault_proxy_doctor
+    - ciphervault_secret_prompt
   provides_hooks:
     - pre_tool_call
     - transform_tool_result
