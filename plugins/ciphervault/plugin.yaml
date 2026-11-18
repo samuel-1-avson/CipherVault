@@ -15,6 +15,10 @@ provides_tools:
   - ciphervault_recovery_drill
   - ciphervault_redact
   - ciphervault_audit
+  - ciphervault_env_doctor
+  - ciphervault_secret_generate
+  - ciphervault_diff
+  - ciphervault_secret_prompt
 provides_hooks:
   - pre_tool_call
   - transform_tool_result

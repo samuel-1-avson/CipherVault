@@ -1,7 +1,8 @@
 """CipherVault Hermes plugin — zero-knowledge secrets for AI agents.
 
 Surfaces registered (see plugin.yaml):
-  tools        ciphervault_status / scan / run / push / recovery_drill / redact
+  tools        ciphervault_status / scan / run / push / recovery_drill / redact /
+               audit / env_doctor / secret_generate / diff
   hooks        pre_tool_call           (leak guard: blocks secret reads/exfil)
                transform_tool_result   (scrubs every non-CipherVault result)
   middleware   tool_request            (defaults ciphervault_* cwd)
@@ -20,6 +21,7 @@ Design rules (also in skills/ciphervault/SKILL.md):
 """
 
 import atexit
+import getpass
 import hashlib
 import ipaddress
 import json
@@ -27,8 +29,10 @@ import os
 import platform
 import queue
 import re
+import secrets
 import shutil
 import socket
+import string
 import subprocess
 import sys
 import tempfile
@@ -36,7 +40,16 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # pragma: no cover
+    try:
+        import tomli as tomllib  # type: ignore
+    except ImportError:
+        tomllib = None  # type: ignore
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 RELEASE_VERSION = "1.0.34"
@@ -724,16 +737,458 @@ def _tool_scan(params, **kwargs):
     return json.dumps(_run_cli_json(args, params.get("cwd")))
 
 
+_KNOWN_PROVIDER_KEYS = frozenset({
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "STRIPE_API_KEY",
+    "STRIPE_SECRET_KEY",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "OPENROUTER_API_KEY",
+    "HF_TOKEN",
+    "HUGGINGFACE_TOKEN",
+})
+
+
+def _clean_proxy_upstreams(params):
+    """Normalize proxy_upstream into non-empty stripped strings so blanks like
+    [''] or ['  '] never act truthy for --no-net or approval UI display."""
+    if not isinstance(params, dict):
+        return []
+    raw = params.get("proxy_upstream")
+    if not raw:
+        return []
+    items = [raw] if isinstance(raw, str) else raw
+    return [str(s).strip() for s in items if str(s).strip()]
+
+
+def _strip_toml_comment(line):
+    in_single = False
+    in_double = False
+    escaped = False
+    for idx, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_double:
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            return line[:idx]
+    return line
+
+
+def _parse_toml_scalar(raw):
+    s = raw.strip()
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    if re.fullmatch(r"[+-]?\d+", s):
+        return int(s)
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        if s.startswith('"'):
+            return bytes(s[1:-1], "utf-8").decode("unicode_escape")
+        return s[1:-1]
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        items = []
+        buf = []
+        in_s = in_d = esc = False
+        for ch in inner:
+            if esc:
+                buf.append(ch)
+                esc = False
+                continue
+            if ch == "\\" and in_d:
+                buf.append(ch)
+                esc = True
+                continue
+            if ch == "'" and not in_d:
+                in_s = not in_s
+            elif ch == '"' and not in_s:
+                in_d = not in_d
+            elif ch == "," and not in_s and not in_d:
+                part = "".join(buf).strip()
+                if part:
+                    items.append(_parse_toml_scalar(part))
+                buf = []
+                continue
+            buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            items.append(_parse_toml_scalar(tail))
+        return items
+    if s.startswith("{") and s.endswith("}"):
+        inner = s[1:-1].strip()
+        tbl = {}
+        if not inner:
+            return tbl
+        pairs = []
+        buf = []
+        in_s = in_d = esc = False
+        for ch in inner:
+            if esc:
+                buf.append(ch)
+                esc = False
+                continue
+            if ch == "\\" and in_d:
+                buf.append(ch)
+                esc = True
+                continue
+            if ch == "'" and not in_d:
+                in_s = not in_s
+            elif ch == '"' and not in_s:
+                in_d = not in_d
+            elif ch == "," and not in_s and not in_d:
+                part = "".join(buf).strip()
+                if part:
+                    pairs.append(part)
+                buf = []
+                continue
+            buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            pairs.append(tail)
+        for pair in pairs:
+            if "=" not in pair:
+                raise ValueError(f"invalid inline table entry: {pair!r}")
+            k, v = pair.split("=", 1)
+            tbl[k.strip().strip('"').strip("'")] = _parse_toml_scalar(v)
+        return tbl
+    raise ValueError(f"unsupported TOML value: {s!r}")
+
+
+def _parse_toml_fallback(text):
+    """Minimal TOML subset parser used only when stdlib tomllib/tomli is absent."""
+    root = {}
+    current = root
+    lines = text.splitlines()
+    idx = 0
+    while idx < len(lines):
+        cleaned = _strip_toml_comment(lines[idx]).strip()
+        idx += 1
+        if not cleaned:
+            continue
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            header = cleaned[1:-1].strip()
+            parts = [p.strip().strip('"').strip("'") for p in header.split(".")]
+            target = root
+            for part in parts:
+                if not part:
+                    raise ValueError(f"invalid TOML header {cleaned!r}")
+                target = target.setdefault(part, {})
+                if not isinstance(target, dict):
+                    raise ValueError(f"conflicting TOML section {cleaned!r}")
+            current = target
+            continue
+        if "=" not in cleaned:
+            raise ValueError(f"expected key = value in policy.toml: {cleaned!r}")
+        k, v = cleaned.split("=", 1)
+        key = k.strip().strip('"').strip("'")
+        val_raw = v.strip()
+        while (val_raw.startswith("[") and not val_raw.endswith("]")) or (
+            val_raw.startswith("{") and not val_raw.endswith("}")
+        ):
+            if idx >= len(lines):
+                raise ValueError(f"unterminated TOML value for {key!r}")
+            val_raw += " " + _strip_toml_comment(lines[idx]).strip()
+            idx += 1
+        current[key] = _parse_toml_scalar(val_raw)
+    return root
+
+
+def _policy_file_path(cwd):
+    try:
+        root = _vault_root(cwd)
+    except Exception:
+        root = None
+    candidates = []
+    if root is not None:
+        candidates.append(Path(root) / ".ciphervault" / "policy.toml")
+    if cwd:
+        p = Path(cwd)
+        if root is None or not _same_dir(p, root):
+            candidates.append(p / ".ciphervault" / "policy.toml")
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _load_policy_toml(cwd):
+    """Load `.ciphervault/policy.toml` if present. Returns (dict, error_or_None)."""
+    path = _policy_file_path(cwd)
+    if path is None:
+        return {}, None
+    try:
+        raw_bytes = path.read_bytes()
+    except OSError as exc:
+        return None, f"could not read .ciphervault/policy.toml: {exc}"
+    try:
+        if tomllib is not None:
+            parsed = tomllib.loads(raw_bytes.decode("utf-8"))
+        else:
+            parsed = _parse_toml_fallback(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        return None, f"invalid .ciphervault/policy.toml: {exc}"
+    if not isinstance(parsed, dict):
+        return None, "invalid .ciphervault/policy.toml: root must be a table"
+    return parsed, None
+
+
+def _split_proxy_upstream_spec(spec):
+    """Parse `VAR=https://host[:port][/path][@Header]` into (var_name, clean_url, scheme, parsed_url)."""
+    if not isinstance(spec, str) or "=" not in spec:
+        return None, "invalid proxy_upstream: expected VAR=https://host[@HeaderName]"
+    var_name, rhs = spec.split("=", 1)
+    var_name = var_name.strip()
+    rhs = rhs.strip()
+    if not var_name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var_name):
+        return None, f"invalid proxy_upstream variable name {var_name!r}"
+    url_part = rhs
+    if "@" in rhs:
+        u, hdr = rhs.rsplit("@", 1)
+        if "://" in u and hdr.strip() and "/" not in hdr:
+            url_part = u.strip()
+    if any(ord(c) < 0x20 or ord(c) == 0x7F or c.isspace() for c in url_part) or "\\" in url_part:
+        return None, f"invalid proxy_upstream URL {url_part!r}"
+    try:
+        parts = urllib.parse.urlsplit(url_part)
+        port = parts.port
+    except ValueError:
+        return None, f"malformed proxy_upstream URL {url_part!r}"
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").strip().lower().rstrip(".")
+    if (scheme not in ("http", "https") or not parts.netloc or not host
+            or "@" in parts.netloc or "%" in parts.netloc or parts.query or parts.fragment):
+        return None, f"invalid proxy_upstream URL {url_part!r}"
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None, f"invalid proxy_upstream hostname {host!r}"
+    host_literal = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
+    netloc = f"{host_literal}:{port}" if port is not None else host_literal
+    clean_url = f"{scheme}://{netloc}{parts.path.rstrip('/')}"
+    return (var_name, clean_url, scheme, ascii_host, parts.port), None
+
+
+def _policy_configured_upstreams(policy, profile_name=None):
+    """Collect trusted `(VAR, clean_url)` pairs authored in `.ciphervault/policy.toml`."""
+    allowed = set()
+
+    def _add_table(raw_upstreams):
+        if isinstance(raw_upstreams, dict):
+            items = [f"{k}={v}" for k, v in raw_upstreams.items()]
+        elif isinstance(raw_upstreams, (list, tuple)):
+            items = [str(x).strip() for x in raw_upstreams if str(x).strip()]
+        else:
+            items = []
+        for spec in items:
+            parsed, err = _split_proxy_upstream_spec(spec)
+            if not err and parsed:
+                allowed.add((parsed[0], parsed[1]))
+
+    _add_table(policy.get("upstreams"))
+    vault_sec = policy.get("vault")
+    if isinstance(vault_sec, dict):
+        _add_table(vault_sec.get("upstreams"))
+    profiles = policy.get("profiles")
+    if isinstance(profiles, dict):
+        if profile_name:
+            prof = profiles.get(profile_name)
+            if isinstance(prof, dict):
+                _add_table(prof.get("upstreams"))
+        else:
+            for prof in profiles.values():
+                if isinstance(prof, dict):
+                    _add_table(prof.get("upstreams"))
+    return allowed
+
+
+def _is_unsafe_upstream_host(host, port):
+    """Return True if host is loopback, private, link-local, metadata, or internal."""
+    if (not host or host in _BLOCKED_OPERATOR_HOSTS
+            or host.endswith((".localhost", ".local", ".internal"))):
+        return True
+    try:
+        ips = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port or 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except OSError:
+            return False
+        ips = []
+        for _fam, _type, _proto, _canon, sockaddr in infos:
+            try:
+                ips.append(ipaddress.ip_address(str(sockaddr[0]).split("%")[0]))
+            except ValueError:
+                return True
+    for raw_ip in ips:
+        ip = _embedded_ipv4(raw_ip)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                or ip in _CGNAT_NET or not ip.is_global):
+            return True
+    return False
+
+
+def _validate_proxy_upstreams(specs, configured_upstreams):
+    """Validate proxy_upstream entries against SSRF and known-provider hijacking."""
+    for spec in specs:
+        parsed, err = _split_proxy_upstream_spec(spec)
+        if err:
+            return err
+        var_name, clean_url, scheme, host, port = parsed
+        if (var_name, clean_url) in configured_upstreams:
+            continue
+        if var_name.upper() in _KNOWN_PROVIDER_KEYS:
+            return (
+                f"refusing proxy_upstream override for known provider {var_name!r}: "
+                "configure custom provider upstreams in .ciphervault/policy.toml"
+            )
+        if scheme != "https":
+            return f"refusing non-HTTPS proxy_upstream {clean_url!r}"
+        if _is_unsafe_upstream_host(host, port):
+            return (
+                f"refusing proxy_upstream {clean_url!r}: loopback, private, link-local, "
+                "or internal hosts are not allowed unless configured in .ciphervault/policy.toml"
+            )
+    return None
+
+
+def _resolve_run_policy(params, cwd):
+    """Merge `.ciphervault/policy.toml` profile defaults into `ciphervault_run` params
+    and validate proxy_upstream entries. Returns (effective_params, error_or_None)."""
+    raw = dict(params) if isinstance(params, dict) else {}
+    policy, err = _load_policy_toml(cwd)
+    if err:
+        return None, err
+    profile_name = str(raw.get("profile") or "").strip() or None
+    configured_upstreams = _policy_configured_upstreams(policy, profile_name)
+    caller_upstreams = _clean_proxy_upstreams(raw)
+
+    if profile_name:
+        profiles = policy.get("profiles") or {}
+        prof = profiles.get(profile_name) if isinstance(profiles, dict) else None
+        if not isinstance(prof, dict):
+            return None, f"unknown policy profile {profile_name!r} in .ciphervault/policy.toml"
+
+        allowed_cmds = prof.get("commands")
+        cmd = raw.get("command") or []
+        if isinstance(allowed_cmds, list) and allowed_cmds and cmd:
+            prog_raw = str(cmd[0]).strip()
+            prog_name = Path(prog_raw).name
+            cmd_line = " ".join(str(x) for x in cmd)
+            if not any(
+                prog_raw == c or prog_name == c or cmd_line == c or cmd_line.startswith(c + " ")
+                for c in (str(x).strip() for x in allowed_cmds if str(x).strip())
+            ):
+                return None, f"command {prog_raw!r} is not permitted by profile {profile_name!r}"
+
+        if prof.get("allow_keys") is not None:
+            prof_keys = [str(k).strip() for k in prof["allow_keys"] if str(k).strip()]
+            if not prof_keys:
+                return None, f"profile {profile_name!r} has empty allow_keys"
+            if raw.get("allow_keys") is None:
+                raw["allow_keys"] = prof_keys
+            else:
+                req_keys = [str(k).strip() for k in raw["allow_keys"] if str(k).strip()]
+                if not req_keys or any(k not in prof_keys for k in req_keys):
+                    return None, f"allow_keys exceeds profile {profile_name!r} allowlist"
+                raw["allow_keys"] = req_keys
+
+        if "no_net" in prof and prof["no_net"] is not None:
+            prof_no_net = bool(prof["no_net"])
+            if raw.get("no_net") is None:
+                raw["no_net"] = prof_no_net
+            elif prof_no_net and raw.get("no_net") is False:
+                return None, f"profile {profile_name!r} enforces no_net=true"
+
+        if "proxy" in prof and prof["proxy"] is not None:
+            prof_proxy = bool(prof["proxy"])
+            if raw.get("proxy") is None:
+                raw["proxy"] = prof_proxy
+            elif prof_proxy and raw.get("proxy") is False:
+                return None, f"profile {profile_name!r} requires proxy=true"
+
+        prof_upstreams = prof.get("upstreams")
+        prof_specs = []
+        if isinstance(prof_upstreams, dict):
+            prof_specs = [f"{k}={v}" for k, v in prof_upstreams.items()]
+        elif isinstance(prof_upstreams, (list, tuple)):
+            prof_specs = [str(x).strip() for x in prof_upstreams if str(x).strip()]
+        if prof_specs:
+            combined = []
+            for item in prof_specs + caller_upstreams:
+                if item not in combined:
+                    combined.append(item)
+            raw["proxy_upstream"] = combined
+            caller_upstreams = _clean_proxy_upstreams(raw)
+
+        if raw.get("no_net") is True and (raw.get("proxy") or caller_upstreams):
+            return None, f"profile {profile_name!r} combines incompatible no_net=true and proxy"
+    else:
+        vault_sec = policy.get("vault")
+        if (isinstance(vault_sec, dict) and "default_no_net" in vault_sec
+                and raw.get("no_net") is None and not raw.get("proxy") and not caller_upstreams):
+            raw["no_net"] = bool(vault_sec["default_no_net"])
+
+    upstream_err = _validate_proxy_upstreams(caller_upstreams, configured_upstreams)
+    if upstream_err:
+        return None, upstream_err
+    return raw, None
+
+
 def _effective_no_net(params):
-    """Default to network isolation on Linux/macOS where kernel `--no-net`
-    is supported unprivileged; Windows defaults False unless explicitly requested
-    (so unsupported hosts fail closed only when asked). When `proxy` is enabled,
-    loopback access is required so `no_net` defaults False unless explicitly set."""
+    """Default to network isolation on Linux, macOS, and Windows where kernel
+    `--no-net` is supported unprivileged. When `proxy` is enabled, loopback access
+    is required so `no_net` defaults False unless explicitly set."""
     if isinstance(params, dict) and params.get("no_net") is not None:
         return bool(params["no_net"])
-    if isinstance(params, dict) and (params.get("proxy") or params.get("proxy_upstream")):
+    if isinstance(params, dict) and (params.get("proxy") or _clean_proxy_upstreams(params)):
         return False
-    return sys.platform.startswith("linux") or sys.platform == "darwin"
+    return sys.platform.startswith("linux") or sys.platform in ("darwin", "win32")
+
+
+_CLI_PROFILE_SUPPORT: dict[str, bool] = {}
+
+
+def _cli_supports_run_profile() -> bool:
+    """Return True if the active ciphervault binary accepts `run --profile`
+    (or if no binary is resolved yet, so mocked unit tests see `--profile`)."""
+    binary, _source = find_binary()
+    if not binary:
+        return True
+    cached = _CLI_PROFILE_SUPPORT.get(binary)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [binary, "run", "--help"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            env=_minimal_env(),
+        )
+        supported = "--profile" in ((proc.stdout or "") + (proc.stderr or ""))
+    except Exception:
+        supported = False
+    _CLI_PROFILE_SUPPORT[binary] = supported
+    return supported
 
 
 def _tool_run(params, **kwargs):
@@ -741,33 +1196,37 @@ def _tool_run(params, **kwargs):
     cmd = params.get("command") or []
     if not cmd:
         return json.dumps({"success": False, "error": "command is required, e.g. ['npm','test']"})
+    effective, policy_err = _resolve_run_policy(params, params.get("cwd"))
+    if policy_err:
+        return json.dumps({"success": False, "error": policy_err})
     args = ["run", "--json"]
-    if params.get("dry_run"):
+    if effective.get("dry_run"):
         args.append("--dry-run")
-    if params.get("env_file"):
-        args += ["--env-file", params["env_file"]]
-    if params.get("project"):
-        args += ["--project", params["project"]]
-    if params.get("env"):
-        args += ["--env", params["env"]]
-    allow_keys = params.get("allow_keys")
+    profile_name = str(effective.get("profile") or "").strip()
+    if profile_name and _cli_supports_run_profile():
+        args += ["--profile", profile_name]
+    if effective.get("env_file"):
+        args += ["--env-file", effective["env_file"]]
+    if effective.get("project"):
+        args += ["--project", effective["project"]]
+    if effective.get("env"):
+        args += ["--env", effective["env"]]
+    allow_keys = effective.get("allow_keys")
     if allow_keys is not None:
         keys = [str(k).strip() for k in allow_keys if str(k).strip()]
         if not keys:
             return json.dumps({"success": False, "error": "allow_keys cannot be empty when provided"})
         args += ["--allow-keys", ",".join(keys)]
-    if params.get("proxy"):
+    if effective.get("proxy"):
         args.append("--proxy")
-    for spec in (params.get("proxy_upstream") or []):
-        s = str(spec).strip()
-        if s:
-            args += ["--proxy-upstream", s]
-    if _effective_no_net(params):
+    for spec in _clean_proxy_upstreams(effective):
+        args += ["--proxy-upstream", spec]
+    if _effective_no_net(effective):
         args.append("--no-net")
     args.append("--")
     args += list(cmd)
-    res = _run_cli_json(args, params.get("cwd"), timeout=300)
-    if params.get("dry_run"):
+    res = _run_cli_json(args, effective.get("cwd"), timeout=300)
+    if effective.get("dry_run"):
         return json.dumps(res)
     res = _structured_run_failure(res)
     data = res.get("data")
@@ -785,7 +1244,9 @@ def _tool_run(params, **kwargs):
               "output_sha256": hashlib.sha256(raw.encode()).hexdigest(),
               "content_sha256": _content_sha256(data.get("stdout") or ""),
               "output_bytes": len(raw)}
-    if _audit("ciphervault_run", "scrubbed_result", detail=detail, cwd=params.get("cwd")):
+    if effective.get("profile"):
+        detail["profile"] = str(effective["profile"])[:64]
+    if _audit("ciphervault_run", "scrubbed_result", detail=detail, cwd=effective.get("cwd")):
         return raw
     withheld = ("[CipherVault] run output withheld: the audit-log write failed, so "
                 "there is no receipt for it. Exit code and counts are kept.")
@@ -833,13 +1294,687 @@ def _visible_text(result):
 
 def _tool_push(params, **kwargs):
     params = params or {}
+    cwd = params.get("cwd")
+    shred = params.get("shred_working_copy")
+    if shred is None:
+        policy, err = _load_policy_toml(cwd)
+        if err:
+            return json.dumps({"success": False, "error": err})
+        shred = bool((policy.get("vault") or {}).get("sealed_mode", False))
     args = ["push", "-m", params.get("message", "Agent snapshot")]
     if params.get("local_only", True):
         args.append("--local")
-    res = _run_cli(args, params.get("cwd"), timeout=300)
+    if shred:
+        args.append("--shred")
+    res = _run_cli(args, cwd, timeout=300)
     if res.get("success"):
         res["output"] = scrub(res["output"])
     return json.dumps(res)
+
+
+_DOCTOR_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "target", ".venv", "venv", "__pycache__",
+    "dist", "build", ".next", ".ciphervault", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache",
+})
+_DOCTOR_CODE_EXTS = frozenset({
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".yml", ".yaml",
+})
+_DOCTOR_MAX_FILES = 5000
+_DOCTOR_MAX_FILE_BYTES = 1_048_576
+_ENV_REF_PATTERNS = (
+    re.compile(r"\bprocess\.env\.([A-Za-z_][A-Za-z0-9_]*)\b"),
+    re.compile(r"""\bprocess\.env\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]"""),
+    re.compile(r"\bimport\.meta\.env\.([A-Za-z_][A-Za-z0-9_]*)\b"),
+    re.compile(r"""\bimport\.meta\.env\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]"""),
+    re.compile(r"""\bos\.(?:environ\.get|getenv)\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']"""),
+    re.compile(r"""\bos\.environ\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]"""),
+    re.compile(r"""\b(?:std::)?env::(?:var|var_os)\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']"""),
+    re.compile(r"""\bos\.(?:Getenv|LookupEnv)\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']"""),
+    re.compile(r"\$\{([A-Z][A-Z0-9_]{1,})(?:[:?-][^}]*)?\}"),
+)
+_DOCKERFILE_ENV_RE = re.compile(r"(?m)^\s*(?:ENV|ARG)\s+([A-Z][A-Z0-9_]{1,})(?:=|\s|$)")
+_PLACEHOLDER_VAL_RE = re.compile(
+    r"(?i)(?:^(?:changeme|todo|fixme|placeholder|replace[-_]?me|"
+    r"your[-_].*[-_]?here|x{3,}|<[^>]+>|\*{3,}|demo[-_]?only)$|"
+    r"your[-_]?(?:api[-_]?key|secret|token|password)|^sk-x{3,}$)"
+)
+_KNOWN_KEY_PREFIXES = {
+    "ANTHROPIC_API_KEY": ("sk-ant-",),
+    "OPENAI_API_KEY": ("sk-",),
+    "STRIPE_SECRET_KEY": ("sk_live_", "sk_test_", "rk_live_", "rk_test_"),
+    "STRIPE_PUBLISHABLE_KEY": ("pk_live_", "pk_test_"),
+    "GITHUB_TOKEN": ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"),
+    "HF_TOKEN": ("hf_",),
+    "HUGGINGFACE_TOKEN": ("hf_",),
+    "OPENROUTER_API_KEY": ("sk-or-",),
+}
+
+
+def _scan_env_references(root_path):
+    """Scan workspace code files for referenced environment variable names."""
+    refs = set()
+    files_seen = 0
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = sorted(d for d in dirnames if d not in _DOCTOR_SKIP_DIRS)
+        for fname in sorted(filenames):
+            if files_seen >= _DOCTOR_MAX_FILES:
+                return refs
+            fpath = Path(dirpath) / fname
+            is_docker = fname == "Dockerfile" or fname.startswith("Dockerfile.")
+            if not is_docker and fpath.suffix.lower() not in _DOCTOR_CODE_EXTS:
+                continue
+            try:
+                if fpath.stat().st_size > _DOCTOR_MAX_FILE_BYTES:
+                    continue
+                content = fpath.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            files_seen += 1
+            for pat in _ENV_REF_PATTERNS:
+                refs.update(pat.findall(content))
+            if is_docker:
+                refs.update(_DOCKERFILE_ENV_RE.findall(content))
+    return refs
+
+
+def _parse_example_keys(example_path):
+    keys = set()
+    if not example_path.is_file():
+        return keys
+    try:
+        text = example_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return keys
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("\ufeff")
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            keys.add(key)
+    return keys
+
+
+def _strip_inline_comment(val):
+    for marker in (" #", "\t#"):
+        pos = val.find(marker)
+        if pos != -1:
+            return val[:pos]
+    return val
+
+
+def _lint_dotenv_line(key, raw_rhs):
+    """Return (parsed_value, list_of_issue_codes) computed strictly in RAM.
+    Never returns or formats secret material."""
+    issues = []
+    raw_no_nl = raw_rhs.rstrip("\n")
+    had_cr = raw_no_nl.endswith("\r")
+    if had_cr:
+        raw_no_nl = raw_no_nl[:-1]
+    stripped = raw_no_nl.strip()
+
+    if stripped.startswith('"') and stripped.endswith('"') and len(stripped) >= 2:
+        inner = stripped[1:-1]
+        if inner != inner.strip() or had_cr:
+            issues.append("WHITESPACE_WRAPPED")
+        val = inner
+        if (val.startswith('"') and val.endswith('"')) or (
+            val.startswith("'") and val.endswith("'")
+        ):
+            issues.append("UNSTRIPPED_QUOTES")
+    elif stripped.startswith("'") and stripped.endswith("'") and len(stripped) >= 2:
+        inner = stripped[1:-1]
+        if inner != inner.strip() or had_cr:
+            issues.append("WHITESPACE_WRAPPED")
+        val = inner
+        if (val.startswith('"') and val.endswith('"')) or (
+            val.startswith("'") and val.endswith("'")
+        ):
+            issues.append("UNSTRIPPED_QUOTES")
+    else:
+        before_comment = _strip_inline_comment(raw_no_nl)
+        if before_comment.startswith("#"):
+            before_comment = ""
+        if before_comment and before_comment != before_comment.strip(" \t"):
+            issues.append("WHITESPACE_WRAPPED")
+        elif had_cr and before_comment:
+            issues.append("WHITESPACE_WRAPPED")
+        val = before_comment.strip()
+        if ((val.startswith('"') and not val.endswith('"'))
+                or (val.endswith('"') and not val.startswith('"'))
+                or (val.startswith("'") and not val.endswith("'"))
+                or (val.endswith("'") and not val.startswith("'"))
+                or val in ('"', "'")):
+            issues.append("UNSTRIPPED_QUOTES")
+
+    if not val.strip():
+        issues.append("EMPTY_VALUE")
+        return val, issues
+
+    is_placeholder = bool(_PLACEHOLDER_VAL_RE.search(val.strip()))
+    if is_placeholder:
+        issues.append("PLACEHOLDER_VALUE")
+        return val, issues
+
+    if re.search(r"(?:_URL|_URI|_ENDPOINT|_DSN)$", key):
+        try:
+            parsed_url = urllib.parse.urlsplit(val.strip())
+            scheme_ok = bool(parsed_url.scheme and re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", parsed_url.scheme))
+            loc_ok = bool(parsed_url.netloc) or (
+                parsed_url.scheme.lower() in ("sqlite", "file") and bool(parsed_url.path)
+            )
+            if not scheme_ok or not loc_ok or any(c.isspace() for c in val.strip()):
+                issues.append("INVALID_URL")
+        except Exception:
+            issues.append("INVALID_URL")
+
+    if key.endswith("_JSON"):
+        try:
+            json.loads(val)
+        except Exception:
+            issues.append("INVALID_JSON")
+
+    expected_prefixes = _KNOWN_KEY_PREFIXES.get(key)
+    if expected_prefixes and not any(val.startswith(pfx) for pfx in expected_prefixes):
+        issues.append("PREFIX_MISMATCH")
+
+    return val, issues
+
+
+def _inspect_dotenv_file_in_memory(env_path):
+    """Parse one .env file in RAM and return (keys_set, anomaly_list).
+    Values never leave this function."""
+    keys = set()
+    anomalies = []
+    seen_anomalies = set()
+    try:
+        text = env_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return keys, anomalies
+    for raw_line in text.splitlines(keepends=True):
+        stripped = raw_line.lstrip("\ufeff").strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        body = raw_line.lstrip("\ufeff").lstrip()
+        if body.startswith("export "):
+            body = body[7:].lstrip()
+        if "=" not in body:
+            continue
+        raw_key, raw_rhs = body.split("=", 1)
+        key = raw_key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        keys.add(key)
+        _val, issues = _lint_dotenv_line(key, raw_rhs)
+        for issue in issues:
+            pair = (key, issue)
+            if pair not in seen_anomalies:
+                seen_anomalies.add(pair)
+                anomalies.append({"key": key, "issue": issue})
+    return keys, anomalies
+
+
+def _tool_env_doctor(params, **kwargs):
+    params = params or {}
+    cwd = params.get("cwd") or os.getcwd()
+    root_path = Path(cwd)
+    if not root_path.is_dir():
+        return json.dumps({"success": False, "error": f"workspace directory does not exist: {cwd}"})
+    resolved_root = root_path.resolve()
+    vault_cwd = _vault_cwd(cwd)
+
+    tracked_paths = []
+    sealed = False
+    status_res = _run_cli_json(["status", "--json"], vault_cwd, timeout=20)
+    if status_res.get("success") and isinstance(status_res.get("data"), dict):
+        sdata = status_res["data"]
+        if sdata.get("vault"):
+            tracked_paths = list(sdata.get("tracked_paths") or [])
+            sealed = bool(sdata.get("working_tree_sealed"))
+
+    candidate_files = []
+    if params.get("env_file"):
+        rel = str(params["env_file"]).strip()
+        cand = (resolved_root / rel).resolve()
+        if not cand.is_relative_to(resolved_root):
+            return json.dumps({"success": False, "error": "env_file must stay inside workspace cwd"})
+        candidate_files = [cand]
+    elif tracked_paths:
+        for rel in tracked_paths:
+            name = Path(rel).name
+            if (name == ".env" or name.startswith(".env.")) and not name.endswith(
+                (".example", ".sample", ".template")
+            ):
+                cand = (resolved_root / rel).resolve()
+                if cand.is_relative_to(resolved_root):
+                    candidate_files.append(cand)
+    else:
+        for name in (".env", ".env.local", ".env.development", ".env.production", ".env.test"):
+            cand = resolved_root / name
+            if cand.is_file():
+                candidate_files.append(cand)
+
+    vault_keys_set = set()
+    value_anomalies = []
+    seen_anomalies = set()
+    for env_path in candidate_files:
+        if env_path.is_file():
+            fkeys, fanomalies = _inspect_dotenv_file_in_memory(env_path)
+            vault_keys_set.update(fkeys)
+            for item in fanomalies:
+                pair = (item["key"], item["issue"])
+                if pair not in seen_anomalies:
+                    seen_anomalies.add(pair)
+                    value_anomalies.append(item)
+
+    if sealed or (status_res.get("success") and status_res.get("data", {}).get("vault") and not vault_keys_set):
+        dry_args = ["run", "--dry-run", "--json"]
+        if params.get("env_file"):
+            dry_args += ["--env-file", str(params["env_file"]).strip()]
+        dry_args += ["--", "echo", "ok"]
+        dry_res = _run_cli_json(dry_args, vault_cwd, timeout=30)
+        if dry_res.get("success") and isinstance(dry_res.get("data"), dict):
+            for entry in dry_res["data"].get("secrets") or []:
+                key_name = entry.get("name") if isinstance(entry, dict) else str(entry)
+                if key_name:
+                    vault_keys_set.add(str(key_name))
+
+    referenced_set = _scan_env_references(resolved_root)
+    example_path = resolved_root / ".env.example"
+    pre_example_keys = _parse_example_keys(example_path)
+
+    vault_keys = sorted(vault_keys_set)
+    referenced_in_code = sorted(referenced_set)
+    missing_in_vault = sorted((referenced_set | pre_example_keys) - vault_keys_set)
+    unreferenced_in_code = sorted(vault_keys_set - referenced_set)
+
+    out = {
+        "success": True,
+        "sealed": sealed,
+        "vault_keys": vault_keys,
+        "referenced_in_code": referenced_in_code,
+        "example_keys": sorted(pre_example_keys),
+        "missing_in_vault": missing_in_vault,
+        "unreferenced_in_code": unreferenced_in_code,
+        "value_anomalies": value_anomalies,
+    }
+
+    if params.get("sync_env_example"):
+        desired = sorted(vault_keys_set | referenced_set)
+        to_add = [k for k in desired if k not in pre_example_keys]
+        if to_add or not example_path.exists():
+            existing_text = ""
+            if example_path.is_file():
+                existing_text = example_path.read_text(encoding="utf-8", errors="replace")
+            prefix = ""
+            if existing_text and not existing_text.endswith(("\n", "\r")):
+                prefix = "\n"
+            lines = "".join(f"{k}= # [required]\n" for k in to_add)
+            example_path.write_text(existing_text + prefix + lines, encoding="utf-8")
+        out["env_example_synced"] = True
+        out["env_example_added"] = to_add
+        out["example_keys"] = sorted(pre_example_keys | set(to_add))
+
+    return json.dumps(out)
+
+
+_ENV_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _validate_env_file(cwd, env_file_raw):
+    """Resolve `cwd` and `env_file`, ensuring `env_file` is a safe relative path
+    inside `cwd` and outside `.ciphervault`."""
+    base_dir = Path(cwd or os.getcwd()).resolve()
+    if not base_dir.is_dir():
+        return None, None, f"workspace directory does not exist: {cwd}"
+    env_file = str(env_file_raw or ".env").strip()
+    if not env_file or "\x00" in env_file or env_file.startswith(("/", "\\")) or ".." in Path(env_file).parts:
+        return None, None, "env_file must be a valid relative path inside workspace cwd"
+    target_path = (base_dir / env_file).resolve()
+    if (target_path == base_dir or not target_path.is_relative_to(base_dir)
+            or ".ciphervault" in target_path.relative_to(base_dir).parts):
+        return None, None, "env_file must be a valid path inside workspace cwd"
+    return base_dir, target_path, None
+
+
+def _upsert_env_vars(target_path: Path, pairs: list[tuple[str, str]]) -> None:
+    """Update existing KEY=... lines or append new ones in `target_path`."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    if target_path.is_file():
+        lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    for name, value in pairs:
+        pattern = re.compile(rf"^(?:\ufeff)?(?:export\s+)?{re.escape(name)}\s*=")
+        replaced = False
+        new_lines = []
+        for line in lines:
+            if not replaced and pattern.match(line):
+                new_lines.append(f"{name}={value}\n")
+                replaced = True
+            else:
+                new_lines.append(line)
+        if not replaced:
+            if new_lines and not new_lines[-1].endswith(("\n", "\r")):
+                new_lines[-1] = new_lines[-1] + "\n"
+            new_lines.append(f"{name}={value}\n")
+        lines = new_lines
+    target_path.write_text("".join(lines), encoding="utf-8")
+
+
+def _tool_secret_generate(params, **kwargs):
+    params = params or {}
+    name = str(params.get("name") or "").strip()
+    if not _ENV_KEY_RE.fullmatch(name):
+        return json.dumps({
+            "success": False,
+            "error": "invalid secret name: must match [A-Za-z_][A-Za-z0-9_]*",
+        })
+    fmt = str(params.get("format") or "base64url").strip().lower()
+    if fmt not in ("base64url", "hex", "uuid", "alphanumeric"):
+        return json.dumps({
+            "success": False,
+            "error": "invalid format: expected base64url, hex, uuid, or alphanumeric",
+        })
+    nbytes = params.get("bytes", 32)
+    if isinstance(nbytes, bool) or not isinstance(nbytes, int) or not (16 <= nbytes <= 64):
+        return json.dumps({
+            "success": False,
+            "error": "bytes must be an integer between 16 and 64",
+        })
+
+    cwd = params.get("cwd") or os.getcwd()
+    env_file = str(params.get("env_file") or ".env").strip()
+    if not env_file:
+        return json.dumps({"success": False, "error": "env_file cannot be empty"})
+    base_dir, target_path, path_err = _validate_env_file(cwd, env_file)
+    if path_err:
+        return json.dumps({"success": False, "error": path_err})
+
+    seal_param = params.get("seal")
+    if seal_param is None:
+        policy, p_err = _load_policy_toml(cwd)
+        seal = bool((policy.get("vault") or {}).get("sealed_mode", False)) if not p_err else False
+    else:
+        seal = bool(seal_param)
+
+    if fmt == "base64url":
+        value = secrets.token_urlsafe(nbytes)
+    elif fmt == "hex":
+        value = secrets.token_hex(nbytes)
+    elif fmt == "uuid":
+        raw_uuid = bytearray(secrets.token_bytes(16))
+        raw_uuid[6] = (raw_uuid[6] & 0x0F) | 0x40
+        raw_uuid[8] = (raw_uuid[8] & 0x3F) | 0x80
+        value = str(uuid.UUID(bytes=bytes(raw_uuid)))
+    else:
+        alphabet = string.ascii_letters + string.digits
+        value = "".join(secrets.choice(alphabet) for _ in range(nbytes))
+
+    length_chars = len(value)
+    sha256_prefix = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+    def _scrub_generated(msg):
+        return scrub(str(msg).replace(value, "[REDACTED]"))
+
+    try:
+        _upsert_env_vars(target_path, [(name, value)])
+
+        vault_cwd = _vault_cwd(cwd)
+        try:
+            track_arg = target_path.relative_to(Path(vault_cwd).resolve()).as_posix()
+        except Exception:
+            track_arg = target_path.relative_to(base_dir).as_posix()
+        track_res = _run_cli(["track", track_arg], vault_cwd, timeout=60)
+        if not track_res.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": _scrub_generated(track_res.get("error") or "ciphervault track failed"),
+            })
+        push_args = ["push", "--local", "-m", f"Generated secret {name}"]
+        if seal:
+            push_args.append("--shred")
+        push_res = _run_cli(push_args, vault_cwd, timeout=120)
+        if not push_res.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": _scrub_generated(push_res.get("error") or "ciphervault push failed"),
+            })
+        _audit(
+            "ciphervault_secret_generate",
+            "generated",
+            path=env_file,
+            detail={"name": name, "format": fmt, "sealed": seal},
+            cwd=vault_cwd,
+        )
+        return json.dumps({
+            "success": True,
+            "name": name,
+            "format": fmt,
+            "length_chars": length_chars,
+            "sha256_prefix": sha256_prefix,
+            "env_file": env_file,
+            "sealed": seal,
+        })
+    except Exception as exc:
+        return json.dumps({"success": False, "error": _scrub_generated(exc)})
+    finally:
+        value = ""
+
+
+def _tool_secret_prompt(params, **kwargs):
+    params = params or {}
+    raw_keys = params.get("keys")
+    if not isinstance(raw_keys, list) or not raw_keys:
+        return json.dumps({
+            "success": False,
+            "error": "keys must be a non-empty list of key names or {name, reason?, expected_prefix?} objects",
+        })
+
+    normalized_keys = []
+    seen_names = set()
+    for item in raw_keys:
+        if isinstance(item, str):
+            name = item.strip()
+            reason = ""
+            expected_prefix = ""
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            expected_prefix = str(item.get("expected_prefix") or "").strip()
+        else:
+            return json.dumps({
+                "success": False,
+                "error": "each item in keys must be a string or an object with a 'name' field",
+            })
+        if not _ENV_KEY_RE.fullmatch(name):
+            return json.dumps({
+                "success": False,
+                "error": f"invalid secret name {name!r}: must match [A-Za-z_][A-Za-z0-9_]*",
+            })
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        entry = {"name": name}
+        if reason:
+            entry["reason"] = reason[:200]
+        if expected_prefix:
+            entry["expected_prefix"] = expected_prefix[:32]
+        normalized_keys.append(entry)
+
+    cwd = params.get("cwd") or os.getcwd()
+    env_file = str(params.get("env_file") or ".env").strip()
+    base_dir, target_path, path_err = _validate_env_file(cwd, env_file)
+    if path_err:
+        return json.dumps({"success": False, "error": path_err})
+
+    seal_param = params.get("seal")
+    seal = True if seal_param is None else bool(seal_param)
+    requested_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    if os.environ.get("CIPHERVAULT_INTERACTIVE_PROMPT") == "1" and sys.stdin.isatty():
+        entered: list[tuple[str, str]] = []
+
+        def _scrub_entered(msg):
+            out = str(msg)
+            for _k, v in entered:
+                if v:
+                    out = out.replace(v, "[REDACTED]")
+            return scrub(out)
+
+        try:
+            for item in normalized_keys:
+                name = item["name"]
+                hint_parts = []
+                if item.get("reason"):
+                    hint_parts.append(item["reason"])
+                if item.get("expected_prefix"):
+                    hint_parts.append(f"prefix: {item['expected_prefix']}")
+                suffix = f" ({', '.join(hint_parts)})" if hint_parts else ""
+                val = getpass.getpass(f"Enter {name}{suffix}: ")
+                if not val or "\n" in val or "\r" in val:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"empty or invalid multiline value for {name}",
+                    })
+                prefix = item.get("expected_prefix") or ""
+                if prefix and not val.startswith(prefix):
+                    return json.dumps({
+                        "success": False,
+                        "error": f"value for {name} does not start with expected prefix {prefix!r}",
+                    })
+                entered.append((name, val))
+
+            _upsert_env_vars(target_path, entered)
+            vault_cwd = _vault_cwd(cwd)
+            try:
+                track_arg = target_path.relative_to(Path(vault_cwd).resolve()).as_posix()
+            except Exception:
+                track_arg = target_path.relative_to(base_dir).as_posix()
+            track_res = _run_cli(["track", track_arg], vault_cwd, timeout=60)
+            if not track_res.get("success"):
+                return json.dumps({
+                    "success": False,
+                    "error": _scrub_entered(track_res.get("error") or "ciphervault track failed"),
+                })
+            push_args = ["push", "--local", "-m", "Configured secrets via interactive prompt"]
+            if seal:
+                push_args.append("--shred")
+            push_res = _run_cli(push_args, vault_cwd, timeout=120)
+            if not push_res.get("success"):
+                return json.dumps({
+                    "success": False,
+                    "error": _scrub_entered(push_res.get("error") or "ciphervault push failed"),
+                })
+            configured_names = [k for k, _v in entered]
+            _audit(
+                "ciphervault_secret_prompt",
+                "configured",
+                path=env_file,
+                detail={"keys": configured_names, "sealed": seal},
+                cwd=vault_cwd,
+            )
+            return json.dumps({
+                "success": True,
+                "configured": configured_names,
+                "env_file": env_file,
+                "sealed": seal,
+            })
+        except Exception as exc:
+            return json.dumps({"success": False, "error": _scrub_entered(exc)})
+        finally:
+            entered.clear()
+
+    # Normal agent/desktop flow: queue metadata-only prompt (zero secrets!).
+    vroot = _vault_root(cwd) or base_dir
+    cv_dir = vroot / ".ciphervault"
+    cv_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = cv_dir / "pending_secret_prompts.json"
+    existing_keys = []
+    if prompt_path.is_file():
+        try:
+            old = json.loads(prompt_path.read_text(encoding="utf-8", errors="replace") or "{}")
+            if isinstance(old, dict) and isinstance(old.get("keys"), list):
+                existing_keys = [k for k in old["keys"] if isinstance(k, dict) and k.get("name")]
+        except Exception:
+            existing_keys = []
+
+    merged = {}
+    order = []
+    for k in existing_keys:
+        n = str(k["name"])
+        merged[n] = k
+        order.append(n)
+    for k in normalized_keys:
+        n = k["name"]
+        item_meta = {
+            "name": n,
+            "reason": k.get("reason", ""),
+            "expected_prefix": k.get("expected_prefix", ""),
+            "env_file": env_file,
+            "seal": seal,
+            "requested_at": requested_at,
+        }
+        if n not in merged:
+            order.append(n)
+        merged[n] = item_meta
+
+    payload = {
+        "keys": [merged[n] for n in order],
+        "env_file": env_file,
+        "seal": seal,
+        "requested_at": requested_at,
+    }
+    prompt_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    pending_names = [k["name"] for k in normalized_keys]
+    _audit(
+        "ciphervault_secret_prompt",
+        "prompt_queued",
+        path=env_file,
+        detail={"keys": pending_names, "sealed": seal},
+        cwd=_vault_cwd(cwd),
+    )
+    return json.dumps({
+        "success": True,
+        "status": "prompt_queued",
+        "pending_keys": pending_names,
+        "env_file": env_file,
+        "seal": seal,
+        "message": "Secret input prompt queued in the CipherVault desktop pane. Enter the values there — never paste secrets into chat.",
+    })
+
+
+def _tool_diff(params, **kwargs):
+    params = params or {}
+    cwd = params.get("cwd")
+    args = ["diff", "--json"]
+    file_filter = params.get("file")
+    if file_filter is not None and str(file_filter).strip():
+        fstr = str(file_filter).strip()
+        if fstr.startswith("-"):
+            return json.dumps({"success": False, "error": "invalid file filter"})
+        args += ["--file", fstr]
+    snap_a = params.get("snapshot_a")
+    snap_b = params.get("snapshot_b")
+    a_str = str(snap_a).strip() if snap_a is not None and str(snap_a).strip() else None
+    b_str = str(snap_b).strip() if snap_b is not None and str(snap_b).strip() else None
+    for tok in (a_str, b_str):
+        if tok and tok.startswith("-"):
+            return json.dumps({"success": False, "error": "snapshot reference cannot start with '-'"})
+    if a_str and b_str:
+        args += [a_str, b_str]
+    elif a_str:
+        args.append(a_str)
+    elif b_str:
+        args += ["head", b_str]
+    # Security invariant: NEVER pass --reveal or -r from an agent tool.
+    if "--reveal" in args or "-r" in args:  # pragma: no cover
+        return json.dumps({"success": False, "error": "reveal is forbidden in ciphervault_diff"})
+    return json.dumps(_run_cli_json(args, _vault_cwd(cwd), timeout=60))
 
 
 def _tool_redact(params, **kwargs):
@@ -1135,27 +2270,96 @@ def _tool_drill(params, **kwargs):
 # ---------------------------------------------------------------- hooks
 
 _SECRET_FILE_RE = re.compile(
-    r"(?i)(^|[\s\\/\"'=])(\.env(\.[\w.-]*)?|\.envrc|\.npmrc|\.pypirc|"
+    r"(?i)(^|[\s\\/\"'=])(\.env(?!(?:\.(?:example|sample|template))\b)(\.[\w.-]*)?|\.envrc|\.npmrc|\.pypirc|"
     r"[\w.-]+\.(pem|key|p12|pfx)|id_rsa|id_ed25519|"
     r"credentials\.json|secrets\.(json|ya?ml|toml)|"
+    r"vault\.db|keystore\.(?:key|salt)|policy\.toml|"
     # Source/docs about kits (recovery_kit.rs, recovery_kit.md) are not kits.
     r"recovery_kit(?![\w-]*\.(?:rs|py|pyi|js|jsx|ts|tsx|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|md|toml|ya?ml|lock)\b)[\w.-]*|"
     r"[\w.-]+\.kit|[\w.-]*share[\w.-]*\.txt)"
 )
+_PROTECTED_CONFIG_RE = re.compile(
+    r"(?i)(^|[\s\\/\"'=])(?:\.?ciphervault[\\/])?(?:policy\.toml|operators\.json|vault\.db|keystore\.(?:key|salt))(\b|$)"
+)
 _SHELL_CHAIN_RE = re.compile(r"[;&|`$<>]|\r|\n")
 _SAFE_SECRET_PATH_CMD_RE = re.compile(
     r"(?i)^\s*(?:"
-    r"(?:ciphervault|cv)(?:\.exe)?\s+(?:status|track|untrack|push|hook|init|audit|agent-log|diff|rekey|prune)\b|"
+    r"(?:ciphervault|cv)(?:\.exe)?\s+(?:status|track|push|hook|audit|agent-log\s+(?:show|verify|check)|diff)\b|"
     r"git(?:\.exe)?\s+(?:status|check-ignore|rm\s+--cached|ls-files)\b"
     r")"
 )
-_EXPORT_ENV_RE = re.compile(r"(?i)\b(?:ciphervault|cv)(?:\.exe)?\s+export-env\b")
+_CLI_FLAGS_RE = r"(?:\s+--?[\w-]+(?:=[^\s;&|]+)?)*"
+_EXPORT_ENV_RE = re.compile(
+    rf"(?i)(?:\b(?:ciphervault|cv)(?:\.exe)?[\"']?{_CLI_FLAGS_RE}\s+"
+    rf"(?:(?:export-env|restore|pull|recover|init|rekey|prune|untrack)\b|"
+    rf"secret{_CLI_FLAGS_RE}\s+get\b|"
+    rf"agent-log{_CLI_FLAGS_RE}\s+(?:record|anchor)\b|"
+    rf"diff\b[^\n;&|]*(?:--reveal|\s-r\b))|"
+    r"/api/diff\b[^\n]*reveal|/api/snapshots/restore\b)"
+)
 _GIT_DANGER_RE = re.compile(r"(?i)\bgit\s+(commit|push|add)\b")
+_INTERPRETER_BINARIES = frozenset({
+    "python", "python3", "node", "bash", "sh",
+    "pwsh", "powershell", "cmd", "ruby", "perl",
+})
+_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "/c", "-command", "-enc", "-encodedcommand"})
 _REDACT_CHUNK_CHARS = 262_144
 _REDACT_SEAM_OVERLAP = 4_096
+_MAX_RESULT_CHARS = int(os.environ.get("CIPHERVAULT_MAX_RESULT_CHARS", str(4 * 1024 * 1024)))
+
+
+def _is_inline_interpreter_cmd(cmd):
+    if not cmd or len(cmd) < 2:
+        return False
+    raw_prog = Path(str(cmd[0])).name.lower()
+    for ext in (".exe", ".cmd", ".bat"):
+        if raw_prog.endswith(ext):
+            raw_prog = raw_prog[:-len(ext)]
+            break
+    is_interp = (
+        raw_prog in _INTERPRETER_BINARIES
+        or bool(re.match(r"^python\d*(?:\.\d+)*$", raw_prog))
+    )
+    if not is_interp:
+        return False
+    for arg in cmd[1:]:
+        tok = str(arg).strip().lower()
+        if tok == "--" or not tok.startswith(("-", "/")):
+            break
+        if tok == "-m":
+            break
+        if tok in _INLINE_CODE_FLAGS or tok.startswith(("-c=", "-e=", "/c:")):
+            return True
+    return False
+
+
+def _compute_run_rule_key(cmd, profile_name, no_net, proxy_on, allow_keys):
+    program = str((cmd or ["run"])[0])
+    parts = ["ciphervault_run"]
+    if profile_name:
+        parts.append(f"profile={profile_name}")
+    else:
+        parts.append(program)
+    if _is_inline_interpreter_cmd(cmd):
+        cmd_digest = hashlib.sha256(
+            json.dumps([str(x) for x in cmd]).encode("utf-8")
+        ).hexdigest()[:12]
+        parts.append(f"inline={cmd_digest}")
+    clean_keys = (
+        [str(k).strip() for k in allow_keys if str(k).strip()]
+        if allow_keys is not None else None
+    )
+    if (not no_net) or proxy_on or (clean_keys is not None):
+        net_mode = "proxy" if proxy_on else ("no_net" if no_net else "open")
+        keys_part = ",".join(sorted(clean_keys)) if clean_keys else "ALL"
+        parts.append(f"net={net_mode}")
+        parts.append(f"keys={keys_part}")
+    return ":".join(parts)
 
 
 def _is_safe_terminal_secret_ref(text):
+    if _EXPORT_ENV_RE.search(text):
+        return False
     return (
         not _SHELL_CHAIN_RE.search(text)
         and bool(_SAFE_SECRET_PATH_CMD_RE.search(text))
@@ -1228,14 +2432,24 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # alone cannot stop a command from exfiltrating the values
             # it was given. Every ciphervault_run call is gated.
             vault_cwd = _vault_cwd(cwd)
-            allow_keys = (args or {}).get("allow_keys") if isinstance(args, dict) else None
-            no_net = _effective_no_net(args)
-            proxy_on = bool(isinstance(args, dict) and (args.get("proxy") or args.get("proxy_upstream")))
+            effective, policy_err = _resolve_run_policy(args, cwd)
+            if policy_err:
+                _audit("ciphervault_run", "blocked",
+                       detail={"reason": "policy_or_upstream_rejected"},
+                       cwd=vault_cwd)
+                return {"action": "block", "message": f"CipherVault guard: {policy_err}"}
+            cmd = list(effective.get("command") or ["run"])
+            allow_keys = effective.get("allow_keys")
+            no_net = _effective_no_net(effective)
+            proxy_on = bool(effective.get("proxy") or _clean_proxy_upstreams(effective))
+            profile_name = str(effective.get("profile") or "").strip() or None
             detail = {
-                "program": ((args or {}).get("command") or [""])[0],
+                "program": str(cmd[0]),
                 "no_net": no_net,
                 "proxy": proxy_on,
             }
+            if profile_name:
+                detail["profile"] = profile_name[:64]
             if allow_keys:
                 detail["allow_keys"] = [str(k) for k in allow_keys][:20]
             _audit("ciphervault_run", "approval_requested",
@@ -1245,10 +2459,9 @@ def on_pre_tool_call(tool_name, args, **kwargs):
             # to the fleet BEFORE the approved command can run, so a
             # run that goes badly cannot rewrite the grant away.
             _anchor_async(vault_cwd)
-            # Narrow grant grain: the rule key names the program, so a
-            # session/always grant in Hermes's approval UI covers that
-            # program only — never every command the model may run.
-            program = str(((args or {}).get("command") or ["run"])[0])
+            # Scoped grant grain: bind rule_key to program/profile, inline
+            # code hash, network isolation mode, and allow_keys.
+            rule_key = _compute_run_rule_key(cmd, profile_name, no_net, proxy_on, allow_keys)
             scope_note = (
                 f" (allow_keys: {', '.join(str(k) for k in allow_keys)})"
                 if allow_keys else " (all vault secrets)"
@@ -1261,20 +2474,33 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                     "message": (f"CipherVault: run a command with vault secrets{scope_note}{net_note} "
                                 "injected in RAM? The command receives the values; "
                                 "approve only if you trust it."),
-                    "rule_key": f"ciphervault_run:{program}"}
+                    "rule_key": rule_key}
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None
         args = args or {}
         texts = list(_iter_strings(args))
 
-        if tool_name == "terminal":
+        if tool_name in ("terminal", "execute_code", "browser_exec"):
             for text in texts:
                 if _EXPORT_ENV_RE.search(text):
                     _audit(tool_name, "blocked", path=text[:300],
                            detail={"reason": "export_env_terminal"}, cwd=cwd)
                     return {"action": "block", "message": (
-                        "CipherVault guard: `ciphervault export-env` prints plaintext secrets "
-                        "and cannot run in terminal. Use ciphervault_run instead."
+                        "CipherVault guard: plaintext secret export/restore/reveal/admin commands "
+                        "cannot run via agent tools. Use ciphervault_run or run interactively."
+                    )}
+
+        if tool_name in ("write_file", "patch"):
+            for key in ("path", "file_path", "file", "target_file"):
+                target = args.get(key) if isinstance(args, dict) else None
+                if isinstance(target, str) and (
+                    _PROTECTED_CONFIG_RE.search(target) or _SECRET_FILE_RE.search(target)
+                ):
+                    _audit(tool_name, "blocked", path=target[:300],
+                           detail={"reason": "protected_secret_or_policy_write"}, cwd=cwd)
+                    return {"action": "block", "message": (
+                        "CipherVault guard: modifying secret files or .ciphervault/policy.toml "
+                        "directly is blocked. Use ciphervault_secret_generate or edit policy.toml manually."
                     )}
 
         if tool_name in ("terminal", "execute_code", "read_file", "browser_exec"):
@@ -1334,7 +2560,7 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                     break
         return None
     except Exception:
-        if _has_vault(cwd):
+        if _vault_present(cwd):
             return {"action": "block", "message": (
                 "CipherVault guard: internal error during security check inside a vault "
                 "workspace; failing closed."
@@ -1460,8 +2686,8 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
         if tool_name and tool_name.startswith("ciphervault_"):
             return None
         cwd = (args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd()
-        oversized = len(result) > 262_144
-        sample = result[:262_144] if oversized else result
+        oversized = len(result) > _MAX_RESULT_CHARS
+        sample = result[:_MAX_RESULT_CHARS] if oversized else result
         roots = _scrub_roots(args, cwd)
         if not roots:
             # No vault here (fresh install, gateway, unrelated
@@ -1474,11 +2700,11 @@ def on_transform_tool_result(tool_name, args, result, **kwargs):
             if cleaned != sample or oversized:
                 return cleaned + ("\n…[truncated by CipherVault scrub]" if oversized else "")
             return None
-        # Each vault the call touches scrubs its own exact values; the
-        # passes chain, and any one failing withholds the result.
+        # Each vault the call touches scrubs its own exact values across all
+        # 256 KiB chunks and 4 KiB join seams; any one failing withholds the result.
         cleaned, n = sample, 0
         for root in roots:
-            cleaned, n_root, exact = cli_redact(cleaned, root, timeout=10)
+            cleaned, n_root, exact, _changed = _scrub_full_text(cleaned, root, timeout=15)
             n += n_root
             if not exact:
                 _audit(tool_name, "scrub_unavailable",
@@ -1647,6 +2873,7 @@ def _slash_ciphervault(raw_args, **kwargs):
         "status": "ciphervault_status", "scan": "ciphervault_scan",
         "drill": "ciphervault_recovery_drill", "push": "ciphervault_push",
         "run": "ciphervault_run", "redact": "ciphervault_redact",
+        "doctor": "ciphervault_env_doctor", "diff": "ciphervault_diff",
     }
     if sub in tool_for:
         try:
@@ -1659,9 +2886,10 @@ def _slash_ciphervault(raw_args, **kwargs):
         binary, source = find_binary()
         return f"plugin v{RELEASE_VERSION}; binary: {binary or 'missing'} ({source})"
     return (
-        "Usage: /ciphervault <status|scan|push|drill|version|setup>\n"
+        "Usage: /ciphervault <status|scan|push|drill|doctor|diff|version|setup>\n"
         "Tools: ciphervault_status, ciphervault_scan, ciphervault_run, "
-        "ciphervault_push, ciphervault_recovery_drill, ciphervault_redact."
+        "ciphervault_push, ciphervault_recovery_drill, ciphervault_redact, "
+        "ciphervault_env_doctor, ciphervault_secret_generate, ciphervault_diff."
     )
 
 
@@ -1767,17 +2995,20 @@ _TOOLS = [
     ("ciphervault_run", _tool_run,
      "Run a command with vault secrets injected into its environment in RAM only (nothing written to disk). Output is exact-value + shape scrubbed before return. Never prints plaintext secrets.",
      {"command": {"type": "array", "items": {"type": "string"}, "description": "Command, e.g. ['npm','test']"},
+      "profile": {"type": "string", "description": "Optional execution profile name defined in .ciphervault/policy.toml"},
       "env_file": {"type": "string"}, "project": {"type": "string"}, "env": {"type": "string"},
       "allow_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional allowlist of variable names to inject (least-privilege scoping)"},
-      "no_net": {"type": "boolean", "description": "Block child outbound/inbound network access (defaults true on Linux/macOS, false on Windows)"},
+      "no_net": {"type": "boolean", "description": "Block child outbound/inbound network access (defaults true on Linux, macOS, and Windows)"},
       "proxy": {"type": "boolean", "default": False, "description": "Run loopback credential proxy in parent so real API keys never enter child env"},
-      "proxy_upstream": {"type": "array", "items": {"type": "string"}, "description": "Optional VAR=https://host[@HeaderName] mappings for proxy mode"},
+      "proxy_upstream": {"type": "array", "items": {"type": "string"}, "description": "Optional VAR=https://host[@HeaderName] mappings for proxy mode (public HTTPS non-provider hosts unless pinned in .ciphervault/policy.toml)"},
       "dry_run": {"type": "boolean", "default": False, "description": "List variable names without executing"},
       "cwd": {"type": "string"}}),
     ("ciphervault_push", _tool_push,
      "Create an encrypted snapshot of tracked secret files (client-side sealed; operators store ciphertext only). Local by default; local_only=false replicates to configured operators.",
      {"message": {"type": "string", "default": "Agent snapshot"},
-      "local_only": {"type": "boolean", "default": True}, "cwd": {"type": "string"}}),
+      "local_only": {"type": "boolean", "default": True},
+      "shred_working_copy": {"type": "boolean", "description": "Zero-fill and remove tracked plaintext files from the working directory after sealing the snapshot (defaults to [vault].sealed_mode in policy.toml)"},
+      "cwd": {"type": "string"}}),
     ("ciphervault_recovery_drill", _tool_drill,
      "Prove a recovery kit or guardian shares actually restore: restores into a fresh temp dir created by the tool, returns a SHA-256 manifest (names+sizes+hashes only), then deletes that temp dir. Takes FILE PATHS only — never accept kit/share contents.",
      {"kit": {"type": "string", "description": "Path to kit file on disk"},
@@ -1793,6 +3024,42 @@ _TOOLS = [
      {"limit": {"type": "integer", "default": 50},
       "check_text": {"type": "string", "description": "Output text to check against the scrub log (hashed locally)"},
       "cwd": {"type": "string"}}),
+    ("ciphervault_env_doctor", _tool_env_doctor,
+     "Zero-knowledge environment diagnostics: cross-reference env vars referenced in code and .env.example against vault keys and inspect .env* files in-memory for structural issues (empty, whitespace-wrapped, unstripped quotes, placeholders, invalid URLs/JSON, prefix mismatches). Never returns secret values.",
+     {"env_file": {"type": "string", "description": "Optional specific .env file relative to cwd"},
+      "sync_env_example": {"type": "boolean", "default": False, "description": "Safely create/update .env.example with KEY= # [required] placeholders"},
+      "cwd": {"type": "string"}}),
+    ("ciphervault_secret_generate", _tool_secret_generate,
+     "Generate a cryptographically random secret inside the vault without exposing the value to chat or logs. Returns only name, format, length, and SHA-256 prefix.",
+     {"name": {"type": "string", "description": "Environment variable name ([A-Za-z_][A-Za-z0-9_]*)"},
+      "format": {"type": "string", "enum": ["base64url", "hex", "uuid", "alphanumeric"], "default": "base64url"},
+      "bytes": {"type": "integer", "default": 32, "description": "Entropy length in bytes (16..64)"},
+      "env_file": {"type": "string", "default": ".env"},
+      "seal": {"type": "boolean", "description": "Shred the plaintext working copy after pushing the encrypted snapshot"},
+      "cwd": {"type": "string"}}),
+    ("ciphervault_diff", _tool_diff,
+     "Compare key-level secret changes between snapshots or against the working tree (always masked; never reveals plaintext values).",
+     {"snapshot_a": {"type": "string", "description": "Old snapshot ID or 'head'/'working'"},
+      "snapshot_b": {"type": "string", "description": "New snapshot ID or 'head'/'working'"},
+      "file": {"type": "string", "description": "Limit diff to a specific relative file path"},
+      "cwd": {"type": "string"}}),
+    ("ciphervault_secret_prompt", _tool_secret_prompt,
+     "Queue a secure secret input prompt in the CipherVault desktop pane (or interactive TTY) so the user can supply missing API keys or credentials without pasting secrets into chat.",
+     {"keys": {"type": "array",
+               "items": {"oneOf": [
+                   {"type": "string"},
+                   {"type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "expected_prefix": {"type": "string"},
+                    },
+                    "required": ["name"]},
+               ]},
+               "description": "List of secret key names or {name, reason?, expected_prefix?} objects to request"},
+      "env_file": {"type": "string", "default": ".env"},
+      "seal": {"type": "boolean", "default": True, "description": "Shred the plaintext working copy after pushing the encrypted snapshot"},
+      "cwd": {"type": "string"}}),
 ]
 
 _REDACTION_PATTERNS = [
@@ -1807,8 +3074,13 @@ _REDACTION_PATTERNS = [
 def register(ctx):
     _ctx["ctx"] = ctx
     for name, handler, description, props in _TOOLS:
-        required = (["command"] if name == "ciphervault_run"
-                    else ["text"] if name == "ciphervault_redact" else [])
+        required = (
+            ["command"] if name == "ciphervault_run"
+            else ["text"] if name == "ciphervault_redact"
+            else ["name"] if name == "ciphervault_secret_generate"
+            else ["keys"] if name == "ciphervault_secret_prompt"
+            else []
+        )
         ctx.register_tool(
             name=name,
             toolset="ciphervault",
