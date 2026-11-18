@@ -64,7 +64,7 @@ throwaway vault in about two minutes.
   or `/ciphervault setup` — downloads the platform asset
   (`ciphervault.exe` on Windows x64, `ciphervault-linux-amd64` on
   Linux x64, `ciphervault-macos-arm64`/`-amd64` on macOS 13+) and
-  `SHA256SUMS.txt` from the pinned GitHub release (`v1.0.34`, published
+  `SHA256SUMS.txt` from the pinned GitHub release (`v1.0.35`, published
   as a pre-release; the macOS binaries are ad-hoc signed on Apple
   Silicon but not notarized, which is fine for this download because
   it is not quarantined) of
@@ -121,7 +121,7 @@ hermes ciphervault doctor
 This plugin version requires a CLI whose `redact --json` attests
 `exact_values_complete` — every tracked working copy was loaded, so a
 shape-blind vault value cannot slip through an unreadable file. The
-pinned v1.0.34 release ships that attestation, so
+pinned v1.0.35 release ships that attestation, so
 `hermes ciphervault bootstrap` installs it on Windows x64, Linux x64, and
 macOS 13+ (Apple Silicon and Intel).
 Older CLIs (v1.0.32 and earlier) lack it: the plugin withholds

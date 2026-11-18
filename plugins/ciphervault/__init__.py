@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
         tomllib = None  # type: ignore
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-RELEASE_VERSION = "1.0.34"
+RELEASE_VERSION = "1.0.35"
 # Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against these values.
@@ -64,26 +64,26 @@ RELEASE_VERSION = "1.0.34"
 RELEASE_ASSETS = {
     "windows-amd64": (
         "ciphervault.exe",
-        "25aaf9851eb94737bdd53c33992e8c16af276e11d9b340a484292feeab1f7865",
+        "3b96259696b42d533bc0545ad2160699b96dfb77fd6922e912276abe4a467c2b",
     ),
     "linux-amd64": (
         "ciphervault-linux-amd64",
-        "86b407373f46edc91411d35d6348f10cc47c63a500ce96c0beaa4bc479caa6ae",
+        "79124f44ab936ecda5b3b21ced3651da616892cebe7ced67c2ef22b8285bb492",
     ),
     "macos-arm64": (
         "ciphervault-macos-arm64",
-        "7f6a1e66d87dd3bfaaa1ef9dacd94920b9acaad3e2f4ceb2ae1331fa77489a42",
+        "c03dc6c72c6a93028ed92add89baab0b5b4ef002821868012d2cb44bbb663743",
     ),
     "macos-amd64": (
         "ciphervault-macos-amd64",
-        "e5109defc338a9e5120ef5dd8d3e9beb039db8ef13e89657f12252459ae1089a",
+        "84b41f27561c7c9fbcd2c4af73d66eaab9ac8dc8f3a36a5bcb895fde46b9ba93",
     ),
 }
 # Backward-compatible alias for the Windows pin.
 RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]
 # Whether the pinned release ships `redact --json`'s
 # `exact_values_complete` attestation, which this plugin requires before
-# releasing vault-scoped output. v1.0.34 does; bootstrap refuses any pin
+# releasing vault-scoped output. v1.0.35 does; bootstrap refuses any pin
 # where this is False rather than install a CLI whose output it withholds.
 RELEASE_SUPPORTS_GUARD = True
 _COMPATIBLE_CLI_HINT = (
@@ -1412,7 +1412,7 @@ _ENV_REF_PATTERNS = (
     re.compile(r"""\bos\.(?:Getenv|LookupEnv)\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']"""),
     re.compile(r"\$\{([A-Z][A-Z0-9_]{1,})(?:[:?-][^}]*)?\}"),
 )
-_DOCKERFILE_ENV_RE = re.compile(r"(?m)^\s*(?:ENV|ARG)\s+([A-Z][A-Z0-9_]{1,})(?:=|\s|$)")
+_DOCKERFILE_ENV_RE = re.compile(r"(?m)^\s*(?:ARG|ENV)\s+([A-Z][A-Z0-9_]{1,})(?:=|\s|$)")
 _PLACEHOLDER_VAL_RE = re.compile(
     r"(?i)(?:^(?:changeme|todo|fixme|placeholder|replace[-_]?me|"
     r"your[-_].*[-_]?here|x{3,}|<[^>]+>|\*{3,}|demo[-_]?only)$|"
@@ -2467,7 +2467,7 @@ _SAFE_SECRET_PATH_CMD_RE = re.compile(
 _CLI_FLAGS_RE = r"(?:\s+--?[\w-]+(?:=[^\s;&|]+)?)*"
 _EXPORT_ENV_RE = re.compile(
     rf"(?i)(?:\b(?:ciphervault|cv)(?:\.exe)?[\"']?{_CLI_FLAGS_RE}\s+"
-    rf"(?:(?:export-env|restore|pull|recover|init|rekey|prune|untrack)\b|"
+    rf"(?:(?:restore|pull|recover|init|rekey|prune|untrack|export-env)\b|"
     rf"secret{_CLI_FLAGS_RE}\s+get\b|"
     rf"agent-log{_CLI_FLAGS_RE}\s+(?:record|anchor)\b|"
     rf"diff\b[^\n;&|]*(?:--reveal|\s-r\b))|"

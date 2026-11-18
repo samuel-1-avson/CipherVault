@@ -409,7 +409,7 @@ def _env_health(cwd: str | None) -> dict:
             pass
     root = Path(safe_cwd)
     code_patterns = (
-        re.compile(r"(?:process\.env|import\.meta\.env)\.([A-Za-z_][A-Za-z0-9_]*)"),
+        re.compile(r"(?:import\.meta|process)\.env\.([A-Za-z_][A-Za-z0-9_]*)"),
         re.compile(r"os\.environ(?:\.get)?\s*[\[(]\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
         re.compile(r"os\.getenv\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
         re.compile(r"std::env::var(?:_os)?\s*\(\s*\"([A-Za-z_][A-Za-z0-9_]*)\""),
