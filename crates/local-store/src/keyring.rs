@@ -374,6 +374,30 @@ pub mod portable_keystore {
     }
 }
 
+/// Parses a 32-byte hex-encoded secret returned by an OS keyring command.
+#[allow(dead_code)]
+pub(crate) fn parse_hex_keyring_secret(raw: &str) -> Option<[u8; 32]> {
+    let trimmed = raw.trim();
+    let bytes = zeroize::Zeroizing::new(hex::decode(trimmed).ok()?);
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Some(key)
+}
+
+/// Formats the macOS `security -i` stdin command without `-U` and without
+/// placing key material on the process command line (`ps`).
+#[allow(dead_code)]
+pub(crate) fn format_macos_security_add_command(key: &[u8; 32]) -> zeroize::Zeroizing<String> {
+    let hex_key = zeroize::Zeroizing::new(hex::encode(key));
+    zeroize::Zeroizing::new(format!(
+        "add-generic-password -s io.ciphervault.local-store -a master-key -w {}\n",
+        hex_key.as_str()
+    ))
+}
+
 #[cfg(not(windows))]
 mod os_keyring {
     use super::*;
@@ -387,14 +411,7 @@ mod os_keyring {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn decode_hex_key(raw: &str) -> Option<[u8; 32]> {
-        let trimmed = raw.trim();
-        let bytes = Zeroizing::new(hex::decode(trimmed).ok()?);
-        if bytes.len() != 32 {
-            return None;
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes);
-        Some(key)
+        super::parse_hex_keyring_secret(raw)
     }
 
     pub fn require_strict() -> bool {
@@ -444,7 +461,6 @@ mod os_keyring {
 
     #[cfg(target_os = "macos")]
     pub fn store_key(key: &[u8; 32]) -> Result<(), LocalStoreError> {
-        let hex_key = Zeroizing::new(hex::encode(key));
         let mut child = Command::new("/usr/bin/security")
             .arg("-i")
             .stdin(Stdio::piped())
@@ -459,10 +475,7 @@ mod os_keyring {
         if let Some(mut stdin) = child.stdin.take() {
             // Omit -U so concurrent process provisioners cannot silently overwrite
             // an already-persisted Keychain item.
-            let cmd = Zeroizing::new(format!(
-                "add-generic-password -s io.ciphervault.local-store -a master-key -w {}\n",
-                hex_key.as_str()
-            ));
+            let cmd = super::format_macos_security_add_command(key);
             stdin.write_all(cmd.as_bytes()).map_err(|e| {
                 LocalStoreError::KeyProtectionError(format!(
                     "Failed to write key to macOS security stdin: {e}"
@@ -788,5 +801,19 @@ mod tests {
             "portable-file-keystore",
         ]
         .contains(&backend));
+    }
+
+    #[test]
+    fn macos_and_linux_keyring_command_helpers_are_well_formed() {
+        let key = [0xABu8; 32];
+        let cmd = format_macos_security_add_command(&key);
+        assert!(cmd.starts_with("add-generic-password -s io.ciphervault.local-store -a master-key -w "));
+        assert!(!cmd.contains(" -U "), "must omit -U so existing key is never clobbered");
+        assert!(cmd.ends_with('\n'));
+        let hex_part = cmd.trim_end().rsplit(' ').next().unwrap();
+        assert_eq!(hex_part.len(), 64);
+        assert_eq!(parse_hex_keyring_secret(&format!("  {hex_part}\n")), Some(key));
+        assert_eq!(parse_hex_keyring_secret("short"), None);
+        assert_eq!(parse_hex_keyring_secret(&"zz".repeat(32)), None);
     }
 }

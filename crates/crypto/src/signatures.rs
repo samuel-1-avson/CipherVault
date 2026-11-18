@@ -1,4 +1,4 @@
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::error::CryptoError;
 
@@ -11,6 +11,10 @@ pub fn generate_signing_key() -> SigningKey {
 
 /// Signs a message with a mandatory domain separation prefix.
 pub fn sign_with_domain(signing_key: &SigningKey, context: &[u8], message: &[u8]) -> [u8; 64] {
+    assert!(
+        !context.is_empty() && !context.contains(&b':'),
+        "signature domain context must be non-empty and must not contain ':'"
+    );
     let mut payload =
         Vec::with_capacity(SIGNATURE_DOMAIN_PREFIX.len() + context.len() + 1 + message.len());
     payload.extend_from_slice(SIGNATURE_DOMAIN_PREFIX);
@@ -23,14 +27,25 @@ pub fn sign_with_domain(signing_key: &SigningKey, context: &[u8], message: &[u8]
 }
 
 /// Verifies an Ed25519 signature against a domain-separated context and message.
+///
+/// Enforces strict verification (`verify_strict`), rejects weak/small-order public
+/// keys, and rejects empty or colon-containing contexts so `prefix || context || ":" || msg`
+/// remains prefix-free.
 pub fn verify_with_domain(
     verifying_key_bytes: &[u8; 32],
     context: &[u8],
     message: &[u8],
     signature_bytes: &[u8; 64],
 ) -> Result<(), CryptoError> {
+    if context.is_empty() || context.contains(&b':') {
+        return Err(CryptoError::SignatureVerificationFailed);
+    }
+
     let verifying_key = VerifyingKey::from_bytes(verifying_key_bytes)
         .map_err(|_| CryptoError::SignatureVerificationFailed)?;
+    if verifying_key.is_weak() {
+        return Err(CryptoError::SignatureVerificationFailed);
+    }
 
     let signature = Signature::from_bytes(signature_bytes);
 
@@ -42,7 +57,7 @@ pub fn verify_with_domain(
     payload.extend_from_slice(message);
 
     verifying_key
-        .verify(&payload, &signature)
+        .verify_strict(&payload, &signature)
         .map_err(|_| CryptoError::SignatureVerificationFailed)?;
 
     Ok(())

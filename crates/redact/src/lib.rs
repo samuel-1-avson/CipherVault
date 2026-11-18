@@ -507,12 +507,13 @@ fn match_credential_url(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
 pub const MIN_EXACT_VALUE_LEN: usize = 6;
 
 /// Scrub *known* secret values (not just shapes) from `input`: every
-/// occurrence of each value, plus its percent-encoded, base64, hex
-/// (lowercase and uppercase), and JSON-escaped forms, is replaced with
-/// `[REDACTED:<name>]`. Values shorter than [`MIN_EXACT_VALUE_LEN`] are
-/// skipped. Longest values are replaced first so overlapping values
-/// redact cleanly. Returns the scrubbed text and the number of
-/// replacements made. Value bytes are compared as-is (values are
+/// occurrence of each value, plus its percent-encoded, base64 / base64url
+/// (padded and unpadded, plus phase-shifted interior substrings for values
+/// >= 12 bytes), hex (lowercase and uppercase), and JSON-escaped forms, is
+/// replaced with `[REDACTED:<name>]`. Values shorter than
+/// [`MIN_EXACT_VALUE_LEN`] are skipped. Longest values are replaced first so
+/// overlapping values redact cleanly. Returns the scrubbed text and the
+/// number of replacements made. Value bytes are compared as-is (values are
 /// expected to be valid UTF-8 env strings).
 #[must_use]
 pub fn scrub_exact_values<N: AsRef<str>, V: AsRef<str>>(
@@ -531,15 +532,47 @@ pub fn scrub_exact_values<N: AsRef<str>, V: AsRef<str>>(
         if encoded != *value {
             needles.push((encoded, label.clone()));
         }
-        let b64 = base64_encode(value.as_bytes());
+        let bytes = value.as_bytes();
+        let b64 = base64_encode(bytes);
         if b64 != *value {
-            needles.push((b64, label.clone()));
+            needles.push((b64.clone(), label.clone()));
         }
-        let hex_lower = hex_encode(value.as_bytes(), false);
+        let b64_unpadded = b64.trim_end_matches('=');
+        if b64_unpadded != value {
+            needles.push((b64_unpadded.to_string(), label.clone()));
+        }
+        let b64url = base64url_encode(bytes, true);
+        if b64url != *value {
+            needles.push((b64url.clone(), label.clone()));
+        }
+        let b64url_unpadded = base64url_encode(bytes, false);
+        if b64url_unpadded != *value {
+            needles.push((b64url_unpadded, label.clone()));
+        }
+        if bytes.len() >= 12 {
+            // Secrets embedded inside a larger Base64/Base64URL blob may begin at
+            // byte offset 0, 1, or 2 mod 3. Encoding `bytes[shift..]` across complete
+            // 3-byte groups (trimming the incomplete trailing block that depends on
+            // outer suffix bytes) produces stable >= 8-char interior needles.
+            for shift in 0..3 {
+                let slice = &bytes[shift..];
+                let complete_len = (slice.len() / 3) * 3;
+                if complete_len < 6 {
+                    continue;
+                }
+                let aligned = &slice[..complete_len];
+                for sub in [base64_encode(aligned), base64url_encode(aligned, true)] {
+                    if sub.len() >= 8 && sub != *value {
+                        needles.push((sub, label.clone()));
+                    }
+                }
+            }
+        }
+        let hex_lower = hex_encode(bytes, false);
         if hex_lower != *value {
             needles.push((hex_lower, label.clone()));
         }
-        let hex_upper = hex_encode(value.as_bytes(), true);
+        let hex_upper = hex_encode(bytes, true);
         if hex_upper != *value {
             needles.push((hex_upper, label.clone()));
         }
@@ -548,7 +581,7 @@ pub fn scrub_exact_values<N: AsRef<str>, V: AsRef<str>>(
             needles.push((json_esc, label));
         }
     }
-    needles.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+    needles.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
     needles.dedup_by(|a, b| a.0 == b.0);
     let mut out = input.to_string();
     let mut count = 0usize;
@@ -579,6 +612,15 @@ fn percent_encode(value: &str) -> String {
 
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    base64_encode_with_table(data, TABLE, true)
+}
+
+fn base64url_encode(data: &[u8], pad: bool) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    base64_encode_with_table(data, TABLE, pad)
+}
+
+fn base64_encode_with_table(data: &[u8], table: &[u8; 64], pad: bool) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b = [
@@ -587,18 +629,18 @@ fn base64_encode(data: &[u8]) -> String {
             *chunk.get(2).unwrap_or(&0),
         ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        out.push(TABLE[(n >> 18) as usize & 63] as char);
-        out.push(TABLE[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[n as usize & 63] as char
-        } else {
-            '='
-        });
+        out.push(table[(n >> 18) as usize & 63] as char);
+        out.push(table[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(table[(n >> 6) as usize & 63] as char);
+        } else if pad {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(table[n as usize & 63] as char);
+        } else if pad {
+            out.push('=');
+        }
     }
     out
 }
@@ -1113,5 +1155,64 @@ mod tests {
         let (out_json, n_json) = scrub_exact_values(json_payload, &values);
         assert_eq!(out_json, r#"{"msg":"val=[REDACTED:ESC]"}"#);
         assert_eq!(n_json, 1);
+    }
+
+    #[test]
+    fn exact_values_scrub_base64url_padded_and_unpadded() {
+        // Contains bytes whose standard base64 emits '+' and '/', so base64url
+        // emits '-' and '_', with length 7 (mod 3 == 1 -> "==" padding).
+        let secret = "??>><<!";
+        let values = vec![("URL_KEY", secret)];
+        let std_b64 = base64_encode(secret.as_bytes());
+        assert!(std_b64.contains('+') || std_b64.contains('/'));
+        assert!(std_b64.ends_with("=="));
+
+        let url_padded = base64url_encode(secret.as_bytes(), true);
+        let url_unpadded = base64url_encode(secret.as_bytes(), false);
+        assert!(url_padded.contains('-') || url_padded.contains('_'));
+        assert!(url_padded.ends_with("=="));
+        assert!(!url_unpadded.contains('='));
+
+        let (out_pad, n_pad) = scrub_exact_values(&format!("tok={url_padded}"), &values);
+        assert_eq!(out_pad, "tok=[REDACTED:URL_KEY]");
+        assert_eq!(n_pad, 1);
+
+        let (out_unpad, n_unpad) = scrub_exact_values(&format!("tok={url_unpadded}"), &values);
+        assert_eq!(out_unpad, "tok=[REDACTED:URL_KEY]");
+        assert_eq!(n_unpad, 1);
+    }
+
+    #[test]
+    fn exact_values_scrub_phase_shifted_base64_blobs() {
+        // 13-byte secret (not divisible by 3, >= 12 bytes) embedded at offsets
+        // 0, 1, and 2 inside larger Base64 and Base64URL blobs.
+        let secret = "s3cr3t?v@l>99";
+        assert_eq!(secret.len(), 13);
+        let values = vec![("EMBED", secret)];
+
+        for (prefix, suffix) in [("", "Z"), ("A", "Z"), ("AB", "Z")] {
+            let combined = format!("{prefix}{secret}{suffix}");
+            let std_blob = base64_encode(combined.as_bytes());
+            let (out_std, n_std) = scrub_exact_values(&std_blob, &values);
+            assert!(n_std >= 1, "expected shift match for prefix={prefix:?}");
+            assert!(out_std.contains("[REDACTED:EMBED]"), "out={out_std}");
+            assert_ne!(out_std, std_blob);
+
+            let url_blob = base64url_encode(combined.as_bytes(), false);
+            let (out_url, n_url) = scrub_exact_values(&url_blob, &values);
+            assert!(n_url >= 1, "expected b64url shift match for prefix={prefix:?}");
+            assert!(out_url.contains("[REDACTED:EMBED]"), "out={out_url}");
+        }
+
+        // Exact 12-byte boundary secret at offset 1 and 2
+        let twelve = "twelve_bytes";
+        assert_eq!(twelve.len(), 12);
+        let vals12 = vec![("TWELVE", twelve)];
+        for prefix in ["X", "XY"] {
+            let blob = base64_encode(format!("{prefix}{twelve}Z").as_bytes());
+            let (out, n) = scrub_exact_values(&blob, &vals12);
+            assert!(n >= 1, "prefix={prefix}");
+            assert!(out.contains("[REDACTED:TWELVE]"), "out={out}");
+        }
     }
 }
