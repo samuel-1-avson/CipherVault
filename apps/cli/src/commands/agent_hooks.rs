@@ -65,6 +65,11 @@ fn is_secret_filename(path_str: &str) -> bool {
         || name == "secrets.yaml"
         || name == "secrets.yml"
         || name == "secrets.toml"
+        || name == "vault.db"
+        || name == "keystore.key"
+        || name == "keystore.salt"
+        || name == "audit_hmac.key"
+        || name == "policy.toml"
         || name.starts_with("recovery_kit")
         || name.starts_with("service_account")
         || name.starts_with("service-account")
@@ -100,21 +105,27 @@ fn is_allowed_vault_or_git_admin_cmd(cmd: &str) -> bool {
         return false;
     }
     match tokens[0] {
-        "ciphervault" | "cv" => matches!(
-            tokens[1],
-            "status"
-                | "track"
-                | "untrack"
-                | "push"
-                | "hook"
-                | "init"
-                | "audit"
-                | "agent-log"
-                | "diff"
-                | "rekey"
-                | "prune"
-                | "doctor"
-        ),
+        "ciphervault" | "cv" => {
+            let rest = &tokens[1..];
+            let Some(sub_idx) = rest.iter().position(|t| !t.starts_with('-')) else {
+                return false;
+            };
+            let sub = rest[sub_idx];
+            let sub_rest = &rest[sub_idx + 1..];
+            if sub == "diff" {
+                return !rest
+                    .iter()
+                    .any(|t| *t == "--reveal" || t.starts_with("--reveal=") || *t == "-r");
+            }
+            if sub == "agent-log" {
+                let log_sub = sub_rest.iter().find(|t| !t.starts_with('-')).copied();
+                return matches!(
+                    log_sub,
+                    Some("show" | "verify" | "check" | "verify-remote" | "export")
+                );
+            }
+            matches!(sub, "status" | "track" | "push" | "hook" | "audit" | "doctor")
+        }
         "git" => {
             matches!(tokens[1], "status" | "check-ignore" | "ls-files")
                 || (tokens[1] == "rm" && tokens.contains(&"--cached"))
@@ -123,14 +134,150 @@ fn is_allowed_vault_or_git_admin_cmd(cmd: &str) -> bool {
     }
 }
 
-fn command_mentions_secret_file(cmd: &str, tracked_paths: &[String]) -> Option<String> {
+fn contains_loopback_host(lower: &str) -> bool {
+    if lower.contains("[::1]") || lower.contains("//::1") {
+        return true;
+    }
+    for (idx, _) in lower.match_indices("localhost") {
+        let before_ok = idx == 0
+            || !matches!(
+                lower.as_bytes()[idx - 1],
+                b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'
+            );
+        let after_idx = idx + "localhost".len();
+        let after_ok = after_idx >= lower.len()
+            || !matches!(
+                lower.as_bytes()[after_idx],
+                b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'
+            );
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    for addr in ["127.0.0.1", "0.0.0.0"] {
+        for (idx, _) in lower.match_indices(addr) {
+            let before_ok = idx == 0
+                || !(lower.as_bytes()[idx - 1].is_ascii_digit()
+                    || lower.as_bytes()[idx - 1] == b'.');
+            let after_idx = idx + addr.len();
+            let after_ok = after_idx >= lower.len()
+                || !(lower.as_bytes()[after_idx].is_ascii_digit()
+                    || lower.as_bytes()[after_idx] == b'.');
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn contains_dashboard_secret_endpoint(lower: &str) -> bool {
+    for endpoint in ["/api/diff", "/api/snapshots/restore"] {
+        for (idx, _) in lower.match_indices(endpoint) {
+            let after_idx = idx + endpoint.len();
+            let boundary_ok = after_idx >= lower.len()
+                || matches!(
+                    lower.as_bytes()[after_idx],
+                    b'?' | b'#' | b'/' | b'\'' | b'"' | b')' | b'&' | b';' | b',' | b'\\' | b'`'
+                )
+                || lower.as_bytes()[after_idx].is_ascii_whitespace();
+            if boundary_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn blocked_cli_secret_command(cmd: &str) -> Option<String> {
     let lower = cmd.to_ascii_lowercase();
-    if (lower.contains("ciphervault") || lower.split_whitespace().any(|t| t == "cv"))
-        && lower.contains("export-env")
-    {
+    if contains_loopback_host(&lower) && contains_dashboard_secret_endpoint(&lower) {
         return Some(
-            "Blocked `export-env`: agent tools must never dump raw vault secret maps.".to_string(),
+            "Blocked loopback private dashboard secret endpoint (`/api/diff` or `/api/snapshots/restore`): agent tools must not access local dashboard secret APIs."
+                .to_string(),
         );
+    }
+
+    for segment in cmd.split([';', '|', '&', '\n', '\r']) {
+        let tokens: Vec<String> = segment
+            .split_whitespace()
+            .map(|t| {
+                t.trim_matches(|c: char| matches!(c, '\'' | '"'))
+                    .to_ascii_lowercase()
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        for (idx, tok) in tokens.iter().enumerate() {
+            let file_name = tok.rsplit(['/', '\\']).next().unwrap_or(tok.as_str());
+            let stem = Path::new(file_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if stem != "ciphervault" && stem != "cv" {
+                continue;
+            }
+            let rest = &tokens[idx + 1..];
+            let Some(sub_pos) = rest.iter().position(|t| !t.starts_with('-')) else {
+                continue;
+            };
+            let sub = rest[sub_pos].as_str();
+            let sub_rest = &rest[sub_pos + 1..];
+            if sub == "export-env" {
+                return Some(
+                    "Blocked `export-env`: agent tools must never dump raw vault secret maps."
+                        .to_string(),
+                );
+            }
+            if matches!(sub, "restore" | "pull" | "recover") {
+                return Some(format!(
+                    "Blocked `{stem} {sub}`: agent tools must not materialize plaintext secret files onto disk."
+                ));
+            }
+            if matches!(sub, "init" | "rekey" | "prune" | "untrack") {
+                return Some(format!(
+                    "Blocked `{stem} {sub}`: agent tools must not initialize, rekey, prune, or untrack vaults."
+                ));
+            }
+            if sub == "secret" {
+                let secret_sub = sub_rest
+                    .iter()
+                    .find(|t| !t.starts_with('-'))
+                    .map(String::as_str);
+                if secret_sub == Some("get") {
+                    return Some(format!(
+                        "Blocked `{stem} secret get`: agent tools must not print secret values; use `ciphervault_run`."
+                    ));
+                }
+            }
+            if sub == "agent-log" {
+                let log_sub = sub_rest
+                    .iter()
+                    .find(|t| !t.starts_with('-'))
+                    .map(String::as_str);
+                if matches!(log_sub, Some("record" | "anchor")) {
+                    return Some(format!(
+                        "Blocked `{stem} agent-log {}`: agent tools must not forge or anchor audit log entries.",
+                        log_sub.unwrap_or_default()
+                    ));
+                }
+            }
+            if sub == "diff"
+                && rest
+                    .iter()
+                    .any(|a| a == "--reveal" || a.starts_with("--reveal=") || a == "-r")
+            {
+                return Some(format!(
+                    "Blocked `{stem} diff --reveal`: masked diff is allowed, plaintext reveal is blocked for agents."
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn command_mentions_secret_file(cmd: &str, tracked_paths: &[String]) -> Option<String> {
+    if let Some(reason) = blocked_cli_secret_command(cmd) {
+        return Some(reason);
     }
 
     if is_allowed_vault_or_git_admin_cmd(cmd) {
@@ -529,6 +676,36 @@ mod tests {
         });
         assert!(evaluate_agent_pre(&bash_export, &mut cache, &tracked).is_some());
 
+        for blocked_cli in [
+            "cv diff --reveal",
+            "ciphervault diff -r",
+            "ciphervault restore",
+            "cv pull --force",
+            "ciphervault recover --kit kit.txt",
+            "ciphervault secret get DB_PASS",
+        ] {
+            let call = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": blocked_cli }
+            });
+            assert!(
+                evaluate_agent_pre(&call, &mut cache, &tracked).is_some(),
+                "expected {blocked_cli} to be blocked"
+            );
+        }
+
+        let read_vault_db = serde_json::json!({
+            "tool_name": "Read",
+            "tool_input": { "file_path": ".ciphervault/vault.db" }
+        });
+        assert!(evaluate_agent_pre(&read_vault_db, &mut cache, &tracked).is_some());
+
+        let safe_diff = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "ciphervault diff" }
+        });
+        assert!(evaluate_agent_pre(&safe_diff, &mut cache, &tracked).is_none());
+
         let safe_status = serde_json::json!({
             "tool_name": "Bash",
             "tool_input": { "command": "ciphervault status" }
@@ -575,5 +752,63 @@ mod tests {
         assert!(!stdout_s.contains(synthetic_tok));
         assert!(!stdout_s.contains("exact_val_998877"));
         assert!(stdout_s.contains("[REDACTED"));
+    }
+
+    #[test]
+    fn agent_pre_blocks_flagged_admin_audit_forgery_and_loopback_dashboard_endpoints() {
+        let mut cache = BridgeSecretCache::new();
+        let tracked = vec![".env".to_string()];
+
+        for blocked_cmd in [
+            "ciphervault --verbose export-env",
+            "cv -q restore",
+            "ciphervault --quiet secret get DB_PASS",
+            "ciphervault -v diff --reveal",
+            "ciphervault --flag diff --reveal=true",
+            "ciphervault init",
+            "cv --force init",
+            "ciphervault rekey",
+            "cv prune",
+            "ciphervault untrack .env",
+            "ciphervault agent-log record --tool t --decision d",
+            "cv -v agent-log --json record --tool t --decision d",
+            "ciphervault agent-log anchor",
+            "cv --quiet agent-log --json anchor",
+            "curl \"http://127.0.0.1:8080/api/diff?reveal=true\"",
+            "curl http://localhost:8080/api/diff",
+            "curl -X POST http://127.0.0.1:8080/api/snapshots/restore",
+            "curl -X POST http://[::1]:8080/api/snapshots/restore",
+            "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9000/api/diff')\"",
+            "BASE=http://127.0.0.1:8080 && curl \"$BASE/api/snapshots/restore\"",
+        ] {
+            let call = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": blocked_cmd }
+            });
+            assert!(
+                evaluate_agent_pre(&call, &mut cache, &tracked).is_some(),
+                "expected `{blocked_cmd}` to be blocked"
+            );
+        }
+
+        for allowed_cmd in [
+            "ciphervault -v track .env",
+            "ciphervault agent-log show --json",
+            "ciphervault agent-log verify --json",
+            "ciphervault agent-log check --output-sha256 deadbeef",
+            "ciphervault agent-log verify-remote --json",
+            "ciphervault push --message init",
+            "curl http://localhost:3000/api/health",
+            "rg -n \"/api/diff\" apps/cli/src",
+        ] {
+            let call = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": allowed_cmd }
+            });
+            assert!(
+                evaluate_agent_pre(&call, &mut cache, &tracked).is_none(),
+                "expected `{allowed_cmd}` to be allowed"
+            );
+        }
     }
 }

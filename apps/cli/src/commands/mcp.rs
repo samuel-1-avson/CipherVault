@@ -3,7 +3,7 @@
 //!
 //! Exposes CipherVault's zero-knowledge tools (`ciphervault_status`,
 //! `ciphervault_scan`, `ciphervault_redact`, `ciphervault_run`,
-//! `ciphervault_push`, `ciphervault_audit`) over newline-delimited JSON-RPC
+//! `ciphervault_push`, `ciphervault_diff`, `ciphervault_audit`) over newline-delimited JSON-RPC
 //! without ever exposing raw secret values.
 
 use anyhow::{Context, Result};
@@ -17,7 +17,7 @@ use crate::util::get_vault_store;
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 fn default_no_net() -> bool {
-    cfg!(any(target_os = "linux", target_vendor = "apple"))
+    cfg!(any(target_os = "linux", target_vendor = "apple", target_os = "windows"))
 }
 
 fn tool_definitions() -> serde_json::Value {
@@ -60,10 +60,10 @@ fn tool_definitions() -> serde_json::Value {
                     "type": "object",
                     "properties": {
                         "command": { "type": "array", "items": { "type": "string" }, "description": "Command and args, e.g. [\"pytest\", \"-q\"]" },
+                        "profile": { "type": "string", "description": "Optional workspace policy profile name from .ciphervault/policy.toml" },
                         "allow_keys": { "type": "array", "items": { "type": "string" }, "description": "Optional allowlist of variable names to inject" },
-                        "no_net": { "type": "boolean", "description": "Block child network access (defaults true on Linux/macOS, false on Windows; cannot combine with proxy)" },
+                        "no_net": { "type": "boolean", "description": "Block child network access (defaults true on Linux, macOS, and Windows; cannot combine with proxy)" },
                         "proxy": { "type": "boolean", "default": false, "description": "Use loopback credential proxy so real API keys stay out of child env" },
-                        "proxy_upstream": { "type": "array", "items": { "type": "string" }, "description": "Optional VAR=https://host[@HeaderName] upstream mappings for proxy mode" },
                         "env_file": { "type": "string" },
                         "project": { "type": "string" },
                         "env": { "type": "string" },
@@ -81,6 +81,20 @@ fn tool_definitions() -> serde_json::Value {
                     "properties": {
                         "message": { "type": "string", "description": "Snapshot commit message" },
                         "local_only": { "type": "boolean", "default": false },
+                        "shred_working_copy": { "type": "boolean", "default": false, "description": "Zero-fill and remove tracked plaintext files from the working directory after sealing the snapshot" },
+                        "cwd": { "type": "string", "description": "Optional workspace directory" }
+                    }
+                }
+            },
+            {
+                "name": "ciphervault_diff",
+                "description": "Inspect masked key-level diffs across vault snapshots or against the working tree (never reveals plaintext secret values).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from_snapshot": { "type": "string", "description": "Optional base snapshot ID (64-char hex), \"head\", or \"working\" (defaults to \"head\")" },
+                        "to_snapshot": { "type": "string", "description": "Optional target snapshot ID (64-char hex), \"head\", or \"working\" (defaults to \"working\")" },
+                        "file": { "type": "string", "description": "Optional relative file path filter (e.g. \".env\")" },
                         "cwd": { "type": "string", "description": "Optional workspace directory" }
                     }
                 }
@@ -148,6 +162,138 @@ fn spawn_self_json(
         }),
         is_err,
     )
+}
+
+fn optional_trimmed_str(args: &serde_json::Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn build_run_cli_args(args: &serde_json::Value) -> std::result::Result<Vec<String>, String> {
+    let cmd_arr = args
+        .get("command")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if cmd_arr.is_empty() {
+        return Err("`command` non-empty array is required".to_string());
+    }
+    let mut cli_args = vec!["run".to_string(), "--json".to_string()];
+    if args
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        cli_args.push("--dry-run".to_string());
+    }
+    if let Some(ef) = args.get("env_file").and_then(|v| v.as_str()) {
+        cli_args.push("--env-file".to_string());
+        cli_args.push(ef.to_string());
+    }
+    if let Some(proj) = args.get("project").and_then(|v| v.as_str()) {
+        cli_args.push("--project".to_string());
+        cli_args.push(proj.to_string());
+    }
+    if let Some(env) = args.get("env").and_then(|v| v.as_str()) {
+        cli_args.push("--env".to_string());
+        cli_args.push(env.to_string());
+    }
+    if let Some(profile) = optional_trimmed_str(args, "profile") {
+        if profile.starts_with('-') {
+            return Err("`profile` cannot start with '-'".to_string());
+        }
+        cli_args.push("--profile".to_string());
+        cli_args.push(profile);
+    }
+    if let Some(allow_arr) = args.get("allow_keys").and_then(|v| v.as_array()) {
+        let keys: Vec<String> = allow_arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if keys.is_empty() {
+            return Err("`allow_keys` cannot be empty when provided".to_string());
+        }
+        cli_args.push("--allow-keys".to_string());
+        cli_args.push(keys.join(","));
+    }
+    // Agent-supplied `proxy_upstream` is intentionally never forwarded over MCP.
+    let proxy_flag = args.get("proxy").and_then(|v| v.as_bool()).unwrap_or(false);
+    if proxy_flag {
+        cli_args.push("--proxy".to_string());
+    }
+    let no_net = args
+        .get("no_net")
+        .and_then(|v| v.as_bool())
+        .unwrap_or_else(|| !proxy_flag && default_no_net());
+    if no_net {
+        cli_args.push("--no-net".to_string());
+    }
+    cli_args.push("--".to_string());
+    cli_args.extend(cmd_arr);
+    Ok(cli_args)
+}
+
+fn normalize_snapshot_ref(raw: &str) -> std::result::Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('-') {
+        return Err("snapshot reference cannot start with '-'".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("head") {
+        Ok("head".to_string())
+    } else if trimmed.eq_ignore_ascii_case("working") {
+        Ok("working".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn build_diff_cli_args(args: &serde_json::Value) -> std::result::Result<Vec<String>, String> {
+    let mut cli_args = vec!["diff".to_string(), "--json".to_string()];
+
+    if let Some(file) = optional_trimmed_str(args, "file") {
+        if file.starts_with('-') {
+            return Err("`file` filter cannot start with '-'".to_string());
+        }
+        cli_args.push("--file".to_string());
+        cli_args.push(file);
+    }
+
+    let from_snap = match optional_trimmed_str(args, "from_snapshot") {
+        Some(raw) => Some(normalize_snapshot_ref(&raw)?),
+        None => None,
+    };
+    let to_snap = match optional_trimmed_str(args, "to_snapshot") {
+        Some(raw) => Some(normalize_snapshot_ref(&raw)?),
+        None => None,
+    };
+
+    match (from_snap, to_snap) {
+        (None, None) => {}
+        (Some(a), None) => {
+            cli_args.push("--".to_string());
+            cli_args.push(a);
+        }
+        (None, Some(b)) => {
+            cli_args.push("--".to_string());
+            cli_args.push("head".to_string());
+            cli_args.push(b);
+        }
+        (Some(a), Some(b)) => {
+            cli_args.push("--".to_string());
+            cli_args.push(a);
+            cli_args.push(b);
+        }
+    }
+
+    Ok(cli_args)
 }
 
 fn call_tool(
@@ -221,86 +367,14 @@ fn call_tool(
             )
         }
         "ciphervault_run" => {
-            let cmd_arr = args
-                .get("command")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if cmd_arr.is_empty() {
-                return (
-                    serde_json::json!({ "ok": false, "error": "`command` non-empty array is required" }),
-                    true,
-                );
-            }
-            let mut cli_args = vec!["run".to_string(), "--json".to_string()];
-            if args
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                cli_args.push("--dry-run".to_string());
-            }
-            if let Some(ef) = args.get("env_file").and_then(|v| v.as_str()) {
-                cli_args.push("--env-file".to_string());
-                cli_args.push(ef.to_string());
-            }
-            if let Some(proj) = args.get("project").and_then(|v| v.as_str()) {
-                cli_args.push("--project".to_string());
-                cli_args.push(proj.to_string());
-            }
-            if let Some(env) = args.get("env").and_then(|v| v.as_str()) {
-                cli_args.push("--env".to_string());
-                cli_args.push(env.to_string());
-            }
-            if let Some(allow_arr) = args.get("allow_keys").and_then(|v| v.as_array()) {
-                let keys: Vec<String> = allow_arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if keys.is_empty() {
-                    return (
-                        serde_json::json!({ "ok": false, "error": "`allow_keys` cannot be empty when provided" }),
-                        true,
-                    );
+            let cli_args = match build_run_cli_args(args) {
+                Ok(a) => a,
+                Err(msg) => {
+                    return (serde_json::json!({ "ok": false, "error": msg }), true);
                 }
-                cli_args.push("--allow-keys".to_string());
-                cli_args.push(keys.join(","));
-            }
-            let proxy_flag = args.get("proxy").and_then(|v| v.as_bool()).unwrap_or(false);
-            let proxy_upstreams: Vec<String> = args
-                .get("proxy_upstream")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
-            let proxy_active = proxy_flag || !proxy_upstreams.is_empty();
-            if proxy_flag {
-                cli_args.push("--proxy".to_string());
-            }
-            for u in proxy_upstreams {
-                cli_args.push("--proxy-upstream".to_string());
-                cli_args.push(u);
-            }
-            let no_net = args
-                .get("no_net")
-                .and_then(|v| v.as_bool())
-                .unwrap_or_else(|| !proxy_active && default_no_net());
-            if no_net {
-                cli_args.push("--no-net".to_string());
-            }
-            cli_args.push("--".to_string());
-            cli_args.extend(cmd_arr);
-            let cwd = args.get("cwd").and_then(|v| v.as_str());
-            spawn_self_json(&cli_args, cwd, cache)
+            };
+            let cwd = optional_trimmed_str(args, "cwd");
+            spawn_self_json(&cli_args, cwd.as_deref(), cache)
         }
         "ciphervault_push" => {
             let mut cli_args = vec!["push".to_string()];
@@ -313,10 +387,27 @@ fn call_tool(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                cli_args.push("--local-only".to_string());
+                cli_args.push("--local".to_string());
             }
-            let cwd = args.get("cwd").and_then(|v| v.as_str());
-            spawn_self_json(&cli_args, cwd, cache)
+            if args
+                .get("shred_working_copy")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                cli_args.push("--shred".to_string());
+            }
+            let cwd = optional_trimmed_str(args, "cwd");
+            spawn_self_json(&cli_args, cwd.as_deref(), cache)
+        }
+        "ciphervault_diff" => {
+            let cli_args = match build_diff_cli_args(args) {
+                Ok(a) => a,
+                Err(msg) => {
+                    return (serde_json::json!({ "ok": false, "error": msg }), true);
+                }
+            };
+            let cwd = optional_trimmed_str(args, "cwd");
+            spawn_self_json(&cli_args, cwd.as_deref(), cache)
         }
         "ciphervault_audit" => {
             let Ok(store) = get_vault_store() else {
@@ -492,7 +583,26 @@ mod tests {
         assert!(names.contains(&"ciphervault_redact"));
         assert!(names.contains(&"ciphervault_run"));
         assert!(names.contains(&"ciphervault_push"));
+        assert!(names.contains(&"ciphervault_diff"));
         assert!(names.contains(&"ciphervault_audit"));
+
+        let run_tool = tools
+            .iter()
+            .find(|t| t["name"] == "ciphervault_run")
+            .unwrap();
+        let run_props = run_tool["inputSchema"]["properties"].as_object().unwrap();
+        assert!(!run_props.contains_key("proxy_upstream"));
+
+        let diff_tool = tools
+            .iter()
+            .find(|t| t["name"] == "ciphervault_diff")
+            .unwrap();
+        let diff_props = diff_tool["inputSchema"]["properties"].as_object().unwrap();
+        assert!(diff_props.contains_key("from_snapshot"));
+        assert!(diff_props.contains_key("to_snapshot"));
+        assert!(diff_props.contains_key("file"));
+        assert!(diff_props.contains_key("cwd"));
+        assert!(!diff_props.contains_key("reveal"));
     }
 
     #[test]
@@ -520,5 +630,121 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unknown["result"]["isError"], true);
+    }
+
+    #[test]
+    fn mcp_run_ignores_agent_supplied_proxy_upstream() {
+        let args = build_run_cli_args(&serde_json::json!({
+            "command": ["python", "-c", "print('ok')"],
+            "proxy_upstream": ["OPENAI_API_KEY=https://attacker.example.com"],
+        }))
+        .unwrap();
+        assert!(!args.iter().any(|a| a == "--proxy-upstream"));
+        assert!(!args.iter().any(|a| a.contains("attacker.example.com")));
+        assert!(!args.iter().any(|a| a == "--proxy"));
+        if default_no_net() {
+            assert!(args.iter().any(|a| a == "--no-net"));
+        }
+
+        let blank_args = build_run_cli_args(&serde_json::json!({
+            "command": ["pytest"],
+            "proxy_upstream": [""],
+        }))
+        .unwrap();
+        assert!(!blank_args.iter().any(|a| a == "--proxy-upstream"));
+        assert!(!blank_args.iter().any(|a| a == "--proxy"));
+        if default_no_net() {
+            assert!(blank_args.iter().any(|a| a == "--no-net"));
+        }
+
+        let proxied_args = build_run_cli_args(&serde_json::json!({
+            "command": ["pytest"],
+            "proxy": true,
+            "proxy_upstream": ["OPENAI_API_KEY=https://attacker.example.com"],
+        }))
+        .unwrap();
+        assert!(proxied_args.iter().any(|a| a == "--proxy"));
+        assert!(!proxied_args.iter().any(|a| a == "--proxy-upstream"));
+        assert!(!proxied_args.iter().any(|a| a == "--no-net"));
+    }
+
+    #[test]
+    fn mcp_diff_cli_args_masked_and_flag_safe() {
+        assert_eq!(
+            build_diff_cli_args(&serde_json::json!({})).unwrap(),
+            vec!["diff", "--json"]
+        );
+
+        assert_eq!(
+            build_diff_cli_args(&serde_json::json!({
+                "from_snapshot": "HEAD",
+                "to_snapshot": "working",
+                "file": ".env",
+                "reveal": true,
+            }))
+            .unwrap(),
+            vec!["diff", "--json", "--file", ".env", "--", "head", "working"]
+        );
+
+        let snap_id = "a".repeat(64);
+        assert_eq!(
+            build_diff_cli_args(&serde_json::json!({
+                "to_snapshot": snap_id,
+            }))
+            .unwrap(),
+            vec!["diff", "--json", "--", "head", &snap_id]
+        );
+
+        assert!(build_diff_cli_args(&serde_json::json!({ "from_snapshot": "--reveal" })).is_err());
+        assert!(build_diff_cli_args(&serde_json::json!({ "to_snapshot": "-r" })).is_err());
+        assert!(build_diff_cli_args(&serde_json::json!({ "file": "--reveal" })).is_err());
+
+        let mut cache = BridgeSecretCache::new();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "ciphervault_diff",
+                "arguments": { "from_snapshot": "--reveal" }
+            }
+        });
+        let resp = handle_mcp_request(&req.to_string(), &mut cache).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+    }
+
+    #[test]
+    fn mcp_run_forwards_profile_and_rejects_flag_injection() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        let run_tool = tools
+            .iter()
+            .find(|t| t["name"] == "ciphervault_run")
+            .unwrap();
+        let run_props = run_tool["inputSchema"]["properties"].as_object().unwrap();
+        assert!(run_props.contains_key("profile"));
+
+        let args = build_run_cli_args(&serde_json::json!({
+            "command": ["pytest", "-q"],
+            "profile": "  test-suite  ",
+        }))
+        .unwrap();
+        assert!(args.windows(2).any(|w| w == ["--profile", "test-suite"]));
+
+        // Blank profile is ignored
+        let blank = build_run_cli_args(&serde_json::json!({
+            "command": ["pytest"],
+            "profile": "   ",
+        }))
+        .unwrap();
+        assert!(!blank.iter().any(|a| a == "--profile"));
+
+        // '-' prefixed profile is rejected to prevent flag injection
+        let err = build_run_cli_args(&serde_json::json!({
+            "command": ["pytest"],
+            "profile": "--no-inherit",
+        }))
+        .unwrap_err();
+        assert!(err.contains("profile"));
     }
 }

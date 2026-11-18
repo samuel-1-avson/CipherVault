@@ -4,7 +4,6 @@
 //! local store; entries carry paths/decisions/counts, never contents.
 
 use anyhow::{bail, ensure, Result};
-use ed25519_dalek::Signer;
 use sha2::Digest;
 use std::io::Write;
 
@@ -12,6 +11,8 @@ use crate::util::{
     configured_operator_pool, get_configured_operators, get_vault_directory, get_vault_store,
 };
 use crate::AgentLogSubcommand;
+
+const AUDIT_CHECKPOINT_SIG_DOMAIN: &[u8] = b"CipherVault-AuditCheckpoint-v1";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AuditCheckpoint {
@@ -25,6 +26,32 @@ struct AuditCheckpoint {
 
 fn checkpoint_payload(vault_id: &str, entries: usize, head_hash: &str, ts: i64) -> String {
     format!("agent-audit-checkpoint\n{vault_id}\n{entries}\n{head_hash}\n{ts}")
+}
+
+fn verify_checkpoint_signature(vk: &ed25519_dalek::VerifyingKey, cp: &AuditCheckpoint) -> bool {
+    let payload = checkpoint_payload(&cp.vault_id, cp.entries, &cp.head_hash, cp.created_at_utc);
+    let Some(sig_bytes) = hex::decode(&cp.signature)
+        .ok()
+        .and_then(|b| <[u8; 64]>::try_from(b.as_slice()).ok())
+    else {
+        return false;
+    };
+    if ciphervault_crypto::verify_with_domain(
+        vk.as_bytes(),
+        AUDIT_CHECKPOINT_SIG_DOMAIN,
+        payload.as_bytes(),
+        &sig_bytes,
+    )
+    .is_ok()
+    {
+        return true;
+    }
+    // Legacy backwards-compatibility fallback for pre-domain checkpoints.
+    if vk.is_weak() {
+        return false;
+    }
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    vk.verify_strict(payload.as_bytes(), &sig).is_ok()
 }
 
 /// Anchors the current audit-chain head to the operator fleet as a
@@ -48,14 +75,12 @@ pub(crate) async fn anchor_agent_audit(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let signature = hex::encode(
-            device_sk
-                .sign(
-                    checkpoint_payload(&vault_hex, report.entries, &report.head_hash, ts)
-                        .as_bytes(),
-                )
-                .to_bytes(),
-        );
+        let payload = checkpoint_payload(&vault_hex, report.entries, &report.head_hash, ts);
+        let signature = hex::encode(ciphervault_crypto::sign_with_domain(
+            &device_sk,
+            AUDIT_CHECKPOINT_SIG_DOMAIN,
+            payload.as_bytes(),
+        ));
         let checkpoint = AuditCheckpoint {
             kind: "agent-audit-checkpoint".to_string(),
             vault_id: vault_hex,
@@ -98,6 +123,86 @@ pub(crate) async fn anchor_agent_audit(
     Ok((confirmed, hex::encode(cid), entries, head_hash))
 }
 
+fn sanitize_audit_field(value: &str) -> String {
+    value.replace(['\n', '\r'], " ")
+}
+
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let mut k_pad = [0u8; 64];
+    if key.len() > 64 {
+        let digest: [u8; 32] = sha2::Sha256::digest(key).into();
+        k_pad[..32].copy_from_slice(&digest);
+    } else {
+        k_pad[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for i in 0..64 {
+        ipad[i] ^= k_pad[i];
+        opad[i] ^= k_pad[i];
+    }
+    let mut inner = sha2::Sha256::new();
+    inner.update(ipad);
+    inner.update(msg);
+    let inner_hash = inner.finalize();
+
+    let mut outer = sha2::Sha256::new();
+    outer.update(opad);
+    outer.update(inner_hash);
+    outer.finalize().into()
+}
+
+pub(crate) fn verify_audit_caller_hmac(
+    tool: &str,
+    decision: &str,
+    path: &str,
+    detail: &str,
+    hmac_hex: Option<&str>,
+) -> Result<()> {
+    let key_file_path = get_vault_directory().join("audit_hmac.key");
+    let key_raw = match std::env::var("CIPHERVAULT_AUDIT_HMAC_KEY") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => match std::fs::read_to_string(&key_file_path) {
+            Ok(file_key) if !file_key.trim().is_empty() => file_key.trim().to_string(),
+            _ => {
+                if std::env::var("CIPHERVAULT_REQUIRE_AUDIT_HMAC").as_deref() == Ok("1") {
+                    bail!("agent-log record rejected: CIPHERVAULT_AUDIT_HMAC_KEY is required");
+                }
+                return Ok(());
+            }
+        },
+    };
+    let key_bytes = if key_raw.len() == 64 && key_raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        hex::decode(&key_raw)?
+    } else {
+        key_raw.into_bytes()
+    };
+    let provided_hex = hmac_hex
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("agent-log record rejected: missing --hmac for CIPHERVAULT_AUDIT_HMAC_KEY")
+        })?;
+    let provided = hex::decode(provided_hex)
+        .map_err(|_| anyhow::anyhow!("agent-log record rejected: malformed --hmac hex"))?;
+    let msg = format!(
+        "{}\n{}\n{}\n{}",
+        sanitize_audit_field(tool),
+        sanitize_audit_field(decision),
+        sanitize_audit_field(path),
+        sanitize_audit_field(detail)
+    );
+    let expected = hmac_sha256(&key_bytes, msg.as_bytes());
+    let mut diff = (provided.len() ^ expected.len()) as u8;
+    for (a, b) in provided.iter().zip(expected.iter()) {
+        diff |= a ^ b;
+    }
+    if diff != 0 {
+        bail!("agent-log record rejected: HMAC verification failed");
+    }
+    Ok(())
+}
+
 pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
     let store = get_vault_store()?;
     match sub {
@@ -106,7 +211,9 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
             decision,
             path,
             detail,
+            hmac,
         } => {
+            verify_audit_caller_hmac(&tool, &decision, &path, &detail, hmac.as_deref())?;
             let entry = store.append_agent_audit(&tool, &decision, &path, &detail)?;
             println!("{}", serde_json::to_string(&entry)?);
         }
@@ -209,7 +316,6 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
             }
         }
         AgentLogSubcommand::VerifyRemote { json } => {
-            use ed25519_dalek::Verifier;
             let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
                 get_vault_directory().join("audit_checkpoint.json"),
             )?)?;
@@ -236,23 +342,7 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
                 let Ok(cp) = serde_json::from_slice::<AuditCheckpoint>(&bytes) else {
                     continue;
                 };
-                let sig_ok = hex::decode(&cp.signature)
-                    .ok()
-                    .and_then(|b| ed25519_dalek::Signature::from_slice(&b).ok())
-                    .map(|sig| {
-                        vk.verify(
-                            checkpoint_payload(
-                                &cp.vault_id,
-                                cp.entries,
-                                &cp.head_hash,
-                                cp.created_at_utc,
-                            )
-                            .as_bytes(),
-                            &sig,
-                        )
-                        .is_ok()
-                    })
-                    .unwrap_or(false);
+                let sig_ok = verify_checkpoint_signature(&vk, &cp);
                 if sig_ok && cp.vault_id == hex::encode(vault_id) {
                     confirmed += 1;
                     anchored_entries = cp.entries;
@@ -322,4 +412,114 @@ pub(crate) async fn cmd_agent_log(sub: AgentLogSubcommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::Signer;
+
+    #[test]
+    fn audit_checkpoint_uses_domain_separation_with_legacy_fallback() {
+        let sk = ciphervault_crypto::generate_signing_key();
+        let vk = sk.verifying_key();
+        let payload = checkpoint_payload("aa".repeat(32).as_str(), 3, "bb".repeat(32).as_str(), 1700);
+        let domain_sig = hex::encode(ciphervault_crypto::sign_with_domain(
+            &sk,
+            AUDIT_CHECKPOINT_SIG_DOMAIN,
+            payload.as_bytes(),
+        ));
+        let cp = AuditCheckpoint {
+            kind: "agent-audit-checkpoint".to_string(),
+            vault_id: "aa".repeat(32),
+            entries: 3,
+            head_hash: "bb".repeat(32),
+            created_at_utc: 1700,
+            signature: domain_sig,
+        };
+        assert!(verify_checkpoint_signature(&vk, &cp));
+
+        // Tampering with entries breaks verification.
+        let mut tampered = AuditCheckpoint {
+            entries: 4,
+            ..AuditCheckpoint {
+                kind: cp.kind.clone(),
+                vault_id: cp.vault_id.clone(),
+                entries: cp.entries,
+                head_hash: cp.head_hash.clone(),
+                created_at_utc: cp.created_at_utc,
+                signature: cp.signature.clone(),
+            }
+        };
+        assert!(!verify_checkpoint_signature(&vk, &tampered));
+
+        // Wrong domain signature must fail verification.
+        tampered.entries = 3;
+        tampered.signature = hex::encode(ciphervault_crypto::sign_with_domain(
+            &sk,
+            b"CipherVault-AgentAudit-v1",
+            payload.as_bytes(),
+        ));
+        assert!(!verify_checkpoint_signature(&vk, &tampered));
+
+        // Legacy raw Ed25519 signature still verifies for backwards compatibility.
+        let legacy_cp = AuditCheckpoint {
+            kind: "agent-audit-checkpoint".to_string(),
+            vault_id: "aa".repeat(32),
+            entries: 3,
+            head_hash: "bb".repeat(32),
+            created_at_utc: 1700,
+            signature: hex::encode(sk.sign(payload.as_bytes()).to_bytes()),
+        };
+        assert!(verify_checkpoint_signature(&vk, &legacy_cp));
+    }
+
+    #[tokio::test]
+    async fn audit_caller_hmac_validates_and_rejects_forgeries() {
+        let _guard = crate::util::TEST_PROCESS_STATE.lock().await;
+        let prev_key = std::env::var_os("CIPHERVAULT_AUDIT_HMAC_KEY");
+        let prev_req = std::env::var_os("CIPHERVAULT_REQUIRE_AUDIT_HMAC");
+        let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        std::env::set_var("CIPHERVAULT_AUDIT_HMAC_KEY", key);
+        std::env::set_var("CIPHERVAULT_REQUIRE_AUDIT_HMAC", "1");
+
+        let tag = hex::encode(hmac_sha256(
+            &hex::decode(key).unwrap(),
+            b"terminal blocked .env {\"reason\":\"secret\"}",
+        ));
+        // Wrong separator (space instead of newline) fails.
+        assert!(verify_audit_caller_hmac(
+            "terminal",
+            "blocked",
+            ".env",
+            "{\"reason\":\"secret\"}",
+            Some(&tag),
+        )
+        .is_err());
+
+        let valid_tag = hex::encode(hmac_sha256(
+            &hex::decode(key).unwrap(),
+            b"terminal\nblocked\n.env\n{\"reason\":\"secret\"}",
+        ));
+        assert!(verify_audit_caller_hmac(
+            "terminal",
+            "blocked",
+            ".env",
+            "{\"reason\":\"secret\"}",
+            Some(&valid_tag),
+        )
+        .is_ok());
+        assert!(
+            verify_audit_caller_hmac("terminal", "blocked", ".env", "{}", None).is_err()
+        );
+
+        match prev_key {
+            Some(v) => std::env::set_var("CIPHERVAULT_AUDIT_HMAC_KEY", v),
+            None => std::env::remove_var("CIPHERVAULT_AUDIT_HMAC_KEY"),
+        }
+        match prev_req {
+            Some(v) => std::env::set_var("CIPHERVAULT_REQUIRE_AUDIT_HMAC", v),
+            None => std::env::remove_var("CIPHERVAULT_REQUIRE_AUDIT_HMAC"),
+        }
+    }
 }

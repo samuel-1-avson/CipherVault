@@ -42,6 +42,7 @@ Developer: vault & secrets:
   track                Add confidential files to vault tracking (e.g. .env, keys)
   untrack              Remove confidential files from vault tracking
   status               Display current vault status and tracked files
+  env-doctor           Zero-knowledge environment & schema diagnostics (code refs vs .env.example vs vault)
   push                 Create, encrypt, and replicate a snapshot across independent operators
   pull                 Pull the latest snapshot from independent operators and update local files
   history              Display snapshot history DAG
@@ -231,6 +232,21 @@ enum Commands {
         overview: bool,
     },
 
+    /// Zero-knowledge environment & schema diagnostics (code refs vs .env.example vs vault)
+    EnvDoctor {
+        #[arg(long, help = "Optional specific .env file relative to workspace")]
+        env_file: Option<String>,
+
+        #[arg(
+            long,
+            help = "Create/update .env.example with safe KEY= # [required] placeholders"
+        )]
+        sync_env_example: bool,
+
+        #[arg(long, help = "Emit machine-readable JSON")]
+        json: bool,
+    },
+
     /// Create, encrypt, and replicate a snapshot across independent operators
     Push {
         #[arg(short, long, help = "Optional commit message describing this snapshot")]
@@ -271,6 +287,13 @@ enum Commands {
 
         #[arg(long, help = "Replicas required for quorum (default 3, must be >= 1)")]
         replicas: Option<usize>,
+
+        #[arg(
+            long,
+            visible_alias = "seal",
+            help = "Overwrite and remove tracked plaintext files from the working directory after sealing the snapshot in the vault"
+        )]
+        shred: bool,
     },
 
     /// Pull the latest snapshot from independent operators and update local files
@@ -586,6 +609,13 @@ enum Commands {
             help = "Pin a variable to an HTTPS upstream URL for --proxy: VAR=https://host[@HeaderName] (repeatable)"
         )]
         proxy_upstream: Vec<String>,
+
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Apply a named execution profile from .ciphervault/policy.toml (command allowlist, allow_keys, no_net, proxy/upstreams)"
+        )]
+        profile: Option<String>,
 
         #[arg(
             trailing_var_arg = true,
@@ -2010,6 +2040,8 @@ enum AgentLogSubcommand {
         path: String,
         #[arg(long, default_value = "{}", help = "JSON detail (counts/reasons only)")]
         detail: String,
+        #[arg(long, help = "Optional HMAC-SHA256 hex tag authenticating parent-process caller")]
+        hmac: Option<String>,
     },
     /// List audit entries, newest first
     Show {

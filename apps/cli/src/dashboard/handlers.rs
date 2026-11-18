@@ -13,17 +13,84 @@ use ciphervault_maintenance::MaintenanceDb;
 use ciphervault_storage::OperatorClient;
 
 use crate::{
-    audit_current, cmd_anchor, cmd_push, current_account_context, current_device_identity,
-    get_configured_operators, get_vault_store, hosted_account_endpoint, mask_operator_endpoint,
-    private_account_session_valid, private_ui_session_snapshot, proxy_account_request,
-    public_operator_http_client, revoke_private_ui_session, ui_capabilities, ui_context,
-    UiServerMode, PRIVATE_UI_SESSION_TTL,
+    audit_current, cmd_anchor, cmd_push, constant_time_str_eq, current_account_context,
+    current_device_identity, get_configured_operators, get_vault_store, hosted_account_endpoint,
+    mask_operator_endpoint, private_account_session_valid, private_ui_bootstrap_token,
+    private_ui_session_snapshot, proxy_account_request, public_operator_http_client,
+    revoke_private_ui_session, ui_capabilities, ui_context, UiServerMode, PRIVATE_UI_SESSION_TTL,
 };
 
-pub(crate) async fn api_private_context_handler() -> axum::response::Response {
+fn query_param<'a>(uri: &'a axum::http::Uri, key: &str) -> Option<&'a str> {
+    uri.query().unwrap_or_default().split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then_some(v)
+    })
+}
+
+fn private_session_cookie(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (name, value) = cookie.trim().split_once('=')?;
+                (name == "ciphervault_private_session").then_some(value)
+            })
+        })
+}
+
+fn private_session_set_cookie_header(token: &str) -> axum::http::HeaderValue {
+    let cookie = format!(
+        "ciphervault_private_session={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
+        token,
+        PRIVATE_UI_SESSION_TTL.as_secs()
+    );
+    axum::http::HeaderValue::from_str(&cookie)
+        .expect("generated private session cookie must be valid")
+}
+
+fn bootstrap_token_matches(
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+    expected: &str,
+) -> bool {
+    let header_matches = headers
+        .get("x-ciphervault-bootstrap-token")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| constant_time_str_eq(value.trim(), expected));
+    let query_matches =
+        query_param(uri, "token").is_some_and(|value| constant_time_str_eq(value, expected));
+    header_matches || query_matches
+}
+
+fn bootstrap_required_response() -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "status": "error",
+            "code": "BOOTSTRAP_TOKEN_REQUIRED",
+            "error": "A valid bootstrap token or private dashboard session is required to open /api/context.",
+        })),
+    )
+        .into_response()
+}
+
+pub(crate) async fn api_private_context_handler(
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
     use axum::{http::header, response::IntoResponse};
 
     let session = private_ui_session_snapshot();
+    if let Some(expected) = private_ui_bootstrap_token() {
+        let cookie_valid = private_session_cookie(&headers)
+            .is_some_and(|value| constant_time_str_eq(value, &session.token));
+        if !cookie_valid && !bootstrap_token_matches(&headers, &uri, &expected) {
+            return bootstrap_required_response();
+        }
+    }
+
     let mut context = ui_context(UiServerMode::LocalPrivate);
     if let Some(object) = context.as_object_mut() {
         object.insert(
@@ -38,15 +105,9 @@ pub(crate) async fn api_private_context_handler() -> axum::response::Response {
         object.insert("account".to_string(), current_account_context());
     }
     let mut response = axum::Json(context).into_response();
-    let cookie = format!(
-        "ciphervault_private_session={}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
-        session.token,
-        PRIVATE_UI_SESSION_TTL.as_secs()
-    );
     response.headers_mut().insert(
         header::SET_COOKIE,
-        axum::http::HeaderValue::from_str(&cookie)
-            .expect("generated private session cookie must be valid"),
+        private_session_set_cookie_header(&session.token),
     );
     response
 }
@@ -391,6 +452,7 @@ async fn private_ui_request_guard_in_context(
     let path = request.uri().path();
     let is_api = path.starts_with("/api/");
     let is_context = path == "/api/context";
+    let is_root_shell = path == "/" && request.method() == axum::http::Method::GET;
     let is_account_bootstrap = matches!(
         path,
         "/api/account/status"
@@ -413,22 +475,21 @@ async fn private_ui_request_guard_in_context(
         || (path.starts_with("/api/account/") && path.ends_with("/devices/challenge"))
         || (path.starts_with("/api/account/") && path.ends_with("/devices"));
     let is_metrics = path == "/metrics" || path == "/api/metrics";
+    let session = private_ui_session_snapshot();
+    let private_cookie_valid = private_session_cookie(headers)
+        .is_some_and(|value| constant_time_str_eq(value, &session.token));
     let session_valid = if is_api && !is_context && !is_account_bootstrap && !is_metrics {
-        let session = private_ui_session_snapshot();
-        let private_cookie_valid = headers
-            .get(axum::http::header::COOKIE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|cookies| {
-                cookies.split(';').find_map(|cookie| {
-                    let (name, value) = cookie.trim().split_once('=')?;
-                    (name == "ciphervault_private_session").then_some(value)
-                })
-            })
-            .is_some_and(|value| value == session.token);
         private_cookie_valid && private_account_session_valid()
     } else {
         true
     };
+    let bootstrap_token = private_ui_bootstrap_token();
+    let bootstrap_matches = bootstrap_token
+        .as_deref()
+        .is_some_and(|expected| bootstrap_token_matches(headers, request.uri(), expected));
+    let context_bootstrap_required =
+        is_context && bootstrap_token.is_some() && !private_cookie_valid && !bootstrap_matches;
+    let mint_cookie_for_root_bootstrap = is_root_shell && bootstrap_matches;
 
     if host.is_none()
         || (origin_header_present && (origin.is_none() || !origin_matches_host))
@@ -445,6 +506,10 @@ async fn private_ui_request_guard_in_context(
             .into_response();
     }
 
+    if context_bootstrap_required {
+        return bootstrap_required_response();
+    }
+
     if is_api && !is_context && !session_valid {
         return (
             StatusCode::UNAUTHORIZED,
@@ -459,6 +524,12 @@ async fn private_ui_request_guard_in_context(
 
     let mut response = next.run(request).await;
     let response_headers = response.headers_mut();
+    if mint_cookie_for_root_bootstrap {
+        response_headers.insert(
+            axum::http::header::SET_COOKIE,
+            private_session_set_cookie_header(&session.token),
+        );
+    }
     response_headers.insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -834,6 +905,7 @@ pub(crate) async fn api_create_snapshot_handler(
         None,
         None,
         None,
+        false,
     )
     .await
     {
@@ -1296,4 +1368,132 @@ pub(crate) async fn api_stream_handler(headers: axum::http::HeaderMap) -> axum::
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+#[cfg(test)]
+mod bootstrap_token_tests {
+    use super::*;
+    use crate::{set_private_ui_bootstrap_token, ui_router};
+
+    struct BootstrapTokenResetGuard;
+    impl Drop for BootstrapTokenResetGuard {
+        fn drop(&mut self) {
+            set_private_ui_bootstrap_token(None);
+        }
+    }
+
+    async fn start_private_test_server() -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                ui_router(UiServerMode::LocalPrivate)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (server, format!("http://{}", address))
+    }
+
+    #[tokio::test]
+    async fn api_context_requires_bootstrap_token_when_configured() {
+        let _guard = crate::util::TEST_PROCESS_STATE.lock().await;
+        let _reset = BootstrapTokenResetGuard;
+        set_private_ui_bootstrap_token(Some("bootstrap-secret-123".to_string()));
+
+        let (server, base_url) = start_private_test_server().await;
+        let client = reqwest::Client::new();
+
+        let response = client
+            .get(format!("{base_url}/api/context"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(json["code"], "BOOTSTRAP_TOKEN_REQUIRED");
+
+        let wrong_response = client
+            .get(format!("{base_url}/api/context?token=wrong-token"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong_response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn api_context_accepts_bootstrap_header_or_query_and_sets_cookie() {
+        let _guard = crate::util::TEST_PROCESS_STATE.lock().await;
+        let _reset = BootstrapTokenResetGuard;
+        set_private_ui_bootstrap_token(Some("bootstrap-secret-456".to_string()));
+
+        let (server, base_url) = start_private_test_server().await;
+        let client = reqwest::Client::new();
+
+        let header_resp = client
+            .get(format!("{base_url}/api/context"))
+            .header("X-CipherVault-Bootstrap-Token", "bootstrap-secret-456")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(header_resp.status(), reqwest::StatusCode::OK);
+        let set_cookie = header_resp
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(set_cookie.contains("ciphervault_private_session="));
+        assert!(set_cookie.contains("HttpOnly"));
+
+        let query_resp = client
+            .get(format!("{base_url}/api/context?token=bootstrap-secret-456"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(query_resp.status(), reqwest::StatusCode::OK);
+        let set_cookie_q = query_resp
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(set_cookie_q.contains("ciphervault_private_session="));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn root_shell_with_bootstrap_token_sets_session_cookie_for_api_context() {
+        let _guard = crate::util::TEST_PROCESS_STATE.lock().await;
+        let _reset = BootstrapTokenResetGuard;
+        set_private_ui_bootstrap_token(Some("bootstrap-secret-789".to_string()));
+
+        let (server, base_url) = start_private_test_server().await;
+        let client = reqwest::Client::new();
+
+        let root_resp = client
+            .get(format!("{base_url}/?token=bootstrap-secret-789"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(root_resp.status(), reqwest::StatusCode::OK);
+        let set_cookie = root_resp
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(set_cookie.contains("ciphervault_private_session="));
+        let cookie_pair = set_cookie.split(';').next().unwrap();
+
+        let context_resp = client
+            .get(format!("{base_url}/api/context"))
+            .header(reqwest::header::COOKIE, cookie_pair)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(context_resp.status(), reqwest::StatusCode::OK);
+        server.abort();
+    }
 }

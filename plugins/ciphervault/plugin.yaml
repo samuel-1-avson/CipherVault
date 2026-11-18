@@ -1,6 +1,6 @@
 name: ciphervault
-version: "0.6.5"
-description: "Prove the model never saw it: zero-knowledge secret backup for AI coding agents — masked scan, approval-gated RAM-only run, leak-guard hooks, and a hash-chained, fleet-anchored audit log of every guarded action."
+version: "0.7.0"
+description: "Prove the model never saw it: zero-knowledge secret backup for AI coding agents — masked scan, policy-scoped RAM-only run, zero-knowledge env doctor & secret generation, out-of-band secret prompt, leak-guard hooks, and a hash-chained, fleet-anchored audit log."
 manifest_version: 2
 api_version: 1
 requires_hermes: ">=0.23.0"
@@ -15,6 +15,11 @@ provides_tools:
   - ciphervault_recovery_drill
   - ciphervault_redact
   - ciphervault_audit
+  - ciphervault_env_doctor
+  - ciphervault_secret_generate
+  - ciphervault_diff
+  - ciphervault_proxy_doctor
+  - ciphervault_secret_prompt
 provides_hooks:
   - pre_tool_call
   - transform_tool_result

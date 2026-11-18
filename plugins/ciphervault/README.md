@@ -18,19 +18,24 @@ throwaway vault in about two minutes.
 
 | Surface | What it does |
 |---|---|
-| `ciphervault_status` | Vault status as JSON: tracked file **paths**, head, operator count, CLI version (from `status --json`) |
+| `ciphervault_status` | Vault status as JSON: tracked file **paths**, sealed state (`working_tree_sealed`), head, operator count, CLI version, plus `workspace_posture` |
 | `ciphervault_scan` | Secret-sprawl scan of workspace + staged diffs, masked (`hook check --deep --json`; `fix` appends to `.gitignore`) |
-| `ciphervault_run` | Run any command with secrets injected in RAM only; output exact-value + shape scrubbed (`run --json`). **Every call passes Hermes's human-approval gate** (see Disclosure) |
-| `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; replicates when `local_only=false`) |
+| `ciphervault_run` | Run any command with secrets injected in RAM only (`--no-net` default on Linux, macOS, and Windows AppContainer; `--proxy` loopback credential proxy; `.ciphervault/policy.toml` `profile` support); output exact-value + shape scrubbed (`run --json`). **Every call passes Hermes's human-approval gate** (see Disclosure) |
+| `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; `shred_working_copy=true` or `[vault].sealed_mode=true` zero-fills and removes plaintext from disk after sealing; replicates when `local_only=false`) |
 | `ciphervault_recovery_drill` | Restore kit/shares into a fresh temp dir the tool itself creates, return a **SHA-256 manifest**, then delete that temp dir. Pass `via` (must match the vault's configured operators and pass `tools.url_safety.is_safe_url`; private, loopback, link-local, and metadata hosts are refused) when the vault moved fleets after the kit was printed |
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
-| `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, device-signed): blocked reads, approval requests, scrubbed results (hash of the whole result plus a whitespace-trimmed hash of the visible text: terminal `output`, file `content`, run `stdout`), writes — plus chain verification and output-hash lookup (`check_text` accepts the text exactly as you saw it) |
-| `pre_tool_call` hook | **Leak guard:** blocks secret-file reads, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
-| `transform_tool_result` hook | Scrubs every other tool's result before it enters context, against every vault the call touches (see Vault detection) |
-| `tool_request` middleware | Defaults the session cwd into `ciphervault_*` calls |
+| `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, domain-separated device-signed, per-vault `audit_hmac.key` caller-authenticated): blocked reads, approval requests, scrubbed results, writes — plus chain verification and output-hash lookup (`check_text`) |
+| `ciphervault_env_doctor` | Zero-knowledge environment & schema diagnostics (`ciphervault env-doctor --json`): compares code env references and `.env.example` against vault keys and detects structural value anomalies (`EMPTY_VALUE`, `WHITESPACE_WRAPPED`, `UNSTRIPPED_QUOTES`, `PLACEHOLDER_VALUE`, `INVALID_URL`, `INVALID_JSON`, `PREFIX_MISMATCH`) even on sealed/shredded vaults without exposing values; `sync_env_example` safely updates `.env.example` |
+| `ciphervault_secret_generate` | In-vault CSPRNG secret provisioning (`base64url`, `hex`, `uuid`, `alphanumeric`): generates entropy in RAM, tracks and seals into the vault, and returns only `{name, format, length_chars, sha256_prefix, sealed}` |
+| `ciphervault_diff` | Masked key-level diff between snapshots or against the working tree (`ciphervault diff --json`, never `--reveal`) |
+| `ciphervault_proxy_doctor` | Dry-run proxy route diagnostic: reports which vault keys map to built-in provider routes vs `.ciphervault/policy.toml` upstreams vs unmapped keys |
+| `ciphervault_secret_prompt` | Out-of-band human secret request: queues requested key metadata in `.ciphervault/pending_secret_prompts.json` for the Hermes desktop Secret Entry Drawer (or reads via hidden TTY `getpass`) so users never paste secrets into chat |
+| `pre_tool_call` hook | **Leak guard:** blocks secret-file/policy reads & writes, secret-dumping CLI commands, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
+| `transform_tool_result` hook | Scrubs every other tool's result before it enters context across 256 KB chunks with 4 KB seam overlaps (up to 4 MB default via `CIPHERVAULT_MAX_RESULT_CHARS`), against every vault the call touches |
+| `tool_request` middleware | Defaults the session cwd into `ciphervault_*` calls and attaches one-time ambient workspace posture |
 | Secret source `ciphervault` | Hermes' own env vars sourced from a vault at startup (`secrets.ciphervault.*`) |
-| `/ciphervault`, `hermes ciphervault` | Chat slash command; terminal bootstrap/status/doctor |
-| Desktop pane + page + chip | Live vault status from the plugin backend (`dashboard/plugin_api.py`) |
+| `/ciphervault`, `hermes ciphervault` | Chat slash command; terminal `bootstrap`, `setup` (wizard for binary + `.ciphervault/policy.toml` + `--wire-hermes`), `status`, `doctor`, `quickstart` |
+| Desktop pane + page + chip | Live vault status, one-click **Seal & shred `.env`**, masked **Secret Entry Drawer** with pending prompt chips, **Env Health** card, and verified **Agent Audit** feed (`dashboard/plugin_api.py` + `desktop/plugin.js`) |
 | Redaction patterns | `cvst1.*`, Stripe/GitHub/AWS key shapes added to Hermes' redactor |
 
 ## Disclosure (catalog rule 13)
@@ -44,9 +49,10 @@ throwaway vault in about two minutes.
   dangerous shell commands — the plugin never routes around it.
   CLI subprocesses get a minimal allow-listed environment (Hermes
   provider keys are not passed down). Tool results scrubbed by the
-  `transform_tool_result` hook are capped at 256 KB; anything beyond
-  that is truncated, not scanned. Fail-closed withholding applies
-  only where a vault is present in the workspace: with no vault,
+  `transform_tool_result` hook are scanned in 256 KB chunks with 4 KB
+  seam overlaps up to 4 MB (`CIPHERVAULT_MAX_RESULT_CHARS`); anything
+  beyond that ceiling is truncated, not passed unscanned. Fail-closed
+  withholding applies only where a vault is present in the workspace: with no vault,
   results pass through with the local shape scrub so the plugin
   never eats unrelated output Hermes-wide. A vault with a missing,
   incompatible, or timed-out CLI still fails closed. The
@@ -92,9 +98,11 @@ throwaway vault in about two minutes.
   checkpointed before the command runs. Entries contain
   tool/path/decision/counts/hashes only — never contents — so a
   session can later *prove* what the agent touched and what it
-  never saw. Approval grants are per-program: the approval rule key
-  names the program (`ciphervault_run:<program>`), so a
-  session/always grant never covers other commands.
+  never saw. Approval grants are scoped to the execution envelope:
+  the approval rule key binds the program, profile, inline `-c`/`-e`
+  code hash, network mode (`no_net`/`proxy`/`open`), and `allow_keys`,
+  so approving an offline test run never covers inline code execution
+  or wider secret/network access.
 - **Credentials:** the plugin holds none. The secret source passes the
   CLI's `export-env` JSON output straight to Hermes' orchestrator.
 - **Approvals/unattended:** tools fail with structured JSON errors when

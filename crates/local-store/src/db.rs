@@ -1265,6 +1265,31 @@ impl LocalVaultStore {
         Ok(out)
     }
 
+    const AGENT_AUDIT_SIG_DOMAIN: &[u8] = b"CipherVault-AgentAudit-v1";
+
+    fn sanitize_audit_field(value: &str) -> String {
+        value.replace(['\n', '\r'], " ")
+    }
+
+    fn canonical_audit_preimage(
+        prev_hash: &str,
+        created_at_utc: i64,
+        tool: &str,
+        decision: &str,
+        path: &str,
+        detail_json: &str,
+    ) -> String {
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            prev_hash,
+            created_at_utc,
+            Self::sanitize_audit_field(tool),
+            Self::sanitize_audit_field(decision),
+            Self::sanitize_audit_field(path),
+            Self::sanitize_audit_field(detail_json),
+        )
+    }
+
     /// Appends one entry to the tamper-evident agent-access audit
     /// chain. The entry hash covers the previous head, so rewriting or
     /// deleting history breaks verification; each entry is also signed
@@ -1277,7 +1302,6 @@ impl LocalVaultStore {
         path: &str,
         detail_json: &str,
     ) -> Result<AgentAuditEntry, LocalStoreError> {
-        use ed25519_dalek::Signer;
         use sha2::Digest;
         // Single transaction: reading the previous head and inserting
         // must be atomic, or two concurrent appenders fork the chain.
@@ -1293,10 +1317,15 @@ impl LocalVaultStore {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let canonical = format!("{prev_hash}\n{now}\n{tool}\n{decision}\n{path}\n{detail_json}");
+        let canonical =
+            Self::canonical_audit_preimage(&prev_hash, now, tool, decision, path, detail_json);
         let entry_hash = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
         let (_, device_sk, _, _) = self.get_device_state()?;
-        let signature = hex::encode(device_sk.sign(entry_hash.as_bytes()).to_bytes());
+        let signature = hex::encode(ciphervault_crypto::sign_with_domain(
+            &device_sk,
+            Self::AGENT_AUDIT_SIG_DOMAIN,
+            entry_hash.as_bytes(),
+        ));
         tx.execute(
             "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![now, tool, decision, path, detail_json, prev_hash, entry_hash, signature],
@@ -1389,10 +1418,10 @@ impl LocalVaultStore {
     /// Walks the chain from genesis recomputing every hash and
     /// signature. `first_bad_id` is the earliest entry that fails.
     pub fn verify_agent_audit(&self) -> Result<AgentAuditReport, LocalStoreError> {
-        use ed25519_dalek::Verifier;
         use sha2::Digest;
         let (_, device_sk, _, _) = self.get_device_state()?;
         let vk = device_sk.verifying_key();
+        let vk_bytes = vk.as_bytes();
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature FROM agent_audit ORDER BY id ASC",
         )?;
@@ -1414,15 +1443,36 @@ impl LocalVaultStore {
         for r in rows {
             let e = r?;
             count += 1;
-            let canonical = format!(
-                "{}\n{}\n{}\n{}\n{}\n{}",
-                e.prev_hash, e.created_at_utc, e.tool, e.decision, e.path, e.detail_json
+            let canonical = Self::canonical_audit_preimage(
+                &e.prev_hash,
+                e.created_at_utc,
+                &e.tool,
+                &e.decision,
+                &e.path,
+                &e.detail_json,
             );
             let expect = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
             let sig_ok = hex::decode(&e.signature)
                 .ok()
-                .and_then(|b| ed25519_dalek::Signature::from_slice(&b).ok())
-                .map(|sig| vk.verify(e.entry_hash.as_bytes(), &sig).is_ok())
+                .and_then(|b| <[u8; 64]>::try_from(b.as_slice()).ok())
+                .map(|sig_bytes| {
+                    if ciphervault_crypto::verify_with_domain(
+                        vk_bytes,
+                        Self::AGENT_AUDIT_SIG_DOMAIN,
+                        e.entry_hash.as_bytes(),
+                        &sig_bytes,
+                    )
+                    .is_ok()
+                    {
+                        true
+                    } else if !vk.is_weak() {
+                        // Legacy backwards-compatibility fallback for pre-domain entries.
+                        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+                        vk.verify_strict(e.entry_hash.as_bytes(), &sig).is_ok()
+                    } else {
+                        false
+                    }
+                })
                 .unwrap_or(false);
             if e.prev_hash != prev || expect != e.entry_hash || !sig_ok {
                 return Ok(AgentAuditReport {
@@ -2878,6 +2928,95 @@ mod tests {
         );
         assert!(store.agent_audit_entry_hash_at(3).unwrap().is_none());
         assert!(store.agent_audit_entry_hash_at(0).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_agent_audit_sanitizes_newlines_and_uses_domain_separation() {
+        use ed25519_dalek::Signer;
+        use sha2::Digest;
+
+        let store = agent_audit_store();
+        let e1 = store
+            .append_agent_audit("tool\na", "dec\rb", "path\nc", "{\"k\":\"v\"}")
+            .unwrap();
+        assert!(store.verify_agent_audit().unwrap().ok);
+
+        // Domain-separated signature must match CipherVault-AgentAudit-v1 and NOT
+        // another domain or raw pre-domain signing.
+        let (_, device_sk, _, _) = store.get_device_state().unwrap();
+        let vk = device_sk.verifying_key();
+        let sig_bytes: [u8; 64] = hex::decode(&e1.signature).unwrap().try_into().unwrap();
+        assert!(ciphervault_crypto::verify_with_domain(
+            vk.as_bytes(),
+            b"CipherVault-AgentAudit-v1",
+            e1.entry_hash.as_bytes(),
+            &sig_bytes
+        )
+        .is_ok());
+        assert!(ciphervault_crypto::verify_with_domain(
+            vk.as_bytes(),
+            b"CipherVault-AuditCheckpoint-v1",
+            e1.entry_hash.as_bytes(),
+            &sig_bytes
+        )
+        .is_err());
+
+        // Swapping characters across field boundaries must fail verification
+        // because `\n`/`\r` inside fields were sanitized to spaces.
+        store
+            .conn
+            .execute(
+                "UPDATE agent_audit SET tool = 'tool', decision = 'a\ndec\rb' WHERE id = ?1",
+                params![e1.id],
+            )
+            .unwrap();
+        let bad_split = store.verify_agent_audit().unwrap();
+        assert!(!bad_split.ok);
+        assert_eq!(bad_split.first_bad_id, Some(e1.id));
+
+        // Restore original fields and verify wrong-domain signature is rejected.
+        store
+            .conn
+            .execute(
+                "UPDATE agent_audit SET tool = ?1, decision = ?2 WHERE id = ?3",
+                params!["tool\na", "dec\rb", e1.id],
+            )
+            .unwrap();
+        let wrong_domain_sig = hex::encode(ciphervault_crypto::sign_with_domain(
+            &device_sk,
+            b"CipherVault-AuditCheckpoint-v1",
+            e1.entry_hash.as_bytes(),
+        ));
+        store
+            .conn
+            .execute(
+                "UPDATE agent_audit SET signature = ?1 WHERE id = ?2",
+                params![wrong_domain_sig, e1.id],
+            )
+            .unwrap();
+        assert!(!store.verify_agent_audit().unwrap().ok);
+
+        // Legacy raw signature fallback must still verify existing entries.
+        let store2 = agent_audit_store();
+        let canonical = LocalVaultStore::canonical_audit_preimage(
+            "GENESIS",
+            1700000000,
+            "terminal",
+            "blocked",
+            ".env",
+            "{}",
+        );
+        let hash = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
+        let (_, sk2, _, _) = store2.get_device_state().unwrap();
+        let legacy_sig = hex::encode(sk2.sign(hash.as_bytes()).to_bytes());
+        store2
+            .conn
+            .execute(
+                "INSERT INTO agent_audit (created_at_utc, tool, decision, path, detail_json, prev_hash, entry_hash, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![1700000000i64, "terminal", "blocked", ".env", "{}", "GENESIS", hash, legacy_sig],
+            )
+            .unwrap();
+        assert!(store2.verify_agent_audit().unwrap().ok);
     }
 
     #[test]

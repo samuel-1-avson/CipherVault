@@ -152,6 +152,11 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
         } => cmd_track(paths, from_gitignore, no_gitignore, allow_planned),
         crate::Commands::Untrack { paths } => cmd_untrack(paths),
         crate::Commands::Status { json, overview } => cmd_status(json, overview),
+        crate::Commands::EnvDoctor {
+            env_file,
+            sync_env_example,
+            json,
+        } => cmd_env_doctor(env_file, sync_env_example, json),
         crate::Commands::Push {
             message,
             touch,
@@ -161,6 +166,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             pin,
             concurrency,
             replicas,
+            shred,
         } => {
             cmd_push(
                 message,
@@ -171,6 +177,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 pin,
                 concurrency,
                 replicas,
+                shred,
             )
             .await
         }
@@ -345,6 +352,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             no_net,
             proxy,
             proxy_upstream,
+            profile,
             command,
         } => {
             cmd_run(
@@ -365,6 +373,7 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 no_net,
                 proxy,
                 proxy_upstream,
+                profile,
                 command,
             )
             .await

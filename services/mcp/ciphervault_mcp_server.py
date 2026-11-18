@@ -19,6 +19,42 @@ import sys
 
 TOOL_TIMEOUT_SECS = 120
 
+_ENV_KEEP = (
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "COMSPEC",
+    "PATHEXT",
+)
+
+
+def _minimal_env():
+    """Environment for CLI subprocesses: an allowlist so parent provider keys
+    (OPENAI_API_KEY, etc.) never leak into the CLI or spawned children."""
+    env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
+    env.update({k: v for k, v in os.environ.items() if k.startswith("CIPHERVAULT_")})
+    env.setdefault("NO_COLOR", "1")
+    return env
+
+
+def _effective_no_net(args):
+    """Default to --no-net on Linux, macOS, and Windows unless proxy is True
+    or no_net=False is explicitly passed."""
+    if isinstance(args, dict) and args.get("no_net") is not None:
+        return bool(args["no_net"])
+    if isinstance(args, dict) and args.get("proxy"):
+        return False
+    return sys.platform.startswith("linux") or sys.platform in ("darwin", "win32")
+
 _TOKEN_RE = re.compile(r"(cvst1\.[A-Za-z0-9._~=-]+|sk_live[\w-]+|sk_test[\w-]+|ghp_[\w]+|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.?[A-Za-z0-9_-]*)")
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~=-]+")
 _PEM_RE = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*-----", re.S)
@@ -72,6 +108,7 @@ class CipherVaultMcpServer:
                 proc = subprocess.run(
                     [self.binary_path, "--version"],
                     capture_output=True, text=True, encoding="utf-8", timeout=15,
+                    env=_minimal_env(),
                 )
                 parts = (proc.stdout or "").strip().split()
                 self._version = parts[-1] if parts else "unknown"
@@ -80,12 +117,13 @@ class CipherVaultMcpServer:
         return self._version
 
     def run_cli(self, cli_args, args):
-        """Run the CLI with a timeout and caller-selected cwd."""
+        """Run the CLI with a timeout, allowlisted env, and caller-selected cwd."""
         cwd = (args or {}).get("cwd") or str(self.repo_root)
         try:
             return subprocess.run(
                 cli_args, cwd=cwd, capture_output=True, text=True,
                 encoding="utf-8", timeout=TOOL_TIMEOUT_SECS,
+                env=_minimal_env(),
             )
         except subprocess.TimeoutExpired:
             raise TimeoutError(f"ciphervault timed out after {TOOL_TIMEOUT_SECS}s")
@@ -94,7 +132,7 @@ class CipherVaultMcpServer:
         """Dispatch a single JSON-RPC 2.0 request."""
         req_id = request.get("id")
         method = request.get("method")
-        params = request.get("params", {})
+        params = request.get("params") or {}
 
         if method == "initialize":
             return {
@@ -141,9 +179,27 @@ class CipherVaultMcpServer:
                                         "type": "string",
                                         "description": "Optional environment name (e.g. 'staging', 'production')",
                                     },
+                                    "allow_keys": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Optional allowlist of variable names to inject (least-privilege scoping)",
+                                    },
+                                    "no_net": {
+                                        "type": "boolean",
+                                        "description": "Block child outbound/inbound network access (defaults true on Linux, macOS, and Windows unless proxy is enabled)",
+                                    },
+                                    "proxy": {
+                                        "type": "boolean",
+                                        "default": False,
+                                        "description": "Run loopback credential proxy in parent so real API keys never enter child env",
+                                    },
                                     "dry_run": {
                                         "type": "boolean",
                                         "description": "List injected variable names without executing command",
+                                    },
+                                    "cwd": {
+                                        "type": "string",
+                                        "description": "Optional workspace directory",
                                     },
                                 },
                                 "required": ["command"],
@@ -165,6 +221,10 @@ class CipherVaultMcpServer:
                                         "default": False,
                                         "description": "Automatically append discovered sprawling secret files to .gitignore",
                                     },
+                                    "cwd": {
+                                        "type": "string",
+                                        "description": "Optional workspace directory",
+                                    },
                                 },
                             },
                         },
@@ -176,6 +236,10 @@ class CipherVaultMcpServer:
                                 "properties": {
                                     "project": {"type": "string"},
                                     "environment": {"type": "string"},
+                                    "cwd": {
+                                        "type": "string",
+                                        "description": "Optional workspace directory",
+                                    },
                                 },
                             },
                         },
@@ -194,6 +258,15 @@ class CipherVaultMcpServer:
                                         "default": True,
                                         "description": "Store snapshot locally without operator replication",
                                     },
+                                    "shred_working_copy": {
+                                        "type": "boolean",
+                                        "default": False,
+                                        "description": "Zero-fill and remove tracked plaintext files from the working directory after sealing the snapshot",
+                                    },
+                                    "cwd": {
+                                        "type": "string",
+                                        "description": "Optional workspace directory",
+                                    },
                                 },
                                 "required": ["message"],
                             },
@@ -204,7 +277,7 @@ class CipherVaultMcpServer:
 
         elif method == "tools/call":
             tool_name = params.get("name")
-            arguments = params.get("arguments", {})
+            arguments = params.get("arguments") or {}
             return self.dispatch_tool(req_id, tool_name, arguments)
 
         else:
@@ -219,13 +292,36 @@ class CipherVaultMcpServer:
 
     def dispatch_tool(self, req_id, tool_name: str, args: dict) -> dict:
         """Execute the requested tool and format result."""
+        args = args or {}
         try:
             if tool_name == "ciphervault_run_in_memory":
-                cmd = args.get("command", [])
+                cmd = args.get("command") or []
                 env_file = args.get("env_file")
                 project = args.get("project")
                 environment = args.get("environment")
-                dry_run = args.get("dry_run", False)
+                dry_run = bool(args.get("dry_run", False))
+                allow_keys = args.get("allow_keys")
+                proxy = bool(args.get("proxy", False))
+                no_net = _effective_no_net(args)
+
+                if cmd and not isinstance(cmd, list):
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "command must be an array of strings",
+                        },
+                    }
+                if not cmd and not dry_run:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "command must be a non-empty array of strings",
+                        },
+                    }
 
                 cli_args = [self.binary_path, "run", "--json"]
                 if dry_run:
@@ -236,20 +332,55 @@ class CipherVaultMcpServer:
                     cli_args.extend(["--project", project])
                 if environment:
                     cli_args.extend(["--env", environment])
+                if allow_keys is not None:
+                    if not isinstance(allow_keys, list):
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {
+                                "code": -32602,
+                                "message": "allow_keys must be an array of variable names",
+                            },
+                        }
+                    keys = [str(k).strip() for k in allow_keys if str(k).strip()]
+                    if not keys:
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {
+                                "code": -32602,
+                                "message": "allow_keys cannot be empty when provided",
+                            },
+                        }
+                    cli_args.extend(["--allow-keys", ",".join(keys)])
+                if proxy and no_net:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "proxy and no_net cannot both be enabled",
+                        },
+                    }
+                if proxy:
+                    cli_args.append("--proxy")
+                if no_net:
+                    cli_args.append("--no-net")
 
                 if cmd:
                     cli_args.append("--")
-                    cli_args.extend(cmd)
+                    cli_args.extend(str(c) for c in cmd)
 
                 proc = self.run_cli(cli_args, args)
 
-                output_text = proc.stdout.strip()
+                output_text = (proc.stdout or "").strip()
+                stderr_text = (proc.stderr or "").strip()
                 try:
                     payload = json.loads(output_text)
                 except Exception:
                     payload = {
                         "raw_output": scrub_text(output_text),
-                        "raw_stderr": scrub_text(proc.stderr.strip()),
+                        "raw_stderr": scrub_text(stderr_text),
                         "exit_code": proc.returncode,
                     }
 
@@ -275,11 +406,12 @@ class CipherVaultMcpServer:
 
                 proc = self.run_cli(cli_args, args)
 
-                output_text = proc.stdout.strip()
+                output_text = (proc.stdout or "").strip()
+                stderr_text = (proc.stderr or "").strip()
                 try:
                     payload = json.loads(output_text)
                 except Exception:
-                    payload = {"output": scrub_text(output_text), "stderr": scrub_text(proc.stderr.strip())}
+                    payload = {"output": scrub_text(output_text), "stderr": scrub_text(stderr_text)}
 
                 return {
                     "jsonrpc": "2.0",
@@ -299,7 +431,7 @@ class CipherVaultMcpServer:
                     "id": req_id,
                     "result": {
                         "content": [
-                            {"type": "text", "text": scrub_text(proc.stdout.strip() or proc.stderr.strip())}
+                            {"type": "text", "text": scrub_text((proc.stdout or "").strip() or (proc.stderr or "").strip())}
                         ]
                     },
                 }
@@ -310,6 +442,8 @@ class CipherVaultMcpServer:
                 cli_args = [self.binary_path, "push", "-m", msg]
                 if local_only:
                     cli_args.append("--local")
+                if args.get("shred_working_copy"):
+                    cli_args.append("--shred")
 
                 proc = self.run_cli(cli_args, args)
                 return {
@@ -317,7 +451,7 @@ class CipherVaultMcpServer:
                     "id": req_id,
                     "result": {
                         "content": [
-                            {"type": "text", "text": scrub_text(proc.stdout.strip() or proc.stderr.strip())}
+                            {"type": "text", "text": scrub_text((proc.stdout or "").strip() or (proc.stderr or "").strip())}
                         ]
                     },
                 }

@@ -10,6 +10,7 @@
  * the agent tools (ciphervault_*) work regardless of this surface.
  */
 import { cn, haptic, host, Tip, usePluginI18n, useQuery, useValue, PALETTE_AREA, ROUTES_AREA } from '@hermes/plugin-sdk'
+import { useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'ciphervault'
@@ -24,9 +25,232 @@ function useVaultStatus(ctx) {
   })
 }
 
+function useVaultAudit(ctx, enabled) {
+  const cwd = useValue(host.state.cwd)
+  return useQuery({
+    queryKey: [ID, 'audit', String(cwd || '')],
+    enabled: Boolean(enabled),
+    retry: false,
+    refetchInterval: 30000,
+    queryFn: async () => ctx.rest('/audit?cwd=' + encodeURIComponent(String(cwd || '')) + '&limit=10')
+  })
+}
+
+function usePendingPrompts(ctx, enabled) {
+  const cwd = useValue(host.state.cwd)
+  return useQuery({
+    queryKey: [ID, 'pending-prompts', String(cwd || '')],
+    enabled: Boolean(enabled),
+    retry: false,
+    refetchInterval: 10000,
+    queryFn: async () => ctx.rest('/pending-prompts?cwd=' + encodeURIComponent(String(cwd || '')))
+  })
+}
+
+function useEnvHealth(ctx, enabled) {
+  const cwd = useValue(host.state.cwd)
+  return useQuery({
+    queryKey: [ID, 'env-health', String(cwd || '')],
+    enabled: Boolean(enabled),
+    retry: false,
+    refetchInterval: 30000,
+    queryFn: async () => ctx.rest('/env-health?cwd=' + encodeURIComponent(String(cwd || '')))
+  })
+}
+
+function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
+  const t = usePluginI18n(ID)
+  const pendingKeys = Array.isArray(pendingQ.data?.keys) ? pendingQ.data.keys : []
+  const [open, setOpen] = useState(false)
+  const [keyName, setKeyName] = useState('')
+  const [secretValue, setSecretValue] = useState('')
+  const [envFile, setEnvFile] = useState('.env')
+  const [seal, setSeal] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [selectedPrompt, setSelectedPrompt] = useState(null)
+
+  const isExpanded = open || pendingKeys.length > 0
+  const envChoices = ['.env', '.env.local', '.env.development', '.env.production']
+  if (envFile && !envChoices.includes(envFile)) {
+    envChoices.push(envFile)
+  }
+
+  const applyPromptChip = (item) => {
+    haptic('tap')
+    setOpen(true)
+    setSelectedPrompt(item)
+    setKeyName(item.name || '')
+    if (item.env_file) setEnvFile(item.env_file)
+    if (typeof item.seal === 'boolean') setSeal(item.seal)
+  }
+
+  const submitSecret = async (e) => {
+    if (e && e.preventDefault) e.preventDefault()
+    if (saving) return
+    const trimmedKey = String(keyName || '').trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmedKey)) {
+      host.notify({ kind: 'error', message: t('secretInvalidKey') })
+      return
+    }
+    if (!secretValue) {
+      host.notify({ kind: 'error', message: t('secretEmptyVal') })
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await ctx.rest('/set?cwd=' + encodeURIComponent(String(cwd || '')), {
+        method: 'POST',
+        body: JSON.stringify({
+          key: trimmedKey,
+          value: secretValue,
+          env_file: envFile || '.env',
+          seal: Boolean(seal)
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+      if (res && res.success) {
+        setSecretValue('')
+        setKeyName('')
+        setSelectedPrompt(null)
+        await Promise.all([q.refetch(), pendingQ.refetch()])
+        host.notify({ kind: 'success', message: t('secretSavedOk', trimmedKey) })
+      } else {
+        host.notify({ kind: 'error', message: t('secretSavedErr', res?.error || 'unknown') })
+      }
+    } catch (err) {
+      host.notify({ kind: 'error', message: t('secretSavedErr', String(err?.message || err || 'unknown')) })
+    } finally {
+      setSecretValue('')
+      setSaving(false)
+    }
+  }
+
+  return jsxs('div', {
+    className: 'mt-2 rounded-lg border border-(--ui-stroke-secondary) p-2',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center justify-between gap-2',
+        children: [
+          jsxs('div', {
+            className: 'flex items-center gap-1.5',
+            children: [
+              jsx('span', {
+                className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)',
+                children: t('drawerTitle')
+              }),
+              pendingKeys.length > 0
+                ? jsx('span', {
+                    className: 'rounded bg-amber-500/20 px-1.5 py-0.5 text-[0.625rem] font-medium text-amber-400',
+                    children: t('pendingCount', String(pendingKeys.length))
+                  })
+                : null
+            ]
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'text-[0.6875rem] text-(--ui-text-tertiary) underline hover:text-foreground',
+            onClick: () => { haptic('tap'); setOpen(!isExpanded) },
+            children: isExpanded ? t('drawerHide') : t('drawerShow')
+          })
+        ]
+      }),
+      pendingKeys.length > 0
+        ? jsxs('div', {
+            className: 'mt-1.5 flex flex-wrap gap-1',
+            children: [
+              jsx('span', { className: 'w-full text-[0.6875rem] text-(--ui-text-tertiary)', children: t('pendingHint') }),
+              ...pendingKeys.map(item =>
+                jsx('button', {
+                  type: 'button',
+                  title: item.reason || item.name,
+                  className: cn(
+                    'rounded border px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+                    keyName === item.name
+                      ? 'border-amber-400 bg-amber-500/15 text-amber-300'
+                      : 'border-(--ui-stroke-secondary) text-(--ui-text-secondary) hover:bg-(--chrome-action-hover)'
+                  ),
+                  onClick: () => applyPromptChip(item),
+                  children: item.expected_prefix ? `${item.name} (${item.expected_prefix}…)` : item.name
+                }, item.name)
+              )
+            ]
+          })
+        : null,
+      isExpanded
+        ? jsxs('form', {
+            className: 'mt-2 flex flex-col gap-1.5',
+            onSubmit: submitSecret,
+            children: [
+              selectedPrompt && selectedPrompt.reason
+                ? jsx('div', {
+                    className: 'text-[0.6875rem] leading-snug text-(--ui-text-tertiary)',
+                    children: selectedPrompt.reason
+                  })
+                : null,
+              jsx('input', {
+                type: 'text',
+                value: keyName,
+                placeholder: t('secretKeyPlaceholder'),
+                autoComplete: 'off',
+                className: 'w-full rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-primary)',
+                onChange: e => setKeyName(e.target.value)
+              }),
+              jsx('input', {
+                type: 'password',
+                value: secretValue,
+                placeholder: t('secretValPlaceholder'),
+                autoComplete: 'new-password',
+                className: 'w-full rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-primary)',
+                onChange: e => setSecretValue(e.target.value)
+              }),
+              jsxs('div', {
+                className: 'flex items-center justify-between gap-2',
+                children: [
+                  jsx('select', {
+                    value: envFile,
+                    className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-1.5 py-1 text-[0.6875rem] text-(--ui-text-secondary) outline-none',
+                    onChange: e => setEnvFile(e.target.value),
+                    children: envChoices.map(opt => jsx('option', { value: opt, children: opt }, opt))
+                  }),
+                  jsxs('label', {
+                    className: 'flex items-center gap-1 text-[0.6875rem] text-(--ui-text-secondary)',
+                    children: [
+                      jsx('input', {
+                        type: 'checkbox',
+                        checked: seal,
+                        onChange: e => setSeal(Boolean(e.target.checked))
+                      }),
+                      jsx('span', { children: t('secretSealLabel') })
+                    ]
+                  })
+                ]
+              }),
+              jsx('button', {
+                type: 'submit',
+                disabled: saving,
+                className: cn(
+                  'mt-0.5 rounded-md border border-(--ui-stroke-secondary) px-2 py-1 text-xs font-medium',
+                  'text-(--ui-text-primary) hover:bg-(--chrome-action-hover)',
+                  saving && 'opacity-50 cursor-not-allowed'
+                ),
+                children: saving ? t('secretSaving') : t('secretSaveBtn')
+              })
+            ]
+          })
+        : null
+    ]
+  })
+}
+
 function StatusBody(ctx) {
   const t = usePluginI18n(ID)
+  const cwd = useValue(host.state.cwd)
   const q = useVaultStatus(ctx)
+  const vaultReady = Boolean(q.data && q.data.vault)
+  const auditQ = useVaultAudit(ctx, vaultReady)
+  const pendingQ = usePendingPrompts(ctx, vaultReady)
+  const healthQ = useEnvHealth(ctx, vaultReady)
+  const [sealing, setSealing] = useState(false)
   const copy = (text, label) => {
     try {
       const ok = host?.clipboard?.writeText ? host.clipboard.writeText(text) : null
@@ -36,12 +260,31 @@ function StatusBody(ctx) {
       host.notify({ kind: 'info', message: t('ask', label) })
     }
   }
-  const btn = (label, onClick) =>
+  const sealNow = async () => {
+    if (sealing) return
+    setSealing(true)
+    try {
+      const res = await ctx.rest('/seal?cwd=' + encodeURIComponent(String(cwd || '')), { method: 'POST' })
+      await q.refetch()
+      if (res && res.error) {
+        host.notify({ kind: 'error', message: t('sealedErr', res.error) })
+      } else {
+        host.notify({ kind: 'success', message: t('sealedOk') })
+      }
+    } catch (e) {
+      host.notify({ kind: 'error', message: t('sealedErr', String(e?.message || e || 'unknown')) })
+    } finally {
+      setSealing(false)
+    }
+  }
+  const btn = (label, onClick, disabled = false) =>
     jsx('button', {
       type: 'button',
+      disabled,
       className: cn(
         'rounded-md border border-(--ui-stroke-secondary) px-2 py-1 text-[0.6875rem]',
-        'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+        'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+        disabled && 'opacity-50 cursor-not-allowed'
       ),
       onClick: () => { haptic('tap'); onClick() },
       children: label
@@ -84,6 +327,9 @@ function StatusBody(ctx) {
       ]
     }, label)
     const paths = Array.isArray(d.tracked_paths) ? d.tracked_paths : []
+    const sealedLabel = d.working_tree_sealed ? 'sealed (0B on disk)' : 'plaintext on disk'
+    const auditEntries = Array.isArray(auditQ.data?.entries) ? auditQ.data.entries : []
+    const auditVerified = Boolean(auditQ.data?.success && auditQ.data?.verification?.ok)
     state = jsxs('div', {
       children: [
         jsxs('div', {
@@ -91,12 +337,53 @@ function StatusBody(ctx) {
           children: [
             row(t('fVault'), d.vault_id_short || '—'),
             row(t('fHead'), d.active_head_short || t('none')),
+            row(t('fSealed'), sealedLabel),
             row(t('fFiles'), d.tracked_files ?? paths.length),
             row(t('fOperators'), d.operators ?? 0),
             row(t('fEpoch'), d.current_epoch ?? '—'),
             row(t('fCli'), d.cli_version || '—')
           ]
         }),
+        !d.working_tree_sealed
+          ? jsx('div', {
+              className: 'mt-2',
+              children: btn(sealing ? t('sealing') : t('bSeal'), sealNow, sealing)
+            })
+          : null,
+        jsx(SecretEntryDrawer, { ctx, cwd, q, pendingQ }),
+        healthQ.data && healthQ.data.success
+          ? jsxs('div', {
+              className: 'mt-2 rounded-lg border border-(--ui-stroke-secondary) p-2',
+              children: [
+                jsxs('div', {
+                  className: 'flex items-center justify-between gap-2',
+                  children: [
+                    jsx('span', { className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)', children: 'Env Health' }),
+                    jsx('span', {
+                      className: cn(
+                        'text-[0.6875rem] font-medium',
+                        (healthQ.data.missing_in_vault?.length || 0) === 0 && (healthQ.data.value_anomalies?.length || 0) === 0
+                          ? 'text-emerald-400'
+                          : 'text-amber-400'
+                      ),
+                      children:
+                        (healthQ.data.missing_in_vault?.length || 0) === 0 && (healthQ.data.value_anomalies?.length || 0) === 0
+                          ? 'healthy'
+                          : `${healthQ.data.missing_in_vault?.length || 0} missing · ${healthQ.data.value_anomalies?.length || 0} lint`
+                    })
+                  ]
+                }),
+                ...(healthQ.data.missing_in_vault || []).slice(0, 6).map(k => jsx('div', {
+                  className: 'truncate py-0.5 text-[0.6875rem] text-amber-300',
+                  children: `missing: ${k}`
+                }, `m-${k}`)),
+                ...(healthQ.data.value_anomalies || []).slice(0, 4).map(a => jsx('div', {
+                  className: 'truncate py-0.5 text-[0.6875rem] text-amber-300',
+                  children: `${a.key}: ${a.issue}`
+                }, `a-${a.key}-${a.issue}`))
+              ]
+            })
+          : null,
         paths.length
           ? jsxs('div', {
               className: 'mt-2',
@@ -108,6 +395,27 @@ function StatusBody(ctx) {
                 paths.length > 12
                   ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: t('more', String(paths.length - 12)) })
                   : null
+              ]
+            })
+          : null,
+        auditQ.data
+          ? jsxs('div', {
+              className: 'mt-2 rounded-lg border border-(--ui-stroke-secondary) p-2',
+              children: [
+                jsxs('div', {
+                  className: 'flex items-center justify-between gap-2',
+                  children: [
+                    jsx('span', { className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)', children: t('auditTitle') }),
+                    jsx('span', {
+                      className: cn('text-[0.6875rem] font-medium', auditVerified ? 'text-emerald-400' : 'text-amber-400'),
+                      children: auditVerified ? t('auditVerified') : t('auditFailed')
+                    })
+                  ]
+                }),
+                ...auditEntries.slice(0, 5).map(e => jsx('div', {
+                  className: 'truncate py-0.5 text-[0.6875rem] text-(--ui-text-secondary)',
+                  children: `${e.tool || 'tool'} • ${e.decision || ''}${e.path ? ' (' + e.path + ')' : ''}`
+                }, String(e.id || e.entry_hash || Math.random())))
               ]
             })
           : null
@@ -171,7 +479,8 @@ function VaultChip(ctx) {
   const t = usePluginI18n(ID)
   const q = useVaultStatus(ctx)
   const ok = q.data && q.data.binary !== 'missing' && q.data.vault
-  const color = q.isLoading ? 'bg-zinc-400' : ok ? 'bg-emerald-400' : 'bg-amber-400'
+  const sealed = Boolean(ok && q.data.working_tree_sealed)
+  const color = q.isLoading ? 'bg-zinc-400' : sealed ? 'bg-emerald-400' : 'bg-amber-400'
   return jsx(Tip, {
     label: t('chipTip'),
     children: jsxs('button', {
@@ -209,7 +518,28 @@ export default {
         noBinarySub: 'Set CIPHERVAULT_BIN to a compatible CLI (source build), then run `hermes ciphervault doctor`.',
         noVault: 'No vault in this workspace',
         noVaultSub: 'Run `ciphervault init` here, then `ciphervault track .env` and `ciphervault push --local`.',
-        fVault: 'Vault', fHead: 'Head', fFiles: 'Tracked files', fOperators: 'Operators', fEpoch: 'Epoch', fCli: 'CLI',
+        fVault: 'Vault', fHead: 'Head', fSealed: 'Working tree', fFiles: 'Tracked files', fOperators: 'Operators', fEpoch: 'Epoch', fCli: 'CLI',
+        bSeal: 'Seal & shred .env',
+        sealing: 'Sealing…',
+        sealedOk: 'Working tree sealed — plaintext .env shredded.',
+        sealedErr: e => `Seal failed: ${e}`,
+        drawerTitle: 'Secret entry',
+        drawerShow: 'Add secret',
+        drawerHide: 'Hide',
+        pendingCount: n => `${n} requested`,
+        pendingHint: 'Agent requested keys (click to fill):',
+        secretKeyPlaceholder: 'KEY_NAME (e.g. OPENAI_API_KEY)',
+        secretValPlaceholder: 'Secret value (never enters chat)',
+        secretSealLabel: 'Seal & shred',
+        secretSaveBtn: 'Save to Vault',
+        secretSaving: 'Saving…',
+        secretInvalidKey: 'Invalid key name (use A-Z, 0-9, _).',
+        secretEmptyVal: 'Secret value cannot be empty.',
+        secretSavedOk: k => `${k} encrypted & saved to vault.`,
+        secretSavedErr: e => `Save failed: ${e}`,
+        auditTitle: 'Recent audit trail',
+        auditVerified: 'Signature verified',
+        auditFailed: 'Verification failed',
         none: 'none yet',
         tracked: 'Tracked paths',
         more: n => `+${n} more`,

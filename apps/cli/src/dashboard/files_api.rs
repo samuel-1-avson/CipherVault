@@ -20,19 +20,36 @@ pub(crate) struct DiffQueryParams {
 
 pub(crate) async fn api_diff_handler(
     axum::extract::Query(params): axum::extract::Query<DiffQueryParams>,
-) -> impl axum::response::IntoResponse {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
     let reveal = params.reveal.unwrap_or(false);
+    if reveal && std::env::var("CIPHERVAULT_UI_ALLOW_REVEAL").as_deref() != Ok("1") {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "success": false,
+                "code": "REVEAL_DISABLED_OVER_HTTP",
+                "error": "Plaintext diff reveal is disabled over the HTTP API. Run `ciphervault diff --reveal` in an interactive terminal or set CIPHERVAULT_UI_ALLOW_REVEAL=1."
+            })),
+        )
+            .into_response();
+    }
+
     match generate_diff_report(params.snapshot_a, params.snapshot_b, params.file, reveal) {
         Ok(report) => axum::Json(serde_json::json!({
             "status": "ok",
             "success": true,
             "report": report
-        })),
+        }))
+        .into_response(),
         Err(e) => axum::Json(serde_json::json!({
             "status": "error",
             "success": false,
             "error": e.to_string()
-        })),
+        }))
+        .into_response(),
     }
 }
 
@@ -113,6 +130,7 @@ pub(crate) async fn api_snapshots_restore_handler(
                     &format!("Restored snapshot into '{}'", to_path),
                     "{}",
                 );
+                let _ = store.append_agent_audit("dashboard_ui", "restore", &to_path, "{}");
             }
             axum::Json(serde_json::json!({
                 "status": "ok",
@@ -355,4 +373,242 @@ pub(crate) async fn api_workspaces_scan_handler() -> impl axum::response::IntoRe
         "count": vaults.len(),
         "workspaces": vaults
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    struct AllowRevealGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl AllowRevealGuard {
+        fn set(val: Option<&str>) -> Self {
+            let prior = std::env::var_os("CIPHERVAULT_UI_ALLOW_REVEAL");
+            match val {
+                Some(v) => std::env::set_var("CIPHERVAULT_UI_ALLOW_REVEAL", v),
+                None => std::env::remove_var("CIPHERVAULT_UI_ALLOW_REVEAL"),
+            }
+            Self { prior }
+        }
+    }
+
+    impl Drop for AllowRevealGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("CIPHERVAULT_UI_ALLOW_REVEAL", v),
+                None => std::env::remove_var("CIPHERVAULT_UI_ALLOW_REVEAL"),
+            }
+        }
+    }
+
+    fn init_certified_workspace(base: &std::path::Path, name: &str) -> crate::util::VaultContext {
+        use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
+        use ciphervault_format::{DeviceCertificate, GenesisRecord, PROTOCOL_VERSION};
+
+        let root = base.join(name);
+        std::fs::create_dir_all(root.join(VAULT_DIR)).unwrap();
+        let recovery = RecoverySecret::generate();
+        let recovery_sk = recovery.derive_recovery_signing_key().unwrap();
+        let (_, encryption) = recovery.derive_recovery_encryption_keys().unwrap();
+        let vault_id = [0x42u8; 32];
+        let device_id = [0x24u8; 32];
+        let mut genesis = GenesisRecord {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            recovery_signing_pk: recovery_sk.verifying_key().to_bytes().to_vec(),
+            recovery_encryption_pk: encryption.as_bytes().to_vec(),
+            policy_digest: vec![0; 32],
+            created_at_utc: 1,
+            creation_nonce: vec![0x42u8; 32],
+            signature: vec![],
+        };
+        genesis.sign(&recovery_sk).unwrap();
+        let device_sk = generate_signing_key();
+        let db_path = root.join(VAULT_DIR).join(DB_FILE);
+        let store = LocalVaultStore::open(&db_path).unwrap();
+        store
+            .init_vault(
+                &vault_id,
+                &genesis,
+                &device_sk,
+                &device_id,
+                &VaultEpochKey::generate(),
+                &recovery.derive_recovery_locator().unwrap(),
+            )
+            .unwrap();
+        let mut cert = DeviceCertificate {
+            version: PROTOCOL_VERSION,
+            vault_id: vault_id.to_vec(),
+            certificate_id: vec![0x11u8; 32],
+            device_signing_pk: device_sk.verifying_key().to_bytes().to_vec(),
+            permissions: 0xFFFF_FFFF,
+            authority_generation: 1,
+            issued_at_utc: 1,
+            signature: Vec::new(),
+        };
+        cert.sign(&recovery_sk).unwrap();
+        store.save_device_certificate(&cert).unwrap();
+        drop(store);
+        crate::util::VaultContext::from_db_path(db_path).unwrap()
+    }
+
+    async fn json_body(response: axum::response::Response) -> (axum::http::StatusCode, serde_json::Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn api_diff_refuses_reveal_unless_explicitly_enabled() {
+        let _serialized = crate::util::TEST_PROCESS_STATE.lock().await;
+        let base = std::env::temp_dir().join(format!(
+            "cv-files-api-diff-{}",
+            rand::random::<u64>()
+        ));
+        let ws = init_certified_workspace(&base, "ws");
+        std::fs::write(ws.root_dir.join(".env"), "API_KEY=initial_secret_value_abc\n").unwrap();
+
+        crate::util::REQUEST_VAULT_CONTEXT
+            .scope(ws.clone(), async {
+                cmd_track(vec![PathBuf::from(".env")], false, false, false).unwrap();
+                crate::cmd_push(
+                    Some("init".to_string()),
+                    false,
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+                std::fs::write(ws.root_dir.join(".env"), "API_KEY=rotated_secret_value_xyz\n")
+                    .unwrap();
+
+                // Default (unset): reveal=true must be refused.
+                {
+                    let _guard = AllowRevealGuard::set(None);
+                    let resp = api_diff_handler(axum::extract::Query(DiffQueryParams {
+                        snapshot_a: None,
+                        snapshot_b: None,
+                        file: None,
+                        reveal: Some(true),
+                    }))
+                    .await;
+                    let (status, body) = json_body(resp).await;
+                    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+                    assert_eq!(body["success"], false);
+                    assert_eq!(body["code"], "REVEAL_DISABLED_OVER_HTTP");
+                    let serialized = body.to_string();
+                    assert!(!serialized.contains("initial_secret_value_abc"));
+                    assert!(!serialized.contains("rotated_secret_value_xyz"));
+                }
+
+                // Default (unset) with reveal=false/None: masked diff succeeds.
+                {
+                    let _guard = AllowRevealGuard::set(None);
+                    let resp = api_diff_handler(axum::extract::Query(DiffQueryParams {
+                        snapshot_a: None,
+                        snapshot_b: None,
+                        file: None,
+                        reveal: Some(false),
+                    }))
+                    .await;
+                    let (status, body) = json_body(resp).await;
+                    assert_eq!(status, axum::http::StatusCode::OK);
+                    assert_eq!(body["success"], true);
+                    let serialized = body.to_string();
+                    assert!(!serialized.contains("initial_secret_value_abc"));
+                    assert!(!serialized.contains("rotated_secret_value_xyz"));
+                }
+
+                // Opt-in CIPHERVAULT_UI_ALLOW_REVEAL=1 allows plaintext reveal.
+                {
+                    let _guard = AllowRevealGuard::set(Some("1"));
+                    let resp = api_diff_handler(axum::extract::Query(DiffQueryParams {
+                        snapshot_a: None,
+                        snapshot_b: None,
+                        file: None,
+                        reveal: Some(true),
+                    }))
+                    .await;
+                    let (status, body) = json_body(resp).await;
+                    assert_eq!(status, axum::http::StatusCode::OK);
+                    assert_eq!(body["success"], true);
+                    let serialized = body.to_string();
+                    assert!(serialized.contains("initial_secret_value_abc"));
+                    assert!(serialized.contains("rotated_secret_value_xyz"));
+                }
+            })
+            .await;
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn api_snapshots_restore_records_agent_audit_entry() {
+        let _serialized = crate::util::TEST_PROCESS_STATE.lock().await;
+        let base = std::env::temp_dir().join(format!(
+            "cv-files-api-restore-{}",
+            rand::random::<u64>()
+        ));
+        let ws = init_certified_workspace(&base, "ws");
+        let restore_dir = base.join("restored_out");
+        let restore_str = restore_dir.display().to_string();
+        std::fs::write(ws.root_dir.join(".env"), "RESTORE_KEY=secret_restore_123\n").unwrap();
+
+        crate::util::REQUEST_VAULT_CONTEXT
+            .scope(ws.clone(), async {
+                cmd_track(vec![PathBuf::from(".env")], false, false, false).unwrap();
+                crate::cmd_push(
+                    Some("snap".to_string()),
+                    false,
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+
+                let resp = api_snapshots_restore_handler(axum::Json(RestoreSnapshotPayload {
+                    snapshot_id: None,
+                    to: Some(restore_str.clone()),
+                    hardware_token: None,
+                    reader: None,
+                    pin: None,
+                }))
+                .await
+                .into_response();
+                let (status, body) = json_body(resp).await;
+                assert_eq!(status, axum::http::StatusCode::OK);
+                assert_eq!(body["success"], true);
+            })
+            .await;
+
+        let store = LocalVaultStore::open(&ws.db_path).unwrap();
+        let activity = store.list_activity(10).unwrap();
+        assert!(activity.iter().any(|a| a.event_type == "SNAPSHOT_RESTORE"));
+
+        let audits = store.list_agent_audit(10).unwrap();
+        assert!(audits.iter().any(|e| {
+            e.tool == "dashboard_ui"
+                && e.decision == "restore"
+                && e.path == restore_str
+                && e.detail_json == "{}"
+        }));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

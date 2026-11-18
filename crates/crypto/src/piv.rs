@@ -822,13 +822,18 @@ mod pcsc_backend {
         fn get() -> Option<&'static Self> {
             static API: OnceLock<Option<LinuxPcscApi>> = OnceLock::new();
             API.get_or_init(|| unsafe {
-                let candidates: [&[u8]; 2] = [b"libpcsclite.so.1\0", b"libpcsclite.so\0"];
                 let mut handle: *mut c_void = std::ptr::null_mut();
+                if let Ok(custom) = std::env::var("CIPHERVAULT_PCSC_SONAME") {
+                    if let Ok(c_custom) = std::ffi::CString::new(custom.trim()) {
+                        handle = dlopen(c_custom.as_ptr(), RTLD_LAZY);
+                    }
+                }
+                let candidates: [&[u8]; 2] = [b"libpcsclite.so.1\0", b"libpcsclite.so\0"];
                 for soname in candidates {
-                    handle = dlopen(soname.as_ptr() as *const c_char, RTLD_LAZY);
                     if !handle.is_null() {
                         break;
                     }
+                    handle = dlopen(soname.as_ptr() as *const c_char, RTLD_LAZY);
                 }
                 if handle.is_null() {
                     return None;

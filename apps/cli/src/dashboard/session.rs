@@ -43,7 +43,44 @@ pub(crate) struct PrivateUiSessionState {
 }
 
 static PRIVATE_UI_SESSION: OnceLock<RwLock<PrivateUiSessionState>> = OnceLock::new();
+static PRIVATE_UI_BOOTSTRAP_TOKEN: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 pub(crate) const PRIVATE_UI_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+
+pub(crate) fn set_private_ui_bootstrap_token(token: Option<String>) {
+    let lock = PRIVATE_UI_BOOTSTRAP_TOKEN.get_or_init(|| RwLock::new(None));
+    let mut guard = lock
+        .write()
+        .expect("private UI bootstrap token lock must not be poisoned");
+    *guard = token;
+}
+
+pub(crate) fn init_private_ui_bootstrap_token() -> String {
+    let mut token_bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut token_bytes);
+    let token = hex::encode(token_bytes);
+    set_private_ui_bootstrap_token(Some(token.clone()));
+    token
+}
+
+pub(crate) fn private_ui_bootstrap_token() -> Option<String> {
+    let lock = PRIVATE_UI_BOOTSTRAP_TOKEN.get_or_init(|| RwLock::new(None));
+    lock.read()
+        .expect("private UI bootstrap token lock must not be poisoned")
+        .clone()
+}
+
+pub(crate) fn constant_time_str_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 pub(crate) fn new_private_ui_session(_vault_binding: Option<String>) -> PrivateUiSessionState {
     let mut token_bytes = [0u8; 32];
@@ -284,5 +321,24 @@ mod local_startup_session_tests {
             "startup sign-in must not write into an empty account dir"
         );
         let _ = std::fs::remove_dir_all(&empty_dir);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_token_defaults_to_none_and_initializes_64_hex_chars() {
+        let _guard = crate::util::TEST_PROCESS_STATE.lock().await;
+        set_private_ui_bootstrap_token(None);
+        assert_eq!(private_ui_bootstrap_token(), None);
+
+        let token = init_private_ui_bootstrap_token();
+        assert_eq!(token.len(), 64);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(private_ui_bootstrap_token().as_deref(), Some(token.as_str()));
+
+        assert!(constant_time_str_eq(&token, &token));
+        assert!(!constant_time_str_eq(&token, "wrong"));
+        assert!(!constant_time_str_eq("abc", "abd"));
+
+        set_private_ui_bootstrap_token(None);
+        assert_eq!(private_ui_bootstrap_token(), None);
     }
 }
