@@ -20,7 +20,7 @@ from . import _runtime
 _self = sys.modules[__name__]
 
 PLUGIN_DIR = _runtime.PLUGIN_DIR
-RELEASE_VERSION = "1.0.35"
+RELEASE_VERSION = "1.0.37"
 # Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against these values.
@@ -31,19 +31,19 @@ RELEASE_VERSION = "1.0.35"
 RELEASE_ASSETS = {
     "windows-amd64": (
         "ciphervault.exe",
-        "3b96259696b42d533bc0545ad2160699b96dfb77fd6922e912276abe4a467c2b",
+        "a9e23344b6da3b6c3731e7da17e7c58da7e1399c6b52039efe87c505cdd99dc4",
     ),
     "linux-amd64": (
         "ciphervault-linux-amd64",
-        "79124f44ab936ecda5b3b21ced3651da616892cebe7ced67c2ef22b8285bb492",
+        "fd9d2ffd3364eb9c54cc76907378eb51e92faf5275b9edb44810c4dfd90fca21",
     ),
     "macos-arm64": (
         "ciphervault-macos-arm64",
-        "c03dc6c72c6a93028ed92add89baab0b5b4ef002821868012d2cb44bbb663743",
+        "43dd46c0bd06573869a0cfa820f22ba5a93cf09c97e11340d5f9c680978d5c1a",
     ),
     "macos-amd64": (
         "ciphervault-macos-amd64",
-        "84b41f27561c7c9fbcd2c4af73d66eaab9ac8dc8f3a36a5bcb895fde46b9ba93",
+        "59fa2600e442cb17a0fd44eca0b57ed1ca8c89e90a85b1b01d707b1153f19a38",
     ),
 }
 # Backward-compatible alias for the Windows pin.
@@ -233,6 +233,53 @@ def _download_resumable(url, progress):
     )
 
 
+def _install_bootstrapped_binary(dest: Path, data: bytes) -> None:
+    """Install verified bytes without truncating a binary that may be running.
+
+    The bytes are staged beside the destination and renamed into place.
+    Windows permits renaming a running executable but not overwriting it;
+    when the direct replace is denied, move the live executable aside first
+    (the running process keeps its image) and restore it if staging fails.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            tmp.chmod(0o755)
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if os.name != "nt" or not dest.exists():
+                raise
+
+        backup = dest.with_name(f"{dest.name}.pre-bootstrap.bak")
+        if backup.exists():
+            backup = dest.with_name(f"{dest.name}.pre-bootstrap-{os.getpid()}.bak")
+        dest.rename(backup)
+        try:
+            tmp.rename(dest)
+        except Exception:
+            backup.rename(dest)
+            raise
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def bootstrap_binary(progress=print):
     """Download the pinned upstream release binary and verify it
     against the release SHA256SUMS.txt before installing it into the
@@ -296,19 +343,14 @@ def bootstrap_binary(progress=print):
             "error": f"SHA-256 mismatch for {asset}: expected {expected}, got {actual}. Refusing to install.",
         }
     dest_dir = _runtime.resolve(_self, "_data_bin_dir")()
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / dest_name
-    dest.write_bytes(data)
-    if os.name != "nt":
-        try:
-            dest.chmod(0o755)
-        except Exception:
-            pass
+    try:
+        _install_bootstrapped_binary(dest, data)
+    except OSError as exc:
+        return {"success": False, "error": f"install failed: {exc}"}
     try:
         alias = dest_dir / ("cv.exe" if os.name == "nt" else "cv")
-        alias.write_bytes(data)
-        if os.name != "nt":
-            alias.chmod(0o755)
+        _install_bootstrapped_binary(alias, data)
     except Exception:
         pass
     progress(f"Verified SHA-256 {actual[:16]}… and installed to {dest}")

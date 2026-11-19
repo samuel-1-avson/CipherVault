@@ -75,6 +75,7 @@ from .binary import (  # noqa: E402
     _data_bin_dir,
     _download_resumable,
     _hermes_home,
+    _install_bootstrapped_binary,
     _minimal_env,
     _read_configured_binary_path,
     _release_asset,
