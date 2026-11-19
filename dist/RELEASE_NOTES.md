@@ -1,3 +1,55 @@
+# CipherVault 1.0.36 (in preparation — not yet tagged)
+
+Native in-vault secret mutation, wildcard policy profiles, a streaming-safe
+credential proxy, and Hermes plugin v0.7.1. This section is written ahead of
+the `v1.0.36` tag per `docs/RELEASE_PROCESS.md`; until that tag and its
+assets exist, treat every item below as source-only.
+
+## Highlights
+
+- **Native vault mutation.** `ciphervault vault set <NAME> --stdin`,
+  `generate`, and `unset` mutate the sealed snapshot in memory — zero
+  plaintext bytes on disk when sealed — while preserving every other key
+  in the target env file. `generate --json` reports metadata only, never
+  the value.
+- **Wildcard policy profiles.** `allow_keys` accepts `*` globs (e.g.
+  `TEST_*`) as an upper bound intersected with `--allow-keys`; profiles
+  gain `require_keys` and Windows AppContainer `sandbox_read_paths`.
+- **Streaming credential proxy.** 30 s connect / 120 s idle-read timeouts
+  and a rolling-window `StreamScrubber` that redacts secrets split across
+  SSE/chunked chunks. Built-in providers now also cover Resend, Slack,
+  Groq, DeepSeek, Mistral, xAI, Cloudflare, and Vercel.
+- **MCP parity and receipts.** Native `ciphervault mcp` adds `env_doctor`,
+  `proxy_doctor`, `recovery_drill`, and `secret_generate`; `ciphervault_run`
+  records a verified audit receipt and fails closed without one. The
+  Python MCP server is now a thin shim delegating to the native server.
+- **Hermes plugin v0.7.1.** Modularized codebase, dashboard secret
+  generation wired to native `vault generate` (fixes the sealed-vault
+  generation crash), fail-closed DNS, expanded write/search guards, and
+  ambient `on_session_start` / `pre_llm_call` lifecycle hooks. Hermes
+  Desktop UI fixes its React `{ ctx }` props crash and gains Env Health
+  Fill & Generate plus a Policy Profiles card.
+
+## Upgrade notes
+
+- **Plugin asset pin unchanged for now.** Hermes plugin v0.7.1 still pins
+  the published v1.0.35 release binaries and their SHA-256 values.
+  Re-pinning to v1.0.36 can only happen after the `v1.0.36` assets are
+  published; it lands as a follow-up change (see
+  `docs/RELEASE_PROCESS.md`). Against a source-built v1.0.36 CLI,
+  `hermes ciphervault doctor` will warn that the installed version differs
+  from the pinned target — expected until the re-pin.
+- **Verified locally.** Hosted CI was unavailable while this was prepared
+  (the two main CI workflows are manually disabled and Actions jobs are
+  billing-locked), so verification is local: the full Rust workspace
+  suite (1,324 tests, 0 failures), Hermes plugin suite, MCP suite,
+  Hermes Desktop tests, and the dashboard audit test all pass; sealed
+  `vault generate`/`unset` was exercised
+  live with no plaintext written to disk. Do not tag until hosted CI is
+  restored or this note is updated to record the exception.
+
+---
+
 # CipherVault 1.0.35
 
 The agent-safety release. It completes the AI-agent guardrail set (network

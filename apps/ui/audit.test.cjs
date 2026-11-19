@@ -926,12 +926,14 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   assert(connectHelp.includes('Keep MFA enabled'), 'Guidance must never suggest disabling MFA to connect');
   assert(connectHelp.includes('hosted MFA step-up'), 'Legacy CLI users need an MFA-capable build, not repeated local login');
   const buildHelp = shellHtml.match(/id="account-connect-build-help"[^>]*>([\s\S]*?)<\/p>/)?.[1];
-  assert(buildHelp?.includes('v1.0.35') && buildHelp.includes('v1.0.33') && buildHelp.includes('v1.0.32') && buildHelp.includes('do not include'), 'Connect guidance must say v1.0.33 and later include the required-MFA fix and v1.0.32 and earlier do not');
+  // Current release comes from Cargo.toml so this cannot drift per-release.
+  const currentVersion = 'v' + fs.readFileSync(`${__dirname}/../../Cargo.toml`, 'utf8').match(/\[workspace\.package\][\s\S]*?version = "([^"]+)"/)[1];
+  assert(buildHelp?.includes(currentVersion) && buildHelp.includes('v1.0.33') && buildHelp.includes('v1.0.32') && buildHelp.includes('do not include'), 'Connect guidance must say v1.0.33 and later include the required-MFA fix and v1.0.32 and earlier do not');
   assert(buildHelp.includes('source build') && buildHelp.includes('newer release'), 'Connect guidance must direct users on older builds to a build containing the fix');
   assert(buildHelp.includes('cv update') && buildHelp.includes('does not guarantee'), 'Self-update alone must not be presented as providing the fix');
   assert(!shellHtml.includes('upgrade to v1.0.32 with'), 'Do not recommend v1.0.32 as the solution for required-MFA connection');
   const downloadHelp = shellHtml.match(/id="cli-download-mfa-help"[^>]*>([\s\S]*?)<\/p>/)?.[1];
-  assert(downloadHelp?.includes('v1.0.35') && downloadHelp.includes('v1.0.33') && downloadHelp.includes('v1.0.32') && downloadHelp.includes('do not include'), 'The download modal must state which releases include required-MFA connection support and that older builds do not');
+  assert(downloadHelp?.includes(currentVersion) && downloadHelp.includes('v1.0.33') && downloadHelp.includes('v1.0.32') && downloadHelp.includes('do not include'), 'The download modal must state which releases include required-MFA connection support and that older builds do not');
   assert(downloadHelp.includes('source build') && downloadHelp.includes('Keep MFA enabled'), 'The download modal must offer a fixed build without weakening MFA');
   const handoffHelp = shellHtml.match(/id="account-connect-handoff-help"[^>]*>([\s\S]*?)<\/p>/)?.[1];
   assert(handoffHelp?.includes('does not transfer'), 'Handoff guidance must not imply MFA proof transfers into the browser');
