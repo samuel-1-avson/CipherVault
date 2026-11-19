@@ -193,8 +193,20 @@ class PackageManifestUpdateTests(unittest.TestCase):
             )
             with sums.open("a", encoding="utf-8") as fh:
                 fh.write(f"{hashlib.sha256(b'win').hexdigest()} *ciphervault.exe\n")
+            watched = [
+                dist / "homebrew/Formula/ciphervault.rb",
+                dist / "scoop/ciphervault.json",
+                dist
+                / "winget/manifests/c/CipherVault/CipherVault/1.0.26/CipherVault.CipherVault.installer.yaml",
+            ]
+            before = [path.read_bytes() for path in watched]
             with self.assertRaisesRegex(ValueError, "missing checksum for ciphervault-linux-amd64"):
                 update_manifests(dist, sums, "v1.0.28", plugin_path=plugin)
+            # Failing closed must not leave a mixed-version tree behind.
+            self.assertEqual([path.read_bytes() for path in watched], before)
+            self.assertFalse(
+                (dist / "winget/manifests/c/CipherVault/CipherVault/1.0.28").exists()
+            )
 
 
 if __name__ == "__main__":

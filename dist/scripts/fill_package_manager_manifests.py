@@ -191,12 +191,16 @@ def update_winget(manifests_root: Path, version: str, checksums: dict[str, str],
     write_preserving_newlines(installer, text)
 
 
-def update_hermes_plugin(path: Path, version: str, checksums: dict[str, str]) -> None:
-    text = path.read_bytes().decode("utf-8")
-    newline = "\r\n" if "\r\n" in text else "\n"
+def require_hermes_checksums(checksums: dict[str, str]) -> None:
     for asset in HERMES_PLUGIN_ASSET_BY_PLATFORM.values():
         if asset not in checksums:
             raise ValueError(f"missing checksum for {asset} (required by Hermes plugin)")
+
+
+def update_hermes_plugin(path: Path, version: str, checksums: dict[str, str]) -> None:
+    text = path.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    require_hermes_checksums(checksums)
     text = exact_substitution(
         text,
         re.compile(r'(?m)^RELEASE_VERSION = "[^"]+"(\r?)$'),
@@ -230,6 +234,10 @@ def update_manifests(
     version = tag[1:] if tag.startswith("v") else tag
     tag = f"v{version}"
     checksums = read_checksums(sums_path, tag)
+    if plugin_path is not None:
+        # Fail before writing anything: a sums file that cannot sync the
+        # Hermes pin must not advance the package-manager manifests alone.
+        require_hermes_checksums(checksums)
 
     update_homebrew(dist / "homebrew/Formula/ciphervault.rb", version, tag, checksums)
     update_scoop(dist / "scoop/ciphervault.json", version, tag, checksums)
