@@ -20,7 +20,7 @@ from . import _runtime
 _self = sys.modules[__name__]
 
 PLUGIN_DIR = _runtime.PLUGIN_DIR
-RELEASE_VERSION = "1.0.35"
+RELEASE_VERSION = "1.0.37"
 # Per-platform release assets, SHA-256 pinned in source (catalog rule
 # 17: setup-time fetches must be checksum-pinned). bootstrap_binary()
 # also cross-checks the release SHA256SUMS.txt against these values.
@@ -31,19 +31,19 @@ RELEASE_VERSION = "1.0.35"
 RELEASE_ASSETS = {
     "windows-amd64": (
         "ciphervault.exe",
-        "3b96259696b42d533bc0545ad2160699b96dfb77fd6922e912276abe4a467c2b",
+        "a9e23344b6da3b6c3731e7da17e7c58da7e1399c6b52039efe87c505cdd99dc4",
     ),
     "linux-amd64": (
         "ciphervault-linux-amd64",
-        "79124f44ab936ecda5b3b21ced3651da616892cebe7ced67c2ef22b8285bb492",
+        "fd9d2ffd3364eb9c54cc76907378eb51e92faf5275b9edb44810c4dfd90fca21",
     ),
     "macos-arm64": (
         "ciphervault-macos-arm64",
-        "c03dc6c72c6a93028ed92add89baab0b5b4ef002821868012d2cb44bbb663743",
+        "43dd46c0bd06573869a0cfa820f22ba5a93cf09c97e11340d5f9c680978d5c1a",
     ),
     "macos-amd64": (
         "ciphervault-macos-amd64",
-        "84b41f27561c7c9fbcd2c4af73d66eaab9ac8dc8f3a36a5bcb895fde46b9ba93",
+        "59fa2600e442cb17a0fd44eca0b57ed1ca8c89e90a85b1b01d707b1153f19a38",
     ),
 }
 # Backward-compatible alias for the Windows pin.
