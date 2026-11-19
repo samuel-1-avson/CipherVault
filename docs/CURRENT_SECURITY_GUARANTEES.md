@@ -12,6 +12,21 @@ Updated 18 November 2026 (v1.0.35). Sections added or revised since v1.0.31 cove
 - **Threshold-aware recovery:** `combine_shares_with_threshold` rejects below-threshold share sets in the guardian path; new recovery kits add a SHA-256 checksum alongside the legacy CRC32 (old kits still load).
 - **Operator defaults tightened:** HTTP API binds loopback unless `0.0.0.0` is explicit; service tokens under 32 chars refuse startup (temporary override `CIPHERVAULT_OPERATOR_ALLOW_SHORT_TOKEN=1`).
 
+## CipherChain anchoring (2026-11-19 review fixes)
+
+- **What verifies:** `ciphervault verify-anchor` checks, offline:
+  - the commitment from the local preimage;
+  - the carried transaction and its Merkle path at the stated position;
+  - the validator quorum, against the configured set (`validators.json`), which must be the chain's genesis set or the set active at the anchor's height;
+  - for block v4+, the block time as the median of validator-signed samples.
+
+  It exits non-zero on any failure.
+- **What an anchor proves:** a solo anchor (this device is the only validator) is tamper-evident against anyone without this device's key, not independent third-party evidence. Multi-validator fleet anchoring does not commit yet, because operators do not cast votes.
+- **Block time:** only v1 and v4+ block times are signed. v2/v3 times are reported as unsigned.
+- **Operators:** catch-up history and peer-supplied genesis sets are untrusted: a replica accepts history only if it contains its own tip and derives the same validator set there. Ledger writes are atomic (temp file, fsync, rename).
+
+Open findings are tracked in [`audit/CIPHERCHAIN_REVIEW_2026-11-19.md`](audit/CIPHERCHAIN_REVIEW_2026-11-19.md).
+
 Stated limits, plainly: the operator challenge ("Proof-of-Storage") proves an operator can produce the object at challenge time — it is a possession/readback check, not a proof of storage over time. The account plane is **single-writer SQLite** (LiteFS optional); the documented PostgreSQL topology is not implemented and fails closed. CipherChain liveness under split votes needs operator coordination (see ADR-013); gossip state is capped, and proposal vetting is O(log n) in history.
 
 ## Agent-safety surfaces (v1.0.32 to v1.0.35)

@@ -44,12 +44,12 @@ verification layer and the multi-node consensus were not:
 | Medium | 6 |
 | Low | 6 |
 
-CC-01, CC-02, CC-03, CC-05, CC-08 and CC-11 are **fixed**, and part
-of CC-12 is fixed. CC-04 is **resolved by re-scoping** (ADR-014): the
-operator transparency log's submission path (Phase 2) replaces
-multi-validator voting, and CLI anchoring to it is Phase 4. Every
-other finding below is **open** as a CipherChain finding; ADR-014
-records which of them the log design closes by construction.
+CC-01, CC-02, CC-03, CC-05, CC-08, CC-09 and CC-11 are **fixed**, and
+CC-12 and CC-18 are partly fixed. CC-04 is **resolved by re-scoping**
+(ADR-014): the operator transparency log's submission path (Phase 2)
+replaces multi-validator voting, and CLI anchoring to it is Phase 4.
+Every other finding below is **open** as a CipherChain finding;
+ADR-014 records which of them the log design closes by construction.
 
 ## Fixed since the review
 
@@ -64,6 +64,7 @@ The critical fixes (CC-01 to CC-03) landed first, in
 | CC-05 | HIGH | `ChainSyncHub::backfill` treats the served history and genesis set as untrusted. It rebuilds the history in memory and accepts it only if it contains the replica's own tip (same hash at the same height) and derives the same validator set at that tip. Only then is anything written. A peer can extend a replica's chain but can no longer replace it or narrow who signs it. An adopted tip that carries a rotation now applies it, and operator admission follows. |
 | CC-08 | MEDIUM | `check_block` and `propose_block` reject a block that repeats a transaction, and require each client's nonces to increase strictly within a block as well as across committed state. Every block mutated by duplicating its tail repeats a transaction, so it is rejected even though its roots and hash match the genuine block. The Merkle tree's doc comment now states the odd-node behavior instead of claiming RFC 6962. |
 | CC-11 | MEDIUM | Block files, `tip.json` and `genesis_validators.json` are written to a temp file, fsynced and renamed into place, and `open` ignores leftover `.tmp` files. A backfill writes every block and the genesis set before removing `tip.json`. While `tip.json` exists, `open` reopens the directory as the tip replica and ignores partial history below the tip, so an interrupted backfill no longer stops the node from starting. |
+| CC-09 | MEDIUM | `ChainSyncHub::ingest_proposal` keeps at most one proposal per proposer per height, replacing the 16-slot pool shared by all validators. A second, different, validly signed proposal from the same proposer is recorded as equivocation evidence and relayed once; further ones are refused. Re-proposing at a stalled height now needs a different validator, until the view change in ADR-013 exists. |
 | CC-12 (part) | MEDIUM | `advance_to_rotation` verifies the rotation header's quorum under the current trusted set before switching trust. `verify-anchor` also requires the configured validator set (`validators.json`) to be the chain's genesis set or the set active at the proof's height, so a replaced genesis record can't become its trust root. Genesis-hash pinning is still open, and `SovereignLedger::open` still prefers the on-disk genesis file. |
 | CC-18 (part) | LOW | The light client uses `InclusionProof::verify_bound`: each step's direction comes from `leaf_index`, the step count must match `total_leaves`, and a lone right-edge node must be paired with itself. A path can no longer be relabelled with another position. The tree size itself is still not committed in block headers. |
 | CC-04 (re-scoped) | HIGH | ADR-014 Option B was chosen over finishing BFT voting. Phase 1 built the RFC 9162 / C2SP log core (`crates/translog`); Phase 2 built the operator log: `services/operator/src/log_store.rs` (append-only entry storage, immediate sequencer, crash-safe writes, torn-tail recovery) with `POST /v1/log/add` under device-session auth and per-device rate limits, signed checkpoints, tlog-tiles and entry bundles, and inclusion/consistency/lookup proof endpoints (`services/operator/src/log_api.rs`, `docs/TRANSPARENCY_LOG.md`). Devices submit commitments and are never validators, so the "clients must be validators" and "no submission path" parts of CC-04 are closed server-side. Nothing casts `VoteMsg` in the new design — by construction, not omission. What remains is Phase 3 (witness cosignatures) and Phase 4 (CLI policy, `anchor` to N logs, evidence v2); until Phase 4 the CLI still anchors solo and says so. |
@@ -118,6 +119,7 @@ The critical fixes (CC-01 to CC-03) landed first, in
   `test_backfill_rejects_history_deriving_another_validator_set`
   (CC-05, `sync.rs`)
 - `test_interrupted_backfill_reopens_as_tip_replica` (CC-11, `sync.rs`)
+- `test_one_proposal_per_proposer_per_height` (CC-09, `sync.rs`)
 
 ## Verified sound
 
@@ -165,7 +167,7 @@ The critical fixes (CC-01 to CC-03) landed first, in
 | CC-06 | HIGH | Open | Certificates are non-deterministic, so honest replicas fork with 4 or more validators |
 | CC-07 | HIGH | Open | The default 3-validator fleet tolerates zero failures (quorum is 3 of 3) |
 | CC-08 | MEDIUM | Fixed | Duplicating the last Merkle node lets a block be mutated with an unchanged hash; nonces are not checked within a block |
-| CC-09 | MEDIUM | Open | The per-height proposal cap is shared by all validators, so one validator can block the rest |
+| CC-09 | MEDIUM | Fixed | The per-height proposal cap is shared by all validators, so one validator can block the rest |
 | CC-10 | MEDIUM | Open | The default v1 transactions publish the salt, snapshot ID and vault ID on-chain |
 | CC-11 | MEDIUM | Fixed | Ledger files are written non-atomically, so a crash can stop a replica from starting |
 | CC-12 | MEDIUM | Partly fixed | No pinned genesis hash, the on-disk genesis file overrides the caller, and light-client rotation is unsigned |
@@ -631,29 +633,31 @@ would confirm, and then guard, an open finding:
 
 - **CC-06:** four hubs receiving votes in different orders must commit
   identical block hashes.
-- **CC-09:** one validator sending 17 proposals at one height must not
-  block another validator's proposal.
 
 ## Docs that overclaim
 
-These should be corrected now, whatever is decided about the design:
+All of these were corrected after the review:
 
 - **Root [`README.md`](../../README.md):**
-  - "Immutable Ledger Proofs"
-  - "Byzantine fault tolerant quorum signatures"
-  - "mathematically prove vault state integrity at any historical
-    point in time" (CC-02, CC-04)
-- **[`SYSTEM_WORKFLOW.md`](../SYSTEM_WORKFLOW.md), Workflow 3:**
-  - the fleet quorum commit and "Operators vote" (CC-04)
-  - "validator-voted time" as a property verifiers can check (CC-02)
-- **CLI output in `anchor.rs`:** `ciphervault anchor` still prints
-  "Deterministic Sovereign Finality". (The `verify-anchor` claims
-  "IMMUTABLY ANCHORED" and "Cryptographic Checkpoint Verified" were
-  removed with the CC-03 fix.)
-- **This engagement pack ([`README.md`](./README.md)):** `crates/chain`
-  is in the code scope, but §3 has no cryptographic-scope row for the
-  chain protocol. Add one as **C9**, covering commitments, Merkle
-  proofs, certificates and rotation.
+  - "Immutable Ledger Proofs" and "Byzantine fault tolerant quorum
+    signatures" are replaced by a description of what verifies and what
+    a solo anchor proves.
+  - The architecture diagram no longer says "Immutable" or "BFT".
+  - The Project Status table now has a CipherChain row.
+- **[`SYSTEM_WORKFLOW.md`](../SYSTEM_WORKFLOW.md):**
+  - No more "deterministic finality".
+  - Workflow 3 states that operators don't vote yet, so fleet anchors
+    stay `PROPOSED`.
+  - The block-time note says only v1 and v4+ times are signed.
+- **[`CURRENT_SECURITY_GUARANTEES.md`](../CURRENT_SECURITY_GUARANTEES.md):**
+  a new CipherChain anchoring section states the current guarantees and
+  limits.
+- **CLI output in `anchor.rs`:** "Deterministic Sovereign Finality" is
+  replaced by a `Trust:` line ("solo chain signed by this device…").
+  The `verify-anchor` claims "IMMUTABLY ANCHORED" and "Cryptographic
+  Checkpoint Verified" were removed with the CC-03 fix.
+- **This engagement pack ([`README.md`](./README.md)):** §3 now has a
+  **C9** row for the chain protocol.
 
 ## Strategic decision
 
@@ -726,9 +730,7 @@ CC-09, CC-13) entirely.
 
 1. **Verification holes:** CC-01, CC-02, CC-03, CC-08 and CC-11 are
    done.
-2. **Operator safety:** CC-05 is done; CC-09 (one proposal per
-   proposer per height) is next.
-3. **Documentation:** correct the docs that overclaim, and add C9 to
-   the engagement pack.
+2. **Operator safety:** CC-05 and CC-09 are done.
+3. **Documentation:** done (see [Docs that overclaim](#docs-that-overclaim)).
 4. **Design:** decide between Option A and Option B, then implement
    CC-04 (and, if A, CC-06, CC-07 and CC-13) under the chosen design.

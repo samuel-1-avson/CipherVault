@@ -16,7 +16,7 @@
 2. **Zero Plaintext Leakage to Operators**: Storage operators store opaque ciphertexts addressed by content digests (CIDs). Chunks, manifests, and head records are encrypted client-side using XChaCha20-Poly1305 with domain-separated derivation contexts.
 3. **RAM Zeroization & Zero-Disk Recovery Kit**: The master recovery secret $R$ is never persisted unencrypted to disk. During vault initialization, $R$ is printed exclusively to the terminal and immediately scrubbed from volatile memory using compiler-fence memory zeroization (`Zeroize` / `ZeroizeOnDrop`).
 4. **Autonomous Durability**: Replication requires proof-of-storage readback, while an autonomous maintenance fleet monitors replica durability and triggers self-repair across independent nodes.
-5. **Sovereign CipherChain Settlement**: Vault head state commitments are anchored to the native zero-gas Proof-of-Authority ledger, providing deterministic finality and tamper-evident audit trails.
+5. **Sovereign CipherChain Settlement**: Vault head state commitments are anchored to the native zero-gas Proof-of-Authority ledger for tamper-evident sequencing. Today only single-validator (solo) chains commit; operators do not cast votes yet, so multi-validator anchors stay `PROPOSED` (see the [CipherChain review](audit/CIPHERCHAIN_REVIEW_2026-11-19.md), CC-04).
 
 ### Developer Operating Model: CipherVault vs. Traditional SaaS (e.g., GitHub)
 
@@ -295,10 +295,15 @@ sequenceDiagram
     CLI->>Fleet: POST /v1/chain/publish (sealed proposal, best-effort, explicit operators only)
     Fleet->>Fleet: admit → hub ingest → vote → commit → relay; laggards backfill 0..tip + genesis set
     CLI->>Store: Record checkpoint evidence (salt, commitment, height, hash)
-    CLI-->>Dev: ✓ Block #H committed (median validator-voted time, deterministic finality)
+    CLI-->>Dev: ✓ Block #H committed (solo: signed by this device)
     Dev->>CLI: ciphervault verify-anchor [--head CID]
-    CLI->>CLI: Recompute commitment, verify Merkle path + quorum sigs (<1ms, offline-capable)
+    CLI->>CLI: Recompute commitment, verify Merkle path, quorum and signed time against the configured set (offline)
 ```
+
+**Fleet path status.** Operators admit, store and relay sealed proposals,
+but no operator casts votes yet, so the quorum step above is not reached
+with more than one validator: the CLI reports `PROPOSED — awaiting fleet
+quorum` and saves no checkpoint evidence. Solo chains commit and verify.
 
 **Block time: which timestamps are evidence.** Only **v1** and **v4+**
 block timestamps are signed:
