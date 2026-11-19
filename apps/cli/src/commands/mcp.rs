@@ -526,7 +526,31 @@ fn spawn_self_json(
     )
 }
 
+fn profile_omits_default_no_net(profile_name: &str, cwd: Option<&str>) -> bool {
+    let VaultLookup::Found(db_path) = lookup_vault_db_for_cwd(cwd) else {
+        return false;
+    };
+    let Some(vault_dir) = db_path.parent() else {
+        return false;
+    };
+    let Ok(Some(policy)) = super::run::load_workspace_policy(vault_dir) else {
+        return false;
+    };
+    let Some(prof) = policy.profiles.get(profile_name) else {
+        return false;
+    };
+    prof.proxy == Some(true) || !prof.upstreams.is_empty() || prof.no_net == Some(false)
+}
+
+#[cfg(test)]
 fn build_run_cli_args(args: &serde_json::Value) -> std::result::Result<Vec<String>, String> {
+    build_run_cli_args_for_cwd(args, None)
+}
+
+fn build_run_cli_args_for_cwd(
+    args: &serde_json::Value,
+    cwd: Option<&str>,
+) -> std::result::Result<Vec<String>, String> {
     let dry_run = args
         .get("dry_run")
         .and_then(|v| v.as_bool())
@@ -566,12 +590,13 @@ fn build_run_cli_args(args: &serde_json::Value) -> std::result::Result<Vec<Strin
         cli_args.push("--env".to_string());
         cli_args.push(env);
     }
-    if let Some(profile) = optional_trimmed_str(args, "profile") {
+    let profile_opt = optional_trimmed_str(args, "profile");
+    if let Some(ref profile) = profile_opt {
         if profile.starts_with('-') {
             return Err("`profile` cannot start with '-'".to_string());
         }
         cli_args.push("--profile".to_string());
-        cli_args.push(profile);
+        cli_args.push(profile.clone());
     }
     if let Some(allow_arr) = args.get("allow_keys").and_then(|v| v.as_array()) {
         let keys: Vec<String> = allow_arr
@@ -587,10 +612,17 @@ fn build_run_cli_args(args: &serde_json::Value) -> std::result::Result<Vec<Strin
     }
     // Agent-supplied `proxy_upstream` is intentionally never forwarded over MCP.
     let proxy_flag = args.get("proxy").and_then(|v| v.as_bool()).unwrap_or(false);
-    let no_net = args
-        .get("no_net")
-        .and_then(|v| v.as_bool())
-        .unwrap_or_else(|| !proxy_flag && default_no_net());
+    let no_net = args.get("no_net").and_then(|v| v.as_bool()).unwrap_or_else(|| {
+        if proxy_flag {
+            return false;
+        }
+        if let Some(ref prof_name) = profile_opt {
+            if profile_omits_default_no_net(prof_name, cwd) {
+                return false;
+            }
+        }
+        default_no_net()
+    });
     if proxy_flag && no_net {
         return Err("`proxy` and `no_net` cannot both be enabled".to_string());
     }
@@ -1165,11 +1197,18 @@ struct TempDrillDir(PathBuf);
 impl TempDrillDir {
     fn create() -> std::io::Result<Self> {
         let base = std::env::temp_dir();
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
         for _ in 0..16 {
             let mut rnd = [0u8; 8];
             rand::thread_rng().fill_bytes(&mut rnd);
             let cand = base.join(format!("cv-drill-{}-{}", std::process::id(), hex::encode(rnd)));
-            match std::fs::create_dir(&cand) {
+            match builder.create(&cand) {
                 Ok(()) => return Ok(Self(cand)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
@@ -1347,7 +1386,7 @@ fn call_tool(
             }
         }
         "ciphervault_run" => {
-            let cli_args = match build_run_cli_args(args) {
+            let cli_args = match build_run_cli_args_for_cwd(args, cwd.as_deref()) {
                 Ok(a) => a,
                 Err(msg) => {
                     return (serde_json::json!({ "ok": false, "error": msg }), true);
@@ -2377,9 +2416,15 @@ mod tests {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("private, loopback, link-local, or cloud-metadata"));
 
-        // TempDrillDir hashes files and deletes on drop.
+        // TempDrillDir hashes files, restricts Unix mode to 0700, and deletes on drop.
         let dir = TempDrillDir::create().unwrap();
         let dir_path = dir.path().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "drill temp dir must be owner-only (0700)");
+        }
         std::fs::write(dir_path.join(".env"), b"KEY=val\n").unwrap();
         let manifest = hash_drill_directory(&dir_path).unwrap();
         assert_eq!(manifest.len(), 1);
@@ -2391,6 +2436,122 @@ mod tests {
         );
         drop(dir);
         assert!(!dir_path.exists(), "TempDrillDir must delete itself on drop");
+    }
+
+    #[test]
+    fn mcp_run_profile_omits_default_no_net_for_proxy_or_open_profiles() {
+        let base = std::env::temp_dir().join(format!(
+            "cv-mcp-profile-net-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let ctx = crate::util::tests::workspace_fixture(&base, "profnet", 77);
+        let vault_dir = ctx.root_dir.join(VAULT_DIR);
+        std::fs::write(
+            vault_dir.join("policy.toml"),
+            r#"
+[vault]
+sealed_mode = false
+default_no_net = true
+
+[profiles.test]
+commands = ["pytest"]
+allow_keys = ["DATABASE_URL"]
+no_net = true
+
+[profiles.llm_eval]
+commands = ["python"]
+allow_keys = ["OPENAI_API_KEY"]
+proxy = true
+
+[profiles.custom_gw]
+commands = ["python"]
+allow_keys = ["CUSTOM_TOKEN"]
+[profiles.custom_gw.upstreams]
+CUSTOM_TOKEN = "https://gw.example.com"
+
+[profiles.open_net]
+commands = ["curl"]
+no_net = false
+"#,
+        )
+        .unwrap();
+        let cwd_str = ctx.root_dir.to_string_lossy().to_string();
+
+        // proxy = true profile omits default --no-net so `run --profile llm_eval` doesn't crash
+        let llm_args = build_run_cli_args_for_cwd(
+            &serde_json::json!({
+                "command": ["python", "eval.py"],
+                "profile": "llm_eval",
+            }),
+            Some(&cwd_str),
+        )
+        .unwrap();
+        assert!(llm_args.windows(2).any(|w| w == ["--profile", "llm_eval"]));
+        assert!(
+            !llm_args.iter().any(|a| a == "--no-net"),
+            "proxy=true profile must omit default --no-net: {llm_args:?}"
+        );
+
+        // non-empty upstreams profile also omits default --no-net
+        let gw_args = build_run_cli_args_for_cwd(
+            &serde_json::json!({
+                "command": ["python", "gw.py"],
+                "profile": "custom_gw",
+            }),
+            Some(&cwd_str),
+        )
+        .unwrap();
+        assert!(
+            !gw_args.iter().any(|a| a == "--no-net"),
+            "upstreams profile must omit default --no-net: {gw_args:?}"
+        );
+
+        // no_net = false profile omits default --no-net
+        let open_args = build_run_cli_args_for_cwd(
+            &serde_json::json!({
+                "command": ["curl", "https://example.com"],
+                "profile": "open_net",
+            }),
+            Some(&cwd_str),
+        )
+        .unwrap();
+        assert!(
+            !open_args.iter().any(|a| a == "--no-net"),
+            "no_net=false profile must omit default --no-net: {open_args:?}"
+        );
+
+        // no_net = true profile and unknown profiles keep fail-closed default --no-net
+        for prof in ["test", "unknown_profile"] {
+            let args = build_run_cli_args_for_cwd(
+                &serde_json::json!({
+                    "command": ["pytest"],
+                    "profile": prof,
+                }),
+                Some(&cwd_str),
+            )
+            .unwrap();
+            if default_no_net() {
+                assert!(
+                    args.iter().any(|a| a == "--no-net"),
+                    "profile {prof} should keep default --no-net: {args:?}"
+                );
+            }
+        }
+
+        // Explicit no_net = true is still honored even on a proxy profile
+        let forced = build_run_cli_args_for_cwd(
+            &serde_json::json!({
+                "command": ["python", "eval.py"],
+                "profile": "llm_eval",
+                "no_net": true,
+            }),
+            Some(&cwd_str),
+        )
+        .unwrap();
+        assert!(forced.iter().any(|a| a == "--no-net"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
