@@ -1568,13 +1568,18 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_scrubs_upstream_response_read_errors() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let real_val = concat!("real_read_err_", "tok_", "aabbccddeeff");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mock_addr = listener.local_addr().unwrap();
         let mock_handle = tokio::spawn(async move {
             if let Ok((mut sock, _)) = listener.accept().await {
+                // Consume the request first: closing with unread request
+                // bytes can RST the connection, which newer hyper surfaces
+                // as a send error instead of the intended body-read error.
+                let mut req_buf = [0u8; 4096];
+                let _ = sock.read(&mut req_buf).await;
                 let _ = sock
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 512\r\n\r\npartial")
                     .await;
