@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ChainError;
 use crate::types::{
-    verify_signed_median, AnchorProofResponse, BlockHeader, CommitmentTx, SIGNED_TIME_VERSION,
+    verify_signed_median, AnchorProofResponse, BlockHeader, CommitmentTx, PROOF_FORMAT_VERSION,
+    PROTOCOL_VERSION, SIGNED_TIME_VERSION,
 };
 
 /// Result of an autonomous light-client verification.
@@ -61,17 +62,38 @@ impl SovereignLightClient {
         self.trusted_validators.len()
     }
 
+    /// Whether the currently trusted set is exactly `keys` (order-insensitive).
+    pub fn trusts_exactly(&self, keys: &[[u8; 32]]) -> bool {
+        let other: HashSet<[u8; 32]> = keys.iter().copied().collect();
+        other.len() == keys.len() && other == self.trusted_validators
+    }
+
     /// Verifies a header's validator quorum under the trusted set and returns
     /// how many trusted signatures verified. Signatures from untrusted keys,
-    /// duplicates and bad signatures are skipped (never counted). Version 4+
-    /// headers must also carry a timestamp equal to the median of the
-    /// verified signers' signed observed times, so the block time cannot be
-    /// rewritten by whoever stores or serves the header.
+    /// duplicates and bad signatures are skipped (never counted). The header
+    /// version must be one this build understands and the proposer must be
+    /// trusted, exactly as the ledger requires. Version 4+ headers must also
+    /// carry a timestamp equal to the median of the verified signers' signed
+    /// observed times, so the block time cannot be rewritten by whoever
+    /// stores or serves the header.
     pub fn verify_header(&self, header: &BlockHeader) -> Result<usize, ChainError> {
         if header.chain_id != self.chain_id {
             return Err(ChainError::InvalidGenesis(format!(
                 "Chain ID mismatch: expected '{}', header carries '{}'",
                 self.chain_id, header.chain_id
+            )));
+        }
+        if header.version == 0 || header.version > PROTOCOL_VERSION {
+            return Err(ChainError::InvalidVersion {
+                found: header.version,
+                min: 1,
+                max: PROTOCOL_VERSION,
+            });
+        }
+        if !self.trusted_validators.contains(&header.proposer) {
+            return Err(ChainError::InvalidProposer(format!(
+                "Proposer {} is not in the trusted validator set",
+                hex::encode(header.proposer)
             )));
         }
         let mut verified: HashSet<[u8; 32]> = HashSet::new();
@@ -164,7 +186,20 @@ impl SovereignLightClient {
         expected_salt: &[u8; 32],
         proof: &AnchorProofResponse,
     ) -> Result<SovereignVerificationResult, ChainError> {
-        // 1. Chain ID.
+        // 1. Proof format and chain ID. Legacy proofs (no carried
+        // transaction) parse but are refused with an explicit error.
+        if proof.format_version != PROOF_FORMAT_VERSION {
+            return Err(ChainError::UnsupportedProofFormat {
+                found: proof.format_version,
+                expected: PROOF_FORMAT_VERSION,
+            });
+        }
+        let Some(tx) = proof.tx.as_ref() else {
+            return Err(ChainError::UnsupportedProofFormat {
+                found: 0,
+                expected: PROOF_FORMAT_VERSION,
+            });
+        };
         if proof.chain_id != self.chain_id {
             return Err(ChainError::InvalidGenesis(format!(
                 "Chain ID mismatch: expected '{}', got '{}'",
@@ -184,8 +219,8 @@ impl SovereignLightClient {
 
         // 3. The carried transaction must be that commitment's and validly
         // signed. Legacy (v0/v1) transactions publish the preimage, which must
-        // be ours; private (v2) ones carry only the commitment.
-        let tx = &proof.tx;
+        // be ours; private (v2) ones carry only the commitment, and their
+        // unsigned salt/head fields must be zero (`verify_signature`).
         if tx.commitment != expected_commitment {
             return Err(ChainError::CommitmentMismatch {
                 computed: hex::encode(expected_commitment),
@@ -236,9 +271,12 @@ impl SovereignLightClient {
                 proof.tx_proof.leaf_index, proof.tx_index
             )));
         }
-        if !proof.tx_proof.verify(&proof.header.tx_root) {
+        // The path must be the one for that position, not merely a path that
+        // reaches the root.
+        if !proof.tx_proof.verify_bound(&proof.header.tx_root) {
             return Err(ChainError::InvalidInclusionProof(
-                "Merkle audit path does not resolve to header tx_root".to_string(),
+                "Merkle audit path does not resolve to header tx_root at the stated position"
+                    .to_string(),
             ));
         }
 

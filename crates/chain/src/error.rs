@@ -78,6 +78,11 @@ pub enum ChainError {
     #[error("Invalid block version {found}: must be between {min} and {max}")]
     InvalidVersion { found: u16, min: u16, max: u16 },
 
+    #[error(
+        "Unsupported anchor proof format {found} (this build verifies format {expected}); re-fetch the proof from an upgraded ledger"
+    )]
+    UnsupportedProofFormat { found: u16, expected: u16 },
+
     #[error("IO error: {0}")]
     Io(String),
 

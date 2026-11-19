@@ -1,6 +1,6 @@
 use ciphervault_chain::{
-    AnchorProofResponse, ChainError, CommitmentTx, ConsensusSigner, SovereignLedger,
-    SovereignLightClient, ValidatorSet,
+    AnchorProofResponse, BlockHeader, ChainError, CommitmentTx, ConsensusSigner, SovereignLedger,
+    SovereignLightClient, ValidatorSet, EMPTY_TREE_ROOT, PROTOCOL_VERSION,
 };
 
 #[test]
@@ -301,8 +301,8 @@ fn light_client_rejects_relabelled_and_retimed_proofs() {
     // ...with a validly signed transaction for our commitment swapped in:
     // its leaf is not the one the audit path proves.
     let mut swapped = relabelled.clone();
-    swapped.tx = signed_tx(&client, chain_id, 0x99, 0x77, 2, 1_200);
-    assert_eq!(swapped.tx.commitment, our_commitment);
+    swapped.tx = Some(signed_tx(&client, chain_id, 0x99, 0x77, 2, 1_200));
+    assert_eq!(swapped.tx.as_ref().unwrap().commitment, our_commitment);
     assert!(matches!(
         light.verify_anchor(&our_head, &our_salt, &swapped),
         Err(ChainError::InvalidInclusionProof(_))
@@ -310,7 +310,7 @@ fn light_client_rejects_relabelled_and_retimed_proofs() {
 
     // ...or with the leaf rewritten to match: it no longer reaches tx_root.
     let mut releafed = swapped.clone();
-    releafed.tx_proof.leaf_hash = releafed.tx.tx_leaf_hash();
+    releafed.tx_proof.leaf_hash = releafed.tx.as_ref().unwrap().tx_leaf_hash();
     assert!(light
         .verify_anchor(&our_head, &our_salt, &releafed)
         .is_err());
@@ -332,6 +332,143 @@ fn light_client_rejects_relabelled_and_retimed_proofs() {
         light.verify_anchor(&other.head_cid, &other.salt, &backdated),
         Err(ChainError::TimestampNotMedian { .. })
     ));
+}
+
+/// PR #59 review hardening of the light client: proof format, block version
+/// range, proposer membership, private-transaction fields and audit-path
+/// position.
+#[test]
+fn light_client_enforces_review_hardening() {
+    let chain_id = "ciphervault-review-test";
+    let ops: Vec<ConsensusSigner> = (0..3).map(|_| ConsensusSigner::generate()).collect();
+    let set = ValidatorSet::new(ops.iter().map(|o| o.public_key()).collect()).unwrap();
+    let refs: Vec<&ConsensusSigner> = ops.iter().collect();
+    let mut ledger =
+        SovereignLedger::create_genesis(chain_id, set.clone(), &refs, 1_000, None).unwrap();
+    let client = ConsensusSigner::generate();
+    let private_client = ConsensusSigner::generate();
+    let legacy = signed_tx(&client, chain_id, 0x10, 0x20, 1, 1_100);
+    let (p_salt, p_head) = ([0x31u8; 32], [0x32u8; 32]);
+    let mut private = CommitmentTx::new_private(&[0x33; 32], &p_salt, &p_head, [0u8; 32], 1, 1_100);
+    private_client.sign_tx(&mut private, chain_id);
+    let mut block = ledger
+        .propose_block(&ops[0], vec![legacy.clone(), private.clone()], 2_000, None)
+        .unwrap();
+    for op in &ops[1..] {
+        block.header.signatures.push(op.sign_header(&block.header));
+    }
+    ledger.commit_block(block).unwrap();
+
+    let light = SovereignLightClient::new(chain_id, set.validators().to_vec());
+    let proof = ledger.get_proof_for_commitment(&legacy.commitment).unwrap();
+    light
+        .verify_anchor(&legacy.head_cid, &legacy.salt, &proof)
+        .expect("genuine legacy proof verifies");
+    let private_proof = ledger
+        .get_proof_for_commitment(&private.commitment)
+        .unwrap();
+    light
+        .verify_anchor(&p_head, &p_salt, &private_proof)
+        .expect("genuine private proof verifies");
+
+    // Legacy proofs (no format field, no transaction) still parse, but are
+    // refused with an explicit format error.
+    let mut json = serde_json::to_value(&proof).unwrap();
+    let obj = json.as_object_mut().unwrap();
+    obj.remove("format_version");
+    obj.remove("tx");
+    let old: AnchorProofResponse = serde_json::from_value(json).unwrap();
+    assert!(matches!(
+        light.verify_anchor(&legacy.head_cid, &legacy.salt, &old),
+        Err(ChainError::UnsupportedProofFormat { found: 0, .. })
+    ));
+
+    // A quorum-signed header must still name a trusted proposer...
+    let outsider = ConsensusSigner::generate();
+    let mut reproposed = proof.clone();
+    reproposed.header.proposer = outsider.public_key();
+    reproposed.header.signatures = ops
+        .iter()
+        .map(|o| o.sign_header(&reproposed.header))
+        .collect();
+    reproposed.block_hash = reproposed.header.block_hash();
+    assert!(matches!(
+        light.verify_anchor(&legacy.head_cid, &legacy.salt, &reproposed),
+        Err(ChainError::InvalidProposer(_))
+    ));
+
+    // ...and carry a block version this build verifies.
+    let mut future = proof.clone();
+    future.header.version = PROTOCOL_VERSION + 1;
+    future.header.signatures = ops.iter().map(|o| o.sign_header(&future.header)).collect();
+    future.block_hash = future.header.block_hash();
+    assert!(matches!(
+        light.verify_anchor(&legacy.head_cid, &legacy.salt, &future),
+        Err(ChainError::InvalidVersion { .. })
+    ));
+
+    // Private transactions may not carry their (unsigned) preimage fields.
+    let mut forged_fields = private_proof.clone();
+    forged_fields.tx.as_mut().unwrap().salt = [0xee; 32];
+    assert!(light
+        .verify_anchor(&p_head, &p_salt, &forged_fields)
+        .is_err());
+
+    // The audit path must be the one for the stated position.
+    let mut moved = proof.clone();
+    moved.tx_index = 1;
+    moved.tx_proof.leaf_index = 1;
+    assert!(matches!(
+        light.verify_anchor(&legacy.head_cid, &legacy.salt, &moved),
+        Err(ChainError::InvalidInclusionProof(_))
+    ));
+}
+
+/// PR #59 review: block v4 must not strand validators still on an older
+/// build during a rolling upgrade.
+#[test]
+fn block_version_activation_respects_rolling_upgrades() {
+    let chain_id = "ciphervault-activation-test";
+    let genesis_at = |signers: &[&ConsensusSigner], version: u16| {
+        let set = ValidatorSet::new(signers.iter().map(|s| s.public_key()).collect()).unwrap();
+        let header = BlockHeader {
+            version,
+            chain_id: chain_id.to_string(),
+            height: 0,
+            prev_block_hash: [0u8; 32],
+            state_root: EMPTY_TREE_ROOT,
+            tx_root: EMPTY_TREE_ROOT,
+            timestamp_ms: 1_000,
+            proposer: signers[0].public_key(),
+            next_validators: None,
+            signatures: Vec::new(),
+        };
+        let sigs = signers.iter().map(|s| s.sign_header(&header)).collect();
+        SovereignLedger::assemble_genesis(chain_id, set, header, sigs, None).unwrap()
+    };
+    let client = ConsensusSigner::generate();
+    let tx = signed_tx(&client, chain_id, 0x01, 0x01, 1, 1_100);
+
+    // A fleet chain created by an older build keeps its version...
+    let ops: Vec<ConsensusSigner> = (0..3).map(|_| ConsensusSigner::generate()).collect();
+    let fleet = genesis_at(&ops.iter().collect::<Vec<_>>(), 3);
+    let kept = fleet
+        .propose_block(&ops[0], vec![tx.clone()], 2_000, None)
+        .unwrap();
+    assert_eq!(kept.header.version, 3);
+    // ...until the operator explicitly activates the current one.
+    let upgraded = fleet
+        .propose_block_upgrading(&ops[0], vec![tx.clone()], 2_000, None)
+        .unwrap();
+    assert_eq!(upgraded.header.version, PROTOCOL_VERSION);
+
+    // A solo chain has nobody to strand and moves to the current version.
+    let solo = ConsensusSigner::generate();
+    let solo_chain = genesis_at(&[&solo], 3);
+    let solo_block = solo_chain
+        .propose_block(&solo, vec![tx], 2_000, None)
+        .unwrap();
+    assert_eq!(solo_block.header.version, PROTOCOL_VERSION);
 }
 
 #[test]

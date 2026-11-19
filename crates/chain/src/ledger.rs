@@ -445,8 +445,54 @@ impl SovereignLedger {
     /// rotation is quorum-certified by the current set's endorsements, so
     /// `Some` must be a well-formed set (non-empty, deduplicated) or
     /// `check_block` rejects the proposal.
+    ///
+    /// Block version and rolling upgrades: a single-validator chain always
+    /// uses this build's [`PROTOCOL_VERSION`], since no other node has to
+    /// verify it. A multi-validator chain keeps its parent's version, so
+    /// validators still on an older build keep accepting blocks during a
+    /// rolling upgrade. Once every validator runs a build that verifies the
+    /// newer version, [`Self::propose_block_upgrading`] activates it, and the
+    /// downgrade rule in `check_block` keeps the chain there.
     pub fn propose_block(
         &self,
+        proposer: &ConsensusSigner,
+        txs: Vec<CommitmentTx>,
+        timestamp_ms: u64,
+        next_validators: Option<Vec<[u8; 32]>>,
+    ) -> Result<CipherChainBlock, ChainError> {
+        let version = if self.validator_set.len() == 1 {
+            PROTOCOL_VERSION
+        } else {
+            self.latest_block()
+                .header
+                .version
+                .clamp(1, PROTOCOL_VERSION)
+        };
+        self.propose_block_at(version, proposer, txs, timestamp_ms, next_validators)
+    }
+
+    /// Proposes at this build's [`PROTOCOL_VERSION`] whatever the parent's
+    /// version: the explicit activation step for a multi-validator chain
+    /// once the whole fleet runs a build that verifies it.
+    pub fn propose_block_upgrading(
+        &self,
+        proposer: &ConsensusSigner,
+        txs: Vec<CommitmentTx>,
+        timestamp_ms: u64,
+        next_validators: Option<Vec<[u8; 32]>>,
+    ) -> Result<CipherChainBlock, ChainError> {
+        self.propose_block_at(
+            PROTOCOL_VERSION,
+            proposer,
+            txs,
+            timestamp_ms,
+            next_validators,
+        )
+    }
+
+    fn propose_block_at(
+        &self,
+        version: u16,
         proposer: &ConsensusSigner,
         txs: Vec<CommitmentTx>,
         timestamp_ms: u64,
@@ -494,7 +540,7 @@ impl SovereignLedger {
         let state_root = prospective_state_tree.root();
 
         let mut header = BlockHeader {
-            version: PROTOCOL_VERSION,
+            version,
             chain_id: self.chain_id.clone(),
             height: latest.header.height + 1,
             prev_block_hash: latest.header.block_hash(),
@@ -760,6 +806,7 @@ impl SovereignLedger {
             .ok_or_else(|| ChainError::InvalidInclusionProof("Indexed tx missing".into()))?;
 
         Ok(AnchorProofResponse {
+            format_version: crate::types::PROOF_FORMAT_VERSION,
             chain_id: self.chain_id.clone(),
             height: record.height,
             block_hash: record.block_hash,
@@ -768,7 +815,7 @@ impl SovereignLedger {
             head_cid: record.head_cid,
             salt: record.salt,
             tx_index: record.tx_index,
-            tx,
+            tx: Some(tx),
             tx_proof,
             header: block.header.clone(),
             validator_signatures_count: block.header.signatures.len(),

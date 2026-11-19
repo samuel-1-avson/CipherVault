@@ -149,12 +149,26 @@ pub(crate) async fn cmd_anchor(
     device_signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
     println!("  Tx Nonce:          {}", tx.nonce);
 
-    let proposed_block = ledger.propose_block(
-        &device_signer,
-        vec![tx],
-        now_ms.saturating_add(10),
-        rotation,
-    )?;
+    // Multi-validator chains keep their parent's block version so validators
+    // on older builds are not stranded mid-upgrade; set
+    // CIPHERVAULT_CHAIN_ACTIVATE_LATEST=1 once the whole fleet is upgraded.
+    // Single-validator chains always use the latest version.
+    let activate_latest = std::env::var("CIPHERVAULT_CHAIN_ACTIVATE_LATEST").as_deref() == Ok("1");
+    let proposed_block = if activate_latest {
+        ledger.propose_block_upgrading(
+            &device_signer,
+            vec![tx],
+            now_ms.saturating_add(10),
+            rotation,
+        )?
+    } else {
+        ledger.propose_block(
+            &device_signer,
+            vec![tx],
+            now_ms.saturating_add(10),
+            rotation,
+        )?
+    };
     let quorum = validator_set.quorum_threshold();
     let sigs = proposed_block.header.signatures.len();
 
@@ -399,6 +413,15 @@ pub(crate) struct VerifiedAnchor {
     pub(crate) block_version: u16,
 }
 
+/// Whether two validator sets have the same members, in any order.
+fn same_members(a: &ciphervault_chain::ValidatorSet, b: &ciphervault_chain::ValidatorSet) -> bool {
+    let mut left = a.validators().to_vec();
+    let mut right = b.validators().to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
+}
+
 fn evidence_field_32(bytes: &[u8], name: &str) -> Result<[u8; 32]> {
     if bytes.len() != 32 {
         bail!(
@@ -497,6 +520,22 @@ pub(crate) fn verify_anchor_evidence(
                 )
             })?;
         }
+    }
+    // The on-disk genesis record and the replayed blocks are local data, so
+    // they cannot be their own trust root. Anchor the walk to the configured
+    // set (validators.json): it must be the genesis set, or the set active at
+    // the proof's height. Either way every key the proof relies on traces to
+    // the configured set, so a self-consistent replacement chain under other
+    // keys (with a rewritten genesis record) is refused.
+    let anchored_at_genesis = same_members(&genesis_set, configured);
+    let anchored_at_proof = light.trusts_exactly(configured.validators());
+    if !anchored_at_genesis && !anchored_at_proof {
+        bail!(
+            "the chain's genesis validator record and the validator set active at block #{} \
+             both differ from the configured validator set (validators.json); refusing to \
+             trust a replaced genesis record",
+            proof.height
+        );
     }
     let trusted_keys = light.trusted_len();
     let result = light
@@ -667,12 +706,24 @@ mod tests {
         let dir = temp_chain_dir(name);
         let signer = ConsensusSigner::generate();
         let set = ValidatorSet::new(vec![signer.public_key()]).unwrap();
+        let evidence = anchor_solo_chain_into(&dir, &signer, private);
+        (dir, set, evidence)
+    }
+
+    /// Writes a fresh solo chain signed by `signer` into `dir` (replacing any
+    /// chain there) with the helper's fixed commitment anchored at height 1.
+    fn anchor_solo_chain_into(
+        dir: &std::path::Path,
+        signer: &ConsensusSigner,
+        private: bool,
+    ) -> CheckpointEvidence {
+        let set = ValidatorSet::new(vec![signer.public_key()]).unwrap();
         let mut ledger = SovereignLedger::create_genesis(
             SOVEREIGN_CHAIN_ID_STR,
-            set.clone(),
-            &[&signer],
+            set,
+            &[signer],
             1_000,
-            Some(dir.clone()),
+            Some(dir.to_path_buf()),
         )
         .unwrap();
         let salt = [0x5au8; 32];
@@ -693,12 +744,10 @@ mod tests {
             }
         };
         signer.sign_tx(&mut tx, SOVEREIGN_CHAIN_ID_STR);
-        let block = ledger
-            .propose_block(&signer, vec![tx], 2_000, None)
-            .unwrap();
+        let block = ledger.propose_block(signer, vec![tx], 2_000, None).unwrap();
         let block_hash = block.header.block_hash();
         ledger.commit_block(block).unwrap();
-        let evidence = CheckpointEvidence::new(
+        CheckpointEvidence::new(
             salt,
             head,
             SOVEREIGN_CHAIN_ID_NUM,
@@ -706,8 +755,35 @@ mod tests {
             block_hash,
             1,
             2,
-        );
-        (dir, set, evidence)
+        )
+    }
+
+    /// Review: a self-consistent replacement chain (other key, rewritten
+    /// genesis record, matching evidence) must not verify against the
+    /// configured validator set.
+    #[test]
+    fn verify_anchor_evidence_refuses_a_replaced_genesis_record() {
+        let (dir, set, evidence) = anchored_solo_chain("replaced-genesis", false);
+        assert!(verify_anchor_evidence(&dir, &evidence, &set).is_ok());
+
+        // An attacker re-creates the chain under their own key in the same
+        // directory (blocks and genesis_validators.json) and rewrites the
+        // evidence to name the forged block.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let attacker = ConsensusSigner::generate();
+        let forged_evidence = anchor_solo_chain_into(&dir, &attacker, false);
+        assert_eq!(forged_evidence.commitment, evidence.commitment);
+        let err = match verify_anchor_evidence(&dir, &forged_evidence, &set) {
+            Ok(_) => panic!("replaced chain must not verify against the configured set"),
+            Err(e) => e,
+        };
+        assert!(format!("{err:#}").contains("validators.json"), "{err:#}");
+
+        // The same chain does verify for a vault that configured that key.
+        let attacker_set = ValidatorSet::new(vec![attacker.public_key()]).unwrap();
+        assert!(verify_anchor_evidence(&dir, &forged_evidence, &attacker_set).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

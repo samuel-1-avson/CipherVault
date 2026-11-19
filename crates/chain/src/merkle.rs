@@ -65,6 +65,42 @@ impl InclusionProof {
         current
     }
 
+    /// Like [`Self::verify`], but the audit path must also be the one for
+    /// position `leaf_index` in a tree of `total_leaves` leaves: one step per
+    /// level, each direction taken from the index bits, and a lone right-edge
+    /// node paired with itself. A path can then no longer be relabelled with
+    /// another position. (`total_leaves` itself is not committed in block
+    /// headers, so it is authenticated only as far as the path agrees with it.)
+    pub fn verify_bound(&self, expected_root: &[u8; 32]) -> bool {
+        if self.leaf_index >= self.total_leaves {
+            return false;
+        }
+        let mut current = self.leaf_hash;
+        let mut idx = self.leaf_index;
+        let mut width = self.total_leaves;
+        let mut steps = self.steps.iter();
+        while width > 1 {
+            let Some(step) = steps.next() else {
+                return false;
+            };
+            let is_right_child = idx % 2 == 1;
+            if step.is_left != is_right_child {
+                return false;
+            }
+            if !is_right_child && idx + 1 == width && step.sibling != current {
+                return false;
+            }
+            current = if step.is_left {
+                hash_nodes(&step.sibling, &current)
+            } else {
+                hash_nodes(&current, &step.sibling)
+            };
+            idx /= 2;
+            width = width.div_ceil(2);
+        }
+        steps.next().is_none() && &current == expected_root
+    }
+
     /// Verifies that this inclusion proof links `self.leaf_hash` to the provided `expected_root`.
     pub fn verify(&self, expected_root: &[u8; 32]) -> bool {
         &self.calculate_root() == expected_root
@@ -271,6 +307,33 @@ mod tests {
             let mut fake_root = root;
             fake_root[31] ^= 0x01;
             assert!(!proof.verify(&fake_root));
+        }
+    }
+
+    #[test]
+    fn test_verify_bound_ties_path_to_position() {
+        for n in 1..=9usize {
+            let leaves: Vec<[u8; 32]> = (0..n).map(|i| hash_leaf(&[i as u8])).collect();
+            let tree = MerkleTree::new(leaves);
+            let root = tree.root();
+            for idx in 0..n {
+                let proof = tree.generate_proof(idx).unwrap();
+                assert!(proof.verify_bound(&root), "n={n} idx={idx}");
+                // The same path relabelled with another position.
+                if n > 1 {
+                    let mut moved = proof.clone();
+                    moved.leaf_index = (idx + 1) % n;
+                    assert!(moved.verify(&root), "plain verify ignores position");
+                    assert!(!moved.verify_bound(&root), "n={n} idx={idx} moved");
+                }
+                // An out-of-range position or a tree size the path disagrees with.
+                let mut out_of_range = proof.clone();
+                out_of_range.leaf_index = n;
+                assert!(!out_of_range.verify_bound(&root));
+                let mut resized = proof.clone();
+                resized.total_leaves = 2 * n + 1;
+                assert!(!resized.verify_bound(&root));
+            }
         }
     }
 }
