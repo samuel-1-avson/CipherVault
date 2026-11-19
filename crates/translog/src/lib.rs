@@ -16,7 +16,12 @@
 //! * [`checkpoint`]: C2SP checkpoints (`c2sp.org/tlog-checkpoint@v1.1.0`)
 //!   and opening a checkpoint signed by a pinned log key.
 //! * [`cosignature`]: Ed25519 `cosignature/v1` witness cosignatures, with
-//!   their signed timestamp (`c2sp.org/tlog-cosignature@v1.1.0`).
+//!   their signed timestamp (`c2sp.org/tlog-cosignature@v1.1.0`), and
+//!   [`WitnessVerifier`], a trusted witness key of either type.
+//! * [`mldsa`]: ML-DSA-44 checkpoint and subtree cosignatures over the
+//!   `subtree/v1` structure (`c2sp.org/tlog-cosignature`, type `0x06`).
+//! * [`witness`]: the `c2sp.org/tlog-witness` protocol: parsing an
+//!   `add-checkpoint` request and checking it against a witness's state.
 //! * [`tiles`]: tile and entry-bundle paths (`c2sp.org/tlog-tiles@v1.0.0`).
 //! * [`entry`]: the CipherVault leaf entry,
 //!   `0x01 || commitment (32 B) || monitor_tag (32 B)`.
@@ -34,19 +39,23 @@ pub mod cosignature;
 mod encoding;
 pub mod entry;
 pub mod hash;
+pub mod mldsa;
 pub mod note;
 pub mod proof;
 pub mod tiles;
+pub mod witness;
 
 pub use checkpoint::{
     open_checkpoint, Checkpoint, CheckpointError, Cosignature, VerifiedCheckpoint,
 };
 pub use compact::{CompactRange, CompactRangeError, NodeId};
 pub use cosignature::{
-    cosignature_timestamp, CosignatureV1Signer, CosignatureV1Verifier, SIG_TYPE_COSIGNATURE_V1,
+    cosignature_timestamp, CosignatureV1Signer, CosignatureV1Verifier, WitnessVerifier,
+    SIG_TYPE_COSIGNATURE_V1,
 };
 pub use entry::{EntryError, LogEntry};
 pub use hash::{empty_root, leaf_hash, node_hash, root_from_leaf_hashes, Hash, HASH_SIZE};
+pub use mldsa::{MlDsa44CosignatureSigner, MlDsa44CosignatureVerifier, SIG_TYPE_MLDSA44};
 pub use note::{
     key_id, Ed25519NoteSigner, Ed25519NoteVerifier, KeyError, Note, NoteError, NoteSignature,
     NoteSigner, NoteVerifier, VerifiedNote, VerifierKey, SIG_TYPE_ED25519,

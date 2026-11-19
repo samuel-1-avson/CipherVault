@@ -12,7 +12,7 @@
 mod common;
 
 use ciphervault_translog::checkpoint::{open_checkpoint, Checkpoint, CheckpointError};
-use ciphervault_translog::cosignature::{CosignatureV1Signer, CosignatureV1Verifier};
+use ciphervault_translog::cosignature::{CosignatureV1Signer, WitnessVerifier};
 use ciphervault_translog::entry::{LogEntry, ENTRY_V1_LEN};
 use ciphervault_translog::note::{Ed25519NoteSigner, Note, NoteError, VerifierKey};
 use ciphervault_translog::proof::{verify_consistency, verify_inclusion};
@@ -288,10 +288,10 @@ fn mutated_signed_checkpoints_never_open_as_something_else() {
     let (mut rng, seed) = rng(0xf006);
     let fixture = fixture();
     let log_key = fixture.log.verifier().unwrap();
-    let witnesses: Vec<CosignatureV1Verifier> = fixture
+    let witnesses: Vec<WitnessVerifier> = fixture
         .witnesses
         .iter()
-        .map(|w| w.verifier().unwrap())
+        .map(|w| w.verifier().unwrap().into())
         .collect();
 
     let opened = open_checkpoint(&fixture.signed, fixture.origin, &log_key, &witnesses).unwrap();
@@ -331,10 +331,10 @@ fn mutated_signed_checkpoints_never_open_as_something_else() {
 fn open_checkpoint_rules() {
     let fixture = fixture();
     let log_key = fixture.log.verifier().unwrap();
-    let witnesses: Vec<CosignatureV1Verifier> = fixture
+    let witnesses: Vec<WitnessVerifier> = fixture
         .witnesses
         .iter()
-        .map(|w| w.verifier().unwrap())
+        .map(|w| w.verifier().unwrap().into())
         .collect();
     let text = String::from_utf8(fixture.signed.clone()).unwrap();
 

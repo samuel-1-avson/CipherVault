@@ -42,18 +42,20 @@ impl OperatorState {
             signing_key,
             security,
             crate::log_store::LogConfig::from_env(),
+            crate::witness_store::WitnessConfig::from_env(),
         )
     }
 
-    /// Full constructor: security policy plus transparency-log config
-    /// (ADR-014 Phase 2). The log origin is fixed at construction
-    /// because it is pinned in the log directory on first open.
+    /// Full constructor: security policy plus transparency-log and witness
+    /// config (ADR-014 Phases 2 and 3). The log origin and witness name
+    /// are fixed at construction because they are pinned on first open.
     pub fn new_with_options(
         operator_id: String,
         data_dir: PathBuf,
         signing_key: SigningKey,
         security: OperatorSecurityConfig,
         log_config: crate::log_store::LogConfig,
+        witness_config: crate::witness_store::WitnessConfig,
     ) -> Self {
         fs::create_dir_all(data_dir.join("objects")).expect("operator data dir must be creatable");
         fs::create_dir_all(data_dir.join("recovery")).expect("operator data dir must be creatable");
@@ -91,8 +93,10 @@ impl OperatorState {
             chain_sync: Mutex::new(ChainSyncSlot::default()),
             transparency_log: None,
             transparency_log_error: None,
+            witness: std::sync::Arc::new(crate::witness_api::WitnessService::disabled()),
         };
         state.open_transparency_log(&log_config);
+        state.open_witness(&witness_config);
         state.load_enrolled_identities();
         state.load_sessions();
         state.load_challenges();

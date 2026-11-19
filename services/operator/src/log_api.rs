@@ -8,6 +8,8 @@
 //! * `GET /v1/log/info` — origin, checkpoint verifier key, tree head.
 //! * `GET /v1/log/checkpoint` — the current signed checkpoint (C2SP
 //!   signed note, `text/plain`). Signed from live state on every call.
+//! * `GET /v1/log/checkpoint/witnessed` — the latest checkpoint with a
+//!   quorum of witness cosignatures (Phase 3), or 404 before the first.
 //! * `GET /v1/log/tile/{*path}` — tlog-tiles hash tiles and entry
 //!   bundles (`tile/<level>/<index>[.p/<width>]`,
 //!   `tile/entries/<index>[.p/<width>]`), served as raw bytes. Tiles are
@@ -138,6 +140,8 @@ pub struct LogInfoResponse {
     pub verifier_key: String,
     pub tree_size: u64,
     pub root: String,
+    /// Size of the latest checkpoint with a witness quorum, if any.
+    pub witnessed_tree_size: Option<u64>,
 }
 
 pub async fn get_log_info(
@@ -149,7 +153,29 @@ pub async fn get_log_info(
         verifier_key: info.verifier_key,
         tree_size: info.tree_size,
         root: hex::encode(info.root),
+        witnessed_tree_size: info.witnessed_tree_size,
     }))
+}
+
+/// The latest checkpoint carrying a quorum of witness cosignatures
+/// (ADR-014 Phase 3). It lags the live checkpoint by one witnessing
+/// round; clients ask for inclusion proofs at its size.
+pub async fn get_log_witnessed_checkpoint(
+    State(state): State<Arc<OperatorState>>,
+) -> Result<Response, (StatusCode, String)> {
+    let witnessed = state
+        .transparency_log()
+        .map_err(log_error_response)?
+        .witnessed_checkpoint()
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "no checkpoint has a witness quorum yet".to_string(),
+        ))?;
+    Ok((
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        witnessed.note,
+    )
+        .into_response())
 }
 
 /// The current signed checkpoint, as a C2SP signed note.

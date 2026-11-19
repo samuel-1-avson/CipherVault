@@ -11,7 +11,8 @@
 //! must have signed.
 //!
 //! This module implements the Ed25519 note signature type (`0x01`). The
-//! `cosignature/v1` type (`0x04`) is in [`crate::cosignature`].
+//! `cosignature/v1` type (`0x04`) is in [`crate::cosignature`] and the
+//! ML-DSA-44 cosignature type (`0x06`) in [`crate::mldsa`].
 
 use std::fmt;
 use std::str::FromStr;
@@ -75,6 +76,13 @@ pub enum NoteError {
     /// A cosignature timestamp is above 2^63 - 1.
     #[error("cosignature timestamp is above 2^63 - 1")]
     TimestampOutOfRange,
+    /// The checkpoint has extension lines, which ML-DSA-44 cosignatures do
+    /// not cover.
+    #[error("ML-DSA-44 cosignatures do not cover checkpoint extension lines")]
+    UncoveredExtensions,
+    /// The signature algorithm failed to produce a signature.
+    #[error("signing failed")]
+    SigningFailed,
 }
 
 /// Why a verifier or signer key could not be built.

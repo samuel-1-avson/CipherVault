@@ -38,6 +38,7 @@ mod methods_log;
 mod methods_peers;
 mod methods_recovery;
 mod methods_sessions;
+mod methods_witness;
 
 #[cfg(test)]
 mod tests;
@@ -170,6 +171,10 @@ pub struct OperatorState {
     // then answer 503 and `transparency_log_error` says why.
     pub(crate) transparency_log: Option<crate::log_store::LogStore>,
     pub(crate) transparency_log_error: Option<String>,
+    // Witness (ADR-014 Phase 3): cosigns other operators' log checkpoints.
+    // Disabled unless configured; a failed open answers 503 on the
+    // witness endpoints only.
+    pub(crate) witness: std::sync::Arc<crate::witness_api::WitnessService>,
 }
 
 /// Pre-consensus admission verdict for one chain envelope. Shared by the

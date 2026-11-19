@@ -37,6 +37,41 @@ any length; this crate only takes 32-byte hashes, so that input is rejected
 before verification. The test pins this as the only such probe and checks
 the 32-byte equivalent separately.
 
+## `torchwood-litewitness-mldsa.txt`
+
+The ML-DSA-44 log key and signed checkpoint from
+[FiloSottile/torchwood](https://github.com/FiloSottile/torchwood)
+`cmd/litewitness/testdata/mldsa.txt` at commit
+`1c05157b1fd2dadcd2bfe0ca67f46926bfcd8cb5`: the verifier key passed to
+`witnessctl add-key`, a blank line, then the checkpoint note from the
+`add-checkpoint` request (an ML-DSA-44 checkpoint cosignature with
+timestamp 0, cosigner name = origin). The rest of that test script,
+including its SSH test key, is not vendored.
+
+Copyright 2009 The Go Authors and 2023 The Torchwood Authors, BSD-3-Clause.
+
+## `transparency-dev-formats-mldsa.txt`
+
+ML-DSA-44 vectors from
+[transparency-dev/formats](https://github.com/transparency-dev/formats)
+`note/note_cosigv1_test.go` at commit
+`c8fd7e880e82895253fd8918b920ad8660706b0d`, one `-- name --` section each:
+
+* `vkey-key-id`: the "native algMLDSA44 verifier" key (key ID only).
+* `private-key`: the published test seed `PRIVATE+KEY+mldsa+6b9c8425+...`
+  from `TestCosigV1_KeyHashValidation`. Deriving the public key from the
+  seed must reproduce key ID `6b9c8425`, which checks FIPS 204 key
+  generation against Go.
+* `witness-vkey`, `checkpoint`: `TestMLDSAVerifyTorchwood`, a witness
+  cosignature with a non-zero timestamp.
+* `subtree-signature`: `TestMLDSAVerifySubtreeTorchwood`, a subtree
+  cosignature for `[8, 16)`.
+
+Copyright Google LLC, Apache License 2.0.
+
+Both ML-DSA files are reproduced unchanged in content. Their SHA-256
+digests (after normalizing CRLF to LF) are checked by `tests/mldsa.rs`.
+
 ## Other vectors
 
 These are small enough to live in `tests/vectors.rs`, each with its source:

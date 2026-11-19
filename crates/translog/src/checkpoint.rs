@@ -11,9 +11,9 @@
 //!
 //! with every line non-empty and ending in a newline. The log signs it with
 //! a plain Ed25519 note signature (type `0x01`); witnesses add Ed25519
-//! `cosignature/v1` cosignatures (type `0x04`).
+//! `cosignature/v1` (type `0x04`) or ML-DSA-44 (type `0x06`) cosignatures.
 
-use crate::cosignature::{cosignature_timestamp, CosignatureV1Verifier};
+use crate::cosignature::{cosignature_timestamp, WitnessVerifier};
 use crate::encoding::{
     b64_decode, b64_encode, is_forbidden_control, is_valid_cosigner_name, parse_decimal_u64,
 };
@@ -217,12 +217,14 @@ impl VerifiedCheckpoint {
 /// Fails unless the note parses, no two signature lines share a key name
 /// and key ID, the log's signature verifies, the text is a valid checkpoint
 /// for `origin`, and every cosignature from a key in `witnesses` verifies.
-/// Signatures from other keys are ignored.
+/// Signatures from other keys are ignored. An ML-DSA-44 cosignature on a
+/// checkpoint with extension lines does not verify, because it would not
+/// cover them.
 pub fn open_checkpoint(
     msg: &[u8],
     origin: &str,
     log_key: &Ed25519NoteVerifier,
-    witnesses: &[CosignatureV1Verifier],
+    witnesses: &[WitnessVerifier],
 ) -> Result<VerifiedCheckpoint, CheckpointError> {
     let note = Note::parse(msg)?;
     let signatures = note.signatures();

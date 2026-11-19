@@ -1,6 +1,6 @@
 # ADR-014: CipherChain becomes a witnessed transparency log
 
-Date: 2026-11-19 · Status: Accepted (Phase 1 log core and Phase 2 operator log implemented; Phases 3–6 pending)
+Date: 2026-11-19 · Status: Accepted (Phases 1–3 implemented: log core, operator log, witness; Phases 4–6 pending). Amended 2026-11-19: witnesses cosign with ML-DSA-44 (see *Amendment*).
 
 ## Context
 
@@ -49,8 +49,9 @@ Certificate Transparency, Sigstore Rekor and the Go checksum database.
    format.
 4. **Witnesses.** Independent witnesses cosign a checkpoint only after
    verifying a consistency proof from the last checkpoint they cosigned.
-   They use the C2SP `tlog-witness` protocol and `cosignature/v1`, which
-   signs a timestamp.
+   They use the C2SP `tlog-witness` protocol and timestamped ML-DSA-44
+   checkpoint cosignatures (amended; originally Ed25519
+   `cosignature/v1`).
 5. **Offline verification.** A client verifies an anchor offline from:
    - an inclusion proof;
    - a checkpoint signed by the log;
@@ -58,6 +59,38 @@ Certificate Transparency, Sigstore Rekor and the Go checksum database.
    all against keys it pinned in advance.
 6. **CipherChain consensus is retired.** Existing CipherChain evidence
    stays verifiable read-only.
+
+### Amendment (2026-11-19): ML-DSA-44 witness cosignatures
+
+The owner chose ML-DSA-44 for witness cosignatures when Phase 3 started.
+`c2sp.org/tlog-cosignature` now says ML-DSA-44 SHOULD be used for new
+deployments, and `c2sp.org/tlog-witness` says witnesses SHOULD use it.
+
+- **What changes.** Witnesses sign the `subtree/v1` `CosignedSubtree`
+  structure with pure FIPS 204 ML-DSA-44 (empty context) and emit
+  checkpoint cosignatures of note signature type `0x06`. Ed25519
+  `cosignature/v1` stays supported for verifying external witnesses.
+- **What does not.** The log's own checkpoint signature stays Ed25519
+  (type `0x01`). Key files, the evidence format and the protocol are
+  unchanged.
+- **Why.** Witness cosignatures are long-lived evidence, so they should
+  survive a future quantum attacker. The ML-DSA-44 message also commits
+  to the cosigner name, which `cosignature/v1` does not.
+- **Costs.** A cosignature is 2,428 bytes instead of 72, and a witness
+  public key is 1,312 bytes instead of 32. ML-DSA-44 cosignatures do not
+  cover checkpoint extension lines, so CipherVault checkpoints must
+  never carry any. The implementation refuses to sign or accept
+  ML-DSA-44 cosignatures on checkpoints that have them.
+- **Audit caveat.** ML-DSA comes from the RustCrypto `ml-dsa` crate
+  (0.1.2), which has not been independently audited. Its signatures and
+  key derivation match the Go implementations on vendored
+  cross-implementation vectors (torchwood litewitness and
+  transparency-dev/formats). Phase 6's external review must cover it.
+  Swapping implementations later does not change the wire format.
+- **Log signature.** Keeping the log signature Ed25519 means a quantum
+  attacker could forge the log's own signature. Forging a split view
+  would still need the witness quorum. Moving the log key to ML-DSA-44
+  is possible later as a new log with a new origin.
 
 ## Design
 
@@ -67,7 +100,7 @@ Certificate Transparency, Sigstore Rekor and the Go checksum database.
 |---|---|
 | Commitment C is in log L at index i of a tree of size n | Inclusion proof (RFC 9162) to the root in a checkpoint signed by L's pinned key. Size and index are bound by the proof, which also fixes CC-18. |
 | L can never show a version of history without C | Witnesses cosign only checkpoints consistent with every one they cosigned before. A split view requires the witness quorum to collude. |
-| C existed by time T | T is the latest timestamp among the policy quorum's `cosignature/v1` signatures, so backdating needs the whole quorum to lie. |
+| C existed by time T | T is the latest timestamp among the policy quorum's checkpoint cosignatures, so backdating needs the whole quorum to lie. |
 | The vault owner authorized the anchor | Not a log property. Submission is authenticated by device session; the commitment's preimage stays local. |
 
 **Not provided:**
@@ -110,8 +143,13 @@ The leaf is `0x01 ‖ commitment (32 B) ‖ monitor_tag (32 B)`:
 - **Witness protocol:** C2SP `tlog-witness`. The log sends the new
   checkpoint plus a consistency proof from the witness's last-seen size.
   The witness verifies it, stores the new checkpoint, and returns a
-  `cosignature/v1` (Ed25519 over a timestamp and the checkpoint body).
+  timestamped ML-DSA-44 checkpoint cosignature (see *Amendment*).
   The log publishes the checkpoint with its collected cosignatures.
+  (Phase 3 as built: the log pushes on a timer, learns a witness's size
+  from `409` answers, verifies every cosignature against the configured
+  witness key, and serves the newest checkpoint with a quorum at
+  `GET /v1/log/checkpoint/witnessed`. See
+  [`../TRANSPARENCY_LOG.md`](../TRANSPARENCY_LOG.md).)
 - **Default topology:** every operator also witnesses every other
   operator's log. A client policy may add external C2SP-compatible
   witnesses, and requires cosignatures from witnesses run by someone
@@ -239,7 +277,7 @@ run in parallel once Phase 1 lands.
 |---|---|---|---|
 | **1. Log core** ✅ | New crate `crates/translog`: RFC 9162 hashing, inclusion and consistency proofs (generate and verify), compact-range appends, C2SP checkpoint / signed-note / `cosignature/v1` encode and verify, tile paths | Passes RFC 9162 and C2SP test vectors; property tests show random trees verify every inclusion and consistency proof and reject mutated ones; fuzzing of parsers and proof verifiers | M |
 | **2. Operator log** ✅ | Log storage (tiles plus entry bundles) and sequencer; `POST /v1/log/add` with session auth and per-device rate limits; checkpoint signing; tile and checkpoint `GET` endpoints; crash-safe writes | A 3-operator test fleet accepts submissions, serves proofs that verify with the Phase 1 client, survives crash and restart with no lost or reordered entries, and rejects unauthenticated or over-limit submissions | L |
-| **3. Witness** | `tlog-witness` server mode in the operator (and a standalone binary); per-log state; logs push checkpoints to witnesses and collect cosignatures | Cross-witnessing works across the 3 operators; a witness refuses an inconsistent checkpoint and keeps the evidence pair; a published checkpoint carries a quorum of cosignatures | M |
+| **3. Witness** ✅ | `tlog-witness` server mode in the operator (and a standalone binary); per-log state; logs push checkpoints to witnesses and collect cosignatures | Cross-witnessing works across the 3 operators; a witness refuses an inconsistent checkpoint and keeps the evidence pair; a published checkpoint carries a quorum of cosignatures | M |
 | **4. CLI** | Policy file and `ciphervault log policy` commands; `anchor` to N logs; evidence v2; `verify-anchor` for both v2 and legacy evidence; `doctor` checks; `anchor --migrate` | End-to-end: anchor on the test fleet, verify offline, tamper with any field and fail, take one log down and still anchor with 2 of 3, and legacy evidence still verifies | M |
 | **5. Monitoring** | Persistent per-log consistency tracking in the CLI; checkpoint gossip in `doctor`; vault monitor tags and recovery-time scanning; agent-log checkpoints moved into the log | A forked log is detected by client and witness and reported; a clean-machine recovery finds the newest anchored head from tags alone | M |
 | **6. Retire CipherChain** | Remove the chain-sync hub, `/v1/chain/publish`, chain gossip and the genesis ceremony; keep the read-only verifier; optional PIV/TPM log and witness keys; optional RFC 3161 timestamps on checkpoints; update docs and the audit pack (C9) | No consensus code ships; docs and the audit pack describe the log; the log protocol goes to external review | M |
@@ -252,6 +290,10 @@ Phase 4, and higher after an external review.
 
 - **Spec drift.** C2SP specs are stable but versioned. Pin versions,
   vendor their test vectors, and keep the formats behind one module.
+  The ML-DSA-44 cosignature and `tlog-witness` were implemented against
+  the editor's copies of 2026-11-19, which are newer than the pinned
+  v1.1.0 releases of the other formats.
+- **Unaudited ML-DSA.** See the amendment's audit caveat.
 - **Witness independence.** With only the three founding operators
   cross-witnessing, "independent" means "a different operator". The
   policy should allow external witnesses from day one.
