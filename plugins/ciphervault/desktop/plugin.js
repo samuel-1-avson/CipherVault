@@ -14,6 +14,11 @@ import { useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'ciphervault'
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function readyNoteForKey(key) {
+  return `Configured ${key} in CipherVault — you can continue.`
+}
 
 function useVaultStatus(ctx) {
   const cwd = useValue(host.state.cwd)
@@ -58,18 +63,32 @@ function useEnvHealth(ctx, enabled) {
   })
 }
 
-function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
+function SecretEntryDrawer({
+  ctx,
+  cwd,
+  q,
+  pendingQ,
+  healthQ,
+  open,
+  setOpen,
+  keyName,
+  setKeyName,
+  envFile,
+  setEnvFile,
+  seal,
+  setSeal,
+  selectedPrompt,
+  setSelectedPrompt,
+  lastSavedKey,
+  setLastSavedKey,
+  onCopyReadyNote
+}) {
   const t = usePluginI18n(ID)
-  const pendingKeys = Array.isArray(pendingQ.data?.keys) ? pendingQ.data.keys : []
-  const [open, setOpen] = useState(false)
-  const [keyName, setKeyName] = useState('')
+  const pendingKeys = Array.isArray(pendingQ?.data?.keys) ? pendingQ.data.keys : []
   const [secretValue, setSecretValue] = useState('')
-  const [envFile, setEnvFile] = useState('.env')
-  const [seal, setSeal] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [selectedPrompt, setSelectedPrompt] = useState(null)
 
-  const isExpanded = open || pendingKeys.length > 0
+  const isExpanded = open === null ? pendingKeys.length > 0 : Boolean(open)
   const envChoices = ['.env', '.env.local', '.env.development', '.env.production']
   if (envFile && !envChoices.includes(envFile)) {
     envChoices.push(envFile)
@@ -81,14 +100,16 @@ function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
     setSelectedPrompt(item)
     setKeyName(item.name || '')
     if (item.env_file) setEnvFile(item.env_file)
+    else if (pendingQ?.data?.env_file) setEnvFile(pendingQ.data.env_file)
     if (typeof item.seal === 'boolean') setSeal(item.seal)
+    else if (typeof pendingQ?.data?.seal === 'boolean') setSeal(pendingQ.data.seal)
   }
 
   const submitSecret = async (e) => {
     if (e && e.preventDefault) e.preventDefault()
     if (saving) return
     const trimmedKey = String(keyName || '').trim()
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmedKey)) {
+    if (!ENV_KEY_RE.test(trimmedKey)) {
       host.notify({ kind: 'error', message: t('secretInvalidKey') })
       return
     }
@@ -112,7 +133,12 @@ function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
         setSecretValue('')
         setKeyName('')
         setSelectedPrompt(null)
-        await Promise.all([q.refetch(), pendingQ.refetch()])
+        setLastSavedKey(trimmedKey)
+        await Promise.all([
+          q?.refetch ? q.refetch() : null,
+          pendingQ?.refetch ? pendingQ.refetch() : null,
+          healthQ?.refetch ? healthQ.refetch() : null
+        ])
         host.notify({ kind: 'success', message: t('secretSavedOk', trimmedKey) })
       } else {
         host.notify({ kind: 'error', message: t('secretSavedErr', res?.error || 'unknown') })
@@ -154,12 +180,42 @@ function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
           })
         ]
       }),
+      lastSavedKey
+        ? jsxs('div', {
+            className: 'mt-1.5 flex items-center justify-between gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[0.6875rem] text-emerald-300',
+            children: [
+              jsx('span', {
+                className: 'min-w-0 flex-1 truncate',
+                title: readyNoteForKey(lastSavedKey),
+                children: t('readyNoteBanner', lastSavedKey)
+              }),
+              jsxs('div', {
+                className: 'flex shrink-0 items-center gap-1',
+                children: [
+                  jsx('button', {
+                    type: 'button',
+                    className: 'rounded border border-emerald-400/50 px-1.5 py-0.5 text-[0.625rem] font-medium text-emerald-200 hover:bg-emerald-500/20',
+                    onClick: () => { haptic('tap'); onCopyReadyNote(lastSavedKey) },
+                    children: t('bCopyReadyNote')
+                  }),
+                  jsx('button', {
+                    type: 'button',
+                    'aria-label': t('dismiss'),
+                    className: 'px-1 text-[0.6875rem] text-emerald-300/80 hover:text-emerald-100',
+                    onClick: () => { haptic('tap'); setLastSavedKey('') },
+                    children: '×'
+                  })
+                ]
+              })
+            ]
+          })
+        : null,
       pendingKeys.length > 0
         ? jsxs('div', {
             className: 'mt-1.5 flex flex-wrap gap-1',
             children: [
               jsx('span', { className: 'w-full text-[0.6875rem] text-(--ui-text-tertiary)', children: t('pendingHint') }),
-              ...pendingKeys.map(item =>
+              ...pendingKeys.map((item, idx) =>
                 jsx('button', {
                   type: 'button',
                   title: item.reason || item.name,
@@ -171,7 +227,7 @@ function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
                   ),
                   onClick: () => applyPromptChip(item),
                   children: item.expected_prefix ? `${item.name} (${item.expected_prefix}…)` : item.name
-                }, item.name)
+                }, `pending-${item.name}-${idx}`)
               )
             ]
           })
@@ -242,7 +298,7 @@ function SecretEntryDrawer({ ctx, cwd, q, pendingQ }) {
   })
 }
 
-function StatusBody(ctx) {
+function StatusBody({ ctx }) {
   const t = usePluginI18n(ID)
   const cwd = useValue(host.state.cwd)
   const q = useVaultStatus(ctx)
@@ -251,15 +307,96 @@ function StatusBody(ctx) {
   const pendingQ = usePendingPrompts(ctx, vaultReady)
   const healthQ = useEnvHealth(ctx, vaultReady)
   const [sealing, setSealing] = useState(false)
-  const copy = (text, label) => {
+  const [generatingKey, setGeneratingKey] = useState(null)
+  const [drawerOpen, setDrawerOpen] = useState(null)
+  const [drawerKeyName, setDrawerKeyName] = useState('')
+  const [drawerEnvFile, setDrawerEnvFile] = useState('.env')
+  const [drawerSeal, setDrawerSeal] = useState(true)
+  const [selectedPrompt, setSelectedPrompt] = useState(null)
+  const [lastSavedKey, setLastSavedKey] = useState('')
+
+  const copyText = (text, onSuccess, onFallback) => {
     try {
-      const ok = host?.clipboard?.writeText ? host.clipboard.writeText(text) : null
-      if (ok && ok.then) ok.then(() => host.notify({ kind: 'success', message: t('copied', label) }))
-      else host.notify({ kind: 'info', message: t('ask', label) })
+      const res = host?.clipboard?.writeText ? host.clipboard.writeText(text) : null
+      if (res && typeof res.then === 'function') {
+        res.then(onSuccess, onFallback)
+      } else if (res === true) {
+        onSuccess()
+      } else {
+        onFallback()
+      }
     } catch (e) {
-      host.notify({ kind: 'info', message: t('ask', label) })
+      onFallback()
     }
   }
+  const copy = (text, label) => copyText(
+    text,
+    () => host.notify({ kind: 'success', message: t('copied', label) }),
+    () => host.notify({ kind: 'info', message: t('ask', label) })
+  )
+  const copyReadyNote = (key) => {
+    const safeKey = String(key || '').trim()
+    if (!ENV_KEY_RE.test(safeKey)) return
+    const note = readyNoteForKey(safeKey)
+    copyText(
+      note,
+      () => host.notify({ kind: 'success', message: t('readyNoteCopied', safeKey) }),
+      () => host.notify({ kind: 'info', message: t('readyNoteAsk', note) })
+    )
+  }
+
+  const openDrawerForKey = (key) => {
+    const pendingKeys = Array.isArray(pendingQ?.data?.keys) ? pendingQ.data.keys : []
+    const matched = pendingKeys.find(item => item && item.name === key) || null
+    setDrawerOpen(true)
+    setDrawerKeyName(String(key || ''))
+    setSelectedPrompt(matched)
+    if (matched?.env_file) setDrawerEnvFile(matched.env_file)
+    else if (pendingQ?.data?.env_file) setDrawerEnvFile(pendingQ.data.env_file)
+    if (typeof matched?.seal === 'boolean') setDrawerSeal(matched.seal)
+    else if (typeof pendingQ?.data?.seal === 'boolean') setDrawerSeal(pendingQ.data.seal)
+  }
+
+  const generateSecret = async (key) => {
+    if (generatingKey) return
+    const trimmedKey = String(key || '').trim()
+    if (!ENV_KEY_RE.test(trimmedKey)) {
+      host.notify({ kind: 'error', message: t('secretInvalidKey') })
+      return
+    }
+    setGeneratingKey(trimmedKey)
+    try {
+      const res = await ctx.rest('/generate?cwd=' + encodeURIComponent(String(cwd || '')), {
+        method: 'POST',
+        body: JSON.stringify({
+          name: trimmedKey,
+          format: 'base64url',
+          bytes: 32,
+          env_file: drawerEnvFile || '.env',
+          seal: Boolean(drawerSeal),
+          overwrite: false
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+      if (res && res.success) {
+        const savedName = ENV_KEY_RE.test(String(res.name || '')) ? String(res.name) : trimmedKey
+        setLastSavedKey(savedName)
+        await Promise.all([
+          q?.refetch ? q.refetch() : null,
+          pendingQ?.refetch ? pendingQ.refetch() : null,
+          healthQ?.refetch ? healthQ.refetch() : null
+        ])
+        host.notify({ kind: 'success', message: t('secretGenOk', savedName, res.sha256_prefix || '') })
+      } else {
+        host.notify({ kind: 'error', message: t('secretGenErr', res?.error || 'unknown') })
+      }
+    } catch (err) {
+      host.notify({ kind: 'error', message: t('secretGenErr', String(err?.message || err || 'unknown')) })
+    } finally {
+      setGeneratingKey(null)
+    }
+  }
+
   const sealNow = async () => {
     if (sealing) return
     setSealing(true)
@@ -327,9 +464,16 @@ function StatusBody(ctx) {
       ]
     }, label)
     const paths = Array.isArray(d.tracked_paths) ? d.tracked_paths : []
+    const rawProfiles = Array.isArray(d.policy_profiles) ? d.policy_profiles : []
+    const policyProfiles = rawProfiles
+      .map(item => (typeof item === 'string' ? { name: item } : item))
+      .filter(item => item && typeof item === 'object' && item.name)
+    const policyError = typeof d.policy_error === 'string' && d.policy_error ? d.policy_error : ''
     const sealedLabel = d.working_tree_sealed ? 'sealed (0B on disk)' : 'plaintext on disk'
     const auditEntries = Array.isArray(auditQ.data?.entries) ? auditQ.data.entries : []
     const auditVerified = Boolean(auditQ.data?.success && auditQ.data?.verification?.ok)
+    const missingKeys = Array.isArray(healthQ.data?.missing_in_vault) ? healthQ.data.missing_in_vault : []
+    const anomalies = Array.isArray(healthQ.data?.value_anomalies) ? healthQ.data.value_anomalies : []
     state = jsxs('div', {
       children: [
         jsxs('div', {
@@ -341,7 +485,89 @@ function StatusBody(ctx) {
             row(t('fFiles'), d.tracked_files ?? paths.length),
             row(t('fOperators'), d.operators ?? 0),
             row(t('fEpoch'), d.current_epoch ?? '—'),
-            row(t('fCli'), d.cli_version || '—')
+            row(t('fCli'), d.cli_version || '—'),
+            row(
+              t('fProfiles'),
+              policyError
+                ? t('policyErrShort')
+                : (policyProfiles.length ? t('profilesCount', String(policyProfiles.length)) : t('none'))
+            ),
+            policyError
+              ? jsx('div', {
+                  className: 'mt-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-1 text-[0.6875rem] text-amber-300',
+                  children: t('policyErrMsg', policyError)
+                })
+              : null,
+            policyProfiles.length > 0
+              ? jsxs('div', {
+                  className: 'mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5',
+                  children: [
+                    jsx('div', {
+                      className: 'text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)',
+                      children: t('profilesTitle')
+                    }),
+                    jsx('div', {
+                      className: 'mt-1 flex flex-col gap-1',
+                      children: policyProfiles.map((p, idx) => {
+                        const keyCount = typeof p.allow_keys_count === 'number'
+                          ? p.allow_keys_count
+                          : (Array.isArray(p.allow_keys) ? p.allow_keys.length : 0)
+                        const modeLabel = p.proxy
+                          ? 'proxy'
+                          : p.no_net === true
+                            ? 'no-net'
+                            : p.no_net === false
+                              ? 'net'
+                              : 'default'
+                        const modeClass = p.proxy
+                          ? 'border-sky-400/40 bg-sky-500/10 text-sky-300'
+                          : p.no_net === true
+                            ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300'
+                            : 'border-amber-400/40 bg-amber-500/10 text-amber-300'
+                        const tipParts = [p.description || '']
+                        if (Array.isArray(p.commands) && p.commands.length) tipParts.push(`cmds: ${p.commands.join(', ')}`)
+                        if (Array.isArray(p.allow_keys) && p.allow_keys.length) tipParts.push(`keys: ${p.allow_keys.join(', ')}`)
+                        if (Array.isArray(p.require_keys) && p.require_keys.length) tipParts.push(`req: ${p.require_keys.join(', ')}`)
+                        if (Array.isArray(p.upstreams) && p.upstreams.length) tipParts.push(`upstreams: ${p.upstreams.join(', ')}`)
+                        return jsxs('div', {
+                          title: tipParts.filter(Boolean).join(' • ') || p.name,
+                          className: 'flex items-center justify-between gap-1.5 rounded border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.6875rem]',
+                          children: [
+                            jsxs('div', {
+                              className: 'min-w-0 flex-1',
+                              children: [
+                                jsx('div', {
+                                  className: 'truncate font-medium text-(--ui-text-primary)',
+                                  children: p.name
+                                }),
+                                p.description
+                                  ? jsx('div', {
+                                      className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)',
+                                      children: p.description
+                                    })
+                                  : null
+                              ]
+                            }),
+                            jsxs('div', {
+                              className: 'flex shrink-0 items-center gap-1',
+                              children: [
+                                jsx('span', {
+                                  className: cn('rounded border px-1 py-0.5 text-[0.625rem] font-medium', modeClass),
+                                  children: modeLabel
+                                }),
+                                jsx('span', {
+                                  className: 'text-[0.625rem] text-(--ui-text-tertiary)',
+                                  children: t('profileKeys', String(keyCount))
+                                })
+                              ]
+                            })
+                          ]
+                        }, `profile-${p.name}-${idx}`)
+                      })
+                    })
+                  ]
+                })
+              : null
           ]
         }),
         !d.working_tree_sealed
@@ -350,7 +576,26 @@ function StatusBody(ctx) {
               children: btn(sealing ? t('sealing') : t('bSeal'), sealNow, sealing)
             })
           : null,
-        jsx(SecretEntryDrawer, { ctx, cwd, q, pendingQ }),
+        jsx(SecretEntryDrawer, {
+          ctx,
+          cwd,
+          q,
+          pendingQ,
+          healthQ,
+          open: drawerOpen,
+          setOpen: setDrawerOpen,
+          keyName: drawerKeyName,
+          setKeyName: setDrawerKeyName,
+          envFile: drawerEnvFile,
+          setEnvFile: setDrawerEnvFile,
+          seal: drawerSeal,
+          setSeal: setDrawerSeal,
+          selectedPrompt,
+          setSelectedPrompt,
+          lastSavedKey,
+          setLastSavedKey,
+          onCopyReadyNote: copyReadyNote
+        }),
         healthQ.data && healthQ.data.success
           ? jsxs('div', {
               className: 'mt-2 rounded-lg border border-(--ui-stroke-secondary) p-2',
@@ -358,29 +603,70 @@ function StatusBody(ctx) {
                 jsxs('div', {
                   className: 'flex items-center justify-between gap-2',
                   children: [
-                    jsx('span', { className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)', children: 'Env Health' }),
+                    jsx('span', { className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)', children: t('envHealthTitle') }),
                     jsx('span', {
                       className: cn(
                         'text-[0.6875rem] font-medium',
-                        (healthQ.data.missing_in_vault?.length || 0) === 0 && (healthQ.data.value_anomalies?.length || 0) === 0
+                        missingKeys.length === 0 && anomalies.length === 0
                           ? 'text-emerald-400'
                           : 'text-amber-400'
                       ),
                       children:
-                        (healthQ.data.missing_in_vault?.length || 0) === 0 && (healthQ.data.value_anomalies?.length || 0) === 0
-                          ? 'healthy'
-                          : `${healthQ.data.missing_in_vault?.length || 0} missing · ${healthQ.data.value_anomalies?.length || 0} lint`
+                        missingKeys.length === 0 && anomalies.length === 0
+                          ? t('envHealthy')
+                          : `${missingKeys.length} missing · ${anomalies.length} lint`
                     })
                   ]
                 }),
-                ...(healthQ.data.missing_in_vault || []).slice(0, 6).map(k => jsx('div', {
-                  className: 'truncate py-0.5 text-[0.6875rem] text-amber-300',
-                  children: `missing: ${k}`
-                }, `m-${k}`)),
-                ...(healthQ.data.value_anomalies || []).slice(0, 4).map(a => jsx('div', {
+                ...missingKeys.slice(0, 6).map(k => {
+                  const isGen = generatingKey === k
+                  const anyGen = Boolean(generatingKey)
+                  return jsxs('div', {
+                    className: 'flex items-center justify-between gap-1.5 py-0.5',
+                    children: [
+                      jsx('span', {
+                        className: 'min-w-0 flex-1 truncate text-[0.6875rem] text-amber-300',
+                        title: k,
+                        children: `missing: ${k}`
+                      }),
+                      jsxs('div', {
+                        className: 'flex shrink-0 items-center gap-1',
+                        children: [
+                          jsx('button', {
+                            type: 'button',
+                            disabled: isGen,
+                            className: cn(
+                              'rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.625rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+                              isGen && 'opacity-50 cursor-not-allowed'
+                            ),
+                            onClick: () => { haptic('tap'); openDrawerForKey(k) },
+                            children: t('bFill')
+                          }),
+                          jsx('button', {
+                            type: 'button',
+                            disabled: anyGen,
+                            className: cn(
+                              'rounded border border-amber-400/50 px-1.5 py-0.5 text-[0.625rem] font-medium text-amber-200 hover:bg-amber-500/20',
+                              anyGen && 'opacity-50 cursor-not-allowed'
+                            ),
+                            onClick: () => { haptic('tap'); generateSecret(k) },
+                            children: isGen ? t('bGenerating') : t('bGenerate')
+                          })
+                        ]
+                      })
+                    ]
+                  }, `m-${k}`)
+                }),
+                missingKeys.length > 6
+                  ? jsx('div', {
+                      className: 'text-[0.6875rem] text-(--ui-text-quaternary)',
+                      children: t('more', String(missingKeys.length - 6))
+                    })
+                  : null,
+                ...anomalies.slice(0, 4).map((a, idx) => jsx('div', {
                   className: 'truncate py-0.5 text-[0.6875rem] text-amber-300',
                   children: `${a.key}: ${a.issue}`
-                }, `a-${a.key}-${a.issue}`))
+                }, `a-${a.file || ''}-${a.key}-${a.issue}-${idx}`))
               ]
             })
           : null,
@@ -412,10 +698,12 @@ function StatusBody(ctx) {
                     })
                   ]
                 }),
-                ...auditEntries.slice(0, 5).map(e => jsx('div', {
+                ...auditEntries.slice(0, 5).map((e, idx) => jsx('div', {
                   className: 'truncate py-0.5 text-[0.6875rem] text-(--ui-text-secondary)',
                   children: `${e.tool || 'tool'} • ${e.decision || ''}${e.path ? ' (' + e.path + ')' : ''}`
-                }, String(e.id || e.entry_hash || Math.random())))
+                }, e.id != null
+                  ? `audit-${e.id}`
+                  : (e.entry_hash ? `audit-${e.entry_hash}` : `audit-${e.timestamp || ''}-${e.tool || 'tool'}-${e.decision || ''}-${idx}`)))
               ]
             })
           : null
@@ -439,14 +727,22 @@ function StatusBody(ctx) {
       jsx('button', {
         type: 'button',
         className: 'self-start text-[0.6875rem] text-(--ui-text-tertiary) underline hover:text-foreground',
-        onClick: () => { haptic('tap'); q.refetch() },
+        onClick: () => {
+          haptic('tap')
+          q.refetch()
+          if (vaultReady) {
+            if (auditQ?.refetch) auditQ.refetch()
+            if (pendingQ?.refetch) pendingQ.refetch()
+            if (healthQ?.refetch) healthQ.refetch()
+          }
+        },
         children: t('refresh')
       })
     ]
   })
 }
 
-function VaultPane(ctx) {
+function VaultPane({ ctx }) {
   const t = usePluginI18n(ID)
   const cwd = useValue(host.state.cwd)
   return jsxs('div', {
@@ -463,7 +759,7 @@ function VaultPane(ctx) {
   })
 }
 
-function VaultPage(ctx) {
+function VaultPage({ ctx }) {
   const t = usePluginI18n(ID)
   return jsxs('main', {
     className: 'h-full overflow-auto p-5 text-sm text-(--ui-text-primary)',
@@ -475,7 +771,7 @@ function VaultPage(ctx) {
   })
 }
 
-function VaultChip(ctx) {
+function VaultChip({ ctx }) {
   const t = usePluginI18n(ID)
   const q = useVaultStatus(ctx)
   const ok = q.data && q.data.binary !== 'missing' && q.data.vault
@@ -518,7 +814,12 @@ export default {
         noBinarySub: 'Set CIPHERVAULT_BIN to a compatible CLI (source build), then run `hermes ciphervault doctor`.',
         noVault: 'No vault in this workspace',
         noVaultSub: 'Run `ciphervault init` here, then `ciphervault track .env` and `ciphervault push --local`.',
-        fVault: 'Vault', fHead: 'Head', fSealed: 'Working tree', fFiles: 'Tracked files', fOperators: 'Operators', fEpoch: 'Epoch', fCli: 'CLI',
+        fVault: 'Vault', fHead: 'Head', fSealed: 'Working tree', fFiles: 'Tracked files', fOperators: 'Operators', fEpoch: 'Epoch', fCli: 'CLI', fProfiles: 'Policy profiles',
+        profilesTitle: 'Active policy profiles',
+        profilesCount: n => `${n} active`,
+        profileKeys: n => `${n} keys`,
+        policyErrShort: 'invalid policy.toml',
+        policyErrMsg: e => `Policy parse error: ${e}`,
         bSeal: 'Seal & shred .env',
         sealing: 'Sealing…',
         sealedOk: 'Working tree sealed — plaintext .env shredded.',
@@ -537,6 +838,18 @@ export default {
         secretEmptyVal: 'Secret value cannot be empty.',
         secretSavedOk: k => `${k} encrypted & saved to vault.`,
         secretSavedErr: e => `Save failed: ${e}`,
+        secretGenOk: (k, h) => h ? `${k} generated & saved to vault (sha256: ${h}).` : `${k} generated & saved to vault.`,
+        secretGenErr: e => `Generate failed: ${e}`,
+        envHealthTitle: 'Env Health',
+        envHealthy: 'healthy',
+        bFill: 'Fill',
+        bGenerate: 'Generate',
+        bGenerating: 'Generating…',
+        readyNoteBanner: k => `Saved ${k} in vault.`,
+        bCopyReadyNote: 'Copy ready note',
+        readyNoteCopied: k => `Ready note copied for ${k} — paste it in chat to continue.`,
+        readyNoteAsk: note => `Tell Hermes: ${note}`,
+        dismiss: 'Dismiss',
         auditTitle: 'Recent audit trail',
         auditVerified: 'Signature verified',
         auditFailed: 'Verification failed',

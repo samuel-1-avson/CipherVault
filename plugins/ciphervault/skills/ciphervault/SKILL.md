@@ -15,33 +15,47 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
    afterwards with `ciphervault_status`. Same for any command whose
    stdout *is* a secret (`export-env` is for Hermes' secret source,
    never for chat).
-3. **The guard hooks are load-bearing.** `pre_tool_call` blocks secret
-   reads and git add/commit/push with violations; `transform_tool_result`
-   scrubs other tools' results. If a call is blocked, do not route
-   around it — fix the cause (unstage, .gitignore, `ciphervault track`)
-   and retry.
-4. **Prefer, in order:** `ciphervault_run` (RAM-only; every call asks
-   the user for approval first — that prompt is expected, never ask
-   the user to disable it; pass `profile` when `.ciphervault/policy.toml`
-   defines workspace execution profiles) to execute with secrets;
-   `ciphervault_env_doctor` to diagnose missing keys, unused keys,
-   `.env.example` drift, and malformed `.env` values without reading
-   plaintext secrets;
-   `ciphervault_secret_generate` to generate cryptographically strong
-   random secrets directly into the vault without exposing values to chat;
-   `ciphervault_secret_prompt` to queue a secure secret input prompt in
-   the CipherVault desktop pane (or interactive TTY) when human-supplied
-   API keys or credentials are missing — never ask the user to paste
-   secrets into chat;
-   `ciphervault_diff` to inspect masked key-level diffs between snapshots
-   or against the working tree (never passes `--reveal`);
-   `ciphervault_redact` to mask text you must quote;
-   `ciphervault_status` for names/paths and sealed status;
-   `ciphervault_scan` before any git operation;
-   `ciphervault_push` after secret edits (honors `[vault] sealed_mode = true`
-   in `.ciphervault/policy.toml` by defaulting `shred_working_copy=true`);
-   `ciphervault_recovery_drill` to prove recovery (it hashes, then
-   deletes the plaintext — trust the manifest, don't re-read files).
+3. **The lifecycle & guard hooks are load-bearing.**
+   - `on_session_start` resets per-session posture caches and binds
+     `session_id` into audit receipts.
+   - `pre_llm_call` injects a compact cached 1-line workspace posture
+     summary (seal state, policy profiles, pending secret prompts) on
+     turn 1 and whenever vault posture changes.
+   - `pre_tool_call` blocks secret-file reads/searches/writes (including
+     `search_files` and `browser_*` tools), secret-dumping CLI commands,
+     and `git` add/commit/push (even with global flags like `-C`) while
+     sprawl violations exist or `hook check` fails inside a vault.
+   - `transform_tool_result` scrubs other tools' results (fail-closed in
+     vault workspaces).
+   If a call is blocked, do not route around it — fix the cause (unstage,
+   `.gitignore`, `ciphervault track`) and retry.
+4. **Prefer, in order:**
+   - `ciphervault_run` (RAM-only; every call asks the user for approval
+     first — that prompt is expected, never ask the user to disable it;
+     pass `profile` when `.ciphervault/policy.toml` defines workspace
+     execution profiles; custom proxy upstreams live in
+     `.ciphervault/policy.toml` only, never as an agent parameter);
+   - `ciphervault_env_doctor` to diagnose missing keys, unused keys,
+     `.env.example` drift, and malformed `.env` values without reading
+     plaintext secrets;
+   - `ciphervault_secret_generate` to generate cryptographically strong
+     random secrets directly inside the vault (`ciphervault vault generate`,
+     preserving all previously sealed keys with zero plaintext written by
+     Python); defaults to `overwrite=false` and requires explicit user
+     approval when `overwrite=true`;
+   - `ciphervault_secret_prompt` to queue a secure secret input prompt in
+     the CipherVault desktop pane (or interactive TTY via `vault set --stdin`)
+     when human-supplied API keys or credentials are missing — never ask the
+     user to paste secrets into chat;
+   - `ciphervault_diff` to inspect masked key-level diffs between snapshots
+     or against the working tree (never passes `--reveal`);
+   - `ciphervault_redact` to mask text you must quote;
+   - `ciphervault_status` for names/paths and sealed status;
+   - `ciphervault_scan` before any git operation;
+   - `ciphervault_push` after secret edits (honors `[vault] sealed_mode = true`
+     in `.ciphervault/policy.toml` by defaulting `shred_working_copy=true`);
+   - `ciphervault_recovery_drill` to prove recovery (it hashes, then
+     deletes the plaintext — trust the manifest, don't re-read files).
 5. **Redacted means redacted.** Output marked `[REDACTED]` was a real
    value. Never try to reconstruct, guess, or ask for it.
 6. **Binary missing or withheld output?** Say so and point to
@@ -50,11 +64,13 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
    Never invent tool output, scan results, or hashes.
 7. **The audit log is the receipt.** Blocks, approvals, scrubs, generated
    secrets, and your writes are hash-chained and device-signed in the
-   vault. When a user asks what you touched, answer from `ciphervault_audit`
-   — and note its verification result; don't summarize from memory.
+   vault (enriched with `session_id`). When a user asks what you touched,
+   answer from `ciphervault_audit` — and note its verification result;
+   don't summarize from memory.
 8. **`.ciphervault/policy.toml` is human-owned.** Never attempt to edit
-   `policy.toml` or override its `allow_keys`, `no_net`, `proxy`, or
-   pinned `upstreams` boundaries.
+   `policy.toml` or override its `allow_keys` (supports `*` glob patterns
+   such as `TEST_*` as an upper bound), `require_keys`, `no_net`, `proxy`,
+   `require_explicit_approval`, or pinned `upstreams` boundaries.
 
 ## Happy path
 

@@ -1,17 +1,21 @@
 """CipherVault dashboard backend, mounted at /api/plugins/ciphervault/.
 
-Serves workspace vault status to the desktop pane / dashboard tab via
-`ctx.rest`. Values are never served: `ciphervault status --json`
-reports tracked file paths, counts, and truncated identifiers only,
-and every response here passes through the same allow-list.
+Serves workspace vault status, env health, pending secret prompts, audit trail,
+and sealed-vault-safe secret entry / generation to the desktop pane via `ctx.rest`.
+Secret values are NEVER served or logged: mutations prefer the native Rust CLI
+(`ciphervault vault set --stdin` / `ciphervault vault generate`) so plaintext
+never touches Python disk I/O, and fail closed on sealed vaults with legacy CLIs.
 """
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 try:
@@ -22,35 +26,54 @@ except Exception:  # pragma: no cover - dashboard host always has fastapi
 
 router = APIRouter() if APIRouter is not None else None
 
-
-def _find_binary():
-    exe = "ciphervault.exe" if os.name == "nt" else "ciphervault"
-    override = os.environ.get("CIPHERVAULT_BIN")
-    if override and Path(override).is_file():
-        return override
-    home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
-    bootstrapped = home / "plugins" / "ciphervault" / "bin" / exe
-    if bootstrapped.is_file():
-        return str(bootstrapped)
-    import shutil
-
-    return shutil.which("ciphervault") or shutil.which("cv")
+_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+_ORIG_SUBPROCESS_RUN = subprocess.run
+_VAULT_SECRET_PROBE_CACHE: dict[str, bool] = {}
 
 
-_ENV_KEEP = (
-    "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR",
-    "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
-    "APPDATA", "LOCALAPPDATA", "COMSPEC", "PATHEXT",
-)
+def _load_plugin_submodules():
+    """Reuse the active CipherVault plugin package if already loaded in this
+    process (so `ctx.get_config("binary_path")` is respected), else load it
+    from the sibling plugin package directory."""
+    binary_file = str((_PLUGIN_ROOT / "binary.py").resolve())
+    pkg_prefix = None
+    for mod_name, mod in list(sys.modules.items()):
+        mfile = getattr(mod, "__file__", None)
+        if mfile and mod_name.endswith(".binary"):
+            try:
+                if str(Path(mfile).resolve()) == binary_file:
+                    pkg_prefix = mod_name.rsplit(".", 1)[0]
+                    break
+            except OSError:
+                continue
+    if pkg_prefix is None:
+        pkg_prefix = "ciphervault_plugin"
+        spec = importlib.util.spec_from_file_location(pkg_prefix, _PLUGIN_ROOT / "__init__.py")
+        assert spec is not None and spec.loader is not None
+        pkg_mod = importlib.util.module_from_spec(spec)
+        sys.modules[pkg_prefix] = pkg_mod
+        spec.loader.exec_module(pkg_mod)
+    return (
+        sys.modules[f"{pkg_prefix}.binary"],
+        sys.modules[f"{pkg_prefix}.bridge"],
+        sys.modules[f"{pkg_prefix}.policy"],
+        sys.modules[f"{pkg_prefix}.tools"],
+    )
 
 
-def _minimal_env() -> dict[str, str]:
-    """Allow-listed subprocess environment so Hermes provider keys never
-    reach the CLI subprocesses."""
-    env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
-    env.update({k: v for k, v in os.environ.items() if k.startswith("CIPHERVAULT_")})
-    env.setdefault("NO_COLOR", "1")
-    return env
+_cv_binary, _cv_bridge, _cv_policy, _cv_tools = _load_plugin_submodules()
+
+_ENV_KEEP = _cv_binary._ENV_KEEP
+_minimal_env = _cv_binary._minimal_env
+_ENV_KEY_RE = _cv_policy._ENV_KEY_RE
+
+
+def _find_binary() -> str | None:
+    """Resolve the ciphervault CLI via the shared plugin binary resolver
+    (respects `binary_path` plugin config, `$CIPHERVAULT_BIN`, bootstrapped
+    binary, repo checkout, and `PATH` `ciphervault` — never bare `cv`)."""
+    bin_path, _source = _cv_binary.find_binary()
+    return bin_path
 
 
 def _safe_cwd(cwd: str | None) -> str | None:
@@ -70,17 +93,111 @@ def _safe_cwd(cwd: str | None) -> str | None:
         return None
 
 
+def _cli_supports_vault_secret(binary: str, cwd: str) -> bool:
+    """Return True if `binary` supports `ciphervault vault set|generate`."""
+    use_cache = subprocess.run is _ORIG_SUBPROCESS_RUN
+    if use_cache and binary in _VAULT_SECRET_PROBE_CACHE:
+        return _VAULT_SECRET_PROBE_CACHE[binary]
+    try:
+        proc = subprocess.run(
+            [binary, "vault", "generate", "--help"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=_minimal_env(),
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        ok = bool(
+            proc.returncode == 0
+            and "--overwrite" in out
+            and "--seal" in out
+            and "--json" in out
+        )
+    except Exception:
+        ok = False
+    if use_cache:
+        _VAULT_SECRET_PROBE_CACHE[binary] = ok
+    return ok
+
+
+def _check_legacy_sealed_guard(
+    binary: str,
+    safe_cwd: str,
+    vault_cwd: str,
+    target_path: Path,
+    rel_env: str,
+    native_cmd: str,
+) -> str | None:
+    """Before a legacy CLI fallback writes `.env` and runs `push`, verify the
+    vault working tree is NOT sealed (failing closed on sealed or unreadable
+    status so previously sealed keys are never overwritten)."""
+    if _cv_bridge._vault_root(safe_cwd) is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "status", "--json"],
+            cwd=vault_cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            env=_minimal_env(),
+        )
+        if proc.returncode != 0:
+            return (
+                f"Cannot verify vault seal state before mutating secrets with a legacy CLI; "
+                f"failing closed to avoid wiping previously sealed keys. Upgrade CipherVault CLI "
+                f"to support `{native_cmd}`."
+            )
+        sdata = json.loads(proc.stdout or "{}")
+    except Exception:
+        return (
+            f"Cannot verify vault seal state before mutating secrets with a legacy CLI; "
+            f"failing closed to avoid wiping previously sealed keys. Upgrade CipherVault CLI "
+            f"to support `{native_cmd}`."
+        )
+    if not isinstance(sdata, dict):
+        return (
+            f"Invalid status response from legacy CLI; failing closed to protect sealed keys. "
+            f"Upgrade CipherVault CLI to support `{native_cmd}`."
+        )
+    if not sdata.get("vault"):
+        return None
+    tracked_norm = {
+        str(p).replace("\\", "/").lstrip("./") for p in (sdata.get("tracked_paths") or [])
+    }
+    target_norm = rel_env.replace("\\", "/").lstrip("./")
+    if sdata.get("working_tree_sealed") is True or (
+        target_norm in tracked_norm and not target_path.is_file()
+    ):
+        return (
+            f"Working tree is sealed: a legacy CipherVault CLI cannot safely update a single "
+            f"key without wiping previously sealed secrets. Upgrade CipherVault CLI to "
+            f"support native `{native_cmd}`."
+        )
+    return None
+
+
 def _status(cwd: str | None) -> dict:
     safe_cwd = _safe_cwd(cwd)
     if safe_cwd is None:
-        return {"binary": "error", "vault": False, "error": "invalid or non-directory cwd"}
+        return {"binary": "error", "vault": False, "error": "invalid or non-directory cwd", "policy_profiles": []}
+    profiles, policy_err = _cv_policy._policy_profiles_summary(safe_cwd)
     binary = _find_binary()
     if not binary:
-        return {
+        out = {
             "binary": "missing",
             "vault": False,
+            "policy_profiles": profiles,
             "next": "Run `hermes ciphervault bootstrap` (Windows) or set CIPHERVAULT_BIN.",
         }
+        if policy_err:
+            out["policy_error"] = str(policy_err)[:200]
+        return out
     try:
         proc = subprocess.run(
             [binary, "status", "--json"],
@@ -93,11 +210,17 @@ def _status(cwd: str | None) -> dict:
             env=_minimal_env(),
         )
     except Exception as exc:
-        return {"binary": "error", "vault": False, "error": str(exc)[:200]}
+        out = {"binary": "error", "vault": False, "error": str(exc)[:200], "policy_profiles": profiles}
+        if policy_err:
+            out["policy_error"] = str(policy_err)[:200]
+        return out
     try:
         data = json.loads(proc.stdout or "{}")
     except Exception:
-        return {"binary": "error", "vault": False, "error": "non-JSON status output"}
+        out = {"binary": "error", "vault": False, "error": "non-JSON status output", "policy_profiles": profiles}
+        if policy_err:
+            out["policy_error"] = str(policy_err)[:200]
+        return out
     # Allow-list: never forward anything beyond status metadata.
     keep = (
         "vault", "cli_version", "tracked_paths", "tracked_files",
@@ -108,6 +231,9 @@ def _status(cwd: str | None) -> dict:
     out = {k: data.get(k) for k in keep if k in data}
     out["binary"] = "ok"
     out["operators"] = len(data.get("operators") or [])
+    out["policy_profiles"] = profiles
+    if policy_err:
+        out["policy_error"] = str(policy_err)[:200]
     if data.get("error"):
         out["error"] = str(data["error"])[:200]
     return out
@@ -116,12 +242,13 @@ def _status(cwd: str | None) -> dict:
 def _seal(cwd: str | None) -> dict:
     safe_cwd = _safe_cwd(cwd)
     if safe_cwd is None:
-        return {"binary": "error", "vault": False, "error": "invalid or non-directory cwd"}
+        return {"binary": "error", "vault": False, "error": "invalid or non-directory cwd", "policy_profiles": []}
     binary = _find_binary()
     if not binary:
         return {
             "binary": "missing",
             "vault": False,
+            "policy_profiles": [],
             "next": "Run `hermes ciphervault bootstrap` (Windows) or set CIPHERVAULT_BIN.",
         }
     try:
@@ -136,7 +263,7 @@ def _seal(cwd: str | None) -> dict:
             env=_minimal_env(),
         )
     except Exception as exc:
-        return {"binary": "error", "vault": False, "error": str(exc)[:200]}
+        return {"binary": "error", "vault": False, "error": str(exc)[:200], "policy_profiles": []}
     status_out = _status(safe_cwd)
     if proc.returncode != 0:
         err_msg = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
@@ -208,9 +335,6 @@ def _audit_trail(cwd: str | None, limit: int = 10) -> dict:
     return out
 
 
-_ENV_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
-
-
 def _find_pending_prompts_file(safe_cwd: str) -> Path | None:
     p = Path(safe_cwd).resolve()
     for parent in (p, *p.parents):
@@ -220,6 +344,22 @@ def _find_pending_prompts_file(safe_cwd: str) -> Path | None:
         if (parent / ".ciphervault" / "vault.db").exists():
             return cand
     return p / ".ciphervault" / "pending_secret_prompts.json"
+
+
+def _clear_pending_prompt(safe_cwd: str, key_name: str) -> None:
+    prompt_path = _find_pending_prompts_file(safe_cwd)
+    if prompt_path is None or not prompt_path.is_file():
+        return
+    try:
+        raw = json.loads(prompt_path.read_text(encoding="utf-8", errors="replace") or "{}")
+        if isinstance(raw, dict) and isinstance(raw.get("keys"), list):
+            raw["keys"] = [
+                item for item in raw["keys"]
+                if not (isinstance(item, dict) and item.get("name") == key_name)
+            ]
+            prompt_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _pending_prompts(cwd: str | None) -> dict:
@@ -263,6 +403,28 @@ def _pending_prompts(cwd: str | None) -> dict:
     }
 
 
+def _validate_rel_env(safe_cwd: str, env_file: object) -> tuple[Path | None, str | None, str | None]:
+    if not isinstance(env_file, str):
+        return None, None, "env_file must be a relative path string"
+    rel_env = env_file.strip()
+    if (
+        not rel_env
+        or "\x00" in rel_env
+        or rel_env.startswith(("/", "\\"))
+        or ".." in Path(rel_env).parts
+    ):
+        return None, None, "env_file must be a safe relative path inside workspace"
+    base_dir = Path(safe_cwd).resolve()
+    target_path = (base_dir / rel_env).resolve()
+    if (
+        target_path == base_dir
+        or not target_path.is_relative_to(base_dir)
+        or ".ciphervault" in target_path.relative_to(base_dir).parts
+    ):
+        return None, None, "env_file must resolve inside workspace"
+    return target_path, rel_env, None
+
+
 def _set_secret(
     cwd: str | None,
     key: object,
@@ -275,58 +437,78 @@ def _set_secret(
         return {"success": False, "error": "invalid or non-directory cwd"}
     if not isinstance(key, str) or "\n" in key or "\r" in key or not _ENV_KEY_RE.fullmatch(key):
         return {"success": False, "error": "invalid key: must match ^[A-Za-z_][A-Za-z0-9_]*$"}
-    if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
+    if not isinstance(value, str) or not value or "\n" in value or "\r" in value or "\x00" in value:
         return {"success": False, "error": "value must be a non-empty single-line string"}
-    if not isinstance(env_file, str):
-        return {"success": False, "error": "env_file must be a relative path string"}
-    rel_env = env_file.strip()
-    if (
-        not rel_env
-        or "\x00" in rel_env
-        or rel_env.startswith(("/", "\\"))
-        or ".." in Path(rel_env).parts
-    ):
-        return {"success": False, "error": "env_file must be a safe relative path inside workspace"}
-    base_dir = Path(safe_cwd).resolve()
-    target_path = (base_dir / rel_env).resolve()
-    if (
-        target_path == base_dir
-        or not target_path.is_relative_to(base_dir)
-        or ".ciphervault" in target_path.relative_to(base_dir).parts
-    ):
-        return {"success": False, "error": "env_file must resolve inside workspace"}
+    target_path, rel_env, path_err = _validate_rel_env(safe_cwd, env_file)
+    if path_err or target_path is None or rel_env is None:
+        return {"success": False, "error": path_err or "invalid env_file"}
 
     binary = _find_binary()
     if not binary:
         return {"success": False, "binary": "missing", "error": "ciphervault binary not found"}
 
     def _scrub_val(msg: object) -> str:
-        return str(msg).replace(value, "[REDACTED]")[:200]
+        return _cv_binary.scrub(str(msg).replace(value, "[REDACTED]"))[:200]
+
+    vault_cwd = _cv_bridge._vault_cwd(safe_cwd) or safe_cwd
+    try:
+        cli_env_file = target_path.relative_to(Path(vault_cwd).resolve()).as_posix()
+    except Exception:
+        cli_env_file = rel_env
+
+    seal_flag = True if seal is None else bool(seal)
+    env = _minimal_env()
+
+    # Prefer native `ciphervault vault set <KEY> --stdin` (zero plaintext written to disk in Python).
+    if _cli_supports_vault_secret(binary, vault_cwd):
+        cmd = [binary, "vault", "set", key, "--stdin", "--env-file", cli_env_file, "--json"]
+        if seal_flag:
+            cmd.append("--seal")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=vault_cwd,
+                input=value,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                env=env,
+            )
+        except Exception as exc:
+            return {"success": False, "error": _scrub_val(exc)}
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            return {"success": False, "error": _scrub_val(err)}
+        try:
+            data = json.loads(proc.stdout or "{}")
+        except Exception:
+            return {"success": False, "error": "non-JSON output from ciphervault vault set"}
+        if not isinstance(data, dict) or data.get("success") is False:
+            return {"success": False, "error": _scrub_val(data.get("error") if isinstance(data, dict) else "vault set failed")}
+        _clear_pending_prompt(safe_cwd, key)
+        return {
+            "success": True,
+            "key": str(data.get("name") or key),
+            "env_file": str(data.get("env_file") or rel_env),
+            "sealed": bool(data.get("sealed", seal_flag)),
+            "snapshot_head": data.get("snapshot_head"),
+            "status": _status(safe_cwd),
+        }
+
+    # Legacy CLI fallback: fail CLOSED if vault working tree is sealed!
+    sealed_err = _check_legacy_sealed_guard(
+        binary, safe_cwd, vault_cwd, target_path, cli_env_file, "ciphervault vault set"
+    )
+    if sealed_err:
+        return {"success": False, "error": sealed_err}
 
     try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = []
-        if target_path.is_file():
-            lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-        pattern = re.compile(rf"^(?:\ufeff)?(?:export\s+)?{re.escape(key)}\s*=")
-        replaced = False
-        new_lines = []
-        for line in lines:
-            if not replaced and pattern.match(line):
-                new_lines.append(f"{key}={value}\n")
-                replaced = True
-            else:
-                new_lines.append(line)
-        if not replaced:
-            if new_lines and not new_lines[-1].endswith(("\n", "\r")):
-                new_lines[-1] = new_lines[-1] + "\n"
-            new_lines.append(f"{key}={value}\n")
-        target_path.write_text("".join(new_lines), encoding="utf-8")
-
-        env = _minimal_env()
+        _cv_tools._upsert_env_vars(target_path, [(key, value)])
         track_proc = subprocess.run(
-            [binary, "track", rel_env],
-            cwd=safe_cwd,
+            [binary, "track", cli_env_file],
+            cwd=vault_cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -338,13 +520,12 @@ def _set_secret(
             err = (track_proc.stderr or track_proc.stdout or f"exit {track_proc.returncode}").strip()
             return {"success": False, "error": _scrub_val(err)}
 
-        seal_flag = bool(seal)
         push_cmd = [binary, "push", "--local", "-m", f"Set {key} via desktop"]
         if seal_flag:
             push_cmd.append("--shred")
         push_proc = subprocess.run(
             push_cmd,
-            cwd=safe_cwd,
+            cwd=vault_cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -358,25 +539,175 @@ def _set_secret(
     except Exception as exc:
         return {"success": False, "error": _scrub_val(exc)}
 
-    # Clear key from pending_secret_prompts.json if present
-    prompt_path = _find_pending_prompts_file(safe_cwd)
-    if prompt_path is not None and prompt_path.is_file():
-        try:
-            raw = json.loads(prompt_path.read_text(encoding="utf-8", errors="replace") or "{}")
-            if isinstance(raw, dict) and isinstance(raw.get("keys"), list):
-                raw["keys"] = [
-                    item for item in raw["keys"]
-                    if not (isinstance(item, dict) and item.get("name") == key)
-                ]
-                prompt_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
-        except Exception:
-            pass
-
+    _clear_pending_prompt(safe_cwd, key)
     return {
         "success": True,
         "key": key,
         "env_file": rel_env,
-        "sealed": bool(seal),
+        "sealed": seal_flag,
+        "snapshot_head": None,
+        "status": _status(safe_cwd),
+    }
+
+
+def _generate_secret(
+    cwd: str | None,
+    name: object,
+    fmt: object = "base64url",
+    nbytes: object = 32,
+    env_file: object = ".env",
+    seal: object = True,
+    overwrite: object = False,
+) -> dict:
+    """Sealed-vault-safe one-click secret generator for the desktop pane.
+    Prefers native `ciphervault vault generate`; fails closed on sealed vaults
+    with legacy CLIs; never exposes secret values."""
+    safe_cwd = _safe_cwd(cwd)
+    if safe_cwd is None:
+        return {"success": False, "error": "invalid or non-directory cwd"}
+    if not isinstance(name, str) or "\n" in name or "\r" in name or not _ENV_KEY_RE.fullmatch(name.strip()):
+        return {"success": False, "error": "invalid name: must match ^[A-Za-z_][A-Za-z0-9_]*$"}
+    clean_name = name.strip()
+    clean_fmt = str(fmt or "base64url").strip().lower()
+    if clean_fmt not in ("base64url", "hex", "uuid", "alphanumeric"):
+        return {"success": False, "error": "invalid format: expected base64url, hex, uuid, or alphanumeric"}
+    if isinstance(nbytes, bool) or not isinstance(nbytes, int) or not (16 <= nbytes <= 64):
+        return {"success": False, "error": "bytes must be an integer between 16 and 64"}
+    target_path, rel_env, path_err = _validate_rel_env(safe_cwd, env_file if env_file is not None else ".env")
+    if path_err or target_path is None or rel_env is None:
+        return {"success": False, "error": path_err or "invalid env_file"}
+
+    binary = _find_binary()
+    if not binary:
+        return {"success": False, "binary": "missing", "error": "ciphervault binary not found"}
+
+    vault_cwd = _cv_bridge._vault_cwd(safe_cwd) or safe_cwd
+    try:
+        cli_env_file = target_path.relative_to(Path(vault_cwd).resolve()).as_posix()
+    except Exception:
+        cli_env_file = rel_env
+
+    seal_flag = True if seal is None else bool(seal)
+    overwrite_flag = bool(overwrite)
+    env = _minimal_env()
+
+    if _cli_supports_vault_secret(binary, vault_cwd):
+        cmd = [
+            binary, "vault", "generate", clean_name,
+            "--format", clean_fmt,
+            "--bytes", str(nbytes),
+            "--env-file", cli_env_file,
+            "--json",
+        ]
+        if seal_flag:
+            cmd.append("--seal")
+        if overwrite_flag:
+            cmd.append("--overwrite")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=vault_cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                env=env,
+            )
+        except Exception as exc:
+            return {"success": False, "error": _cv_binary.scrub(str(exc))[:200]}
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            return {"success": False, "error": _cv_binary.scrub(err)[:200]}
+        try:
+            data = json.loads(proc.stdout or "{}")
+        except Exception:
+            return {"success": False, "error": "non-JSON output from ciphervault vault generate"}
+        if not isinstance(data, dict) or data.get("success") is False:
+            return {
+                "success": False,
+                "error": _cv_binary.scrub(str(data.get("error") if isinstance(data, dict) else "vault generate failed"))[:200],
+            }
+        _clear_pending_prompt(safe_cwd, clean_name)
+        return {
+            "success": True,
+            "name": str(data.get("name") or clean_name),
+            "format": str(data.get("format") or clean_fmt),
+            "length_chars": data.get("length_chars"),
+            "sha256_prefix": data.get("sha256_prefix"),
+            "env_file": str(data.get("env_file") or rel_env),
+            "sealed": bool(data.get("sealed", seal_flag)),
+            "snapshot_head": data.get("snapshot_head"),
+            "status": _status(safe_cwd),
+        }
+
+    # Legacy CLI fallback: fail CLOSED if vault working tree is sealed!
+    sealed_err = _check_legacy_sealed_guard(
+        binary, safe_cwd, vault_cwd, target_path, cli_env_file, "ciphervault vault generate"
+    )
+    if sealed_err:
+        return {"success": False, "error": sealed_err}
+
+    if not overwrite_flag and _cv_tools._env_file_has_key(target_path, clean_name):
+        return {
+            "success": False,
+            "error": f"Secret {clean_name!r} already exists in {rel_env}. Pass overwrite=true to replace it.",
+        }
+
+    value = _cv_tools._generate_random_secret_value(clean_fmt, nbytes)
+    length_chars = len(value)
+    sha256_prefix = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+    def _scrub_gen(msg: object) -> str:
+        return _cv_binary.scrub(str(msg).replace(value, "[REDACTED]"))[:200]
+
+    try:
+        _cv_tools._upsert_env_vars(target_path, [(clean_name, value)])
+        track_proc = subprocess.run(
+            [binary, "track", cli_env_file],
+            cwd=vault_cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            env=env,
+        )
+        if track_proc.returncode != 0:
+            err = (track_proc.stderr or track_proc.stdout or f"exit {track_proc.returncode}").strip()
+            return {"success": False, "error": _scrub_gen(err)}
+
+        push_cmd = [binary, "push", "--local", "-m", f"Generated {clean_name} via desktop"]
+        if seal_flag:
+            push_cmd.append("--shred")
+        push_proc = subprocess.run(
+            push_cmd,
+            cwd=vault_cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env=env,
+        )
+        if push_proc.returncode != 0:
+            err = (push_proc.stderr or push_proc.stdout or f"exit {push_proc.returncode}").strip()
+            return {"success": False, "error": _scrub_gen(err)}
+    except Exception as exc:
+        return {"success": False, "error": _scrub_gen(exc)}
+    finally:
+        value = ""
+
+    _clear_pending_prompt(safe_cwd, clean_name)
+    return {
+        "success": True,
+        "name": clean_name,
+        "format": clean_fmt,
+        "length_chars": length_chars,
+        "sha256_prefix": sha256_prefix,
+        "env_file": rel_env,
+        "sealed": seal_flag,
+        "snapshot_head": None,
         "status": _status(safe_cwd),
     }
 
@@ -450,7 +781,7 @@ def _env_health(cwd: str | None) -> dict:
                 continue
             k, v = stripped.split("=", 1)
             k = k.removeprefix("export ").strip()
-            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+            if not _ENV_KEY_RE.fullmatch(k):
                 continue
             vault_keys.add(k)
             val_unquoted = v.strip()
@@ -467,7 +798,7 @@ def _env_health(cwd: str | None) -> dict:
                 s = line.strip()
                 if s and not s.startswith("#") and "=" in s:
                     ek = s.split("=", 1)[0].removeprefix("export ").strip()
-                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ek):
+                    if _ENV_KEY_RE.fullmatch(ek):
                         example_keys.add(ek)
         except OSError:
             pass
@@ -538,6 +869,20 @@ if router is not None:
             value=payload.get("value"),
             env_file=payload.get("env_file", ".env"),
             seal=payload.get("seal", True),
+        )
+
+    @router.post("/generate")
+    def generate_secret(payload: dict = Body(...), cwd: str | None = None):
+        if not isinstance(payload, dict):
+            return {"success": False, "error": "JSON object body required"}
+        return _generate_secret(
+            cwd=cwd,
+            name=payload.get("name") if payload.get("name") is not None else payload.get("key"),
+            fmt=payload.get("format", "base64url"),
+            nbytes=payload.get("bytes", 32),
+            env_file=payload.get("env_file", ".env"),
+            seal=payload.get("seal", True),
+            overwrite=payload.get("overwrite", False),
         )
 
     @router.get("/health")

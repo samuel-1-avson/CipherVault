@@ -48,6 +48,14 @@ jobs:
           sudo docker image prune --all --force
           df -h /
 
+      - name: Enable unprivileged user namespaces for --no-net sandbox tests
+        if: runner.os == 'Linux'
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -qx '1'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --net -- true
+
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,16 +74,18 @@ jobs:
       - name: Workspace Unit & Integration Tests
         run: cargo test --workspace --locked --verbose
 
-      - name: Dashboard Syntax and Audit Regressions
+      - name: Setup Python for custody, plugin, and review regressions
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Dashboard and Hermes Desktop Syntax & Regressions
         run: |
           node --check apps/ui/app.js
           node apps/ui/audit.test.cjs
           node tests/dashboard_container_contract.cjs
-
-      - name: Setup Python for custody and review regressions
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
+          node --check plugins/ciphervault/desktop/plugin.js
+          node --test plugins/ciphervault/tests/desktop_plugin.test.mjs
 
       - name: Package manager manifest regression
         run: python tests/release_package_manifests.py
@@ -87,11 +97,43 @@ jobs:
           python -m unittest discover -s tests/recovery -v
           python -m unittest discover -s scripts/security -p "test_*.py" -v
 
+      - name: Hermes Plugin Live CLI Integration (Linux & macOS)
+        if: runner.os != 'Windows'
+        env:
+          CV_TEST_BINARY: ${{ github.workspace }}/target/debug/ciphervault
+        run: |
+          python -m pip install --disable-pip-version-check pytest pyyaml
+          test -x "$CV_TEST_BINARY" || cargo build -p ciphervault-cli --bin ciphervault --locked
+          python -m pytest plugins/ciphervault/tests/test_cli_integration.py -q
+
       - name: Release packaging and hosted secret bootstrap regressions
         if: runner.os == 'Linux'
         run: |
           node tests/release_package_assets.cjs
           node tests/web_secret_bootstrap.cjs
+
+  hermes-plugin:
+    name: Hermes Plugin & Desktop UI Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install Python test dependencies
+        run: python -m pip install --disable-pip-version-check pytest pyyaml
+
+      - name: Hermes Desktop Plugin Syntax & Render Tests
+        run: |
+          node --check plugins/ciphervault/desktop/plugin.js
+          node --test plugins/ciphervault/tests/desktop_plugin.test.mjs
+
+      - name: Hermes Plugin & MCP Shim Python Tests
+        run: python -m pytest plugins/ciphervault/tests/test_plugin.py tests/mcp/test_mcp_server.py -q
 
   browser:
     name: Real Browser CSP Regressions
