@@ -35,8 +35,10 @@ ciphervault-file-lock = { path = "../../crates/file-lock" }
 ciphervault-format = { path = "../../crates/format" }
 ciphervault-storage = { path = "../../crates/storage" }
 ciphervault-chain = { path = "../../crates/chain" }
+ciphervault-translog = { path = "../../crates/translog" }
 ciphervault-recovery = { path = "../../crates/recovery" }
 
 [dev-dependencies]
+ciphervault-translog = { path = "../../crates/translog" }
 tower = { workspace = true, features = ["util"] }
 reqwest.workspace = true

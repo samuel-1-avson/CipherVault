@@ -796,6 +796,7 @@ dependencies = [
  "ciphervault-format",
  "ciphervault-recovery",
  "ciphervault-storage",
+ "ciphervault-translog",
  "clap",
  "colored",
  "ed25519-dalek",

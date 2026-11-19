@@ -4,6 +4,8 @@
 //! authentication, and append-only recovery logs for CipherVault.
 
 pub mod handlers;
+pub mod log_api;
+pub mod log_store;
 pub mod metrics;
 pub mod state;
 pub mod swarm;
@@ -52,6 +54,9 @@ fn classify_route(path: &str) -> &'static str {
     }
     if path.starts_with("/v1/chain") {
         return "chain";
+    }
+    if path.starts_with("/v1/log") {
+        return "log";
     }
     if path.starts_with("/v1/identities") {
         return "identities";
@@ -372,6 +377,17 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         // Sovereign chain sync: catch-up reads are public; proposal
         // publication is public too (envelopes self-authenticate).
         .route("/v1/chain/publish", post(handlers::post_chain_publish))
+        // Transparency log (ADR-014 Phase 2): submission needs a vault
+        // session; tiles, checkpoints and proofs are public verifiable
+        // data. Axum matches the concrete routes before the tile
+        // wildcard, so `tile/...` never shadows them.
+        .route("/v1/log/add", post(log_api::post_log_add))
+        .route("/v1/log/info", get(log_api::get_log_info))
+        .route("/v1/log/checkpoint", get(log_api::get_log_checkpoint))
+        .route("/v1/log/inclusion/{index}", get(log_api::get_log_inclusion))
+        .route("/v1/log/consistency", get(log_api::get_log_consistency))
+        .route("/v1/log/lookup/{commitment}", get(log_api::get_log_lookup))
+        .route("/v1/log/tile/{*path}", get(log_api::get_log_tile))
         // Out-of-Band Cryptographic Approval routes
         .route(
             "/v1/auth/challenges",

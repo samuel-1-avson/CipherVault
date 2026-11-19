@@ -1,6 +1,6 @@
 # ADR-014: CipherChain becomes a witnessed transparency log
 
-Date: 2026-11-19 · Status: Accepted (direction chosen; implementation not started)
+Date: 2026-11-19 · Status: Accepted (Phase 1 log core and Phase 2 operator log implemented; Phases 3–6 pending)
 
 ## Context
 
@@ -126,7 +126,12 @@ The leaf is `0x01 ‖ commitment (32 B) ‖ monitor_tag (32 B)`:
   every 256 entries), assigns indices, extends the tree, signs a
   checkpoint and starts witnessing.
 - **Responses:** the client receives its index at once and polls `GET`
-  endpoints for a cosigned checkpoint covering it.
+  endpoints for a cosigned checkpoint covering it. (Phase 2 as built
+  sequences immediately — append, fsync, extend, sign under one lock —
+  so the index at once already has a covering signed checkpoint; a
+  `GET /v1/log/lookup/{commitment}` endpoint lets a client whose
+  receipt was lost recover its index instead of resubmitting. See
+  [`../TRANSPARENCY_LOG.md`](../TRANSPARENCY_LOG.md).)
 - **Serving:** C2SP `tlog-tiles` (static, cacheable tiles and checkpoint
   files) plus a convenience proof endpoint. Tiles live beside the
   operator's existing redb store (ADR-004).
@@ -232,8 +237,8 @@ run in parallel once Phase 1 lands.
 
 | Phase | Deliverable | Done when | Size |
 |---|---|---|---|
-| **1. Log core** | New crate `crates/translog`: RFC 9162 hashing, inclusion and consistency proofs (generate and verify), compact-range appends, C2SP checkpoint / signed-note / `cosignature/v1` encode and verify, tile paths | Passes RFC 9162 and C2SP test vectors; property tests show random trees verify every inclusion and consistency proof and reject mutated ones; fuzzing of parsers and proof verifiers | M |
-| **2. Operator log** | Log storage (tiles plus entry bundles) and sequencer; `POST /v1/log/add` with session auth and per-device rate limits; checkpoint signing; tile and checkpoint `GET` endpoints; crash-safe writes | A 3-operator test fleet accepts submissions, serves proofs that verify with the Phase 1 client, survives crash and restart with no lost or reordered entries, and rejects unauthenticated or over-limit submissions | L |
+| **1. Log core** ✅ | New crate `crates/translog`: RFC 9162 hashing, inclusion and consistency proofs (generate and verify), compact-range appends, C2SP checkpoint / signed-note / `cosignature/v1` encode and verify, tile paths | Passes RFC 9162 and C2SP test vectors; property tests show random trees verify every inclusion and consistency proof and reject mutated ones; fuzzing of parsers and proof verifiers | M |
+| **2. Operator log** ✅ | Log storage (tiles plus entry bundles) and sequencer; `POST /v1/log/add` with session auth and per-device rate limits; checkpoint signing; tile and checkpoint `GET` endpoints; crash-safe writes | A 3-operator test fleet accepts submissions, serves proofs that verify with the Phase 1 client, survives crash and restart with no lost or reordered entries, and rejects unauthenticated or over-limit submissions | L |
 | **3. Witness** | `tlog-witness` server mode in the operator (and a standalone binary); per-log state; logs push checkpoints to witnesses and collect cosignatures | Cross-witnessing works across the 3 operators; a witness refuses an inconsistent checkpoint and keeps the evidence pair; a published checkpoint carries a quorum of cosignatures | M |
 | **4. CLI** | Policy file and `ciphervault log policy` commands; `anchor` to N logs; evidence v2; `verify-anchor` for both v2 and legacy evidence; `doctor` checks; `anchor --migrate` | End-to-end: anchor on the test fleet, verify offline, tamper with any field and fail, take one log down and still anchor with 2 of 3, and legacy evidence still verifies | M |
 | **5. Monitoring** | Persistent per-log consistency tracking in the CLI; checkpoint gossip in `doctor`; vault monitor tags and recovery-time scanning; agent-log checkpoints moved into the log | A forked log is detected by client and witness and reported; a clean-machine recovery finds the newest anchored head from tags alone | M |
