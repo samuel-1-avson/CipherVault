@@ -104,7 +104,8 @@ App:
 
 /// Canonical binary name: stable across releases for scripts, docs, and installers.
 const CANONICAL_BIN_NAME: &str = "ciphervault";
-/// Short alias binary name, built as a second binary target from this same source.
+/// Short alias binary name; the `cv` shim under src/bin/ calls the same
+/// library entry point as the canonical `ciphervault` shim.
 const ALIAS_BIN_NAME: &str = "cv";
 
 /// Display name for an argv[0] path: the alias when invoked as `cv` (any
@@ -2300,11 +2301,12 @@ enum RecoverySubcommand {
     },
 }
 
-/// Real entry point, on a roomy thread: the 40+-subcommand clap tree
-/// overflows small stacks during construction (immediate stack overflow
-/// on the 1 MiB Windows main thread), so parse and dispatch off-main.
-/// Same hazard as the help/completions renderers below.
-fn main() {
+/// Library entry point shared by the `ciphervault` and `cv` binary shims.
+/// Runs on a roomy thread: the 40+-subcommand clap tree overflows small
+/// stacks during construction (immediate stack overflow on the 1 MiB
+/// Windows main thread), so parse and dispatch off-main. Same hazard as
+/// the help/completions renderers below.
+pub fn run_cli() {
     std::thread::Builder::new()
         .name("ciphervault-main".into())
         .stack_size(64 * 1024 * 1024)
