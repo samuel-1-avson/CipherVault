@@ -70,6 +70,14 @@ pub enum ChainError {
     #[error("Invalid validator rotation: {0}")]
     InvalidRotation(String),
 
+    #[error(
+        "Block timestamp {declared} is not the median {median} of the validator-signed observed times"
+    )]
+    TimestampNotMedian { declared: u64, median: u64 },
+
+    #[error("Invalid block version {found}: must be between {min} and {max}")]
+    InvalidVersion { found: u16, min: u16, max: u16 },
+
     #[error("IO error: {0}")]
     Io(String),
 

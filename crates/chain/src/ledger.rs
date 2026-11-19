@@ -114,6 +114,13 @@ impl SovereignLedger {
         mut header: BlockHeader,
         storage_path: Option<PathBuf>,
     ) -> Result<Self, ChainError> {
+        if header.version == 0 || header.version > PROTOCOL_VERSION {
+            return Err(ChainError::InvalidVersion {
+                found: header.version,
+                min: 1,
+                max: PROTOCOL_VERSION,
+            });
+        }
         header.signatures.sort_by_key(|sig| sig.validator);
         validator_set.verify_header_signatures(&header)?;
 
@@ -389,6 +396,12 @@ impl SovereignLedger {
         self.blocks.last().expect("Genesis block always present")
     }
 
+    /// All held blocks in height order (from genesis for complete replicas,
+    /// from the adopted tip for unbackfilled ones).
+    pub fn blocks(&self) -> &[CipherChainBlock] {
+        &self.blocks
+    }
+
     /// Committed block at `height`, if the ledger has reached it.
     pub fn block_at_height(&self, height: u64) -> Option<&CipherChainBlock> {
         self.blocks.iter().find(|b| b.header.height == height)
@@ -589,6 +602,17 @@ impl SovereignLedger {
                 .map_err(|e| ChainError::InvalidRotation(e.to_string()))?;
         }
 
+        // 7. Version: never below the parent's, so a chain that reached
+        // signed block time (v4) cannot be extended with unsigned-time v2/v3
+        // blocks, and never above what this build can verify.
+        if block.header.version < latest.header.version || block.header.version > PROTOCOL_VERSION {
+            return Err(ChainError::InvalidVersion {
+                found: block.header.version,
+                min: latest.header.version,
+                max: PROTOCOL_VERSION,
+            });
+        }
+
         Ok(())
     }
 
@@ -729,6 +753,11 @@ impl SovereignLedger {
         let tx_proof = tx_tree
             .generate_proof(record.tx_index)
             .ok_or_else(|| ChainError::InvalidInclusionProof("Proof generation failed".into()))?;
+        let tx = block
+            .transactions
+            .get(record.tx_index)
+            .cloned()
+            .ok_or_else(|| ChainError::InvalidInclusionProof("Indexed tx missing".into()))?;
 
         Ok(AnchorProofResponse {
             chain_id: self.chain_id.clone(),
@@ -739,6 +768,7 @@ impl SovereignLedger {
             head_cid: record.head_cid,
             salt: record.salt,
             tx_index: record.tx_index,
+            tx,
             tx_proof,
             header: block.header.clone(),
             validator_signatures_count: block.header.signatures.len(),

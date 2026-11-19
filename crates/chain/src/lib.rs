@@ -26,8 +26,8 @@ pub use sync::{
     VoteCollector, VoteMsg, VoteOutcome, CHAIN_SYNC_TOPIC, SYNC_ENVELOPE_DOMAIN,
 };
 pub use types::{
-    median_timestamp_ms, proposal_time_acceptable, vote_observed_ms, AnchorProofResponse,
-    BlockHeader, BlockSignature, CipherChainBlock, CommitmentTx, BLOCK_SIGNING_DOMAIN,
-    MAX_PROPOSAL_CLOCK_SKEW_MS, PROTOCOL_VERSION, SOVEREIGN_CHAIN_ID_NUM, SOVEREIGN_CHAIN_ID_STR,
-    TX_SIGNING_DOMAIN,
+    median_timestamp_ms, proposal_time_acceptable, verify_signed_median, vote_observed_ms,
+    AnchorProofResponse, BlockHeader, BlockSignature, CipherChainBlock, CommitmentTx,
+    BLOCK_SIGNING_DOMAIN, MAX_PROPOSAL_CLOCK_SKEW_MS, PROTOCOL_VERSION, SIGNED_TIME_VERSION,
+    SOVEREIGN_CHAIN_ID_NUM, SOVEREIGN_CHAIN_ID_STR, TX_SIGNING_DOMAIN,
 };

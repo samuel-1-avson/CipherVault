@@ -1,6 +1,6 @@
 use ciphervault_chain::{
-    AnchorProofResponse, CommitmentTx, ConsensusSigner, SovereignLedger, SovereignLightClient,
-    ValidatorSet,
+    AnchorProofResponse, ChainError, CommitmentTx, ConsensusSigner, SovereignLedger,
+    SovereignLightClient, ValidatorSet,
 };
 
 #[test]
@@ -253,6 +253,85 @@ fn signed_tx(
     };
     client.sign_tx(&mut tx, chain_id);
     tx
+}
+
+/// Review CC-01 / CC-02: whoever serves a proof must not be able to attach a
+/// genuine audit path to a commitment that was never anchored, nor move the
+/// anchor's time.
+#[test]
+fn light_client_rejects_relabelled_and_retimed_proofs() {
+    let chain_id = "ciphervault-forgery-test";
+    let ops: Vec<ConsensusSigner> = (0..3).map(|_| ConsensusSigner::generate()).collect();
+    let set = ValidatorSet::new(ops.iter().map(|o| o.public_key()).collect()).unwrap();
+    let refs: Vec<&ConsensusSigner> = ops.iter().collect();
+    let mut ledger =
+        SovereignLedger::create_genesis(chain_id, set.clone(), &refs, 1_000, None).unwrap();
+    let client = ConsensusSigner::generate();
+
+    // Block 1 anchors someone else's commitment; ours never committed.
+    let other = signed_tx(&client, chain_id, 0x10, 0x20, 1, 1_100);
+    let mut block = ledger
+        .propose_block(&ops[0], vec![other.clone()], 2_000, None)
+        .unwrap();
+    for op in &ops[1..] {
+        block.header.signatures.push(op.sign_header(&block.header));
+    }
+    ledger.commit_block(block).unwrap();
+    let genuine = ledger.get_proof_for_commitment(&other.commitment).unwrap();
+    let light = SovereignLightClient::new(chain_id, set.validators().to_vec());
+    let ok = light
+        .verify_anchor(&other.head_cid, &other.salt, &genuine)
+        .expect("genuine proof verifies");
+    assert!(ok.timestamp_signed);
+    assert_eq!(ok.timestamp_ms, 2_000);
+
+    let our_salt = [0x99u8; 32];
+    let our_head = [0x77u8; 32];
+    let our_commitment = CommitmentTx::calculate_commitment(&our_salt, &our_head);
+
+    // A genuine audit path relabelled with our commitment.
+    let mut relabelled = genuine.clone();
+    relabelled.commitment = our_commitment;
+    relabelled.salt = our_salt;
+    relabelled.head_cid = our_head;
+    assert!(light
+        .verify_anchor(&our_head, &our_salt, &relabelled)
+        .is_err());
+
+    // ...with a validly signed transaction for our commitment swapped in:
+    // its leaf is not the one the audit path proves.
+    let mut swapped = relabelled.clone();
+    swapped.tx = signed_tx(&client, chain_id, 0x99, 0x77, 2, 1_200);
+    assert_eq!(swapped.tx.commitment, our_commitment);
+    assert!(matches!(
+        light.verify_anchor(&our_head, &our_salt, &swapped),
+        Err(ChainError::InvalidInclusionProof(_))
+    ));
+
+    // ...or with the leaf rewritten to match: it no longer reaches tx_root.
+    let mut releafed = swapped.clone();
+    releafed.tx_proof.leaf_hash = releafed.tx.tx_leaf_hash();
+    assert!(light
+        .verify_anchor(&our_head, &our_salt, &releafed)
+        .is_err());
+
+    // The proof's copy of the time must match the header...
+    let mut retimed = genuine.clone();
+    retimed.timestamp_ms = 1_500;
+    assert!(light
+        .verify_anchor(&other.head_cid, &other.salt, &retimed)
+        .is_err());
+
+    // ...and the header's time must be the signed median: rewriting it and
+    // re-hashing the header keeps every signature valid, but not the median.
+    let mut backdated = genuine.clone();
+    backdated.header.timestamp_ms = 1_500;
+    backdated.timestamp_ms = 1_500;
+    backdated.block_hash = backdated.header.block_hash();
+    assert!(matches!(
+        light.verify_anchor(&other.head_cid, &other.salt, &backdated),
+        Err(ChainError::TimestampNotMedian { .. })
+    ));
 }
 
 #[test]

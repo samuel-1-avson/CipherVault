@@ -123,7 +123,7 @@ Guardrails that let AI coding agents scan, run, diff and back up secrets without
 | Document | Audience | Scope & Key Topics Covered |
 |---|---|---|
 | [**`CURRENT_SECURITY_GUARANTEES.md`**](./CURRENT_SECURITY_GUARANTEES.md) | **Everyone (start here)** | The working implementation's guarantees and stated limits. Takes precedence over older reports where they differ. |
-| [**`audit/README.md`**](./audit/README.md) | **External auditors** | Engagement pack: scope (C1 to C8), claimed invariants, reproduction commands and known limitations, with the [threat model](./audit/THREAT_MODEL.md) and the [2026-11-10 independent reviewer pass](./audit/INDEPENDENT_REVIEW_2026-11-10.md). |
+| [**`audit/README.md`**](./audit/README.md) | **External auditors** | Engagement pack: scope (C1 to C8), claimed invariants, reproduction commands and known limitations, with the [threat model](./audit/THREAT_MODEL.md) the [2026-11-10 independent reviewer pass](./audit/INDEPENDENT_REVIEW_2026-11-10.md), and the [2026-11-19 CipherChain review](./audit/CIPHERCHAIN_REVIEW_2026-11-19.md). |
 | [**`SECURITY_AUDIT_READINESS.md`**](./SECURITY_AUDIT_READINESS.md) | **Security leads** | Audit readiness package and baseline evidence. |
 | [**`ENFORCED_MFA.md`**](./ENFORCED_MFA.md) and [**`MFA_ROLLOUT.md`**](./MFA_ROLLOUT.md) | **Account owners & operators** | Enforced second-factor policy for the account plane, and its rollout. |
 | [**`UPDATER_SIGNATURE_VERIFICATION.md`**](./UPDATER_SIGNATURE_VERIFICATION.md) | **Release engineers** | Signed-update verification, pinned trust roots and the key-rotation record. |
