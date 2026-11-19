@@ -3,7 +3,7 @@
   "label": "CipherVault",
   "description": "Zero-knowledge vault status, policy profiles, secret entry drawer, one-click CSPRNG secret generation, working-tree seal, env health, and live audit trail (never exposes secret values).",
   "icon": "Shield",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "tab": { "path": "/ciphervault", "position": "end", "hidden": true },
   "api": "plugin_api.py"
 }

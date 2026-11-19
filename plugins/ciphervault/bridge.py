@@ -70,6 +70,69 @@ def _vault_cwd(cwd):
     return str(root) if root is not None else cwd
 
 
+def _validate_env_file(cwd, env_file_raw):
+    """Resolve `cwd` and `env_file`, ensuring `env_file` is a safe relative path
+    inside `cwd` and outside `.ciphervault`."""
+    base_dir = Path(cwd or os.getcwd()).resolve()
+    if not base_dir.is_dir():
+        return None, None, f"workspace directory does not exist: {cwd}"
+    env_file = str(env_file_raw or ".env").strip()
+    if (
+        not env_file
+        or "\x00" in env_file
+        or env_file.startswith(("/", "\\"))
+        or ".." in Path(env_file).parts
+    ):
+        return None, None, "env_file must be a valid relative path inside workspace cwd"
+    target_path = (base_dir / env_file).resolve()
+    if (
+        target_path == base_dir
+        or not target_path.is_relative_to(base_dir)
+        or ".ciphervault" in target_path.relative_to(base_dir).parts
+    ):
+        return None, None, "env_file must be a valid path inside workspace cwd"
+    return base_dir, target_path, None
+
+
+def _secret_write_target(cwd, env_file_raw):
+    """Where `ciphervault_secret_generate` and `ciphervault_secret_prompt` may write.
+
+    Both tools take `cwd` and `env_file` from the model, so neither may write
+    anywhere a vault does not already own: `cwd` must sit inside an existing
+    vault, and `env_file` must resolve (after symlinks) inside that vault's
+    root, outside `.ciphervault/`, and outside the Hermes home, whose files
+    Hermes's own file tools refuse to write. Returns
+    `(vault_root, base_dir, target_path, error)`.
+    """
+    base_dir, target_path, err = _validate_env_file(cwd, env_file_raw)
+    if err:
+        return None, None, None, err
+    try:
+        root = _runtime.resolve(_self, "_vault_root")(str(base_dir))
+    except Exception:
+        root = None
+    if root is None:
+        return None, None, None, (
+            "no CipherVault vault at or above cwd: secret tools only write inside an "
+            "existing vault (run `ciphervault init` there first)"
+        )
+    vault_root = Path(root).resolve()
+    if (
+        not target_path.is_relative_to(vault_root)
+        or ".ciphervault" in target_path.relative_to(vault_root).parts
+    ):
+        return None, None, None, "env_file must resolve inside the vault root, outside .ciphervault/"
+    try:
+        hermes_home = _runtime.resolve(binary, "_hermes_home")().resolve()
+    except Exception:
+        hermes_home = None
+    if hermes_home is not None and target_path.is_relative_to(hermes_home):
+        return None, None, None, (
+            "env_file resolves inside the Hermes home; CipherVault secret tools never write there"
+        )
+    return vault_root, base_dir, target_path, None
+
+
 _ARG_TOKEN_RE = re.compile(r"[^\s\"'`;|&<>(){}\[\]=,]+")
 _ARG_SCAN_CHARS = 16_384
 _ARG_MAX_TOKENS = 256

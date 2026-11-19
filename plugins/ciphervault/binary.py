@@ -65,7 +65,25 @@ RELEASE_BASE = (
 )
 
 
+def _hermes_home_resolver():
+    """Hermes's own home resolver, which also handles profiles, or None
+    outside Hermes (unit tests, the standalone dashboard process)."""
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+    except Exception:
+        return None
+    return get_hermes_home
+
+
 def _hermes_home() -> Path:
+    resolver = _runtime.resolve(_self, "_hermes_home_resolver")()
+    if resolver is not None:
+        try:
+            home = resolver()
+            if home:
+                return Path(home)
+        except Exception:
+            pass
     return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
 
 
