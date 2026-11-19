@@ -502,28 +502,9 @@ def _tool_env_doctor(params, **kwargs):
 
 # ---------------------------------------------------------------- secret generation & prompt
 
-def _validate_env_file(cwd, env_file_raw):
-    """Resolve `cwd` and `env_file`, ensuring `env_file` is a safe relative path
-    inside `cwd` and outside `.ciphervault`."""
-    base_dir = Path(cwd or os.getcwd()).resolve()
-    if not base_dir.is_dir():
-        return None, None, f"workspace directory does not exist: {cwd}"
-    env_file = str(env_file_raw or ".env").strip()
-    if (
-        not env_file
-        or "\x00" in env_file
-        or env_file.startswith(("/", "\\"))
-        or ".." in Path(env_file).parts
-    ):
-        return None, None, "env_file must be a valid relative path inside workspace cwd"
-    target_path = (base_dir / env_file).resolve()
-    if (
-        target_path == base_dir
-        or not target_path.is_relative_to(base_dir)
-        or ".ciphervault" in target_path.relative_to(base_dir).parts
-    ):
-        return None, None, "env_file must be a valid path inside workspace cwd"
-    return base_dir, target_path, None
+# Path validation lives in `bridge` so the pre_tool_call gate and the tools
+# share one definition; re-exported here for the facade.
+_validate_env_file = bridge._validate_env_file
 
 
 def _env_file_has_key(target_path: Path, name: str) -> bool:
@@ -540,12 +521,23 @@ def _env_file_has_key(target_path: Path, name: str) -> bool:
     return False
 
 
-def _upsert_env_vars(target_path: Path, pairs: list[tuple[str, str]]) -> None:
-    """Update existing KEY=... lines or append new ones in `target_path`."""
+def _upsert_env_vars(target_path: Path, pairs: list[tuple[str, str]], replace=()) -> None:
+    """Append KEY=value lines to `target_path`, or replace an existing KEY line
+    when KEY is in `replace` (the user approved replacing it). Any other
+    existing KEY refuses the whole write before the file changes."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     if target_path.is_file():
         lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    allowed = set(replace)
+    for name, _value in pairs:
+        if name in allowed:
+            continue
+        pattern = re.compile(rf"^(?:\ufeff)?(?:export\s+)?{re.escape(name)}\s*=")
+        if any(pattern.match(line) for line in lines):
+            raise ValueError(
+                f"{name} already exists in {target_path.name}; refusing to replace it without the user's confirmation"
+            )
     for name, value in pairs:
         pattern = re.compile(rf"^(?:\ufeff)?(?:export\s+)?{re.escape(name)}\s*=")
         replaced = False
@@ -634,7 +626,9 @@ def _tool_secret_generate(params, **kwargs):
     env_file = str(params.get("env_file") or ".env").strip()
     if not env_file:
         return json.dumps({"success": False, "error": "env_file cannot be empty"})
-    base_dir, target_path, path_err = _validate_env_file(cwd, env_file)
+    vault_root, _base_dir, target_path, path_err = _runtime.resolve(bridge, "_secret_write_target")(
+        cwd, env_file
+    )
     if path_err:
         return json.dumps({"success": False, "error": path_err})
 
@@ -646,13 +640,11 @@ def _tool_secret_generate(params, **kwargs):
     else:
         seal = bool(seal_param)
 
-    vault_cwd = _runtime.resolve(bridge, "_vault_cwd")(cwd)
-    try:
-        track_arg = target_path.relative_to(Path(vault_cwd).resolve()).as_posix()
-    except Exception:
-        track_arg = target_path.relative_to(base_dir).as_posix()
+    vault_cwd = str(vault_root)
+    track_arg = target_path.relative_to(vault_root).as_posix()
 
     # Prefer native `ciphervault vault generate`: zero plaintext in Python or on disk.
+    # Without --overwrite the CLI refuses an existing key, sealed or not.
     if _runtime.resolve(binary, "_cli_supports_vault_secret")(vault_cwd):
         cli_args = [
             "vault", "generate", name,
@@ -723,7 +715,7 @@ def _tool_secret_generate(params, **kwargs):
         return binary.scrub(str(msg).replace(value, "[REDACTED]"))
 
     try:
-        _upsert_env_vars(target_path, [(name, value)])
+        _upsert_env_vars(target_path, [(name, value)], replace={name} if overwrite else ())
         run_cli_fn = _runtime.resolve(bridge, "_run_cli")
         track_res = run_cli_fn(["track", track_arg], vault_cwd, timeout=60)
         if not track_res.get("success"):
@@ -760,6 +752,48 @@ def _tool_secret_generate(params, **kwargs):
         return json.dumps({"success": False, "error": _scrub_generated(exc)})
     finally:
         value = ""
+
+
+def _existing_secret_names(vault_cwd, target_path: Path, track_arg: str, names) -> tuple[set, bool]:
+    """Which of `names` the vault's `track_arg` env file already defines, and
+    whether that answer is certain. Reads key names only, never values: from
+    the plaintext file when present, else from the vault (a sealed file is not
+    on disk). Uncertain answers make the caller ask before every key."""
+    wanted = set(names)
+    found = {n for n in wanted if _env_file_has_key(target_path, n)}
+    run_cli_json_fn = _runtime.resolve(bridge, "_run_cli_json")
+    status = run_cli_json_fn(["status", "--json"], vault_cwd, timeout=20)
+    if status.get("success") and isinstance(status.get("data"), dict):
+        tracked = {
+            str(p).replace("\\", "/").lstrip("./")
+            for p in (status["data"].get("tracked_paths") or [])
+        }
+        if track_arg.replace("\\", "/").lstrip("./") not in tracked and not target_path.exists():
+            return found, True  # a new file: nothing in it to replace
+    listing = run_cli_json_fn(
+        ["run", "--dry-run", "--json", "--env-file", track_arg, "--", "echo", "ok"],
+        vault_cwd,
+        timeout=30,
+    )
+    if listing.get("success") and isinstance(listing.get("data"), dict):
+        listed = {
+            str(item.get("name"))
+            for item in (listing["data"].get("secrets") or [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        return found | (listed & wanted), True
+    return found, False
+
+
+def _confirm_replace(name: str, env_file: str, certain: bool = True) -> bool:
+    """Ask the user at the terminal before replacing an existing key. Only an
+    explicit "y" or "yes" counts; anything else, or no answer, keeps it."""
+    state = "already exists" if certain else "may already exist (could not check)"
+    try:
+        answer = input(f"{name} {state} in {env_file}. Replace it? [y/N]: ")
+    except (EOFError, OSError):
+        return False
+    return answer.strip().lower() in ("y", "yes")
 
 
 def _tool_secret_prompt(params, **kwargs):
@@ -804,7 +838,9 @@ def _tool_secret_prompt(params, **kwargs):
 
     cwd = params.get("cwd") or os.getcwd()
     env_file = str(params.get("env_file") or ".env").strip()
-    base_dir, target_path, path_err = _validate_env_file(cwd, env_file)
+    vault_root, _base_dir, target_path, path_err = _runtime.resolve(bridge, "_secret_write_target")(
+        cwd, env_file
+    )
     if path_err:
         return json.dumps({"success": False, "error": path_err})
 
@@ -814,6 +850,10 @@ def _tool_secret_prompt(params, **kwargs):
 
     if os.environ.get("CIPHERVAULT_INTERACTIVE_PROMPT") == "1" and sys.stdin.isatty():
         entered: list[tuple[str, str]] = []
+        replace_ok: set[str] = set()
+        skipped_existing: list[str] = []
+        vault_cwd = str(vault_root)
+        track_arg = target_path.relative_to(vault_root).as_posix()
 
         def _scrub_entered(msg):
             out = str(msg)
@@ -823,8 +863,17 @@ def _tool_secret_prompt(params, **kwargs):
             return binary.scrub(out)
 
         try:
+            existing, certain = _existing_secret_names(
+                vault_cwd, target_path, track_arg, [item["name"] for item in normalized_keys]
+            )
+            confirm_fn = _runtime.resolve(_self, "_confirm_replace")
             for item in normalized_keys:
                 name = item["name"]
+                if name in existing or not certain:
+                    if not confirm_fn(name, env_file, certain=name in existing):
+                        skipped_existing.append(name)
+                        continue
+                    replace_ok.add(name)
                 hint_parts = []
                 if item.get("reason"):
                     hint_parts.append(item["reason"])
@@ -845,13 +894,17 @@ def _tool_secret_prompt(params, **kwargs):
                     })
                 entered.append((name, val))
 
-            vault_cwd = _runtime.resolve(bridge, "_vault_cwd")(cwd)
-            try:
-                track_arg = target_path.relative_to(Path(vault_cwd).resolve()).as_posix()
-            except Exception:
-                track_arg = target_path.relative_to(base_dir).as_posix()
+            if not entered:
+                return json.dumps({
+                    "success": False,
+                    "error": "nothing configured: the user kept every existing key",
+                    "skipped_existing": skipped_existing,
+                })
+            extra = {"skipped_existing": skipped_existing} if skipped_existing else {}
 
             # Prefer native `ciphervault vault set <NAME> --stdin`: zero plaintext on disk.
+            # `vault set` always replaces, so only keys that are new or that the user
+            # confirmed above reach it.
             if _runtime.resolve(binary, "_cli_supports_vault_secret")(vault_cwd):
                 run_cli_json_fn = _runtime.resolve(bridge, "_run_cli_json")
                 last_head = None
@@ -888,6 +941,7 @@ def _tool_secret_prompt(params, **kwargs):
                     "env_file": env_file,
                     "sealed": last_sealed,
                     "snapshot_head": last_head,
+                    **extra,
                 })
 
             # Legacy CLI fallback: fail CLOSED if vault working tree is sealed!
@@ -897,7 +951,7 @@ def _tool_secret_prompt(params, **kwargs):
             if sealed_err:
                 return json.dumps({"success": False, "error": sealed_err})
 
-            _upsert_env_vars(target_path, entered)
+            _upsert_env_vars(target_path, entered, replace=replace_ok)
             run_cli_fn = _runtime.resolve(bridge, "_run_cli")
             track_res = run_cli_fn(["track", track_arg], vault_cwd, timeout=60)
             if not track_res.get("success"):
@@ -927,17 +981,16 @@ def _tool_secret_prompt(params, **kwargs):
                 "configured": configured_names,
                 "env_file": env_file,
                 "sealed": seal,
+                **extra,
             })
         except Exception as exc:
             return json.dumps({"success": False, "error": _scrub_entered(exc)})
         finally:
             entered.clear()
 
-    # Normal agent/desktop flow: queue metadata-only prompt (zero secrets!).
-    vroot = _runtime.resolve(bridge, "_vault_root")(cwd) or base_dir
-    cv_dir = vroot / ".ciphervault"
-    cv_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path = cv_dir / "pending_secret_prompts.json"
+    # Normal agent/desktop flow: queue metadata-only prompt (zero secrets!) in the
+    # vault that owns `env_file`; the user enters the values in the desktop pane.
+    prompt_path = vault_root / ".ciphervault" / "pending_secret_prompts.json"
     existing_keys = []
     if prompt_path.is_file():
         try:
@@ -1309,7 +1362,7 @@ _TOOLS = [
     (
         "ciphervault_secret_generate",
         _tool_secret_generate,
-        "Generate a cryptographically random secret inside the vault without exposing the value to chat or logs. Preserves all other sealed keys via native `ciphervault vault generate`. Refuses to overwrite an existing key unless overwrite=true (which requires explicit user approval). Returns only name, format, length, and SHA-256 prefix.",
+        "Generate a cryptographically random secret inside an existing vault without exposing the value to chat or logs. `cwd` must be inside a CipherVault vault and `env_file` inside that vault; every call asks the user for approval first. Preserves all other sealed keys via native `ciphervault vault generate`. Refuses to overwrite an existing key unless overwrite=true, which needs its own one-time user approval. Returns only name, format, length, and SHA-256 prefix.",
         {
             "name": {"type": "string", "description": "Environment variable name ([A-Za-z_][A-Za-z0-9_]*)"},
             "format": {"type": "string", "enum": ["base64url", "hex", "uuid", "alphanumeric"], "default": "base64url"},
@@ -1348,7 +1401,7 @@ _TOOLS = [
     (
         "ciphervault_secret_prompt",
         _tool_secret_prompt,
-        "Queue a secure secret input prompt in the CipherVault desktop pane (or interactive TTY) so the user can supply missing API keys or credentials without pasting secrets into chat.",
+        "Queue a secure secret input prompt in the CipherVault desktop pane (or interactive TTY) so the user can supply missing API keys or credentials without pasting secrets into chat. `cwd` must be inside a CipherVault vault and `env_file` inside that vault; every call asks the user for approval first, and the terminal prompt asks again before replacing a key that already exists.",
         {
             "keys": {
                 "type": "array",

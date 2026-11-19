@@ -475,11 +475,107 @@ def pre_llm_call(*args, **kwargs):
 
 # ---------------------------------------------------------------- tool hooks
 
+_SECRET_WRITE_TOOLS = ("ciphervault_secret_generate", "ciphervault_secret_prompt")
+
+
+def _requested_secret_names(raw_keys):
+    """Valid key names from a `ciphervault_secret_prompt` `keys` argument."""
+    names = []
+    for item in raw_keys if isinstance(raw_keys, list) else []:
+        name = item if isinstance(item, str) else (item.get("name") if isinstance(item, dict) else None)
+        name = str(name or "").strip()
+        if policy._ENV_KEY_RE.fullmatch(name) and name not in names:
+            names.append(name)
+    return names
+
+
+def _secret_write_gate(tool_name, args, cwd, audit_fn):
+    """Approval gate for the two tools that write secrets into an env file.
+
+    The model chooses `cwd` and `env_file`, so the call is blocked unless the
+    target lies inside an existing vault (see `bridge._secret_write_target`),
+    and otherwise always goes to Hermes's approval prompt. An "always" grant
+    is scoped to that vault and env file. Overwriting an existing key gets a
+    one-shot rule key, so no earlier grant can approve it."""
+    if not isinstance(args, dict):
+        return {"action": "block", "message": "CipherVault guard: invalid tool arguments"}
+    env_file = str(args.get("env_file") or ".env").strip()
+    vault_root, _base, target, err = _runtime.resolve(bridge, "_secret_write_target")(cwd, env_file)
+    if err:
+        audit_fn(
+            tool_name,
+            "blocked",
+            path=env_file[:128],
+            detail={"reason": "secret_target_outside_vault"},
+            cwd=cwd,
+        )
+        return {"action": "block", "message": f"CipherVault guard: {err}"}
+
+    rel = target.relative_to(vault_root).as_posix()
+    vault_cwd = str(vault_root)
+    scope = hashlib.sha256(
+        f"{os.path.normcase(vault_cwd)}\n{rel}".encode("utf-8")
+    ).hexdigest()[:12]
+    where = f"{rel!r} in the vault at {vault_cwd}"
+
+    if tool_name == "ciphervault_secret_generate":
+        key_name = str(args.get("name") or "").strip()[:64] or "?"
+        overwrite = bool(args.get("overwrite"))
+        audit_fn(
+            tool_name,
+            "approval_requested",
+            path=rel,
+            detail={"name": key_name, "overwrite": overwrite},
+            cwd=vault_cwd,
+        )
+        if overwrite:
+            return {
+                "action": "approve",
+                "message": (
+                    f"CipherVault: overwrite the existing secret {key_name!r} in {where}? "
+                    "Replacing an active key may invalidate existing credentials or sessions."
+                ),
+                "rule_key": f"ciphervault_secret_generate:overwrite:{key_name}:{scope}:oneshot={secrets.token_hex(6)}",
+            }
+        return {
+            "action": "approve",
+            "message": (
+                f"CipherVault: generate a new random secret {key_name!r} into {where}? "
+                "The value is never shown to the model, and an existing key is not replaced."
+            ),
+            "rule_key": f"ciphervault_secret_generate:{scope}",
+        }
+
+    names = _requested_secret_names(args.get("keys"))
+    if not names:
+        return {
+            "action": "block",
+            "message": "CipherVault guard: keys must list valid secret names ([A-Za-z_][A-Za-z0-9_]*)",
+        }
+    audit_fn(
+        tool_name,
+        "approval_requested",
+        path=rel,
+        detail={"keys": names[:20]},
+        cwd=vault_cwd,
+    )
+    shown = ", ".join(names[:8]) + (f" (+{len(names) - 8} more)" if len(names) > 8 else "")
+    return {
+        "action": "approve",
+        "message": (
+            f"CipherVault: ask you to enter {shown} for {where}? "
+            "You type the values yourself, outside the chat."
+        ),
+        "rule_key": f"ciphervault_secret_prompt:{scope}:keys={','.join(sorted(names))}",
+    }
+
+
 def on_pre_tool_call(tool_name, args, **kwargs):
     """Leak guard. Blocks secret-file reads/searches/writes, secret-shaped
     content handed to other tools, and git add/commit/push while violations
-    exist or hook checks fail inside a vault. Gates ciphervault_run and
-    ciphervault_secret_generate(overwrite=True) behind Hermes approval."""
+    exist or hook checks fail inside a vault. Gates ciphervault_run,
+    ciphervault_secret_generate and ciphervault_secret_prompt behind Hermes
+    approval, and blocks the two secret tools outside an existing vault."""
     cwd = (
         ((args or {}).get("cwd") or (args or {}).get("workdir") or os.getcwd())
         if isinstance(args, dict)
@@ -548,25 +644,16 @@ def on_pre_tool_call(tool_name, args, **kwargs):
                 "rule_key": rule_key,
             }
 
-        if tool_name == "ciphervault_secret_generate" and isinstance(args, dict) and bool(args.get("overwrite")):
-            vault_cwd = vault_cwd_fn(cwd)
-            key_name = str(args.get("name") or "").strip()[:64] or "?"
-            env_file = str(args.get("env_file") or ".env").strip()[:128]
-            audit_fn(
-                "ciphervault_secret_generate",
-                "approval_requested",
-                path=env_file,
-                detail={"name": key_name, "overwrite": True},
-                cwd=vault_cwd,
-            )
-            return {
-                "action": "approve",
-                "message": (
-                    f"CipherVault: overwrite existing secret {key_name!r} in {env_file!r}? "
-                    "Replacing an active key may invalidate existing credentials or sessions."
-                ),
-                "rule_key": f"ciphervault_secret_generate:overwrite:{key_name}",
-            }
+        if tool_name in _SECRET_WRITE_TOOLS:
+            try:
+                return _secret_write_gate(tool_name, args, cwd, audit_fn)
+            except Exception:
+                # Unlike the outer handler, fail closed even outside a vault:
+                # these tools write files wherever the arguments point.
+                return {
+                    "action": "block",
+                    "message": "CipherVault guard: could not check where this secret tool would write; failing closed.",
+                }
 
         if not tool_name or tool_name.startswith("ciphervault_"):
             return None

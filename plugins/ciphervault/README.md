@@ -26,15 +26,15 @@ throwaway vault in about two minutes.
 | `ciphervault_redact` | Mask text with vault-exact + shape redaction before quoting it |
 | `ciphervault_audit` | Tamper-evident agent audit log (hash-chained, domain-separated device-signed, per-vault `audit_hmac.key` caller-authenticated): blocked reads, approval requests, scrubbed results, writes — plus chain verification and output-hash lookup (`check_text`) |
 | `ciphervault_env_doctor` | Zero-knowledge environment & schema diagnostics (`ciphervault env-doctor --json`): compares code env references and `.env.example` against vault keys and detects structural value anomalies (`EMPTY_VALUE`, `WHITESPACE_WRAPPED`, `UNSTRIPPED_QUOTES`, `PLACEHOLDER_VALUE`, `INVALID_URL`, `INVALID_JSON`, `PREFIX_MISMATCH`) even on sealed/shredded vaults without exposing values; `sync_env_example` safely updates `.env.example` |
-| `ciphervault_secret_generate` | In-vault CSPRNG secret provisioning (`base64url`, `hex`, `uuid`, `alphanumeric`): generates entropy in RAM, tracks and seals into the vault, and returns only `{name, format, length_chars, sha256_prefix, sealed}` |
+| `ciphervault_secret_generate` | In-vault CSPRNG secret provisioning (`base64url`, `hex`, `uuid`, `alphanumeric`): generates entropy in RAM, tracks and seals into the vault, and returns only `{name, format, length_chars, sha256_prefix, sealed}`. Only inside an existing vault, after Hermes approval; never replaces an existing key unless `overwrite=true` gets its own one-time approval |
 | `ciphervault_diff` | Masked key-level diff between snapshots or against the working tree (`ciphervault diff --json`, never `--reveal`) |
 | `ciphervault_proxy_doctor` | Dry-run proxy route diagnostic: reports which vault keys map to built-in provider routes vs `.ciphervault/policy.toml` upstreams vs unmapped keys |
-| `ciphervault_secret_prompt` | Out-of-band human secret request: queues requested key metadata in `.ciphervault/pending_secret_prompts.json` for the Hermes desktop Secret Entry Drawer (or reads via hidden TTY `getpass`) so users never paste secrets into chat |
+| `ciphervault_secret_prompt` | Out-of-band human secret request: queues requested key metadata in `.ciphervault/pending_secret_prompts.json` for the Hermes desktop Secret Entry Drawer (or reads via hidden TTY `getpass`) so users never paste secrets into chat. Only inside an existing vault, after Hermes approval; the TTY prompt asks again before replacing a key that already exists |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file/policy reads & writes, secret-dumping CLI commands, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
 | `transform_tool_result` hook | Scrubs every other tool's result before it enters context across 256 KB chunks with 4 KB seam overlaps (up to 4 MB default via `CIPHERVAULT_MAX_RESULT_CHARS`), against every vault the call touches |
 | `tool_request` middleware | Defaults the session cwd into `ciphervault_*` calls and attaches one-time ambient workspace posture |
 | Secret source `ciphervault` | Hermes' own env vars sourced from a vault at startup (`secrets.ciphervault.*`) |
-| `/ciphervault`, `hermes ciphervault` | Chat slash command; terminal `bootstrap`, `setup` (wizard for binary + `.ciphervault/policy.toml` + `--wire-hermes`), `status`, `doctor`, `quickstart` |
+| `/ciphervault`, `hermes ciphervault` | Chat slash command; terminal `bootstrap`, `setup` (wizard for binary + `.ciphervault/policy.toml`; `--wire-hermes` prints the `hermes config set` commands for the secret source), `status`, `doctor`, `quickstart` |
 | Desktop pane + page + chip | Live vault status, one-click **Seal & shred `.env`**, masked **Secret Entry Drawer** with pending prompt chips, **Env Health** card, and verified **Agent Audit** feed (`dashboard/plugin_api.py` + `desktop/plugin.js`) |
 | Redaction patterns | `cvst1.*`, Stripe/GitHub/AWS key shapes added to Hermes' redactor |
 
@@ -47,6 +47,9 @@ throwaway vault in about two minutes.
   every `ciphervault_run` call returns Hermes's `approve` directive
   from `pre_tool_call`, so it passes the same human-approval gate as
   dangerous shell commands — the plugin never routes around it.
+  `ciphervault_secret_generate` and `ciphervault_secret_prompt` go
+  through the same gate on every call; an approval to overwrite an
+  existing key is one-time and never covered by an "always" grant.
   CLI subprocesses get a minimal allow-listed environment (Hermes
   provider keys are not passed down). Tool results scrubbed by the
   `transform_tool_result` hook are scanned in 256 KB chunks with 4 KB
@@ -103,6 +106,15 @@ throwaway vault in about two minutes.
   code hash, network mode (`no_net`/`proxy`/`open`), and `allow_keys`,
   so approving an offline test run never covers inline code execution
   or wider secret/network access.
+- **Writes outside its data:** `ciphervault_secret_generate` and
+  `ciphervault_secret_prompt` write one env file, and only when the
+  call's `cwd` is inside an existing vault and the file resolves
+  (after symlinks) inside that vault, outside `.ciphervault/` and
+  outside the Hermes home; anything else is blocked before approval
+  is asked. They never replace an existing `NAME=` line without your
+  yes. `hermes ciphervault setup` writes `.ciphervault/policy.toml`
+  in the vault; it never edits Hermes's `config.yaml` (`--wire-hermes`
+  only prints the `hermes config set` commands to run).
 - **Credentials:** the plugin holds none. The secret source passes the
   CLI's `export-env` JSON output straight to Hermes' orchestrator.
 - **Approvals/unattended:** tools fail with structured JSON errors when
@@ -119,7 +131,7 @@ hermes ciphervault doctor
 ```
 
 The catalog installs the version it pins, which can lag this repository (it was
-v0.6.5 with 7 tools when last checked, 18 November 2026). For v0.7.1 and all 12
+v0.6.5 with 7 tools when last checked, 18 November 2026). For v0.7.2 and all 12
 tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
 (default `~/.hermes`), then run `hermes plugins enable ciphervault`.
 

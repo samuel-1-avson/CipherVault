@@ -2109,13 +2109,21 @@ def test_env_doctor_detects_drift_anomalies_and_sealed_fallback(ctx, tmp_path, m
 
 @pytest.mark.parametrize("fmt", ["base64url", "hex", "uuid", "alphanumeric"])
 def test_secret_generate_writes_env_and_never_exposes_secret(ctx, tmp_path, monkeypatch, fmt):
+    _marker_vault(tmp_path)
     cli_calls = []
 
     def fake_run(args, cwd, timeout=120, input_text=None):
         cli_calls.append(list(args))
+        if args[:2] == ["status", "--json"]:
+            return {
+                "success": True,
+                "output": json.dumps({"vault": True, "working_tree_sealed": False, "tracked_paths": []}),
+                "binary": "test",
+            }
         return {"success": True, "output": "ok", "binary": "test"}
 
     monkeypatch.setattr(cv, "_run_cli", fake_run)
+    monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: False)
     raw = ctx.tools["ciphervault_secret_generate"][1]({
         "name": "NEXTAUTH_SECRET",
         "format": fmt,
@@ -2145,13 +2153,15 @@ def test_secret_generate_writes_env_and_never_exposes_secret(ctx, tmp_path, monk
 
 
 def test_secret_generate_validates_inputs(ctx, tmp_path):
+    vault = str(_marker_vault(tmp_path / "proj"))
     for bad in [
-        {"name": "123BAD", "cwd": str(tmp_path)},
-        {"name": "GOOD_NAME", "format": "plain", "cwd": str(tmp_path)},
-        {"name": "GOOD_NAME", "bytes": 8, "cwd": str(tmp_path)},
-        {"name": "GOOD_NAME", "bytes": True, "cwd": str(tmp_path)},
-        {"name": "GOOD_NAME", "env_file": "../escape.env", "cwd": str(tmp_path)},
-        {"name": "GOOD_NAME", "env_file": ".ciphervault/vault.db", "cwd": str(tmp_path)},
+        {"name": "123BAD", "cwd": vault},
+        {"name": "GOOD_NAME", "format": "plain", "cwd": vault},
+        {"name": "GOOD_NAME", "bytes": 8, "cwd": vault},
+        {"name": "GOOD_NAME", "bytes": True, "cwd": vault},
+        {"name": "GOOD_NAME", "env_file": "../escape.env", "cwd": vault},
+        {"name": "GOOD_NAME", "env_file": ".ciphervault/vault.db", "cwd": vault},
+        {"name": "GOOD_NAME", "cwd": str(tmp_path)},  # no vault at or above cwd
     ]:
         res = json.loads(ctx.tools["ciphervault_secret_generate"][1](bad))
         assert res["success"] is False
@@ -2493,24 +2503,35 @@ def test_setup_workspace_scaffolds_policy_and_wires_hermes_config(tmp_path, monk
     assert dry["success"] is True
     assert dry["dry_run"] is True
     assert dry["policy"]["action"] == "would_write"
-    assert dry["hermes_secret_source"]["action"] == "would_wire_secret_source"
+    assert dry["hermes_secret_source"]["action"] == "run_these_commands"
     assert not (vault / ".ciphervault" / "policy.toml").exists()
     assert not (hermes_home / "config.yaml").exists()
 
+    # --wire-hermes never edits Hermes's config.yaml: it hands back the
+    # `hermes config set` commands, and the user's file stays byte-for-byte.
+    hermes_home.mkdir()
+    original_cfg = "# my settings\nmodel: hermes-4  # keep this comment\nsecrets:\n  other: {}\n"
+    (hermes_home / "config.yaml").write_text(original_cfg, encoding="utf-8")
     res = cv.setup_workspace(cwd=str(vault), sealed=True, wire_hermes_config=True)
     assert res["success"] is True
     assert res["vault_initialized"] is True
     assert res["policy"]["written"] is True
-    assert res["hermes_secret_source"]["updated"] is True
+    wiring = res["hermes_secret_source"]
+    assert wiring["updated"] is False
+    assert wiring["action"] == "run_these_commands"
+    assert wiring["vault_path"] == str(vault.resolve())
+    assert wiring["commands"] == [cv._shell_command(argv) for argv in [
+        ["hermes", "config", "set", "secrets.ciphervault.enabled", "true"],
+        ["hermes", "config", "set", "secrets.ciphervault.vault_path", str(vault.resolve())],
+        ["hermes", "config", "set", "secrets.ciphervault.allow_working_copy", "false"],
+    ]]
+    assert all(cmd in res["next_steps"] for cmd in wiring["commands"])
+    assert (hermes_home / "config.yaml").read_text(encoding="utf-8") == original_cfg
 
     policy_text = (vault / ".ciphervault" / "policy.toml").read_text(encoding="utf-8")
     assert "sealed_mode = true" in policy_text
     assert "[profiles.test]" in policy_text
     assert "[profiles.llm_eval]" in policy_text
-
-    cfg_text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
-    assert "ciphervault" in cfg_text
-    assert "allow_working_copy: false" in cfg_text
 
     # Re-running without force preserves existing policy.toml.
     (vault / ".ciphervault" / "policy.toml").write_text("# custom\n", encoding="utf-8")
@@ -2541,7 +2562,8 @@ def test_cli_setup_subcommand_parses_and_runs_dry_run(tmp_path, monkeypatch, cap
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is True
     assert out["vault_initialized"] is False
-    assert out["hermes_secret_source"]["action"] == "would_wire_secret_source"
+    assert out["hermes_secret_source"]["action"] == "run_these_commands"
+    assert not (tmp_path / "hh" / "config.yaml").exists()
 
 
 def test_proxy_doctor_reports_providers_policy_and_unmapped_without_values(tmp_path, monkeypatch):
@@ -2732,12 +2754,12 @@ def test_real_cli_env_doctor_works_on_sealed_shredded_vault(real_vault):
 # ------------------------------------------------------------ v0.7.1 hardening, sealed-vault fix & lifecycle hooks
 
 
-def test_plugin_yaml_declares_v071_and_new_lifecycle_hooks():
+def test_plugin_yaml_declares_version_and_lifecycle_hooks():
     yaml_text = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-    assert 'version: "0.7.1"' in yaml_text
+    assert 'version: "0.7.2"' in yaml_text
     for hook in ("on_session_start", "pre_llm_call", "pre_tool_call", "transform_tool_result", "post_tool_call"):
         assert f"- {hook}" in yaml_text
-    assert cv.PLUGIN_VERSION == "0.7.1"
+    assert cv.PLUGIN_VERSION == "0.7.2"
 
 
 def test_dashboard_manifest_version_matches_plugin_version():
@@ -2884,20 +2906,211 @@ def test_secret_generate_legacy_fallback_fails_closed_on_sealed_vault_and_refuse
     assert "original-value" not in (vault / ".env").read_text(encoding="utf-8")
 
 
-def test_secret_generate_overwrite_requires_pre_tool_call_approval(ctx, tmp_path, monkeypatch):
+def test_secret_generate_always_requires_pre_tool_call_approval(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path / "proj")
     calls = _capture_audit(monkeypatch)
-    assert cv.on_pre_tool_call("ciphervault_secret_generate", {"name": "NEW_KEY", "cwd": str(tmp_path)}) is None
-    assert cv.on_pre_tool_call(
-        "ciphervault_secret_generate", {"name": "NEW_KEY", "overwrite": False, "cwd": str(tmp_path)}
-    ) is None
 
+    # Every generate call goes to Hermes approval, scoped to the vault and env file.
+    new = cv.on_pre_tool_call("ciphervault_secret_generate", {"name": "NEW_KEY", "cwd": str(vault)})
+    assert new and new["action"] == "approve"
+    assert "NEW_KEY" in new["message"] and str(vault.resolve()) in new["message"]
+    assert "overwrite" not in new["rule_key"]
+    again = cv.on_pre_tool_call(
+        "ciphervault_secret_generate", {"name": "OTHER_KEY", "overwrite": False, "cwd": str(vault)}
+    )
+    assert again["rule_key"] == new["rule_key"]
+    other_file = cv.on_pre_tool_call(
+        "ciphervault_secret_generate", {"name": "NEW_KEY", "env_file": ".env.local", "cwd": str(vault)}
+    )
+    assert other_file["rule_key"] != new["rule_key"]
+
+    # Overwriting is one-shot: no "always" grant can cover the next one.
     appr = cv.on_pre_tool_call(
-        "ciphervault_secret_generate", {"name": "EXISTING_KEY", "overwrite": True, "cwd": str(tmp_path)}
+        "ciphervault_secret_generate", {"name": "EXISTING_KEY", "overwrite": True, "cwd": str(vault)}
     )
     assert appr and appr["action"] == "approve"
-    assert "EXISTING_KEY" in appr["message"]
+    assert "EXISTING_KEY" in appr["message"] and "overwrite" in appr["message"]
     assert "overwrite" in appr["rule_key"]
+    appr2 = cv.on_pre_tool_call(
+        "ciphervault_secret_generate", {"name": "EXISTING_KEY", "overwrite": True, "cwd": str(vault)}
+    )
+    assert appr2["rule_key"] != appr["rule_key"]
     assert any(c[:2] == ["agent-log", "record"] and "approval_requested" in c for c in calls)
+
+
+def test_secret_prompt_requires_pre_tool_call_approval(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path / "proj")
+    _capture_audit(monkeypatch)
+    appr = cv.on_pre_tool_call(
+        "ciphervault_secret_prompt",
+        {"keys": [{"name": "OPENAI_API_KEY", "reason": "LLM"}, "STRIPE_KEY"], "cwd": str(vault)},
+    )
+    assert appr and appr["action"] == "approve"
+    assert "OPENAI_API_KEY" in appr["message"] and "STRIPE_KEY" in appr["message"]
+    assert appr["rule_key"].startswith("ciphervault_secret_prompt:")
+    assert "OPENAI_API_KEY,STRIPE_KEY" in appr["rule_key"]
+    bad = cv.on_pre_tool_call("ciphervault_secret_prompt", {"keys": ["not-a-name"], "cwd": str(vault)})
+    assert bad["action"] == "block"
+    assert cv.on_pre_tool_call("ciphervault_secret_prompt", "not a dict")["action"] == "block"
+
+    # An internal error while checking the target fails closed, vault or not.
+    def boom(cwd, env_file):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(cv, "_secret_write_target", boom)
+    for cwd in (str(vault), str(tmp_path)):
+        for tool in ("ciphervault_secret_prompt", "ciphervault_secret_generate"):
+            out = cv.on_pre_tool_call(tool, {"keys": ["K"], "name": "K", "cwd": cwd})
+            assert out and out["action"] == "block"
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("ciphervault_secret_generate", {"name": "OPENROUTER_API_KEY", "overwrite": True}),
+    ("ciphervault_secret_prompt", {"keys": ["OPENROUTER_API_KEY"]}),
+])
+def test_secret_tools_are_blocked_outside_a_vault(ctx, tmp_path, monkeypatch, tool, args):
+    # The review's example: a model-chosen cwd at the Hermes home (no vault)
+    # must not let either tool rewrite a NAME= line in $HERMES_HOME/.env.
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("OPENROUTER_API_KEY=keep-me\n", encoding="utf-8")
+    monkeypatch.setattr(cv, "_hermes_home_resolver", lambda: None)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _capture_audit(monkeypatch)
+    call = dict(args, cwd=str(hermes_home), env_file=".env")
+
+    gate = cv.on_pre_tool_call(tool, call)
+    assert gate and gate["action"] == "block"
+    assert "vault" in gate["message"]
+    res = json.loads(ctx.tools[tool][1](call))
+    assert res["success"] is False
+    assert (hermes_home / ".env").read_text(encoding="utf-8") == "OPENROUTER_API_KEY=keep-me\n"
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("ciphervault_secret_generate", {"name": "OPENROUTER_API_KEY"}),
+    ("ciphervault_secret_prompt", {"keys": ["OPENROUTER_API_KEY"]}),
+])
+def test_secret_tools_never_write_into_the_hermes_home(ctx, tmp_path, monkeypatch, tool, args):
+    # Even a vault that contains the Hermes home (say, one at the user's home
+    # directory) cannot be used to write the Hermes home's files.
+    vault = _marker_vault(tmp_path / "home")
+    hermes_home = vault / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("OPENROUTER_API_KEY=keep-me\n", encoding="utf-8")
+    monkeypatch.setattr(cv, "_hermes_home_resolver", lambda: None)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _capture_audit(monkeypatch)
+    for call in (
+        dict(args, cwd=str(vault), env_file=".hermes/.env"),
+        dict(args, cwd=str(hermes_home), env_file=".env"),
+    ):
+        gate = cv.on_pre_tool_call(tool, call)
+        assert gate and gate["action"] == "block"
+        assert "Hermes home" in gate["message"]
+        res = json.loads(ctx.tools[tool][1](call))
+        assert res["success"] is False
+    assert (hermes_home / ".env").read_text(encoding="utf-8") == "OPENROUTER_API_KEY=keep-me\n"
+
+
+def test_secret_target_must_stay_inside_the_vault_after_symlinks(tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path / "proj")
+    outside = tmp_path / "outside.env"
+    outside.write_text("KEY=keep-me\n", encoding="utf-8")
+    try:
+        (vault / "linked.env").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available to this user")
+    root, _base, target, err = cv._secret_write_target(str(vault), "linked.env")
+    assert err and root is None and target is None
+
+
+def test_hermes_home_prefers_hermes_resolver(tmp_path, monkeypatch):
+    profile_home = tmp_path / "profiles" / "work"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "plain"))
+    monkeypatch.setattr(cv, "_hermes_home_resolver", lambda: (lambda: str(profile_home)))
+    assert cv._hermes_home() == profile_home
+    # A failing resolver, or none (outside Hermes), falls back to $HERMES_HOME.
+    monkeypatch.setattr(cv, "_hermes_home_resolver", lambda: (lambda: 1 / 0))
+    assert cv._hermes_home() == tmp_path / "plain"
+    monkeypatch.setattr(cv, "_hermes_home_resolver", lambda: None)
+    assert cv._hermes_home() == tmp_path / "plain"
+
+
+def test_upsert_env_vars_never_replaces_without_approval(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export KEEP=1\nOTHER=2\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        cv._upsert_env_vars(env, [("NEW", "x"), ("KEEP", "replaced")])
+    assert env.read_text(encoding="utf-8") == "export KEEP=1\nOTHER=2\n"
+    cv._upsert_env_vars(env, [("NEW", "x")])
+    cv._upsert_env_vars(env, [("KEEP", "replaced")], replace={"KEEP"})
+    assert env.read_text(encoding="utf-8") == "KEEP=replaced\nOTHER=2\nNEW=x\n"
+
+
+def test_secret_prompt_tty_asks_before_replacing_an_existing_key(ctx, tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path / "proj")
+    (vault / ".env").write_text("OPENAI_API_KEY=sk-old-value\n", encoding="utf-8")
+    monkeypatch.setenv("CIPHERVAULT_INTERACTIVE_PROMPT", "1")
+    monkeypatch.setattr(cv.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cv.getpass, "getpass", lambda _p: "sk-new-value-123")
+    monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: False)
+    cli_calls = []
+
+    def fake_run_cli(args, cwd, timeout=300, input_text=None):
+        cli_calls.append(list(args))
+        if args[:2] == ["status", "--json"]:
+            return {"success": True, "output": json.dumps({
+                "vault": True, "working_tree_sealed": False, "tracked_paths": [".env"],
+            })}
+        if args[:3] == ["run", "--dry-run", "--json"]:
+            return {"success": True, "output": json.dumps({"secrets": [{"name": "OPENAI_API_KEY"}]})}
+        return {"success": True, "output": "ok"}
+
+    monkeypatch.setattr(cv, "_run_cli", fake_run_cli)
+    asked = []
+
+    def decline(name, env_file, certain=True):
+        asked.append((name, env_file, certain))
+        return False
+
+    monkeypatch.setattr(cv, "_confirm_replace", decline)
+    call = {"keys": ["OPENAI_API_KEY", "NEW_KEY"], "env_file": ".env", "seal": False, "cwd": str(vault)}
+    res = json.loads(ctx.tools["ciphervault_secret_prompt"][1](call))
+    assert asked == [("OPENAI_API_KEY", ".env", True)]  # only the existing key is asked about
+    assert res["success"] is True
+    assert res["configured"] == ["NEW_KEY"]
+    assert res["skipped_existing"] == ["OPENAI_API_KEY"]
+    text = (vault / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=sk-old-value" in text and "NEW_KEY=sk-new-value-123" in text
+
+    # With a yes, the existing key is replaced.
+    monkeypatch.setattr(cv, "_confirm_replace", lambda name, env_file, certain=True: True)
+    res2 = json.loads(ctx.tools["ciphervault_secret_prompt"][1](dict(call, keys=["OPENAI_API_KEY"])))
+    assert res2["success"] is True and res2["configured"] == ["OPENAI_API_KEY"]
+    assert "OPENAI_API_KEY=sk-new-value-123" in (vault / ".env").read_text(encoding="utf-8")
+
+    # When existence cannot be checked, every key is asked about; declining all writes nothing.
+    monkeypatch.setattr(cv, "_run_cli", lambda args, cwd, timeout=300, input_text=None: {"success": False, "error": "boom"})
+    asked.clear()
+    monkeypatch.setattr(cv, "_confirm_replace", decline)
+    before = (vault / ".env").read_text(encoding="utf-8")
+    res3 = json.loads(ctx.tools["ciphervault_secret_prompt"][1](dict(call, keys=["BRAND_NEW"])))
+    assert asked == [("BRAND_NEW", ".env", False)]
+    assert res3["success"] is False and res3["skipped_existing"] == ["BRAND_NEW"]
+    assert (vault / ".env").read_text(encoding="utf-8") == before
+
+
+def test_confirm_replace_needs_an_explicit_yes(monkeypatch):
+    for answer, expected in (("y", True), ("YES", True), ("", False), ("n", False), ("sure", False)):
+        monkeypatch.setattr("builtins.input", lambda _p, a=answer: a)
+        assert cv._confirm_replace("KEY", ".env") is expected
+
+    def eof(_p):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert cv._confirm_replace("KEY", ".env") is False
 
 
 def test_secret_prompt_tty_native_vault_set_and_sealed_legacy_fail_closed(ctx, tmp_path, monkeypatch):
@@ -2938,8 +3151,12 @@ def test_secret_prompt_tty_native_vault_set_and_sealed_legacy_fail_closed(ctx, t
     assert res["snapshot_head"] == "abcd1234" * 8
     assert secret_val not in json.dumps(res)
     assert not (vault / ".env").exists()
-    assert seen_native[0][0] == ["vault", "set", "OPENAI_API_KEY", "--stdin", "--env-file", ".env", "--json", "--seal"]
-    assert seen_native[0][2] == secret_val
+    set_calls = [c for c in seen_native if c[0][:2] == ["vault", "set"]]
+    assert len(set_calls) == 1
+    assert set_calls[0][0] == ["vault", "set", "OPENAI_API_KEY", "--stdin", "--env-file", ".env", "--json", "--seal"]
+    assert set_calls[0][2] == secret_val
+    # Only the vault set call carries the secret.
+    assert all(c[2] is None for c in seen_native if c[0][:2] != ["vault", "set"])
 
     # 2. Legacy CLI fallback on sealed vault MUST fail closed without writing .env or leaking secret
     monkeypatch.setattr(cv, "_cli_supports_vault_secret", lambda cwd=None: False)

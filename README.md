@@ -662,7 +662,7 @@ hermes ciphervault doctor      # confirms the CLI is compatible; exits nonzero i
 Copy-Item -Recurse plugins\ciphervault "$HOME\.hermes\plugins\ciphervault"
 ```
 
-`hermes ciphervault setup` is a guided wizard for the binary, `.ciphervault/policy.toml`, and (with `--wire-hermes`) pointing Hermes' own provider keys at the vault.
+`hermes ciphervault setup` is a guided wizard for the binary and `.ciphervault/policy.toml`. With `--wire-hermes` it also prints the `hermes config set` commands that point Hermes' own provider keys at the vault; it never edits Hermes' `config.yaml` itself.
 
 > [!NOTE]
 > **Platform status:** `bootstrap` pins a CLI binary for Windows x64, Linux x64 and macOS 13+ (Apple Silicon and Intel). Windows is the verified path. The Linux and macOS binaries are cross-built and have not yet been exercised on real hosts, so treat those platforms as unverified until [Project Status](#-project-status--known-limits) says otherwise. You can always build the CLI yourself (`cargo build --release -p ciphervault-cli`) and point `$CIPHERVAULT_BIN` at it.

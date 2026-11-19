@@ -41,12 +41,16 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
    - `ciphervault_secret_generate` to generate cryptographically strong
      random secrets directly inside the vault (`ciphervault vault generate`,
      preserving all previously sealed keys with zero plaintext written by
-     Python); defaults to `overwrite=false` and requires explicit user
-     approval when `overwrite=true`;
+     Python); defaults to `overwrite=false`. Every call asks the user for
+     approval, and `overwrite=true` needs its own one-time approval;
    - `ciphervault_secret_prompt` to queue a secure secret input prompt in
      the CipherVault desktop pane (or interactive TTY via `vault set --stdin`)
      when human-supplied API keys or credentials are missing — never ask the
-     user to paste secrets into chat;
+     user to paste secrets into chat. It asks for approval too, and the
+     TTY prompt asks again before replacing an existing key;
+   - both secret tools only work inside an existing vault: pass the
+     vault's `cwd`, and keep `env_file` inside it (never `.ciphervault/`
+     or the Hermes home). Outside a vault they are blocked;
    - `ciphervault_diff` to inspect masked key-level diffs between snapshots
      or against the working tree (never passes `--reveal`);
    - `ciphervault_redact` to mask text you must quote;

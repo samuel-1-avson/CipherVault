@@ -275,53 +275,36 @@ def quickstart(progress=print, keep=False):
             shutil.rmtree(demo, ignore_errors=True)
 
 
-def _upsert_hermes_secret_source(config_path: Path, vault_path: str) -> dict:
-    """Safely enable `secrets.ciphervault` in `$HERMES_HOME/config.yaml`
-    without touching or logging any secret values."""
-    existing = ""
-    if config_path.is_file():
-        existing = config_path.read_text(encoding="utf-8", errors="replace")
-    try:
-        import yaml  # type: ignore
+def _hermes_secret_source_commands(vault_path: str) -> list[list[str]]:
+    """The `hermes config set` commands that enable Hermes's own
+    `secrets.ciphervault` source for `vault_path`."""
+    return [
+        ["hermes", "config", "set", "secrets.ciphervault.enabled", "true"],
+        ["hermes", "config", "set", "secrets.ciphervault.vault_path", str(vault_path)],
+        ["hermes", "config", "set", "secrets.ciphervault.allow_working_copy", "false"],
+    ]
 
-        data = yaml.safe_load(existing) if existing.strip() else {}
-        if not isinstance(data, dict):
-            return {"updated": False, "error": f"{config_path} is not a YAML mapping"}
-        secrets_cfg = data.setdefault("secrets", {})
-        if not isinstance(secrets_cfg, dict):
-            return {"updated": False, "error": "config.yaml `secrets` section is not a mapping"}
-        secrets_cfg["ciphervault"] = {
-            "enabled": True,
-            "vault_path": str(vault_path),
-            "allow_working_copy": False,
-        }
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-        return {"updated": True, "path": str(config_path), "vault_path": str(vault_path)}
-    except ImportError:
-        if "ciphervault:" in existing:
-            return {"updated": False, "already_configured": True, "path": str(config_path)}
-        snippet = (
-            "\nsecrets:\n"
-            "  ciphervault:\n"
-            "    enabled: true\n"
-            f"    vault_path: {json.dumps(str(vault_path))}\n"
-            "    allow_working_copy: false\n"
-        )
-        if re.search(r"(?m)^secrets:\s*$", existing):
-            updated = re.sub(
-                r"(?m)^secrets:\s*$",
-                "secrets:\n  ciphervault:\n    enabled: true\n"
-                f"    vault_path: {json.dumps(str(vault_path))}\n"
-                "    allow_working_copy: false",
-                existing,
-                count=1,
-            )
-        else:
-            updated = existing + snippet
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(updated, encoding="utf-8")
-        return {"updated": True, "path": str(config_path), "vault_path": str(vault_path)}
+
+def _shell_command(argv: list[str]) -> str:
+    """`argv` quoted for the user's shell (cmd/PowerShell on Windows, POSIX sh elsewhere)."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def _hermes_secret_source_plan(vault_path: str) -> dict:
+    """How to wire Hermes's secret source. The plugin never edits Hermes's
+    `config.yaml` itself: rewriting it would drop the user's comments and
+    layout, and `hermes config set` also resolves the active profile. So
+    `setup --wire-hermes` prints the commands for the user to run."""
+    commands = [_shell_command(argv) for argv in _hermes_secret_source_commands(vault_path)]
+    return {
+        "action": "run_these_commands",
+        "updated": False,
+        "vault_path": str(vault_path),
+        "commands": commands,
+        "message": "Run these commands to point Hermes's own provider keys at this vault.",
+    }
 
 
 def setup_workspace(
@@ -335,7 +318,8 @@ def setup_workspace(
 ):
     """One-command setup wizard: verify/bootstrap binary, scaffold
     `.ciphervault/policy.toml` inside an initialized vault, and optionally
-    wire `secrets.ciphervault` in `$HERMES_HOME/config.yaml`."""
+    print the `hermes config set` commands that enable Hermes's own
+    `secrets.ciphervault` source (it never edits Hermes's config itself)."""
     target_dir = Path(cwd or os.getcwd()).resolve()
     bin_path, source = _runtime.resolve(binary, "find_binary")()
     binary_info = {"binary": bin_path, "source": source, "bootstrapped": False}
@@ -384,27 +368,14 @@ def setup_workspace(
             )
             policy_info["written"] = True
 
-    hermes_cfg_path = binary._hermes_home() / "config.yaml"
-    hermes_info = {"path": str(hermes_cfg_path), "updated": False}
+    hermes_info = {"updated": False}
     if wire_hermes_config:
-        vault_ref = str(vault_root or target_dir)
-        if dry_run:
-            hermes_info["action"] = "would_wire_secret_source"
-            hermes_info["vault_path"] = vault_ref
-        else:
-            hermes_info = _upsert_hermes_secret_source(hermes_cfg_path, vault_ref)
-            if hermes_info.get("error"):
-                return {
-                    "success": False,
-                    "step": "wire_hermes",
-                    "error": hermes_info["error"],
-                    "binary": binary_info,
-                    "policy": policy_info,
-                    "hermes_secret_source": hermes_info,
-                }
+        hermes_info = _hermes_secret_source_plan(str(vault_root or target_dir))
+        next_steps.extend(hermes_info["commands"])
     else:
         next_steps.append(
-            "Optional: re-run with `--wire-hermes` to configure Hermes's own `secrets.ciphervault` source."
+            "Optional: re-run with `--wire-hermes` for the `hermes config set` commands that "
+            "point Hermes's own `secrets.ciphervault` source at this vault."
         )
 
     return {
@@ -431,7 +402,11 @@ def _cli_setup(parser):
     su.add_argument("--cwd", default=None, help="Target workspace directory (default: current directory)")
     su.add_argument("--no-bootstrap", action="store_true", help="Do not download binary if missing")
     su.add_argument("--unsealed", action="store_true", help="Set sealed_mode = false in starter policy.toml")
-    su.add_argument("--wire-hermes", action="store_true", help="Enable secrets.ciphervault in $HERMES_HOME/config.yaml")
+    su.add_argument(
+        "--wire-hermes",
+        action="store_true",
+        help="Print the `hermes config set` commands that enable Hermes's secrets.ciphervault source",
+    )
     su.add_argument("--force", action="store_true", help="Overwrite existing .ciphervault/policy.toml")
     su.add_argument("--dry-run", action="store_true", help="Show planned setup actions without writing files")
 
