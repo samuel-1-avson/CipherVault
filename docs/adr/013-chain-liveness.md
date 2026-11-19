@@ -18,6 +18,13 @@ full cumulative Merkle root per proposal.
 - Proposal ingestion is capped (16 distinct proposals per height, 256
   total) and decided heights are pruned; equivocation evidence is capped
   at 256 entries; certified heights drop their vote buckets.
+  - **Amended 2026-11-19 (review CC-09):** the shared 16-per-height cap
+    let one validator crowd out the others. It is replaced by one
+    proposal per proposer per height. A second, different proposal from
+    the same proposer is recorded as equivocation evidence and relayed
+    once, then refused; the 256-total ceiling remains. Until the view
+    change below exists, re-proposing at a stalled height needs a
+    different validator.
 - Proposal vetting (`check_block`) computes the prospective state root
   with `MerkleTree::root_with_appended` (suffix-only recomputation,
   equality with a full rebuild pinned by test) instead of cloning and
