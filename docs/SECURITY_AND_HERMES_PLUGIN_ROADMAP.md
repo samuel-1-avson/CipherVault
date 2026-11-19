@@ -34,7 +34,7 @@ This document is the point-in-time review that drove the v1.0.33 to v1.0.35 work
 | `hermes ciphervault setup` wizard | **Shipped** | Binary, policy and `--wire-hermes`. |
 | Windows `--no-net` | **Shipped** | AppContainer. Third-party Python packages can still fail to start under it; see [PLATFORM_SUPPORT.md](PLATFORM_SUPPORT.md). |
 | Live CI on macOS and desktop Linux | **Open** | The Linux and macOS code paths exist but have not run on real hosts, and hosted CI is currently paused. |
-| Install of v0.7.0 through the Hermes catalog | **Open** | The upstream catalog entry lagged at v0.6.5 when this was checked; v0.7.0 installs from this repository. |
+| Install of v0.7.2 through the Hermes catalog | **Open** | The upstream catalog entry still pinned v0.6.5 on 19 November 2026. The update to v0.7.2 is in review ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)); until it merges, v0.7.2 installs from this repository. |
 
 ---
 
