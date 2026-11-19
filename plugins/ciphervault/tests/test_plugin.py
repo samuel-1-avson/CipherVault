@@ -925,6 +925,54 @@ def test_bootstrap_resume_cannot_bypass_the_pinned_hash(monkeypatch, tmp_path):
     assert not (tmp_path / "bin").exists()
 
 
+def test_install_bootstrapped_binary_replaces_existing_atomically(tmp_path):
+    dest = tmp_path / "bin" / "fixture-cli"
+    dest.parent.mkdir()
+    dest.write_bytes(b"old-binary")
+
+    cv._install_bootstrapped_binary(dest, b"new-binary")
+
+    assert dest.read_bytes() == b"new-binary"
+    assert not list(dest.parent.glob("*.tmp"))
+
+
+def test_install_bootstrapped_binary_moves_locked_windows_exe_aside(monkeypatch, tmp_path):
+    dest = tmp_path / "bin" / "ciphervault.exe"
+    dest.parent.mkdir()
+    dest.write_bytes(b"running-binary")
+    real_replace = cv.os.replace
+    calls = {"count": 0}
+
+    def locked_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("executable is running")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(cv.os, "name", "nt")
+    monkeypatch.setattr(cv.os, "replace", locked_replace)
+    cv._install_bootstrapped_binary(dest, b"new-binary")
+
+    assert dest.read_bytes() == b"new-binary"
+    assert not list(dest.parent.glob("*.tmp"))
+
+
+def test_bootstrap_install_failure_is_structured(monkeypatch, tmp_path):
+    payload = b"fixture-binary-bytes"
+    _bootstrap_fixture(
+        monkeypatch,
+        tmp_path,
+        payload,
+        lambda header: _FakeDownload(payload),
+    )
+    (tmp_path / "bin").write_bytes(b"not a directory")
+
+    out = cv.bootstrap_binary(progress=lambda *a: None)
+
+    assert out["success"] is False
+    assert "install failed" in out["error"]
+
+
 @pytest.mark.parametrize("existing_binary", [False, True])
 def test_bootstrap_refuses_incompatible_pin_without_shadowing(monkeypatch, tmp_path, existing_binary):
     dest_dir = tmp_path / "bin"

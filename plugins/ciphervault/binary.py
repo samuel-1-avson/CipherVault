@@ -233,6 +233,53 @@ def _download_resumable(url, progress):
     )
 
 
+def _install_bootstrapped_binary(dest: Path, data: bytes) -> None:
+    """Install verified bytes without truncating a binary that may be running.
+
+    The bytes are staged beside the destination and renamed into place.
+    Windows permits renaming a running executable but not overwriting it;
+    when the direct replace is denied, move the live executable aside first
+    (the running process keeps its image) and restore it if staging fails.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            tmp.chmod(0o755)
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if os.name != "nt" or not dest.exists():
+                raise
+
+        backup = dest.with_name(f"{dest.name}.pre-bootstrap.bak")
+        if backup.exists():
+            backup = dest.with_name(f"{dest.name}.pre-bootstrap-{os.getpid()}.bak")
+        dest.rename(backup)
+        try:
+            tmp.rename(dest)
+        except Exception:
+            backup.rename(dest)
+            raise
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def bootstrap_binary(progress=print):
     """Download the pinned upstream release binary and verify it
     against the release SHA256SUMS.txt before installing it into the
@@ -296,19 +343,14 @@ def bootstrap_binary(progress=print):
             "error": f"SHA-256 mismatch for {asset}: expected {expected}, got {actual}. Refusing to install.",
         }
     dest_dir = _runtime.resolve(_self, "_data_bin_dir")()
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / dest_name
-    dest.write_bytes(data)
-    if os.name != "nt":
-        try:
-            dest.chmod(0o755)
-        except Exception:
-            pass
+    try:
+        _install_bootstrapped_binary(dest, data)
+    except OSError as exc:
+        return {"success": False, "error": f"install failed: {exc}"}
     try:
         alias = dest_dir / ("cv.exe" if os.name == "nt" else "cv")
-        alias.write_bytes(data)
-        if os.name != "nt":
-            alias.chmod(0o755)
+        _install_bootstrapped_binary(alias, data)
     except Exception:
         pass
     progress(f"Verified SHA-256 {actual[:16]}… and installed to {dest}")
