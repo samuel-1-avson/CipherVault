@@ -521,7 +521,7 @@ fn build_exact_needles(exact_values: &[(String, Zeroizing<String>)]) -> Vec<Zero
         push_unique(hex::encode_upper(bytes));
         push_unique(json_escape_needle(value));
     }
-    needles.sort_by(|a, b| b.len().cmp(&a.len()));
+    needles.sort_by_key(|needle| std::cmp::Reverse(needle.len()));
     needles
 }
 

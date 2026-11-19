@@ -755,17 +755,21 @@ def test_release_asset_selection(monkeypatch):
 
 
 def test_pinned_release_is_guard_compatible_and_hash_pinned():
-    # v1.0.35 ships redact --json's exact_values_complete attestation.
-    assert cv.RELEASE_VERSION == "1.0.35"
+    # The pinned release ships redact --json's exact_values_complete
+    # attestation (first shipped in v1.0.35). Assert the shape and floor
+    # rather than one exact version so automated re-pin PRs (which only
+    # rewrite binary.py) stay green without editing this test each cycle.
+    version = tuple(int(part) for part in cv.RELEASE_VERSION.split("."))
+    assert len(version) == 3 and version >= (1, 0, 35)
     assert cv.RELEASE_SUPPORTS_GUARD is True
-    assert cv.RELEASE_BASE.endswith("/v1.0.35")
+    assert cv.RELEASE_BASE.endswith(f"/v{cv.RELEASE_VERSION}")
     for name, (asset, sha) in cv.RELEASE_ASSETS.items():
         assert asset and len(sha) == 64 and int(sha, 16) >= 0, name
     assert "windows-amd64" in cv.RELEASE_ASSETS
 
 
 def test_every_supported_platform_has_a_pinned_release_asset():
-    # v1.0.35 publishes Windows x64, Linux x64, and macOS arm64/Intel CLIs.
+    # The pinned release publishes Windows x64, Linux x64, and macOS arm64/Intel CLIs.
     assert set(cv.RELEASE_ASSETS) == {"windows-amd64", "linux-amd64", "macos-arm64", "macos-amd64"}
     assert cv.RELEASE_ASSETS["macos-arm64"][0] == "ciphervault-macos-arm64"
     assert cv.RELEASE_ASSETS["macos-amd64"][0] == "ciphervault-macos-amd64"

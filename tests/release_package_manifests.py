@@ -134,15 +134,31 @@ class PackageManifestUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dist, sums = self.fixture(root)
-            plugin = root / "__init__.py"
+            plugin = root / "binary.py"
+            zero = "0" * 64
             plugin.write_text(
                 "\n".join(
                     [
                         'RELEASE_VERSION = "1.0.26"',
-                        f'RELEASE_BINARY_SHA256 = "{"0" * 64}"',
-                        "RELEASE_BINARY_SHA256S = {",
-                        f'    "ciphervault.exe": "{"0" * 64}",',
+                        "RELEASE_ASSETS = {",
+                        '    "windows-amd64": (',
+                        '        "ciphervault.exe",',
+                        f'        "{zero}",',
+                        "    ),",
+                        '    "linux-amd64": (',
+                        '        "ciphervault-linux-amd64",',
+                        f'        "{zero}",',
+                        "    ),",
+                        '    "macos-arm64": (',
+                        '        "ciphervault-macos-arm64",',
+                        f'        "{zero}",',
+                        "    ),",
+                        '    "macos-amd64": (',
+                        '        "ciphervault-macos-amd64",',
+                        f'        "{zero}",',
+                        "    ),",
                         "}",
+                        'RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]',
                     ]
                 )
                 + "\n",
@@ -150,18 +166,47 @@ class PackageManifestUpdateTests(unittest.TestCase):
             )
             win_sha = hashlib.sha256(b"win").hexdigest()
             lin_sha = hashlib.sha256(b"lin").hexdigest()
-            mac_sha = hashlib.sha256(b"mac").hexdigest()
+            mac_arm_sha = hashlib.sha256(b"mac-arm").hexdigest()
+            mac_intel_sha = hashlib.sha256(b"mac-intel").hexdigest()
             with sums.open("a", encoding="utf-8") as fh:
                 fh.write(f"{win_sha} *ciphervault.exe\n")
                 fh.write(f"{lin_sha} *ciphervault-linux-amd64\n")
-                fh.write(f"{mac_sha} *ciphervault-macos-arm64\n")
+                fh.write(f"{mac_arm_sha} *ciphervault-macos-arm64\n")
+                fh.write(f"{mac_intel_sha} *ciphervault-macos-amd64\n")
 
             update_manifests(dist, sums, "v1.0.28", plugin_path=plugin)
             updated = plugin.read_text(encoding="utf-8")
             self.assertIn('RELEASE_VERSION = "1.0.28"', updated)
-            self.assertIn(f'RELEASE_BINARY_SHA256 = "{win_sha}"', updated)
-            self.assertIn(f'"ciphervault-linux-amd64": "{lin_sha}"', updated)
-            self.assertIn(f'"ciphervault-macos-arm64": "{mac_sha}"', updated)
+            self.assertIn(f'"windows-amd64": (\n        "ciphervault.exe",\n        "{win_sha}",', updated)
+            self.assertIn(f'"linux-amd64": (\n        "ciphervault-linux-amd64",\n        "{lin_sha}",', updated)
+            self.assertIn(f'"macos-arm64": (\n        "ciphervault-macos-arm64",\n        "{mac_arm_sha}",', updated)
+            self.assertIn(f'"macos-amd64": (\n        "ciphervault-macos-amd64",\n        "{mac_intel_sha}",', updated)
+            self.assertIn('RELEASE_BINARY_SHA256 = RELEASE_ASSETS["windows-amd64"][1]', updated)
+
+    def test_hermes_plugin_sync_fails_closed_on_missing_platform_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist, sums = self.fixture(root)
+            plugin = root / "binary.py"
+            plugin.write_text(
+                'RELEASE_VERSION = "1.0.26"\nRELEASE_ASSETS = {}\n', encoding="utf-8"
+            )
+            with sums.open("a", encoding="utf-8") as fh:
+                fh.write(f"{hashlib.sha256(b'win').hexdigest()} *ciphervault.exe\n")
+            watched = [
+                dist / "homebrew/Formula/ciphervault.rb",
+                dist / "scoop/ciphervault.json",
+                dist
+                / "winget/manifests/c/CipherVault/CipherVault/1.0.26/CipherVault.CipherVault.installer.yaml",
+            ]
+            before = [path.read_bytes() for path in watched]
+            with self.assertRaisesRegex(ValueError, "missing checksum for ciphervault-linux-amd64"):
+                update_manifests(dist, sums, "v1.0.28", plugin_path=plugin)
+            # Failing closed must not leave a mixed-version tree behind.
+            self.assertEqual([path.read_bytes() for path in watched], before)
+            self.assertFalse(
+                (dist / "winget/manifests/c/CipherVault/CipherVault/1.0.28").exists()
+            )
 
 
 if __name__ == "__main__":
