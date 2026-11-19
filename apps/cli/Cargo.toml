@@ -7,13 +7,14 @@ authors.workspace = true
 license.workspace = true
 default-run = "ciphervault"
 
-[[bin]]
-name = "ciphervault"
-path = "src/main.rs"
-
-[[bin]]
-name = "cv"
-path = "src/main.rs"
+# The CLI implementation lives in the library target (src/lib.rs); the
+# `ciphervault` and `cv` executables are thin shims under src/bin/ that
+# both call `ciphervault_cli::run_cli`. Keeping one library target avoids
+# compiling the same root file as two binary targets (and the Cargo
+# "file present in multiple build targets" warning that produced).
+[lib]
+name = "ciphervault_cli"
+path = "src/lib.rs"
 
 [dependencies]
 clap.workspace = true
