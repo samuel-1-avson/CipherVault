@@ -6,7 +6,14 @@ use crate::error::ChainError;
 use crate::merkle::{hash_leaf, InclusionProof};
 
 /// Protocol version of the CipherChain ledger.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
+
+/// First block version whose validator signatures each cover the signer's
+/// observed time (`BlockSignature::observed_ms`). From this version on the
+/// committed `timestamp_ms` must equal the median of those signed samples,
+/// so any verifier can recompute it. Versions 2 and 3 committed a median
+/// that no signature covered (review CC-02).
+pub const SIGNED_TIME_VERSION: u16 = 4;
 
 /// Canonical Sovereign Chain numeric identifier.
 pub const SOVEREIGN_CHAIN_ID_NUM: u64 = 777777;
@@ -28,8 +35,10 @@ pub const MAX_PROPOSAL_CLOCK_SKEW_MS: u64 = 60_000;
 
 /// Median of observed validator times (upper median, sorts in place).
 /// With 2f+1 samples and at most f Byzantine voters, the result falls
-/// inside the honest range — this is what v2 blocks commit as
-/// `header.timestamp_ms`. Panics on an empty slice (quorum assembly
+/// inside the honest range — this is what v2+ blocks commit as
+/// `header.timestamp_ms`. Only from v4 ([`SIGNED_TIME_VERSION`]) is each
+/// sample signed, so only v1 (proposer-signed) and v4+ block times are
+/// authenticated evidence; v2/v3 times are not. Panics on an empty slice (quorum assembly
 /// always holds at least one sample: the proposer's suggestion).
 pub fn median_timestamp_ms(times: &mut [u64]) -> u64 {
     times.sort_unstable();
@@ -82,6 +91,32 @@ pub struct BlockSignature {
     pub validator: [u8; 32],
     #[serde(with = "serde_hex_64")]
     pub signature: [u8; 64],
+    /// Version 4+: the signer's observed wall-clock time, covered by
+    /// `signature` (see [`BlockHeader::vote_bytes_v4`]). `None` for
+    /// version 1-3 blocks, and omitted from their JSON so older block files
+    /// and gossip envelopes serialize byte-for-byte as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_ms: Option<u64>,
+}
+
+/// Version 4+ time rule: the committed timestamp must equal the median of
+/// the observed times carried by already-verified signatures. Callers pass
+/// only samples from signatures they verified, so extra or forged entries
+/// cannot move the median.
+pub fn verify_signed_median(timestamp_ms: u64, observed: &mut [u64]) -> Result<(), ChainError> {
+    if observed.is_empty() {
+        return Err(ChainError::InvalidSignature(
+            "no signed observed times to derive the block timestamp from".to_string(),
+        ));
+    }
+    let median = median_timestamp_ms(observed);
+    if median != timestamp_ms {
+        return Err(ChainError::TimestampNotMedian {
+            declared: timestamp_ms,
+            median,
+        });
+    }
+    Ok(())
 }
 
 /// Sovereign block header containing consensus state and Merkle roots.
@@ -132,8 +167,10 @@ impl BlockHeader {
     /// Version 1 hashes the v1 signing payload plus signatures (timestamp
     /// committed inside the signed bytes). Version 2+ hashes the
     /// timestamp-free vote payload, then the finalized median timestamp,
-    /// then the signatures — so the hash commits to validator-voted time
-    /// while the signatures stay valid across the median substitution.
+    /// then the signatures, so the hash commits to the median time while the
+    /// signatures stay valid across the median substitution. The hash alone
+    /// does not authenticate that time: v2/v3 timestamps are unsigned, and
+    /// only v4+ signs every median sample (see [`SIGNED_TIME_VERSION`]).
     pub fn block_hash(&self) -> [u8; 32] {
         let signing = self.signing_payload();
         let mut hasher = Sha256::new();
@@ -145,6 +182,15 @@ impl BlockHeader {
         for sig in &self.signatures {
             hasher.update(sig.validator);
             hasher.update(sig.signature);
+            if self.version >= SIGNED_TIME_VERSION {
+                match sig.observed_ms {
+                    Some(observed) => {
+                        hasher.update([0x01]);
+                        hasher.update(observed.to_le_bytes());
+                    }
+                    None => hasher.update([0x00]),
+                }
+            }
         }
         let result = hasher.finalize();
         let mut hash = [0u8; 32];
@@ -170,9 +216,11 @@ impl BlockHeader {
         buf
     }
 
-    /// Payload validators actually sign and verifiers actually check:
-    /// version 3+ uses [`Self::vote_bytes_v3`], version 2 uses
-    /// [`Self::vote_bytes`], version 1 uses [`Self::signing_bytes`].
+    /// Shared header content payload: version 3+ uses
+    /// [`Self::vote_bytes_v3`], version 2 uses [`Self::vote_bytes`],
+    /// version 1 uses [`Self::signing_bytes`]. Version 4+ signatures cover
+    /// this plus the signer's observed time; verify them through
+    /// [`Self::payload_for_signature`].
     pub fn signing_payload(&self) -> Vec<u8> {
         if self.version >= 3 {
             self.vote_bytes_v3()
@@ -200,6 +248,43 @@ impl BlockHeader {
             }
         }
         buf
+    }
+
+    /// Version-4 per-signer payload: [`Self::vote_bytes_v3`] plus the
+    /// signer's observed time. Each validator signs its own sample, so the
+    /// committed median is verifiable by anyone holding the certificate.
+    /// The header version is inside `vote_bytes`, so a v3 signature can
+    /// never be replayed as a v4 one.
+    pub fn vote_bytes_v4(&self, observed_ms: u64) -> Vec<u8> {
+        let mut buf = self.vote_bytes_v3();
+        buf.extend_from_slice(b"OBSERVED_MS:");
+        buf.extend_from_slice(&observed_ms.to_le_bytes());
+        buf
+    }
+
+    /// The exact bytes `sig` must verify over. Version 4+ requires the
+    /// signature to carry its observed time; older versions use the shared
+    /// [`Self::signing_payload`].
+    pub fn payload_for_signature(&self, sig: &BlockSignature) -> Result<Vec<u8>, ChainError> {
+        if self.version >= SIGNED_TIME_VERSION {
+            let observed = sig.observed_ms.ok_or_else(|| {
+                ChainError::InvalidSignature(format!(
+                    "version {} signature from {} carries no observed time",
+                    self.version,
+                    hex::encode(sig.validator)
+                ))
+            })?;
+            Ok(self.vote_bytes_v4(observed))
+        } else {
+            Ok(self.signing_payload())
+        }
+    }
+
+    /// Whether this header's timestamp is covered by validator signatures:
+    /// version 1 signs it directly, version 4+ signs every median sample,
+    /// versions 2 and 3 sign neither.
+    pub fn timestamp_is_signed(&self) -> bool {
+        self.version < 2 || self.version >= SIGNED_TIME_VERSION
     }
 }
 
@@ -319,6 +404,20 @@ impl CommitmentTx {
 
     /// Validates the internal commitment derivation and Ed25519 client signature.
     pub fn verify_signature(&self, chain_id: &str) -> Result<(), ChainError> {
+        if self.version > 2 {
+            return Err(ChainError::InvalidSignature(format!(
+                "unsupported commitment transaction version {}",
+                self.version
+            )));
+        }
+        // Private (v2) transactions keep the preimage off-chain and neither
+        // sign nor hash `salt`/`head_cid`: anything but their canonical zero
+        // value would be unauthenticated data riding on a valid transaction.
+        if self.version == 2 && (self.salt != [0u8; 32] || self.head_cid != [0u8; 32]) {
+            return Err(ChainError::InvalidSignature(
+                "private transaction carries non-zero salt/head_cid fields".to_string(),
+            ));
+        }
         // Private (v2) transactions carry no preimage on-chain, so the
         // commitment cannot (and must not) be recomputed here; the
         // signature over the v2 signing bytes is the authenticity check.
@@ -363,9 +462,23 @@ pub struct CipherChainBlock {
     pub transactions: Vec<CommitmentTx>,
 }
 
+/// Current [`AnchorProofResponse`] format: proofs carry the committed
+/// transaction. Format 0 (field absent) is the original shape without it;
+/// it still parses, but the light client refuses it with
+/// [`ChainError::UnsupportedProofFormat`] instead of failing to deserialize.
+pub const PROOF_FORMAT_VERSION: u16 = 1;
+
 /// Light client proof response verifying commitment inclusion in CipherChain.
+///
+/// `tx` is the committed transaction itself: the light client recomputes its
+/// Merkle leaf, so the audit path is bound to the commitment being verified
+/// (review CC-01). `timestamp_ms`, `head_cid` and `salt` are informational
+/// copies; verifiers use the header's timestamp and their own preimage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorProofResponse {
+    /// Proof format ([`PROOF_FORMAT_VERSION`]); 0 for legacy proofs.
+    #[serde(default)]
+    pub format_version: u16,
     pub chain_id: String,
     pub height: u64,
     pub block_hash: [u8; 32],
@@ -374,6 +487,9 @@ pub struct AnchorProofResponse {
     pub head_cid: [u8; 32],
     pub salt: [u8; 32],
     pub tx_index: usize,
+    /// The committed transaction; absent in legacy (format 0) proofs.
+    #[serde(default)]
+    pub tx: Option<CommitmentTx>,
     pub tx_proof: InclusionProof,
     pub header: BlockHeader,
     pub validator_signatures_count: usize,

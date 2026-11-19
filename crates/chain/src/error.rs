@@ -70,6 +70,31 @@ pub enum ChainError {
     #[error("Invalid validator rotation: {0}")]
     InvalidRotation(String),
 
+    #[error("Duplicate transaction in block (commitment {0})")]
+    DuplicateTransaction(String),
+
+    #[error(
+        "Transaction nonce {nonce} for {pubkey} does not exceed {previous} from an earlier transaction in the same block"
+    )]
+    InBlockNonceReplay {
+        pubkey: String,
+        nonce: u64,
+        previous: u64,
+    },
+
+    #[error(
+        "Block timestamp {declared} is not the median {median} of the validator-signed observed times"
+    )]
+    TimestampNotMedian { declared: u64, median: u64 },
+
+    #[error("Invalid block version {found}: must be between {min} and {max}")]
+    InvalidVersion { found: u16, min: u16, max: u16 },
+
+    #[error(
+        "Unsupported anchor proof format {found} (this build verifies format {expected}); re-fetch the proof from an upgraded ledger"
+    )]
+    UnsupportedProofFormat { found: u16, expected: u16 },
+
     #[error("IO error: {0}")]
     Io(String),
 

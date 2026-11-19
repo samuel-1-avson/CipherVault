@@ -74,7 +74,10 @@ pub struct ProposalMsg {
 /// [`crate::proposal_time_acceptable`] holds for the proposal's suggested
 /// time. The quorum median of `observed_ms` samples (plus the proposer's
 /// suggested time as its sample) becomes the committed block timestamp —
-/// validator-voted time, robust to f < quorum/3 liars.
+/// validator-voted time, robust to f < quorum/3 liars. From block version 4
+/// the endorsement signs `observed_ms` itself (it must equal
+/// `endorsement.observed_ms`), so verifiers recompute the median from the
+/// certificate instead of trusting the assembler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoteMsg {
     pub chain_id: String,
@@ -137,9 +140,20 @@ fn verify_endorsement(
     let verifying_key = VerifyingKey::from_bytes(&endorsement.validator)
         .map_err(|e| ChainError::InvalidSignature(format!("Invalid endorser key: {e}")))?;
     let signature = Signature::from_bytes(&endorsement.signature);
+    let payload = header.payload_for_signature(endorsement)?;
     verifying_key
-        .verify_strict(&header.signing_payload(), &signature)
+        .verify_strict(&payload, &signature)
         .map_err(|e| ChainError::InvalidSignature(format!("Endorsement failure: {e}")))
+}
+
+/// Whether two validator sets have the same members (order-insensitive:
+/// configured files and rotation payloads may list keys differently).
+fn same_members(a: &ValidatorSet, b: &ValidatorSet) -> bool {
+    let mut left = a.validators().to_vec();
+    let mut right = b.validators().to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
 }
 
 /// Conflicting endorsements from one validator at one height.
@@ -228,6 +242,15 @@ impl VoteCollector {
         }
         if !self.validator_set.contains(&vote.endorsement.validator) {
             return VoteOutcome::Rejected("endorser not in validator set".to_string());
+        }
+        // Version 4+: the median sample must be the time the voter signed,
+        // or the certificate could not prove the committed timestamp.
+        if vote.header.version >= crate::types::SIGNED_TIME_VERSION
+            && vote.endorsement.observed_ms != Some(vote.observed_ms)
+        {
+            return VoteOutcome::Rejected(
+                "vote observed time does not match the signed endorsement".to_string(),
+            );
         }
         if let Err(e) = verify_endorsement(&vote.header, &vote.endorsement) {
             return VoteOutcome::Rejected(e.to_string());
@@ -332,21 +355,28 @@ impl ChainSyncHub {
         tip: CipherChainBlock,
         storage: Option<std::path::PathBuf>,
     ) -> Result<Self, ChainError> {
-        let ledger =
-            SovereignLedger::from_certified_tip(chain_id, validator_set.clone(), tip, storage)?;
+        let ledger = SovereignLedger::from_certified_tip(chain_id, validator_set, tip, storage)?;
+        // The tip's own rotation (if any) is already applied to the ledger.
+        let collector = VoteCollector::new(ledger.validator_set().clone());
         Ok(Self {
             ledger,
-            collector: VoteCollector::new(validator_set),
+            collector,
             proposals: HashMap::new(),
             complete: false,
         })
     }
 
     /// Rebuilds genesis-anchored history (backfill) and marks the replica
-    /// complete. Prunes proposals at or below the new tip. `genesis_set`
-    /// must be the set that certified block 0 (fetched alongside the
-    /// blocks): block 0 verifies against it, and in-band rotations derive
-    /// every later set during replay.
+    /// complete. Prunes proposals at or below the new tip. `genesis_set` is
+    /// the set the serving peer says certified block 0: block 0 verifies
+    /// against it, and in-band rotations derive every later set.
+    ///
+    /// The served history is untrusted (review CC-05). It is accepted only
+    /// if it contains this replica's own tip (certified by the set this
+    /// replica trusts) and derives that same validator set at the tip, so a
+    /// peer can extend the chain but never replace it or change who signs
+    /// it. Everything is validated in memory before anything touches disk;
+    /// on any error the replica is left exactly as it was.
     pub fn backfill(
         &mut self,
         blocks: Vec<CipherChainBlock>,
@@ -354,7 +384,38 @@ impl ChainSyncHub {
     ) -> Result<(), ChainError> {
         let chain_id = self.ledger.chain_id().to_string();
         let storage = self.ledger.storage_path();
-        let ledger = SovereignLedger::rebuild_from_blocks(&chain_id, genesis_set, blocks, storage)?;
+        let anchor_height = self.ledger.height();
+        let anchor_hash = self.ledger.latest_block().header.block_hash();
+        let trusted_set = self.ledger.validator_set().clone();
+
+        let mut ledger =
+            SovereignLedger::rebuild_from_blocks(&chain_id, genesis_set.clone(), blocks, None)?;
+        // Hash linkage pins the whole served history to our tip.
+        match ledger.block_at_height(anchor_height) {
+            Some(block) if block.header.block_hash() == anchor_hash => {}
+            other => {
+                return Err(ChainError::ForkDetected {
+                    height: anchor_height,
+                    existing: hex::encode(anchor_hash),
+                    incoming: other
+                        .map(|b| hex::encode(b.header.block_hash()))
+                        .unwrap_or_else(|| "missing".to_string()),
+                });
+            }
+        }
+        // The peer-supplied genesis set must lead to the set we trust at the
+        // tip, so it cannot narrow or swap who certifies future blocks.
+        let derived = ledger.validator_set_after(anchor_height, &genesis_set)?;
+        if !same_members(&derived, &trusted_set) {
+            return Err(ChainError::InvalidRotation(format!(
+                "backfilled history derives a different validator set at height {anchor_height} \
+                 than the one this replica trusts"
+            )));
+        }
+        if let Some(dir) = storage {
+            ledger.persist_history(dir, &genesis_set)?;
+        }
+
         let tip = ledger.height();
         let active = ledger.validator_set().clone();
         self.ledger = ledger;
@@ -539,7 +600,21 @@ impl ChainSyncHub {
         // time. Signatures cover everything except the timestamp, so the
         // substitution keeps them valid; block_hash commits to the median.
         // Version-1 blocks keep proposer-stamped time (legacy rule).
-        if block.header.version >= 2 {
+        // Version 4+ takes every sample from a signature in the certificate
+        // (the proposal's own endorsements included), which is exactly the
+        // set `verify_header_signatures` recomputes the median from.
+        if block.header.version >= crate::types::SIGNED_TIME_VERSION {
+            let mut samples: Vec<u64> = block
+                .header
+                .signatures
+                .iter()
+                .filter_map(|sig| sig.observed_ms)
+                .chain(fresh.iter().filter_map(|(sig, _)| sig.observed_ms))
+                .collect();
+            if !samples.is_empty() {
+                block.header.timestamp_ms = crate::median_timestamp_ms(&mut samples);
+            }
+        } else if block.header.version >= 2 {
             let mut samples: Vec<u64> = fresh.iter().map(|(_, observed)| *observed).collect();
             samples.push(block.header.timestamp_ms);
             block.header.timestamp_ms = crate::median_timestamp_ms(&mut samples);
@@ -642,6 +717,37 @@ mod tests {
         (signers, set, hubs)
     }
 
+    /// Hubs on a genesis of an explicit (older) block version, so legacy
+    /// rules can be exercised without a version downgrade.
+    fn setup_at_version(
+        n_validators: usize,
+        version: u16,
+    ) -> (Vec<ConsensusSigner>, ValidatorSet, Vec<ChainSyncHub>) {
+        let signers: Vec<ConsensusSigner> = (0..n_validators)
+            .map(|_| ConsensusSigner::generate())
+            .collect();
+        let set = ValidatorSet::new(signers.iter().map(|s| s.public_key()).collect()).unwrap();
+        let header = BlockHeader {
+            version,
+            chain_id: CHAIN_ID.to_string(),
+            height: 0,
+            prev_block_hash: [0u8; 32],
+            state_root: crate::merkle::EMPTY_TREE_ROOT,
+            tx_root: crate::merkle::EMPTY_TREE_ROOT,
+            timestamp_ms: 1_000,
+            proposer: signers[0].public_key(),
+            next_validators: None,
+            signatures: Vec::new(),
+        };
+        let sigs = signers.iter().map(|s| s.sign_header(&header)).collect();
+        let template =
+            SovereignLedger::assemble_genesis(CHAIN_ID, set.clone(), header, sigs, None).unwrap();
+        let hubs = (0..n_validators)
+            .map(|_| ChainSyncHub::new(template.clone()))
+            .collect();
+        (signers, set, hubs)
+    }
+
     fn client_tx(
         client: &ConsensusSigner,
         salt_byte: u8,
@@ -675,7 +781,7 @@ mod tests {
         header: &BlockHeader,
         observed_ms: u64,
     ) -> ChainSyncEnvelope {
-        let endorsement = signer.sign_header(header);
+        let endorsement = signer.sign_header_at(header, observed_ms);
         ChainSyncEnvelope::seal(
             signer,
             ChainSyncMsg::Vote(VoteMsg {
@@ -790,7 +896,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(proposal_block.header.version, 3);
+        assert_eq!(proposal_block.header.version, crate::PROTOCOL_VERSION);
         let proposal_raw = raw(&ChainSyncEnvelope::seal(
             &signers[0],
             ChainSyncMsg::Proposal(ProposalMsg {
@@ -833,7 +939,8 @@ mod tests {
 
     #[test]
     fn test_version_one_blocks_keep_proposer_time() {
-        let (signers, _set, mut hubs) = setup(3);
+        // A v1 chain: v1 blocks after a v4 genesis would be a downgrade.
+        let (signers, _set, mut hubs) = setup_at_version(3, 1);
         let client = ConsensusSigner::generate();
 
         // Hand-rolled v1 proposal: timestamp inside the signed bytes, so
@@ -884,6 +991,90 @@ mod tests {
     }
 
     #[test]
+    fn test_v4_vote_must_sign_its_reported_time() {
+        let (signers, _set, mut hubs) = setup(3);
+        let client = ConsensusSigner::generate();
+        let proposal = hubs[0]
+            .ledger()
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
+            .unwrap();
+        assert_eq!(proposal.header.version, crate::SIGNED_TIME_VERSION);
+        // Signed at 2_000 but reporting 1_500: the reported sample would
+        // move the median without any signature covering it.
+        let endorsement = signers[1].sign_header_at(&proposal.header, 2_000);
+        let lying = raw(&ChainSyncEnvelope::seal(
+            &signers[1],
+            ChainSyncMsg::Vote(VoteMsg {
+                chain_id: CHAIN_ID.to_string(),
+                header: proposal.header.clone(),
+                observed_ms: 1_500,
+                endorsement,
+            }),
+        ));
+        assert!(matches!(hubs[0].ingest(&lying), IngestOutcome::Rejected(_)));
+    }
+
+    #[test]
+    fn test_v4_rewritten_block_time_is_rejected() {
+        let (signers, set, _) = setup(3);
+        let refs: Vec<&ConsensusSigner> = signers.iter().collect();
+        let mut ledger =
+            SovereignLedger::create_genesis(CHAIN_ID, set.clone(), &refs, 1_000, None).unwrap();
+        let client = ConsensusSigner::generate();
+        let mut block = ledger
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                5_000,
+                None,
+            )
+            .unwrap();
+        for (signer, observed) in [(&signers[1], 4_000u64), (&signers[2], 6_000u64)] {
+            block
+                .header
+                .signatures
+                .push(signer.sign_header_at(&block.header, observed));
+        }
+        // Samples [5_000, 4_000, 6_000] -> median 5_000 (the proposal time).
+        // Backdating the committed time keeps every signature valid under
+        // v2/v3 rules; v4 recomputes the median and refuses.
+        let mut backdated = block.clone();
+        backdated.header.timestamp_ms = 1_001;
+        assert!(matches!(
+            ledger.commit_block(backdated),
+            Err(ChainError::TimestampNotMedian { .. })
+        ));
+        ledger.commit_block(block).unwrap();
+        assert_eq!(ledger.latest_block().header.timestamp_ms, 5_000);
+    }
+
+    #[test]
+    fn test_downgrade_to_unsigned_time_version_is_rejected() {
+        let (signers, _set, hubs) = setup(3);
+        let client = ConsensusSigner::generate();
+        let mut block = hubs[0]
+            .ledger()
+            .propose_block(
+                &signers[0],
+                vec![client_tx(&client, 0xaa, 0xbb, 1)],
+                2_000,
+                None,
+            )
+            .unwrap();
+        block.header.version = 3;
+        block.header.signatures = vec![signers[0].sign_header(&block.header)];
+        assert!(matches!(
+            hubs[0].ledger().check_block(&block),
+            Err(ChainError::InvalidVersion { .. })
+        ));
+    }
+
+    #[test]
     fn test_median_and_voter_helpers() {
         assert_eq!(
             crate::median_timestamp_ms(&mut [9_000, 2_000, 4_000]),
@@ -917,7 +1108,7 @@ mod tests {
                 Some(keys_b.clone()),
             )
             .unwrap();
-        assert_eq!(rotation_block.header.version, 3);
+        assert_eq!(rotation_block.header.version, crate::PROTOCOL_VERSION);
         let proposal_hash = rotation_block.header.block_hash();
         let proposal_raw = raw(&ChainSyncEnvelope::seal(
             &signers_a[0],
@@ -1496,6 +1687,254 @@ mod tests {
                 .unwrap();
         assert_eq!(rebuilt.height(), 2);
         assert!(!dir.join("tip.json").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review CC-08: a block with a duplicated tail shares the genuine
+    /// block's roots, header and hash, so it must be rejected on content.
+    #[test]
+    fn test_mutated_block_with_duplicated_tail_is_rejected() {
+        let (signers, set, _) = setup(3);
+        let refs: Vec<&ConsensusSigner> = signers.iter().collect();
+        let mut ledger =
+            SovereignLedger::create_genesis(CHAIN_ID, set, &refs, 1_000, None).unwrap();
+        let client = ConsensusSigner::generate();
+        let txs = vec![
+            client_tx(&client, 0x01, 0x01, 1),
+            client_tx(&client, 0x02, 0x02, 2),
+            client_tx(&client, 0x03, 0x03, 3),
+        ];
+        let mut block = ledger.propose_block(&signers[0], txs, 2_000, None).unwrap();
+        for signer in &signers[1..] {
+            block
+                .header
+                .signatures
+                .push(signer.sign_header(&block.header));
+        }
+
+        // Three leaves pad the last with itself, so a copy of the last
+        // transaction leaves both roots, the signed header and its hash as-is.
+        let mut mutated = block.clone();
+        let last = mutated.transactions[2].clone();
+        mutated.transactions.push(last);
+        let tx_root = crate::merkle::MerkleTree::new(
+            mutated
+                .transactions
+                .iter()
+                .map(|t| t.tx_leaf_hash())
+                .collect(),
+        )
+        .root();
+        let state_root = crate::merkle::MerkleTree::new(
+            mutated
+                .transactions
+                .iter()
+                .map(|t| crate::merkle::hash_leaf(&t.commitment))
+                .collect(),
+        )
+        .root();
+        assert_eq!(tx_root, block.header.tx_root);
+        assert_eq!(state_root, block.header.state_root);
+        assert_eq!(mutated.header.block_hash(), block.header.block_hash());
+
+        assert!(matches!(
+            ledger.check_block(&mutated),
+            Err(ChainError::DuplicateTransaction(_))
+        ));
+        assert!(ledger.commit_block(mutated).is_err());
+        ledger.commit_block(block).unwrap();
+        assert_eq!(ledger.height(), 1);
+    }
+
+    #[test]
+    fn test_in_block_nonce_replay_is_rejected() {
+        let (signers, _set, hubs) = setup(3);
+        let client = ConsensusSigner::generate();
+        let ledger = hubs[0].ledger();
+        // Same client and nonce, different content.
+        let err = ledger
+            .propose_block(
+                &signers[0],
+                vec![
+                    client_tx(&client, 0xaa, 0xbb, 1),
+                    client_tx(&client, 0xcc, 0xdd, 1),
+                ],
+                2_000,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ChainError::InBlockNonceReplay { .. }));
+        // Decreasing nonces within one block.
+        let err = ledger
+            .propose_block(
+                &signers[0],
+                vec![
+                    client_tx(&client, 0xaa, 0xbb, 5),
+                    client_tx(&client, 0xcc, 0xdd, 4),
+                ],
+                2_000,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ChainError::InBlockNonceReplay { .. }));
+        // Increasing nonces are fine.
+        ledger
+            .propose_block(
+                &signers[0],
+                vec![
+                    client_tx(&client, 0xaa, 0xbb, 1),
+                    client_tx(&client, 0xcc, 0xdd, 2),
+                ],
+                2_000,
+                None,
+            )
+            .unwrap();
+    }
+
+    /// Review CC-05: a serving peer can extend a replica's chain but never
+    /// replace it with history minted under other keys.
+    #[test]
+    fn test_backfill_rejects_foreign_history_and_keeps_replica() {
+        let (signers, set, _) = setup(3);
+        let client = ConsensusSigner::generate();
+        let genuine = full_chain(&signers, &set, &client, 3);
+        let tip_hash = genuine.latest_block().header.block_hash();
+
+        // A longer chain under the attacker's own keys and genesis set.
+        let (rogue_signers, rogue_set, _) = setup(3);
+        let forged = full_chain(&rogue_signers, &rogue_set, &client, 5);
+
+        // An adopted (incomplete) replica keeps its tip and validator set.
+        let mut adopted =
+            ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), genuine.latest_block().clone(), None)
+                .unwrap();
+        assert!(matches!(
+            adopted.backfill(forged.blocks().to_vec(), rogue_set.clone()),
+            Err(ChainError::ForkDetected { .. })
+        ));
+        assert!(!adopted.is_complete());
+        assert_eq!(
+            adopted.ledger().latest_block().header.block_hash(),
+            tip_hash
+        );
+        assert_eq!(adopted.ledger().validator_set(), &set);
+
+        // A complete replica is protected the same way...
+        let mut complete = ChainSyncHub::new(genuine.clone());
+        assert!(complete
+            .backfill(forged.blocks().to_vec(), rogue_set)
+            .is_err());
+        assert_eq!(complete.ledger().height(), 3);
+        assert_eq!(
+            complete.ledger().latest_block().header.block_hash(),
+            tip_hash
+        );
+
+        // ...and still catches up on genuine history that extends it.
+        let longer = full_chain(&signers, &set, &client, 5);
+        assert_eq!(
+            longer.block_at_height(3).unwrap().header.block_hash(),
+            tip_hash
+        );
+        complete
+            .backfill(longer.blocks().to_vec(), set.clone())
+            .unwrap();
+        assert_eq!(complete.ledger().height(), 5);
+    }
+
+    /// Review CC-05: a peer-supplied genesis set that verifies the genuine
+    /// history but derives a different set at the tip (here: dropping a
+    /// validator from admission) is refused.
+    #[test]
+    fn test_backfill_rejects_history_deriving_another_validator_set() {
+        // Four validators; every block carries the same three signatures.
+        let signers: Vec<ConsensusSigner> = (0..4).map(|_| ConsensusSigner::generate()).collect();
+        let set = ValidatorSet::new(signers.iter().map(|s| s.public_key()).collect()).unwrap();
+        let client = ConsensusSigner::generate();
+        let mut chain = SovereignLedger::create_genesis(
+            CHAIN_ID,
+            set.clone(),
+            &[&signers[0], &signers[1], &signers[2]],
+            1_000,
+            None,
+        )
+        .unwrap();
+        for n in 1..=2u64 {
+            let mut block = chain
+                .propose_block(
+                    &signers[0],
+                    vec![client_tx(&client, n as u8, n as u8, n)],
+                    1_000 + n * 1_000,
+                    None,
+                )
+                .unwrap();
+            for signer in [&signers[1], &signers[2]] {
+                block
+                    .header
+                    .signatures
+                    .push(signer.sign_header(&block.header));
+            }
+            chain.commit_block(block).unwrap();
+        }
+        let mut hub =
+            ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), chain.latest_block().clone(), None)
+                .unwrap();
+
+        let narrowed =
+            ValidatorSet::new(signers[..3].iter().map(|s| s.public_key()).collect()).unwrap();
+        assert!(matches!(
+            hub.backfill(chain.blocks().to_vec(), narrowed),
+            Err(ChainError::InvalidRotation(_))
+        ));
+        assert!(!hub.is_complete());
+
+        hub.backfill(chain.blocks().to_vec(), set.clone()).unwrap();
+        assert!(hub.is_complete());
+        assert_eq!(hub.ledger().validator_set(), &set);
+    }
+
+    /// Review CC-11: a backfill interrupted after writing part of the
+    /// history (and a torn temp file) must not stop the replica reopening.
+    #[test]
+    fn test_interrupted_backfill_reopens_as_tip_replica() {
+        let (signers, set, _) = setup(3);
+        let client = ConsensusSigner::generate();
+        let full = full_chain(&signers, &set, &client, 3);
+        let dir = support_dir("interrupted-backfill");
+
+        let tip = full.latest_block().clone();
+        drop(
+            ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), tip.clone(), Some(dir.clone())).unwrap(),
+        );
+        let blocks_dir = dir.join("blocks");
+        for h in 0..=1u64 {
+            let block = full.block_at_height(h).unwrap();
+            std::fs::write(
+                blocks_dir.join(format!("{h:012}.json")),
+                serde_json::to_string_pretty(block).unwrap(),
+            )
+            .unwrap();
+        }
+        std::fs::write(blocks_dir.join(format!("{:012}.json.tmp", 2)), b"{ torn").unwrap();
+
+        let reopened = SovereignLedger::open(CHAIN_ID, set.clone(), &dir).unwrap();
+        assert_eq!(reopened.height(), 3);
+        assert_eq!(reopened.earliest_height(), 3);
+        assert_eq!(
+            reopened.latest_block().header.block_hash(),
+            tip.header.block_hash()
+        );
+
+        // Completing the backfill writes the history and drops the snapshot
+        // last; the directory then reopens genesis-anchored.
+        let mut hub = ChainSyncHub::new(reopened);
+        hub.mark_syncing();
+        hub.backfill(full.blocks().to_vec(), set.clone()).unwrap();
+        assert!(!dir.join("tip.json").exists());
+        let complete = SovereignLedger::open(CHAIN_ID, set, &dir).unwrap();
+        assert_eq!(complete.earliest_height(), 0);
+        assert_eq!(complete.height(), 3);
 
         std::fs::remove_dir_all(&dir).ok();
     }

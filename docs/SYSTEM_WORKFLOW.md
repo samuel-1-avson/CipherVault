@@ -300,11 +300,22 @@ sequenceDiagram
     CLI->>CLI: Recompute commitment, verify Merkle path + quorum sigs (<1ms, offline-capable)
 ```
 
-**Validator-voted time (protocol v2+).** Endorsements sign everything
-except `timestamp_ms`; each vote carries the voter's `observed_ms`, and
-the committed timestamp is the quorum median (robust to f < quorum/3
-liars). Voters endorse only within 60 s proposal skew and clamp
-observations past the parent.
+**Block time: which timestamps are evidence.** Only **v1** and **v4+**
+block timestamps are signed:
+
+- **v1:** the proposer's timestamp is inside the signed bytes.
+- **v2/v3:** the committed timestamp is the quorum median of the voters'
+  `observed_ms`, but no signature covers it or the samples. Whoever stores
+  or serves the block can rewrite it, so these times are **not**
+  authenticated evidence. `verify-anchor` reports them as unsigned.
+- **v4+ (`SIGNED_TIME_VERSION`):** each endorsement signs the voter's own
+  `observed_ms`, and every verifier recomputes the median (robust to
+  f < quorum/3 liars) from the signed samples in the certificate.
+
+Voters endorse only within 60 s proposal skew and clamp observations past
+the parent. Multi-validator chains keep their parent's block version until
+the operator activates the latest one (`CIPHERVAULT_CHAIN_ACTIVATE_LATEST=1`)
+after the whole fleet is upgraded; single-validator chains use it at once.
 
 **Rotation (protocol v3+).** A block may carry `next_validators`,
 quorum-certified by the current set, taking effect next height.

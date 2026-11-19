@@ -5,7 +5,9 @@ use std::path::Path;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::error::ChainError;
-use crate::types::{BlockHeader, BlockSignature, CommitmentTx};
+use crate::types::{
+    verify_signed_median, BlockHeader, BlockSignature, CommitmentTx, SIGNED_TIME_VERSION,
+};
 
 /// Set of registered fleet operators authorized to produce and endorse blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +87,10 @@ impl ValidatorSet {
             });
         }
 
-        // 3. Duplicate and authorization checks
+        // 3. Duplicate and authorization checks. Each signature verifies over
+        // its own payload: version 4+ binds the signer's observed time.
         let mut seen = HashSet::new();
-        let signing_payload = header.signing_payload();
+        let mut observed = Vec::with_capacity(header.signatures.len());
 
         for sig in &header.signatures {
             if !self.contains(&sig.validator) {
@@ -106,9 +109,10 @@ impl ValidatorSet {
                 ChainError::InvalidSignature(format!("Invalid validator public key: {}", e))
             })?;
             let signature = Signature::from_bytes(&sig.signature);
+            let payload = header.payload_for_signature(sig)?;
 
             verifying_key
-                .verify_strict(&signing_payload, &signature)
+                .verify_strict(&payload, &signature)
                 .map_err(|e| {
                     ChainError::InvalidSignature(format!(
                         "Validator {} signature verification failed: {}",
@@ -116,6 +120,15 @@ impl ValidatorSet {
                         e
                     ))
                 })?;
+            if let Some(t) = sig.observed_ms {
+                observed.push(t);
+            }
+        }
+
+        // 4. Version 4+: the committed time is the median of the signed
+        // samples, so no assembler or later holder can rewrite it.
+        if header.version >= SIGNED_TIME_VERSION {
+            verify_signed_median(header.timestamp_ms, &mut observed)?;
         }
 
         Ok(())
@@ -131,7 +144,6 @@ impl ValidatorSet {
                 hex::encode(header.proposer)
             )));
         }
-        let signing_payload = header.signing_payload();
         let verifying_key = VerifyingKey::from_bytes(&header.proposer).map_err(|e| {
             ChainError::InvalidSignature(format!("Invalid proposer public key: {e}"))
         })?;
@@ -141,11 +153,17 @@ impl ValidatorSet {
                 continue;
             }
             saw_proposer_sig = true;
-            let signature = Signature::from_bytes(&sig.signature);
-            if verifying_key
-                .verify_strict(&signing_payload, &signature)
-                .is_ok()
+            // Version 4+: before votes arrive, the proposal's timestamp is
+            // the proposer's own signed sample.
+            if header.version >= SIGNED_TIME_VERSION && sig.observed_ms != Some(header.timestamp_ms)
             {
+                continue;
+            }
+            let Ok(payload) = header.payload_for_signature(sig) else {
+                continue;
+            };
+            let signature = Signature::from_bytes(&sig.signature);
+            if verifying_key.verify_strict(&payload, &signature).is_ok() {
                 return Ok(());
             }
         }
@@ -249,13 +267,32 @@ impl ConsensusSigner {
         self.signing_key.sign(payload).to_bytes()
     }
 
-    /// Endorses and cryptographically signs a block header.
+    /// Endorses and cryptographically signs a block header. For version 4+
+    /// headers the signer's observed time is the header's own timestamp
+    /// (proposers, genesis members); voters reporting their own clock use
+    /// [`Self::sign_header_at`].
     pub fn sign_header(&self, header: &BlockHeader) -> BlockSignature {
-        let payload = header.signing_payload();
-        let signature = self.signing_key.sign(&payload);
-        BlockSignature {
-            validator: self.public_key,
-            signature: signature.to_bytes(),
+        self.sign_header_at(header, header.timestamp_ms)
+    }
+
+    /// Endorses a block header with this signer's observed time. Version 4+
+    /// signs `observed_ms` into the endorsement; older versions ignore it
+    /// and sign the shared header payload.
+    pub fn sign_header_at(&self, header: &BlockHeader, observed_ms: u64) -> BlockSignature {
+        if header.version >= SIGNED_TIME_VERSION {
+            let signature = self.signing_key.sign(&header.vote_bytes_v4(observed_ms));
+            BlockSignature {
+                validator: self.public_key,
+                signature: signature.to_bytes(),
+                observed_ms: Some(observed_ms),
+            }
+        } else {
+            let signature = self.signing_key.sign(&header.signing_payload());
+            BlockSignature {
+                validator: self.public_key,
+                signature: signature.to_bytes(),
+                observed_ms: None,
+            }
         }
     }
 

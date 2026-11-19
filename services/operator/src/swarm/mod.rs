@@ -1054,7 +1054,9 @@ fn handle_chain_backfill_response(
         // A malformed genesis set fails closed here (dropped fetch, retry
         // on the next trigger); `None` falls back to the hub's current set
         // inside `chain_backfill`, which verifies block 0 and fails closed
-        // when a rotation actually happened.
+        // when a rotation actually happened. The peer is untrusted: the hub
+        // rejects history that does not contain its own tip or derives a
+        // different validator set there (review CC-05).
         let genesis = match fetch.genesis {
             Some(keys) => match ciphervault_chain::ValidatorSet::new(keys) {
                 Ok(set) => Some(set),

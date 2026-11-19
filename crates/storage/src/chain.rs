@@ -27,6 +27,10 @@ pub struct SovereignAnchorReport {
     pub height: u64,
     pub block_hash_hex: String,
     pub timestamp_ms: u64,
+    /// Whether `timestamp_ms` is covered by validator signatures (block v1
+    /// or v4+); false for v2/v3 blocks.
+    #[serde(default)]
+    pub timestamp_signed: bool,
     pub commitment_hex: String,
     pub head_cid_hex: String,
     pub proposer_hex: String,
@@ -122,6 +126,7 @@ impl SovereignAnchorClient {
             height: res.height,
             block_hash_hex: res.block_hash_hex,
             timestamp_ms: res.timestamp_ms,
+            timestamp_signed: res.timestamp_signed,
             commitment_hex: res.commitment_hex,
             head_cid_hex: res.head_cid_hex,
             proposer_hex: res.proposer_hex,

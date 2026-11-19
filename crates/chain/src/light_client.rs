@@ -4,7 +4,10 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ChainError;
-use crate::types::{AnchorProofResponse, CommitmentTx};
+use crate::types::{
+    verify_signed_median, AnchorProofResponse, BlockHeader, CommitmentTx, PROOF_FORMAT_VERSION,
+    PROTOCOL_VERSION, SIGNED_TIME_VERSION,
+};
 
 /// Result of an autonomous light-client verification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,7 +16,13 @@ pub struct SovereignVerificationResult {
     pub chain_id: String,
     pub height: u64,
     pub block_hash_hex: String,
+    /// Block time from the verified header, never the proof's own copy.
     pub timestamp_ms: u64,
+    /// Whether `timestamp_ms` is covered by validator signatures. False for
+    /// block versions 2 and 3, whose committed median no signature covers:
+    /// report that time, but do not rely on it as evidence.
+    #[serde(default)]
+    pub timestamp_signed: bool,
     pub commitment_hex: String,
     pub head_cid_hex: String,
     pub proposer_hex: String,
@@ -48,16 +57,88 @@ impl SovereignLightClient {
         }
     }
 
-    /// Advances trust across a rotation block: verifies the header carries a
-    /// well-formed rotation and swaps the trusted set to the new members.
-    /// Callers feed rotation headers in height order; proofs for later
-    /// heights then verify against the rotated set. Rotation headers
-    /// themselves verify under the pre-rotation set (call `verify_anchor`
-    /// first when the proof needs checking, then advance).
-    pub fn advance_to_rotation(
-        &mut self,
-        header: &crate::types::BlockHeader,
-    ) -> Result<(), ChainError> {
+    /// Number of currently trusted validator keys.
+    pub fn trusted_len(&self) -> usize {
+        self.trusted_validators.len()
+    }
+
+    /// Whether the currently trusted set is exactly `keys` (order-insensitive).
+    pub fn trusts_exactly(&self, keys: &[[u8; 32]]) -> bool {
+        let other: HashSet<[u8; 32]> = keys.iter().copied().collect();
+        other.len() == keys.len() && other == self.trusted_validators
+    }
+
+    /// Verifies a header's validator quorum under the trusted set and returns
+    /// how many trusted signatures verified. Signatures from untrusted keys,
+    /// duplicates and bad signatures are skipped (never counted). The header
+    /// version must be one this build understands and the proposer must be
+    /// trusted, exactly as the ledger requires. Version 4+ headers must also
+    /// carry a timestamp equal to the median of the verified signers' signed
+    /// observed times, so the block time cannot be rewritten by whoever
+    /// stores or serves the header.
+    pub fn verify_header(&self, header: &BlockHeader) -> Result<usize, ChainError> {
+        if header.chain_id != self.chain_id {
+            return Err(ChainError::InvalidGenesis(format!(
+                "Chain ID mismatch: expected '{}', header carries '{}'",
+                self.chain_id, header.chain_id
+            )));
+        }
+        if header.version == 0 || header.version > PROTOCOL_VERSION {
+            return Err(ChainError::InvalidVersion {
+                found: header.version,
+                min: 1,
+                max: PROTOCOL_VERSION,
+            });
+        }
+        if !self.trusted_validators.contains(&header.proposer) {
+            return Err(ChainError::InvalidProposer(format!(
+                "Proposer {} is not in the trusted validator set",
+                hex::encode(header.proposer)
+            )));
+        }
+        let mut verified: HashSet<[u8; 32]> = HashSet::new();
+        let mut observed = Vec::with_capacity(header.signatures.len());
+        for sig in &header.signatures {
+            if !self.trusted_validators.contains(&sig.validator)
+                || verified.contains(&sig.validator)
+            {
+                continue;
+            }
+            let Ok(payload) = header.payload_for_signature(sig) else {
+                continue;
+            };
+            let Ok(verifying_key) = VerifyingKey::from_bytes(&sig.validator) else {
+                continue;
+            };
+            let ed_sig = Signature::from_bytes(&sig.signature);
+            if verifying_key.verify_strict(&payload, &ed_sig).is_ok() {
+                verified.insert(sig.validator);
+                if let Some(t) = sig.observed_ms {
+                    observed.push(t);
+                }
+            }
+        }
+
+        // An empty trusted set must never "verify" anything.
+        let required = self.quorum_threshold().max(1);
+        if verified.len() < required {
+            return Err(ChainError::InsufficientQuorum {
+                required,
+                actual: verified.len(),
+            });
+        }
+        if header.version >= SIGNED_TIME_VERSION {
+            verify_signed_median(header.timestamp_ms, &mut observed)?;
+        }
+        Ok(verified.len())
+    }
+
+    /// Advances trust across a rotation block. The rotation header must
+    /// verify under the CURRENT trusted set (quorum signatures checked here,
+    /// not left to the caller) before the trusted set swaps to the new
+    /// members. Callers feed rotation headers in height order; proofs for
+    /// later heights then verify against the rotated set.
+    pub fn advance_to_rotation(&mut self, header: &BlockHeader) -> Result<(), ChainError> {
         let Some(keys) = &header.next_validators else {
             return Err(ChainError::InvalidRotation(
                 "header carries no rotation".to_string(),
@@ -74,7 +155,7 @@ impl SovereignLightClient {
                 "rotation to an empty set".to_string(),
             ));
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for key in keys {
             if !seen.insert(key) {
                 return Err(ChainError::InvalidRotation(
@@ -82,18 +163,43 @@ impl SovereignLightClient {
                 ));
             }
         }
+        self.verify_header(header).map_err(|e| {
+            ChainError::InvalidRotation(format!(
+                "rotation at height {} is not certified by the current set: {e}",
+                header.height
+            ))
+        })?;
         self.trusted_validators = keys.iter().copied().collect();
         Ok(())
     }
 
-    /// Verifies that an anchor proof cryptographically proves the commitment's inclusion in CipherChain.
+    /// Verifies that an anchor proof cryptographically proves the inclusion of
+    /// the commitment to (`expected_salt`, `expected_head_cid`) in CipherChain.
+    ///
+    /// Everything that matters is recomputed by the verifier: the commitment
+    /// from its own preimage, the Merkle leaf from the carried transaction,
+    /// and (for version 4+) the block time from the signed samples. Proof
+    /// fields that merely restate those values are cross-checked or ignored.
     pub fn verify_anchor(
         &self,
         expected_head_cid: &[u8; 32],
         expected_salt: &[u8; 32],
         proof: &AnchorProofResponse,
     ) -> Result<SovereignVerificationResult, ChainError> {
-        // 1. Verify chain ID
+        // 1. Proof format and chain ID. Legacy proofs (no carried
+        // transaction) parse but are refused with an explicit error.
+        if proof.format_version != PROOF_FORMAT_VERSION {
+            return Err(ChainError::UnsupportedProofFormat {
+                found: proof.format_version,
+                expected: PROOF_FORMAT_VERSION,
+            });
+        }
+        let Some(tx) = proof.tx.as_ref() else {
+            return Err(ChainError::UnsupportedProofFormat {
+                found: 0,
+                expected: PROOF_FORMAT_VERSION,
+            });
+        };
         if proof.chain_id != self.chain_id {
             return Err(ChainError::InvalidGenesis(format!(
                 "Chain ID mismatch: expected '{}', got '{}'",
@@ -101,30 +207,35 @@ impl SovereignLightClient {
             )));
         }
 
-        // 2. Verify CID and salt match client expectation
-        if &proof.head_cid != expected_head_cid {
+        // 2. The commitment comes from the verifier's preimage, not the proof.
+        let expected_commitment =
+            CommitmentTx::calculate_commitment(expected_salt, expected_head_cid);
+        if proof.commitment != expected_commitment {
             return Err(ChainError::CommitmentMismatch {
-                computed: hex::encode(expected_head_cid),
-                declared: hex::encode(proof.head_cid),
-            });
-        }
-        if &proof.salt != expected_salt {
-            return Err(ChainError::CommitmentMismatch {
-                computed: hex::encode(expected_salt),
-                declared: hex::encode(proof.salt),
-            });
-        }
-
-        // 3. Verify commitment derivation: SHA-256(salt || head_cid)
-        let computed_commitment = CommitmentTx::calculate_commitment(&proof.salt, &proof.head_cid);
-        if computed_commitment != proof.commitment {
-            return Err(ChainError::CommitmentMismatch {
-                computed: hex::encode(computed_commitment),
+                computed: hex::encode(expected_commitment),
                 declared: hex::encode(proof.commitment),
             });
         }
 
-        // 4. Verify block header consistency
+        // 3. The carried transaction must be that commitment's and validly
+        // signed. Legacy (v0/v1) transactions publish the preimage, which must
+        // be ours; private (v2) ones carry only the commitment, and their
+        // unsigned salt/head fields must be zero (`verify_signature`).
+        if tx.commitment != expected_commitment {
+            return Err(ChainError::CommitmentMismatch {
+                computed: hex::encode(expected_commitment),
+                declared: hex::encode(tx.commitment),
+            });
+        }
+        if tx.version < 2 && (tx.salt != *expected_salt || tx.head_cid != *expected_head_cid) {
+            return Err(ChainError::CommitmentMismatch {
+                computed: hex::encode(expected_commitment),
+                declared: hex::encode(CommitmentTx::calculate_commitment(&tx.salt, &tx.head_cid)),
+            });
+        }
+        tx.verify_signature(&self.chain_id)?;
+
+        // 4. Header consistency, including the proof's copy of the time.
         let computed_block_hash = proof.header.block_hash();
         if computed_block_hash != proof.block_hash {
             return Err(ChainError::InvalidPrevHash {
@@ -138,56 +249,64 @@ impl SovereignLightClient {
                 found: proof.header.height,
             });
         }
+        if proof.timestamp_ms != proof.header.timestamp_ms {
+            return Err(ChainError::InvalidInclusionProof(format!(
+                "proof timestamp {} does not match the block header's {}",
+                proof.timestamp_ms, proof.header.timestamp_ms
+            )));
+        }
 
-        // 5. Verify Merkle inclusion proof against tx_root
-        if !proof.tx_proof.verify(&proof.header.tx_root) {
+        // 5. Merkle inclusion, bound to THIS transaction: the leaf is
+        // recomputed, so a genuine audit path for another transaction in the
+        // same (or any) block cannot be relabelled with our commitment.
+        let leaf = tx.tx_leaf_hash();
+        if proof.tx_proof.leaf_hash != leaf {
             return Err(ChainError::InvalidInclusionProof(
-                "Merkle audit path does not resolve to header tx_root".to_string(),
+                "audit path leaf is not the carried transaction".to_string(),
+            ));
+        }
+        if proof.tx_proof.leaf_index != proof.tx_index {
+            return Err(ChainError::InvalidInclusionProof(format!(
+                "audit path index {} does not match tx index {}",
+                proof.tx_proof.leaf_index, proof.tx_index
+            )));
+        }
+        // The path must be the one for that position, not merely a path that
+        // reaches the root.
+        if !proof.tx_proof.verify_bound(&proof.header.tx_root) {
+            return Err(ChainError::InvalidInclusionProof(
+                "Merkle audit path does not resolve to header tx_root at the stated position"
+                    .to_string(),
             ));
         }
 
-        // 6. Verify validator quorum threshold and Ed25519 signatures
-        let required_quorum = self.quorum_threshold();
-        let signing_payload = proof.header.signing_payload();
-
-        let mut valid_signatures = 0;
-        let mut seen = HashSet::new();
-
-        for sig in &proof.header.signatures {
-            if self.trusted_validators.contains(&sig.validator) && seen.insert(sig.validator) {
-                if let Ok(verifying_key) = VerifyingKey::from_bytes(&sig.validator) {
-                    let ed_sig = Signature::from_bytes(&sig.signature);
-                    if verifying_key
-                        .verify_strict(&signing_payload, &ed_sig)
-                        .is_ok()
-                    {
-                        valid_signatures += 1;
-                    }
-                }
-            }
-        }
-
-        if valid_signatures < required_quorum {
-            return Err(ChainError::InsufficientQuorum {
-                required: required_quorum,
-                actual: valid_signatures,
-            });
-        }
+        // 6. Validator quorum (and, for v4+, the signed median time).
+        let signatures_verified = self.verify_header(&proof.header)?;
+        let quorum_required = self.quorum_threshold().max(1);
+        let timestamp_signed = proof.header.timestamp_is_signed();
 
         Ok(SovereignVerificationResult {
             verified: true,
             chain_id: self.chain_id.clone(),
             height: proof.height,
             block_hash_hex: hex::encode(proof.block_hash),
-            timestamp_ms: proof.timestamp_ms,
-            commitment_hex: hex::encode(proof.commitment),
-            head_cid_hex: hex::encode(proof.head_cid),
+            timestamp_ms: proof.header.timestamp_ms,
+            timestamp_signed,
+            commitment_hex: hex::encode(expected_commitment),
+            head_cid_hex: hex::encode(expected_head_cid),
             proposer_hex: hex::encode(proof.header.proposer),
-            signatures_verified: valid_signatures,
-            quorum_required: required_quorum,
+            signatures_verified,
+            quorum_required,
             message: format!(
-                "Anchor cryptographically verified on sovereign CipherChain (Block #{}, {}/{} validator signatures)",
-                proof.height, valid_signatures, required_quorum
+                "Anchor verified on sovereign CipherChain (Block #{}, {}/{} validator signatures; block time {})",
+                proof.height,
+                signatures_verified,
+                quorum_required,
+                if timestamp_signed {
+                    "validator-signed".to_string()
+                } else {
+                    format!("NOT signed: block version {}", proof.header.version)
+                }
             ),
         })
     }
@@ -196,9 +315,13 @@ impl SovereignLightClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::BlockHeader;
+    use crate::consensus::ConsensusSigner;
 
-    fn header_with_rotation(version: u16, rotation: Option<Vec<[u8; 32]>>) -> BlockHeader {
+    fn header_with_rotation(
+        proposer: [u8; 32],
+        version: u16,
+        rotation: Option<Vec<[u8; 32]>>,
+    ) -> BlockHeader {
         BlockHeader {
             version,
             chain_id: "test-chain".to_string(),
@@ -207,7 +330,7 @@ mod tests {
             state_root: [0u8; 32],
             tx_root: [0u8; 32],
             timestamp_ms: 2_000,
-            proposer: [0x01; 32],
+            proposer,
             next_validators: rotation,
             signatures: Vec::new(),
         }
@@ -215,20 +338,59 @@ mod tests {
 
     #[test]
     fn test_advance_to_rotation_rekeys_trust() {
-        let mut client = SovereignLightClient::new("test-chain", vec![[0x01; 32]]);
+        let signer = ConsensusSigner::generate();
+        let mut client = SovereignLightClient::new("test-chain", vec![signer.public_key()]);
         assert_eq!(client.quorum_threshold(), 1);
 
         // No rotation payload: rejected.
-        let plain = header_with_rotation(3, None);
+        let plain = header_with_rotation(signer.public_key(), 3, None);
         assert!(client.advance_to_rotation(&plain).is_err());
 
         // Rotation in a pre-v3 header: rejected even if well-formed.
-        let legacy = header_with_rotation(2, Some(vec![[0x02; 32]]));
+        let legacy = header_with_rotation(signer.public_key(), 2, Some(vec![[0x02; 32]]));
         assert!(client.advance_to_rotation(&legacy).is_err());
 
-        // Well-formed v3 rotation advances trust.
-        let rotated = header_with_rotation(3, Some(vec![[0x02; 32], [0x03; 32]]));
+        // Unsigned rotation: rejected, trust does not move (CC-12).
+        let mut rotated =
+            header_with_rotation(signer.public_key(), 3, Some(vec![[0x02; 32], [0x03; 32]]));
+        assert!(client.advance_to_rotation(&rotated).is_err());
+        assert_eq!(client.quorum_threshold(), 1);
+
+        // Certified by the current set: trust advances.
+        rotated.signatures.push(signer.sign_header(&rotated));
         client.advance_to_rotation(&rotated).unwrap();
         assert_eq!(client.quorum_threshold(), 2);
+    }
+
+    #[test]
+    fn test_v4_header_time_must_be_signed_median() {
+        let signers: Vec<ConsensusSigner> = (0..3).map(|_| ConsensusSigner::generate()).collect();
+        let client = SovereignLightClient::new(
+            "test-chain",
+            signers.iter().map(|s| s.public_key()).collect(),
+        );
+        let mut header = header_with_rotation(signers[0].public_key(), SIGNED_TIME_VERSION, None);
+        for (signer, observed) in signers.iter().zip([1_000u64, 2_000, 9_000]) {
+            header
+                .signatures
+                .push(signer.sign_header_at(&header, observed));
+        }
+        // Declared time must be the median of the signed samples (2_000):
+        // an assembler claiming the proposer's 9_000 is caught.
+        header.timestamp_ms = 9_000;
+        assert!(client.verify_header(&header).is_err());
+        header.timestamp_ms = 2_000;
+        assert_eq!(client.verify_header(&header).unwrap(), 3);
+        // Rewriting the time afterwards breaks verification.
+        header.timestamp_ms = 1_500;
+        assert!(matches!(
+            client.verify_header(&header),
+            Err(ChainError::TimestampNotMedian { .. })
+        ));
+        // An empty trusted set verifies nothing.
+        header.timestamp_ms = 2_000;
+        assert!(SovereignLightClient::new("test-chain", Vec::new())
+            .verify_header(&header)
+            .is_err());
     }
 }

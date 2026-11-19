@@ -149,12 +149,26 @@ pub(crate) async fn cmd_anchor(
     device_signer.sign_tx(&mut tx, ciphervault_chain::SOVEREIGN_CHAIN_ID_STR);
     println!("  Tx Nonce:          {}", tx.nonce);
 
-    let proposed_block = ledger.propose_block(
-        &device_signer,
-        vec![tx],
-        now_ms.saturating_add(10),
-        rotation,
-    )?;
+    // Multi-validator chains keep their parent's block version so validators
+    // on older builds are not stranded mid-upgrade; set
+    // CIPHERVAULT_CHAIN_ACTIVATE_LATEST=1 once the whole fleet is upgraded.
+    // Single-validator chains always use the latest version.
+    let activate_latest = std::env::var("CIPHERVAULT_CHAIN_ACTIVATE_LATEST").as_deref() == Ok("1");
+    let proposed_block = if activate_latest {
+        ledger.propose_block_upgrading(
+            &device_signer,
+            vec![tx],
+            now_ms.saturating_add(10),
+            rotation,
+        )?
+    } else {
+        ledger.propose_block(
+            &device_signer,
+            vec![tx],
+            now_ms.saturating_add(10),
+            rotation,
+        )?
+    };
     let quorum = validator_set.quorum_threshold();
     let sigs = proposed_block.header.signatures.len();
 
@@ -316,137 +330,222 @@ pub(crate) async fn cmd_verify_anchor(head_hex_opt: Option<String>) -> Result<()
         .get_checkpoint_evidence(&head_cid)?
         .context("No on-chain checkpoint evidence recorded for this snapshot head")?;
 
-    let is_sovereign = evidence.chain_id == ciphervault_chain::SOVEREIGN_CHAIN_ID_NUM
-        || evidence.contract_address == vec![0u8; 20]
-        || (evidence.contract_address.len() == 20 && evidence.contract_address == [0u8; 20]);
-
-    if is_sovereign {
-        println!(
-            "{}",
-            "=======================================================".cyan()
-        );
-        println!(
-            "{}",
-            "  CipherChain Sovereign Anchor Verification Report"
-                .bold()
-                .green()
-        );
-        println!(
-            "  Commitment:        0x{}",
-            hex::encode(&evidence.commitment).yellow()
-        );
-
-        let preimage_valid = evidence.verify_commitment();
-        println!(
-            "  Salt Preimage:     {}",
-            if preimage_valid {
-                "Valid (Matches SHA-256('CIPHERVAULT-ANCHOR-V1' || salt || head_cid))".green()
-            } else {
-                "TAMPERED / INVALID".red()
-            }
-        );
-
-        let (chain_dir, _device_signer, validator_set) = load_device_and_validators()?;
-
-        if chain_dir.join("blocks").exists() {
-            let mut salt_arr = [0u8; 32];
-            let mut head_arr = [0u8; 32];
-            let mut commitment_arr = [0u8; 32];
-            if evidence.salt.len() == 32
-                && evidence.head_record_cid.len() == 32
-                && evidence.commitment.len() == 32
-            {
-                salt_arr.copy_from_slice(&evidence.salt);
-                head_arr.copy_from_slice(&evidence.head_record_cid);
-                commitment_arr.copy_from_slice(&evidence.commitment);
-
-                if let Ok(ledger) = ciphervault_chain::SovereignLedger::open(
-                    ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
-                    validator_set,
-                    &chain_dir,
-                ) {
-                    if let Ok(proof) = ledger.get_proof_for_commitment(&commitment_arr) {
-                        let light_client = ciphervault_chain::SovereignLightClient::new(
-                            ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
-                            vec![proof.header.proposer],
-                        );
-                        if let Ok(result) = light_client.verify_anchor(&head_arr, &salt_arr, &proof)
-                        {
-                            println!("  Sovereign Network: {}", result.chain_id.cyan());
-                            println!("  Block Height:      #{}", result.height);
-                            println!("  Block Hash:        0x{}", result.block_hash_hex.cyan());
-                            println!("  Proposer ID:       0x{}", result.proposer_hex.dimmed());
-                            println!(
-                                "  Quorum Signatures: {}/{} Operator Signatures Verified",
-                                result.signatures_verified, result.quorum_required
-                            );
-                            println!(
-                                "  Merkle Tx Root:    0x{}",
-                                hex::encode(proof.header.tx_root).dimmed()
-                            );
-                            println!(
-                                "  Light Client:      {}",
-                                "Cryptographically Proven Valid (<1ms local verification)"
-                                    .green()
-                                    .bold()
-                            );
-                            println!(
-                                "  Status:            {}",
-                                "IMMUTABLY ANCHORED (Sovereign Blockchain)".green().bold()
-                            );
-                            println!(
-                                "{}",
-                                "=======================================================".cyan()
-                            );
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        println!(
-            "  Sovereign Network: {}",
-            ciphervault_chain::SOVEREIGN_CHAIN_ID_STR.cyan()
-        );
-        println!("  Block Height:      #{}", evidence.block_number);
-        println!(
-            "  Block Hash:        0x{}",
-            hex::encode(&evidence.tx_hash).cyan()
-        );
-        println!(
-            "  Status:            {}",
-            "Cryptographic Checkpoint Verified".green().bold()
-        );
-        println!(
-            "{}",
-            "=======================================================".cyan()
-        );
-        return Ok(());
-    }
-
-    // Legacy pre-sovereign evidence: EVM verification was removed in Phase 1
-    // of the sovereign-chain migration (legacy path in git tag `last-evm-anchor`).
-    // The cryptographic preimage is still verified locally below.
-    let preimage_valid = evidence.verify_commitment();
+    println!(
+        "{}",
+        "=======================================================".cyan()
+    );
+    println!(
+        "{}",
+        "  CipherChain Sovereign Anchor Verification Report"
+            .bold()
+            .green()
+    );
     println!(
         "  Commitment:        0x{}",
         hex::encode(&evidence.commitment).yellow()
     );
-    println!(
-        "  Salt Preimage:     {}",
-        if preimage_valid {
-            "Valid (Matches SHA-256('CIPHERVAULT-ANCHOR-V1' || salt || head_cid))".green()
-        } else {
-            "TAMPERED / INVALID".red()
-        }
-    );
-    println!(
-        "  {}",
-        "Legacy Arbitrum evidence: on-chain EVM verification was removed in the sovereign migration. Re-anchor to CipherChain for sovereign proofs.".yellow()
-    );
 
+    let (chain_dir, _device_signer, validator_set) = load_device_and_validators()?;
+    // Every failure exits non-zero: scripts and CI rely on the exit code,
+    // so an unverifiable anchor must never read as verified (review CC-03).
+    let verified = match verify_anchor_evidence(&chain_dir, &evidence, &validator_set) {
+        Ok(verified) => verified,
+        Err(e) => {
+            println!("  Status:            {}", "NOT VERIFIED".red().bold());
+            println!(
+                "{}",
+                "=======================================================".cyan()
+            );
+            return Err(e.context("anchor NOT verified"));
+        }
+    };
+    let result = &verified.result;
+
+    println!("  Sovereign Network: {}", result.chain_id.cyan());
+    println!("  Block Height:      #{}", result.height);
+    println!("  Block Hash:        0x{}", result.block_hash_hex.cyan());
+    println!("  Proposer ID:       0x{}", result.proposer_hex.dimmed());
+    println!(
+        "  Quorum Signatures: {}/{} validator signatures verified (trusted set: {} key(s), walked from genesis)",
+        result.signatures_verified, result.quorum_required, verified.trusted_keys
+    );
+    let when = chrono::DateTime::from_timestamp_millis(result.timestamp_ms as i64)
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_else(|| result.timestamp_ms.to_string());
+    if result.timestamp_signed {
+        println!("  Block Time:        {when} (validator-signed)");
+    } else {
+        println!(
+            "  Block Time:        {when} {}",
+            format!(
+                "(NOT signed: block version {} predates signed block time; re-anchor for a signed time)",
+                verified.block_version
+            )
+            .yellow()
+        );
+    }
+    if verified.trusted_keys == 1 {
+        println!(
+            "  Trust Note:        {}",
+            "solo validator: this device signed its own chain, so it is tamper-evident only against parties without this device's key"
+                .yellow()
+        );
+    }
+    println!(
+        "  Status:            {}",
+        "ANCHORED (verified against the trusted validator set)"
+            .green()
+            .bold()
+    );
+    println!(
+        "{}",
+        "=======================================================".cyan()
+    );
     Ok(())
+}
+
+/// What `verify-anchor` established, for reporting.
+pub(crate) struct VerifiedAnchor {
+    pub(crate) result: ciphervault_chain::SovereignVerificationResult,
+    /// Size of the validator set the proof was checked against.
+    pub(crate) trusted_keys: usize,
+    /// Header version of the anchoring block (time is signed for v1 and v4+).
+    pub(crate) block_version: u16,
+}
+
+/// Whether two validator sets have the same members, in any order.
+fn same_members(a: &ciphervault_chain::ValidatorSet, b: &ciphervault_chain::ValidatorSet) -> bool {
+    let mut left = a.validators().to_vec();
+    let mut right = b.validators().to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
+}
+
+fn evidence_field_32(bytes: &[u8], name: &str) -> Result<[u8; 32]> {
+    if bytes.len() != 32 {
+        bail!(
+            "malformed checkpoint evidence: {name} is {} bytes, expected 32",
+            bytes.len()
+        );
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(bytes);
+    Ok(arr)
+}
+
+/// Verifies checkpoint evidence against the local CipherChain ledger and
+/// fails closed on every path (review CC-03):
+///
+/// - the evidence must match its own commitment;
+/// - legacy EVM evidence is refused (its on-chain path was removed);
+/// - the ledger must open, re-verify from genesis, and hold the commitment
+///   in the block the evidence names;
+/// - the proof is checked by the light client against the set that
+///   certified genesis, walked forward through every certified rotation
+///   before the anchoring height, never against the block's own proposer.
+///
+/// Private (v2) anchors verify through the local preimage, since their
+/// on-chain transaction carries only the commitment.
+pub(crate) fn verify_anchor_evidence(
+    chain_dir: &std::path::Path,
+    evidence: &ciphervault_format::CheckpointEvidence,
+    configured: &ciphervault_chain::ValidatorSet,
+) -> Result<VerifiedAnchor> {
+    if !evidence.verify_commitment() {
+        bail!(
+            "the stored checkpoint evidence does not match its own commitment (tampered or corrupt)"
+        );
+    }
+    let is_sovereign = evidence.chain_id == ciphervault_chain::SOVEREIGN_CHAIN_ID_NUM
+        || evidence.contract_address == [0u8; 20];
+    if !is_sovereign {
+        bail!(
+            "legacy Arbitrum evidence can no longer be verified on-chain (the EVM path was removed; \
+             see git tag last-evm-anchor). Re-anchor with 'ciphervault anchor'"
+        );
+    }
+    let salt = evidence_field_32(&evidence.salt, "salt")?;
+    let head = evidence_field_32(&evidence.head_record_cid, "head record CID")?;
+    let commitment = evidence_field_32(&evidence.commitment, "commitment")?;
+
+    if !chain_dir.join("blocks").exists() {
+        bail!("no local CipherChain ledger at {}", chain_dir.display());
+    }
+    let ledger = ciphervault_chain::SovereignLedger::open(
+        ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
+        configured.clone(),
+        chain_dir,
+    )
+    .context("the local CipherChain ledger failed to open or re-verify")?;
+    if ledger.earliest_height() != 0 {
+        bail!(
+            "the local CipherChain ledger has no genesis-anchored history yet (unbackfilled tip)"
+        );
+    }
+    let proof = ledger
+        .get_proof_for_commitment(&commitment)
+        .context("the commitment is not in the local CipherChain ledger")?;
+    if evidence.block_number != proof.height
+        || evidence.tx_hash.as_slice() != proof.block_hash.as_slice()
+    {
+        bail!(
+            "evidence names block #{} (0x{}), but the ledger holds this commitment in block #{} (0x{})",
+            evidence.block_number,
+            hex::encode(&evidence.tx_hash),
+            proof.height,
+            hex::encode(proof.block_hash)
+        );
+    }
+
+    // Trust root: the set that certified genesis (on-disk record, else the
+    // configured set), advanced only through rotations the then-current set
+    // certified, so the proof verifies against the set active at its height.
+    let genesis_set = ciphervault_chain::SovereignLedger::read_genesis_validators(chain_dir)?
+        .unwrap_or_else(|| configured.clone());
+    let mut light = ciphervault_chain::SovereignLightClient::new(
+        ciphervault_chain::SOVEREIGN_CHAIN_ID_STR,
+        genesis_set.validators().to_vec(),
+    );
+    for block in ledger
+        .blocks()
+        .iter()
+        .take_while(|b| b.header.height < proof.height)
+    {
+        if block.header.next_validators.is_some() {
+            light.advance_to_rotation(&block.header).with_context(|| {
+                format!(
+                    "validator rotation at height {} does not verify",
+                    block.header.height
+                )
+            })?;
+        }
+    }
+    // The on-disk genesis record and the replayed blocks are local data, so
+    // they cannot be their own trust root. Anchor the walk to the configured
+    // set (validators.json): it must be the genesis set, or the set active at
+    // the proof's height. Either way every key the proof relies on traces to
+    // the configured set, so a self-consistent replacement chain under other
+    // keys (with a rewritten genesis record) is refused.
+    let anchored_at_genesis = same_members(&genesis_set, configured);
+    let anchored_at_proof = light.trusts_exactly(configured.validators());
+    if !anchored_at_genesis && !anchored_at_proof {
+        bail!(
+            "the chain's genesis validator record and the validator set active at block #{} \
+             both differ from the configured validator set (validators.json); refusing to \
+             trust a replaced genesis record",
+            proof.height
+        );
+    }
+    let trusted_keys = light.trusted_len();
+    let result = light
+        .verify_anchor(&head, &salt, &proof)
+        .context("light-client verification of the anchor proof failed")?;
+    Ok(VerifiedAnchor {
+        result,
+        trusted_keys,
+        block_version: proof.header.version,
+    })
 }
 
 /// Loads the persistent device consensus key and the explicit validator set.
@@ -579,7 +678,177 @@ fn is_legacy_key_mismatch(e: &ciphervault_chain::ChainError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::publish_proposal_to_operators;
+    use super::verify_anchor_evidence;
+    use ciphervault_chain::{
+        CommitmentTx, ConsensusSigner, SovereignLedger, ValidatorSet, SOVEREIGN_CHAIN_ID_NUM,
+        SOVEREIGN_CHAIN_ID_STR,
+    };
+    use ciphervault_format::CheckpointEvidence;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn temp_chain_dir(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "cv-verify-anchor-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    /// A solo chain (device = sole validator, as `cmd_anchor` builds it)
+    /// holding one anchored commitment, plus the evidence `cmd_anchor` saves.
+    fn anchored_solo_chain(
+        name: &str,
+        private: bool,
+    ) -> (std::path::PathBuf, ValidatorSet, CheckpointEvidence) {
+        let dir = temp_chain_dir(name);
+        let signer = ConsensusSigner::generate();
+        let set = ValidatorSet::new(vec![signer.public_key()]).unwrap();
+        let evidence = anchor_solo_chain_into(&dir, &signer, private);
+        (dir, set, evidence)
+    }
+
+    /// Writes a fresh solo chain signed by `signer` into `dir` (replacing any
+    /// chain there) with the helper's fixed commitment anchored at height 1.
+    fn anchor_solo_chain_into(
+        dir: &std::path::Path,
+        signer: &ConsensusSigner,
+        private: bool,
+    ) -> CheckpointEvidence {
+        let set = ValidatorSet::new(vec![signer.public_key()]).unwrap();
+        let mut ledger = SovereignLedger::create_genesis(
+            SOVEREIGN_CHAIN_ID_STR,
+            set,
+            &[signer],
+            1_000,
+            Some(dir.to_path_buf()),
+        )
+        .unwrap();
+        let salt = [0x5au8; 32];
+        let head = [0xc3u8; 32];
+        let mut tx = if private {
+            CommitmentTx::new_private(&[0x77u8; 32], &salt, &head, [0u8; 32], 1, 1_500)
+        } else {
+            CommitmentTx {
+                version: 0,
+                vault_id: [0x77u8; 32],
+                salt,
+                head_cid: head,
+                commitment: CommitmentTx::calculate_commitment(&salt, &head),
+                client_pubkey: [0u8; 32],
+                signature: [0u8; 64],
+                nonce: 1,
+                timestamp_ms: 1_500,
+            }
+        };
+        signer.sign_tx(&mut tx, SOVEREIGN_CHAIN_ID_STR);
+        let block = ledger.propose_block(signer, vec![tx], 2_000, None).unwrap();
+        let block_hash = block.header.block_hash();
+        ledger.commit_block(block).unwrap();
+        CheckpointEvidence::new(
+            salt,
+            head,
+            SOVEREIGN_CHAIN_ID_NUM,
+            [0u8; 20],
+            block_hash,
+            1,
+            2,
+        )
+    }
+
+    /// Review: a self-consistent replacement chain (other key, rewritten
+    /// genesis record, matching evidence) must not verify against the
+    /// configured validator set.
+    #[test]
+    fn verify_anchor_evidence_refuses_a_replaced_genesis_record() {
+        let (dir, set, evidence) = anchored_solo_chain("replaced-genesis", false);
+        assert!(verify_anchor_evidence(&dir, &evidence, &set).is_ok());
+
+        // An attacker re-creates the chain under their own key in the same
+        // directory (blocks and genesis_validators.json) and rewrites the
+        // evidence to name the forged block.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let attacker = ConsensusSigner::generate();
+        let forged_evidence = anchor_solo_chain_into(&dir, &attacker, false);
+        assert_eq!(forged_evidence.commitment, evidence.commitment);
+        let err = match verify_anchor_evidence(&dir, &forged_evidence, &set) {
+            Ok(_) => panic!("replaced chain must not verify against the configured set"),
+            Err(e) => e,
+        };
+        assert!(format!("{err:#}").contains("validators.json"), "{err:#}");
+
+        // The same chain does verify for a vault that configured that key.
+        let attacker_set = ValidatorSet::new(vec![attacker.public_key()]).unwrap();
+        assert!(verify_anchor_evidence(&dir, &forged_evidence, &attacker_set).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_anchor_evidence_accepts_legacy_and_private_anchors() {
+        for private in [false, true] {
+            let (dir, set, evidence) =
+                anchored_solo_chain(if private { "private" } else { "legacy" }, private);
+            let verified = verify_anchor_evidence(&dir, &evidence, &set)
+                .unwrap_or_else(|e| panic!("private={private}: {e:#}"));
+            assert!(verified.result.verified);
+            assert_eq!(verified.result.height, 1);
+            assert_eq!(verified.trusted_keys, 1);
+            assert!(verified.result.timestamp_signed);
+            assert_eq!(verified.block_version, ciphervault_chain::PROTOCOL_VERSION);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn verify_anchor_evidence_fails_closed() {
+        let (dir, set, evidence) = anchored_solo_chain("fail-closed", false);
+        assert!(verify_anchor_evidence(&dir, &evidence, &set).is_ok());
+
+        // Evidence that no longer matches its own commitment.
+        let mut tampered = evidence.clone();
+        tampered.salt[0] ^= 0x01;
+        assert!(verify_anchor_evidence(&dir, &tampered, &set).is_err());
+
+        // Self-consistent evidence for a commitment that was never anchored.
+        let never = CheckpointEvidence::new(
+            [0x01; 32],
+            [0x02; 32],
+            SOVEREIGN_CHAIN_ID_NUM,
+            [0u8; 20],
+            [0u8; 32],
+            1,
+            2,
+        );
+        assert!(verify_anchor_evidence(&dir, &never, &set).is_err());
+
+        // Evidence naming a different block than the ledger holds.
+        let mut wrong_block = evidence.clone();
+        wrong_block.tx_hash = vec![0xee; 32];
+        assert!(verify_anchor_evidence(&dir, &wrong_block, &set).is_err());
+
+        // Legacy EVM evidence cannot be verified any more.
+        let mut legacy = evidence.clone();
+        legacy.chain_id = 42_161;
+        legacy.contract_address = vec![0x11; 20];
+        assert!(verify_anchor_evidence(&dir, &legacy, &set).is_err());
+
+        // No ledger at all.
+        assert!(verify_anchor_evidence(&dir.join("missing"), &evidence, &set).is_err());
+
+        // A block whose time was rewritten on disk no longer re-verifies
+        // (v4 signs every median sample).
+        let block_path = dir.join("blocks").join(format!("{:012}.json", 1));
+        let mut block: ciphervault_chain::CipherChainBlock =
+            serde_json::from_str(&std::fs::read_to_string(&block_path).unwrap()).unwrap();
+        block.header.timestamp_ms = 1_001;
+        std::fs::write(&block_path, serde_json::to_string_pretty(&block).unwrap()).unwrap();
+        assert!(verify_anchor_evidence(&dir, &evidence, &set).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Minimal HTTP responder: reads one request (headers + body), counts
     /// it, answers 200. Runs until aborted.
