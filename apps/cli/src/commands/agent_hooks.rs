@@ -528,15 +528,12 @@ fn extract_tool_target_paths(tool_input: &serde_json::Value) -> Vec<String> {
                             .trim()
                             .trim_start_matches("a/"),
                     )
-                } else if let Some(rest) = line
-                    .strip_prefix("*** Update File:")
-                    .or_else(|| line.strip_prefix("*** Add File:"))
-                    .or_else(|| line.strip_prefix("*** Delete File:"))
-                    .or_else(|| line.strip_prefix("*** Move to:"))
-                {
-                    Some(rest.trim())
                 } else {
-                    None
+                    line.strip_prefix("*** Update File:")
+                        .or_else(|| line.strip_prefix("*** Add File:"))
+                        .or_else(|| line.strip_prefix("*** Delete File:"))
+                        .or_else(|| line.strip_prefix("*** Move to:"))
+                        .map(|rest| rest.trim())
                 };
                 if let Some(p) = candidate {
                     if !p.is_empty() && p != "/dev/null" {

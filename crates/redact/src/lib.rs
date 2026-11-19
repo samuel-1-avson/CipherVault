@@ -509,7 +509,8 @@ pub const MIN_EXACT_VALUE_LEN: usize = 6;
 /// Scrub *known* secret values (not just shapes) from `input`: every
 /// occurrence of each value, plus its percent-encoded, base64 / base64url
 /// (padded and unpadded, plus phase-shifted interior substrings for values
-/// >= 12 bytes), hex (lowercase and uppercase), and JSON-escaped forms, is
+/// of at least 12 bytes), hex (lowercase and uppercase), and JSON-escaped
+/// forms, is
 /// replaced with `[REDACTED:<name>]`. Values shorter than
 /// [`MIN_EXACT_VALUE_LEN`] are skipped. Longest values are replaced first so
 /// overlapping values redact cleanly. Returns the scrubbed text and the
