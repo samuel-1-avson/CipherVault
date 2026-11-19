@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CipherVault - verified Linux & macOS installer/updater
 # Usage: curl -fsSL https://raw.githubusercontent.com/samuel-1-avson/CipherVault/main/dist/scripts/install.sh | bash
-# Optional env knobs: CIPHERVAULT_VERSION=v1.0.29 (pin, skips the
+# Optional env knobs: CIPHERVAULT_VERSION=v1.0.37 (pin, skips the
 # API call), CIPHERVAULT_INSTALL_DIR=/opt/cv-bin (override bindir),
 # CIPHERVAULT_ROLE=developer|node|full (default full; developer = CLI+agent,
 # node = CLI+operator+maintenance for guided `cv node setup`).
@@ -29,6 +29,7 @@ verify_release_signature() {
   case "$key_id" in
     b625994c0c3f53a6) public_key=b625994c0c3f53a6c40b0eadebe7ba1f5199e9f829a4bf20e064ae7aaab22c1e ;;
     c34d6bb1a158184d) public_key=c34d6bb1a158184d086033373be599f6867eff3815d32189715056e3ef82ea60 ;;
+    a5fddec52680cab8) public_key=a5fddec52680cab8b1296575032d278f8c89b48ec29f815e9fe782c8555ad54d ;;
     *) echo "Untrusted release signing key" >&2; return 1 ;;
   esac
   case "$version" in

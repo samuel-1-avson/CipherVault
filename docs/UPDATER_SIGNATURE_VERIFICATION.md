@@ -156,9 +156,28 @@ signing key`) and must fresh-install once. Follow-up when CI is reachable:
 replace the `CIPHERVAULT_RELEASE_SIGNING_KEY` secret with the successor
 seed so automated releases can sign again.
 
+## Rotation record (2026-11-19, v1.0.37)
+
+The 2026-11-07 successor seed (`c34d6bb1a158184d`) is likewise unavailable
+locally: it is not in the environment, local vault, or candidate key files
+on the release machine (the `.ciphervault/feed-signing-key.hex` candidate
+derives to unpinned key `5631c3669259b634`), and its only other copy is
+the GitHub Actions secret behind the still-active billing lock. The tagged
+v1.0.36 therefore could not be signed. A second successor
+(`a5fddec52680cab8`, generated offline via OS CSPRNG, stored outside the
+repo under a current-user-only ACL) is pinned alongside both predecessors
+in `update.rs` and both bootstrap installers; v1.0.37 is the first release
+signed by it via the local signed-publish path. Old releases keep
+verifying under retained predecessor pins. Updaters older than v1.0.37
+fail closed on the new signature and must fresh-install once via a
+bootstrap installer carrying the new pin. Follow-up when CI is reachable:
+replace the `CIPHERVAULT_RELEASE_SIGNING_KEY` secret with the second
+successor seed so automated releases can sign again, and back the seed up
+offline with the fleet seed.
+
 ## Files
 
 - `apps/cli/src/commands/update.rs` — trust roots, verification, updater hook, tests
 - `apps/cli/src/commands/release.rs` — `release sign` / `release verify`
-- `apps/cli/src/main.rs` — `release` subcommand wiring
+- `apps/cli/src/lib.rs` — `release` subcommand wiring
 - `.github/workflows/release.yml` — signing step
