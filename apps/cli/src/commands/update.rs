@@ -242,6 +242,11 @@ fn tar_listing_is_confined(listing: &str) -> bool {
 /// was unreachable, so v1.0.29+ is signed by the successor. The predecessor
 /// pin stays so old releases keep verifying; updaters older than this
 /// release reject new-key signatures and must fresh-install once.
+/// Rotation 2026-11-19: the successor seed is likewise unavailable locally
+/// (its only other copy is the unreachable CI secret), so v1.0.37+ is
+/// signed by the second successor. Both predecessor pins stay so old
+/// releases keep verifying; updaters older than v1.0.37 reject the new-key
+/// signature and must fresh-install once.
 const RELEASE_SIGNING_KEYS: &[(&str, &str)] = &[
     (
         "b625994c0c3f53a6",
@@ -250,6 +255,10 @@ const RELEASE_SIGNING_KEYS: &[(&str, &str)] = &[
     (
         "c34d6bb1a158184d",
         "c34d6bb1a158184d086033373be599f6867eff3815d32189715056e3ef82ea60",
+    ),
+    (
+        "a5fddec52680cab8",
+        "a5fddec52680cab8b1296575032d278f8c89b48ec29f815e9fe782c8555ad54d",
     ),
 ];
 

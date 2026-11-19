@@ -1,4 +1,33 @@
-# CipherVault 1.0.36
+# CipherVault 1.0.37
+
+Release-signing key rotation release. Functional content is the merged
+v1.0.36 feature set below plus merged maintenance work (CLI library
+extraction, oversized-module splits, Hermes pin-sync automation, and
+compatible dependency updates); the reason for the version step is trust
+roots, not features.
+
+- **Second signing-key successor.** The v1.0.29 successor seed
+  (`c34d6bb1a158184d`) is unavailable locally — its only other copy is the
+  GitHub Actions secret, unreachable while Actions is billing-locked — so
+  the tagged v1.0.36 could not be signed or published. v1.0.37 pins a
+  second successor (`a5fddec52680cab8`, generated offline via OS CSPRNG)
+  alongside both predecessors in the updater and both bootstrap
+  installers, and is the first release signed by it, published via the
+  local signed-publish path.
+- **Migration:** updaters older than v1.0.37 fail closed on the new
+  signature (`untrusted release signing key`) and must fresh-install once
+  via the bootstrap installer (which carries the new pin). Older releases
+  keep verifying under the retained predecessor pins.
+- **Hermes plugin v0.7.1** re-pins to the published v1.0.37 binaries in a
+  follow-up change after the assets and signed `SHA256SUMS.txt` are live.
+- **Verified locally** (hosted CI still billing-locked): full Rust
+  workspace suite on the merged tree — 97 suites, 1,025 passed,
+  0 failures — plus Hermes plugin, MCP, desktop, release-manifest, and
+  installer-signature suites as run for this release.
+
+---
+
+# CipherVault 1.0.36 (tagged; no signed release published — superseded by v1.0.37)
 
 Native in-vault secret mutation, wildcard policy profiles, a streaming-safe
 credential proxy, and Hermes plugin v0.7.1. Tagged `v1.0.36` from `main`;
