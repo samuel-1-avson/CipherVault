@@ -10,7 +10,7 @@ use ciphervault_operator::{
 use ciphervault_storage::{types::RecoveryRecordsResponse, OperatorClient};
 use ed25519_dalek::SigningKey;
 use std::{io::Write, sync::Arc};
-use tower05::ServiceExt;
+use tower::ServiceExt;
 
 fn strict_state(root: &std::path::Path, key: &SigningKey) -> OperatorState {
     OperatorState::new_with_security(

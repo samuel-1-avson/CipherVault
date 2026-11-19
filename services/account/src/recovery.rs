@@ -215,7 +215,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn recovery_session_enrolls_replacement_device() {

@@ -384,7 +384,7 @@ mod tests {
     use crate::test_support::{cleanup, test_app};
     use axum::body::Body;
     use axum::http::Request;
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn invitation_acceptance_requires_primary_and_target_account_factor_policy() {

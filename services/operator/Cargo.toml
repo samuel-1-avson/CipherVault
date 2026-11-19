@@ -38,5 +38,5 @@ ciphervault-chain = { path = "../../crates/chain" }
 ciphervault-recovery = { path = "../../crates/recovery" }
 
 [dev-dependencies]
-tower05 = { package = "tower", version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 reqwest.workspace = true

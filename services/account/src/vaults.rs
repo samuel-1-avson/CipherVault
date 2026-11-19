@@ -99,7 +99,7 @@ mod tests {
     use crate::{hash_token, random_hex};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn vault_link_records_and_preserves_key_backup_locator() {

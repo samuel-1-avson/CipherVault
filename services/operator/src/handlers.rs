@@ -1,5 +1,5 @@
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -1112,7 +1112,8 @@ pub async fn post_submit_approval(
 /// happens in test harnesses, which are allowed through.)
 pub async fn get_metrics(
     State(state): State<Arc<OperatorState>>,
-    connect: Option<ConnectInfo<SocketAddr>>,
+    // axum 0.8: ConnectInfo is not an optional extractor; Extension is.
+    connect: Option<Extension<ConnectInfo<SocketAddr>>>,
 ) -> Response {
     let public = matches!(
         std::env::var("CIPHERVAULT_METRICS_PUBLIC")
@@ -1122,7 +1123,7 @@ pub async fn get_metrics(
             .as_str(),
         "1" | "true" | "yes"
     );
-    if !public && connect.is_some_and(|ConnectInfo(addr)| !addr.ip().is_loopback()) {
+    if !public && connect.is_some_and(|Extension(ConnectInfo(addr))| !addr.ip().is_loopback()) {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"code": 403, "error": "metrics are loopback-only"})),

@@ -125,11 +125,11 @@ pub(crate) fn private_ui_router() -> axum::Router {
             axum::routing::post(api_account_mfa_step_up_handler),
         )
         .route(
-            "/api/account/:account_id/mfa",
+            "/api/account/{account_id}/mfa",
             get(api_account_mfa_get_handler).patch(api_account_mfa_patch_handler),
         )
         .route(
-            "/api/account/:account_id/mfa/recovery-reset",
+            "/api/account/{account_id}/mfa/recovery-reset",
             axum::routing::post(api_account_mfa_recovery_reset_handler),
         )
         .route(
@@ -149,27 +149,27 @@ pub(crate) fn private_ui_router() -> axum::Router {
             axum::routing::post(api_account_session_handoff_consume_handler),
         )
         .route(
-            "/api/account/:account_id",
+            "/api/account/{account_id}",
             get(api_account_resource_get_handler),
         )
         .route(
-            "/api/account/:account_id/invitations",
+            "/api/account/{account_id}/invitations",
             get(api_account_invitations_get_handler).post(api_account_invitations_post_handler),
         )
         .route(
-            "/api/account/:account_id/vaults",
+            "/api/account/{account_id}/vaults",
             axum::routing::post(api_account_vaults_post_handler),
         )
         .route(
-            "/api/account/:account_id/memberships",
+            "/api/account/{account_id}/memberships",
             get(api_account_memberships_get_handler),
         )
         .route(
-            "/api/account/:account_id/memberships/:member_account_id/revoke",
+            "/api/account/{account_id}/memberships/{member_account_id}/revoke",
             axum::routing::post(api_account_membership_revoke_handler),
         )
         .route(
-            "/api/account/:account_id/recovery/codes",
+            "/api/account/{account_id}/recovery/codes",
             axum::routing::post(api_account_recovery_codes_handler),
         )
         .route(
@@ -193,19 +193,19 @@ pub(crate) fn private_ui_router() -> axum::Router {
             axum::routing::post(api_account_webauthn_verify_handler),
         )
         .route(
-            "/api/account/:account_id/webauthn/registration/options",
+            "/api/account/{account_id}/webauthn/registration/options",
             axum::routing::post(api_account_webauthn_registration_options_handler),
         )
         .route(
-            "/api/account/:account_id/devices/challenge",
+            "/api/account/{account_id}/devices/challenge",
             axum::routing::post(api_account_device_challenge_handler),
         )
         .route(
-            "/api/account/:account_id/devices",
+            "/api/account/{account_id}/devices",
             axum::routing::post(api_account_device_enrollment_handler),
         )
         .route(
-            "/api/account/:account_id/webauthn/registration/verify",
+            "/api/account/{account_id}/webauthn/registration/verify",
             axum::routing::post(api_account_webauthn_registration_verify_handler),
         )
         .route(
@@ -217,15 +217,15 @@ pub(crate) fn private_ui_router() -> axum::Router {
             axum::routing::post(api_account_totp_verify_handler),
         )
         .route(
-            "/api/account/:account_id/totp/enrollment",
+            "/api/account/{account_id}/totp/enrollment",
             axum::routing::post(api_account_totp_enrollment_handler),
         )
         .route(
-            "/api/account/:account_id/totp/enrollment/verify",
+            "/api/account/{account_id}/totp/enrollment/verify",
             axum::routing::post(api_account_totp_enrollment_verify_handler),
         )
         .route(
-            "/api/account/:account_id/totp/revoke",
+            "/api/account/{account_id}/totp/revoke",
             axum::routing::post(api_account_totp_revoke_handler),
         )
         .route(
@@ -241,7 +241,7 @@ pub(crate) fn private_ui_router() -> axum::Router {
             get(api_snapshots_handler).post(api_create_snapshot_handler),
         )
         .route(
-            "/api/snapshots/:id/manifest",
+            "/api/snapshots/{id}/manifest",
             get(api_snapshot_manifest_handler),
         )
         .route("/api/activity", get(api_activity_handler))
@@ -299,13 +299,13 @@ pub(crate) fn private_ui_router() -> axum::Router {
         .route("/api/scoped/context", get(api_scoped_context_handler))
         .route("/api/scoped/projects", get(api_scoped_projects_handler))
         .route(
-            "/api/scoped/projects/:project_ref",
+            "/api/scoped/projects/{project_ref}",
             get(api_scoped_project_handler),
         )
         .route("/api/scoped/secrets", get(api_scoped_secrets_handler))
         .route("/api/explorer/overview", get(api_explorer_overview_handler))
         .route(
-            "/api/explorer/object/:cid",
+            "/api/explorer/object/{cid}",
             get(api_explorer_object_handler),
         )
         .route("/metrics", get(api_public_metrics_handler))
@@ -508,11 +508,11 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             axum::routing::post(api_account_mfa_step_up_handler),
         )
         .route(
-            "/api/account/:account_id/mfa",
+            "/api/account/{account_id}/mfa",
             get(api_account_mfa_get_handler).patch(api_account_mfa_patch_handler),
         )
         .route(
-            "/api/account/:account_id/mfa/recovery-reset",
+            "/api/account/{account_id}/mfa/recovery-reset",
             axum::routing::post(api_account_mfa_recovery_reset_handler),
         )
         .route(
@@ -532,27 +532,27 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             axum::routing::post(api_account_session_handoff_consume_handler),
         )
         .route(
-            "/api/account/:account_id",
+            "/api/account/{account_id}",
             get(api_account_resource_get_handler),
         )
         .route(
-            "/api/account/:account_id/invitations",
+            "/api/account/{account_id}/invitations",
             get(api_account_invitations_get_handler).post(api_account_invitations_post_handler),
         )
         .route(
-            "/api/account/:account_id/vaults",
+            "/api/account/{account_id}/vaults",
             axum::routing::post(api_account_vaults_post_handler),
         )
         .route(
-            "/api/account/:account_id/memberships",
+            "/api/account/{account_id}/memberships",
             get(api_account_memberships_get_handler),
         )
         .route(
-            "/api/account/:account_id/memberships/:member_account_id/revoke",
+            "/api/account/{account_id}/memberships/{member_account_id}/revoke",
             axum::routing::post(api_account_membership_revoke_handler),
         )
         .route(
-            "/api/account/:account_id/recovery/codes",
+            "/api/account/{account_id}/recovery/codes",
             axum::routing::post(api_account_recovery_codes_handler),
         )
         .route(
@@ -562,7 +562,7 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
         // Local-device sign-in. On a loopback workspace this binds the
         // local vault key; on the public explorer the handler reports that
         // no local vault exists. Either way the route must exist: without
-        // it POSTs fall onto GET-only `/api/account/:account_id` and die
+        // it POSTs fall onto GET-only `/api/account/{account_id}` and die
         // with an empty 405.
         .route(
             "/api/account/login",
@@ -581,19 +581,19 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             axum::routing::post(api_account_webauthn_verify_handler),
         )
         .route(
-            "/api/account/:account_id/webauthn/registration/options",
+            "/api/account/{account_id}/webauthn/registration/options",
             axum::routing::post(api_account_webauthn_registration_options_handler),
         )
         .route(
-            "/api/account/:account_id/devices/challenge",
+            "/api/account/{account_id}/devices/challenge",
             axum::routing::post(api_account_device_challenge_handler),
         )
         .route(
-            "/api/account/:account_id/devices",
+            "/api/account/{account_id}/devices",
             axum::routing::post(api_account_device_enrollment_handler),
         )
         .route(
-            "/api/account/:account_id/webauthn/registration/verify",
+            "/api/account/{account_id}/webauthn/registration/verify",
             axum::routing::post(api_account_webauthn_registration_verify_handler),
         )
         .route(
@@ -605,15 +605,15 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
             axum::routing::post(api_account_totp_verify_handler),
         )
         .route(
-            "/api/account/:account_id/totp/enrollment",
+            "/api/account/{account_id}/totp/enrollment",
             axum::routing::post(api_account_totp_enrollment_handler),
         )
         .route(
-            "/api/account/:account_id/totp/enrollment/verify",
+            "/api/account/{account_id}/totp/enrollment/verify",
             axum::routing::post(api_account_totp_enrollment_verify_handler),
         )
         .route(
-            "/api/account/:account_id/totp/revoke",
+            "/api/account/{account_id}/totp/revoke",
             axum::routing::post(api_account_totp_revoke_handler),
         )
         .route("/api/vault", get(api_public_vault_handler))
@@ -636,7 +636,7 @@ pub(crate) fn public_ui_router_with_limiter(limiter: RateLimiter) -> axum::Route
         .route("/api/stream", get(api_public_stream_handler))
         .route("/api/explorer/overview", get(api_explorer_overview_handler))
         .route(
-            "/api/explorer/object/:cid",
+            "/api/explorer/object/{cid}",
             get(api_explorer_object_handler),
         )
         .route("/metrics", get(api_public_metrics_handler))
@@ -1870,8 +1870,8 @@ mod tests {
         }
         let app = axum::Router::new()
             .route("/v1/projects", axum::routing::get(projects))
-            .route("/v1/projects/:id", axum::routing::get(project))
-            .route("/v1/projects/:id/secrets", axum::routing::get(secrets));
+            .route("/v1/projects/{id}", axum::routing::get(project))
+            .route("/v1/projects/{id}/secrets", axum::routing::get(secrets));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {

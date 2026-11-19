@@ -3,7 +3,7 @@ use axum::http::{Request, StatusCode};
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_operator::{create_router, OperatorState};
 use std::sync::Arc;
-use tower05::ServiceExt;
+use tower::ServiceExt;
 
 /// R11: /metrics serves Prometheus exposition, and the trace middleware
 /// echoes valid client trace IDs back to the caller.

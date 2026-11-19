@@ -80,7 +80,7 @@ async fn operator_tokens_require_allowlists_and_never_follow_redirects() {
         Router::new()
             .route("/v1/peers", get(redirect.clone()))
             .route("/v1/vouchers", post(redirect.clone()))
-            .route("/v1/checkpoints/:commitment", get(redirect)),
+            .route("/v1/checkpoints/{commitment}", get(redirect)),
     )
     .await;
     std::env::set_var("CIPHERVAULT_OPERATOR_SERVICE_TOKEN", "synthetic-token");
@@ -119,7 +119,7 @@ async fn operator_tokens_require_allowlists_and_never_follow_redirects() {
     let (untrusted, untrusted_task) = serve(
         Router::new()
             .route("/v1/peers", get(capture.clone()))
-            .route("/v1/checkpoints/:commitment", get(capture)),
+            .route("/v1/checkpoints/{commitment}", get(capture)),
     )
     .await;
     OperatorClient::new(untrusted.clone())
