@@ -48,6 +48,7 @@ limits: `docs/CURRENT_SECURITY_GUARANTEES.md`; threat model:
 | C6 | Sealed epoch envelopes (X25519 sealed box), device certificates, recovery signing | `crates/format`, `crates/local-store` | Envelope binding, cert authority generations, replay/rollback of heads. |
 | C7 | Operator protocol: challenge/session auth, signed proof-of-storage (`CIPHERVAULT-POS-V1`), lease receipts | `crates/storage`, `services/operator` | Session scope binding, PoS soundness, receipt forgery. |
 | C8 | Audit chain: hash-chained device-signed entries, signed fleet checkpoints | `crates/local-store` (`agent_audit`), `apps/cli/src/commands/agent_log.rs` | Chain/anchor forgery or truncation under a same-user attacker; what the proof does and does not establish. |
+| C9 | CipherChain anchoring: salted commitments, Merkle inclusion proofs, quorum certificates with signed block time (v4), validator rotation, catch-up trust | `crates/chain`, `apps/cli/src/commands/anchor.rs`, `services/operator/src/state/methods_chain.rs` | Can a proof, block time or validator set be forged, replayed or swapped? Are the light-client and catch-up trust anchors sound? Start from [`CIPHERCHAIN_REVIEW_2026-11-19.md`](./CIPHERCHAIN_REVIEW_2026-11-19.md), which lists fixed and open findings. |
 
 ## 4. Code scope
 

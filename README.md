@@ -113,8 +113,8 @@ flowchart TB
         MaintDaemon["ciphervault-maintenance\n(PoS Challenge Audits & Autonomous Self-Repair)"]
     end
 
-    subgraph Settlement ["Immutable Settlement & Anchoring"]
-        CipherChain["CipherChain (Sovereign BFT PoA Ledger)\nciphervault-chain (Merkle State Accumulator)"]
+    subgraph Settlement ["Tamper-Evident Anchoring"]
+        CipherChain["CipherChain (Sovereign PoA Ledger)\nciphervault-chain (Merkle State Accumulator)"]
     end
 
     subgraph Recovery ["Sovereign Clean-Machine Recovery"]
@@ -180,7 +180,7 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 | **Storage Operator** | `services/operator` | Rust (Axum, Tokio) | Zero-knowledge chunk store, PoS challenge responder, and P2P peer gossip. |
 | **Maintenance Fleet** | `services/maintenance` | Rust (Tokio, Rusqlite) | Periodic replication auditor, node latency monitor, and autonomous self-repair scheduler. |
 | **Account Service** | `services/account` | Rust (Axum, WebAuthn) | Optional self-hosted multi-device synchronization, passkey enrollment, and TOTP alternate login. |
-| **Sovereign Ledger** | `crates/chain` | Rust (Ed25519, Sha2) | Zero-gas Proof-of-Authority consensus ledger, Merkle state accumulator, and sub-millisecond light client verifier. |
+| **Sovereign Ledger** | `crates/chain` | Rust (Ed25519, Sha2) | Zero-gas Proof-of-Authority anchoring ledger, Merkle state accumulator, and light-client verifier. Multi-validator consensus is not finished (see [Project Status](#-project-status--known-limits)). |
 | **Redaction Engine** | `crates/redact` | Rust | Exact-value and credential-shape scrubbing (raw, base64/base64url, hex, percent- and JSON-escaped variants) behind `run --json`, `redact`, the agent bridge and audit paths. |
 | **File Locking** | `crates/file-lock` | Rust (advapi32 FFI on Windows) | Locks secret files down to the current user (Unix `0600`; protected owner-only DACL on Windows) with no `icacls` shell-out. |
 | **Hermes Plugin** | `plugins/ciphervault` | Python | Native [Hermes Agent](https://hermes-agent.nousresearch.com) plugin: 12 tools, leak-guard hooks, result scrubber, secret source and desktop pane. See [AI Agent Safety](#-ai-agent-safety--the-hermes-plugin). |
@@ -247,8 +247,8 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 * **Pre-Commit Enforcement**: Installable Git pre-commit hook blocks accidental staging or committing of confidential files.
 
 ### ⛓️ Tamper-Evident Sovereign State Anchoring
-* **Sovereign CipherChain Anchoring**: Anchor cryptographic state commitments directly to CipherVault's native zero-gas Proof-of-Authority blockchain with Byzantine fault tolerant quorum signatures, Merkle audit proofs, and sub-millisecond local verification.
-* **Immutable Ledger Proofs**: Persist sovereign block inclusion proofs locally to mathematically prove vault state integrity at any historical point in time.
+* **Sovereign CipherChain Anchoring**: Anchor salted state commitments to CipherVault's own zero-gas Proof-of-Authority ledger. Blocks carry Ed25519 quorum signatures, and from block version 4 each signature also covers the signer's observed time. `ciphervault verify-anchor` checks the Merkle path, the quorum and the signed time locally, and fails if anything does not verify.
+* **What an anchor proves today**: a solo anchor (this device is the only validator, the default) is tamper-evident against anyone without this device's key; it is not independent third-party evidence. Multi-validator fleet anchors do not commit yet, because operators do not cast votes. See [Project Status](#-project-status--known-limits) and the [CipherChain review](docs/audit/CIPHERCHAIN_REVIEW_2026-11-19.md).
 
 ---
 
@@ -811,7 +811,7 @@ Its `ciphervault_run` tool defaults to `--no-net` on Linux, macOS and Windows, a
 | `ciphervault ui` | `[--host <ADDR>] [-p/--port <PORT>] [--no-browser] [--local] [--serve] [--url <URL>]` | Launches embedded Web Dashboard and Visual Secrets Explorer. `--local` serves the offline inspector; otherwise opens the production dashboard. |
 | `ciphervault watch` | `[-d/--debounce <SECS>] [-s/--sync] [--dry-run]` | Listens to OS filesystem save events on tracked secrets; auto-snapshots and pushes on save. |
 | `ciphervault anchor` | `[--head <CID>] [--daemon] [--interval <SECS>] [--rotate-to <KEYS>]` | Computes a salted state commitment and anchors to the CipherChain sovereign blockchain. `--rotate-to` (comma-separated member pubkeys) proposes a validator-set rotation taking effect next height. |
-| `ciphervault verify-anchor` | `[--head <CID>]` | Verifies cryptographic state commitment, Merkle audit path, and operator quorum signatures locally in <1ms. |
+| `ciphervault verify-anchor` | `[--head <CID>]` | Verifies the state commitment, Merkle audit path, validator quorum and (block v4+) signed block time against the configured validator set, offline. Exits non-zero on any failure. |
 | `ciphervault genesis` | `propose / sign / assemble` *(v1.0.30+; not in 1.0.28 binaries)* | Multi-party genesis ceremony: deterministic unsigned proposal, per-member device-key signatures, founder combines quorum into a chain dir. |
 | `ciphervault publish-public-feed` | `-o/--output <PATH> [--network <LABEL>]` | Publishes a signed public checkpoint feed from local vault evidence for the public explorer. |
 | `ciphervault audit` | `[-o/--operators <URL...>] [--export-inventory <PATH>] [--operator-pin <ENDPOINT=64HEX...>] [--recovery-drill]` | Audits ciphertext availability; the explicit drill fetches pinned remote objects and verifies plaintext in memory with historical local epoch keys. |
@@ -938,6 +938,7 @@ CipherVault is a working, actively developed system. It is **not yet independent
 | **Linux and macOS** | The v1.0.35 binaries are cross-built. Network sandboxing (`unshare`, `sandbox-exec`), macOS Keychain, Linux Secret Service and PC/SC smartcards on these systems are implemented but have not yet been run on real hosts, and hosted CI is currently paused. See [`docs/PLATFORM_SUPPORT.md`](docs/PLATFORM_SUPPORT.md). |
 | **Hardware tokens** | Software-simulator regressions verify the YubiKey PIV flow. Physical-token behavior has not been established on every platform. |
 | **Proof-of-Storage** | Proves an operator can produce an object at challenge time (a readback check), not storage over time. |
+| **CipherChain anchoring** | Solo anchoring (this device as the only validator) works and verifies. Multi-validator fleet anchoring does not commit yet: operators admit and relay proposals but do not cast votes. The 2026-11-19 [CipherChain review](docs/audit/CIPHERCHAIN_REVIEW_2026-11-19.md) tracks this and the other open findings; block times are signed only from block version 4. |
 | **Account plane** | Single-writer SQLite (LiteFS optional). The documented PostgreSQL topology is not implemented and fails closed. |
 | **Releases** | v1.0.35 is a GitHub pre-release built locally, and its `SHA256SUMS.txt` is not signed (see the [audit pack](docs/audit/README.md)). The Hermes plugin compensates by verifying the CLI against SHA-256 pins in its own source. |
 

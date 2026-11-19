@@ -156,7 +156,8 @@ fn same_members(a: &ValidatorSet, b: &ValidatorSet) -> bool {
     left == right
 }
 
-/// Conflicting endorsements from one validator at one height.
+/// Conflicting signed messages from one validator at one height: two votes
+/// for different proposals, or two different proposals (review CC-09).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Equivocation {
     pub validator: [u8; 32],
@@ -221,9 +222,19 @@ impl VoteCollector {
         self.validator_set = validator_set;
     }
 
-    /// Conflicting-vote evidence observed so far.
+    /// Conflicting-vote and conflicting-proposal evidence observed so far.
     pub fn equivocations(&self) -> &[Equivocation] {
         &self.equivocations
+    }
+
+    /// Records equivocation evidence, keeping only the most recent entries:
+    /// proving equivocation needs a handful, not an ever-growing list.
+    pub fn record_equivocation(&mut self, evidence: Equivocation) {
+        const MAX_EQUIVOCATIONS: usize = 256;
+        if self.equivocations.len() >= MAX_EQUIVOCATIONS {
+            self.equivocations.remove(0);
+        }
+        self.equivocations.push(evidence);
     }
 
     /// Records a vote whose envelope already passed admission. `latest_height`
@@ -330,6 +341,9 @@ pub struct ChainSyncHub {
     ledger: SovereignLedger,
     collector: VoteCollector,
     proposals: HashMap<(u64, [u8; 32]), CipherChainBlock>,
+    /// (height, proposer) pairs already caught proposing twice: their
+    /// evidence is relayed once, further conflicting proposals are refused.
+    equivocating_proposers: HashSet<(u64, [u8; 32])>,
     /// False for adopted tips until [`Self::backfill`] rebuilds genesis-
     /// anchored history. While false the hub relays and votes but never
     /// commits new proposals (its nonce/state view is incomplete).
@@ -343,6 +357,7 @@ impl ChainSyncHub {
             ledger,
             collector,
             proposals: HashMap::new(),
+            equivocating_proposers: HashSet::new(),
             complete: true,
         }
     }
@@ -362,6 +377,7 @@ impl ChainSyncHub {
             ledger,
             collector,
             proposals: HashMap::new(),
+            equivocating_proposers: HashSet::new(),
             complete: false,
         })
     }
@@ -421,6 +437,8 @@ impl ChainSyncHub {
         self.ledger = ledger;
         self.collector = VoteCollector::new(active);
         self.proposals.retain(|(height, _), _| *height > tip);
+        self.equivocating_proposers
+            .retain(|(height, _)| *height > tip);
         self.complete = true;
         Ok(())
     }
@@ -515,13 +533,36 @@ impl ChainSyncHub {
         if self.proposals.contains_key(&key) {
             return IngestOutcome::Duplicate;
         }
-        // Bound gossip state: a validator (or a compromised one) must
-        // not grow proposals without limit. Caps are generous versus
-        // honest traffic (one proposal per validator per height).
-        const MAX_PROPOSALS_PER_HEIGHT: usize = 16;
+        // One proposal per proposer per height (review CC-09), instead of a
+        // shared per-height pool one validator could exhaust. A second,
+        // different, validly signed proposal from the same proposer is
+        // equivocation evidence: recorded and relayed once, then refused.
+        let proposer = block.header.proposer;
+        let earlier = self
+            .proposals
+            .iter()
+            .find(|((h, _), b)| *h == height && b.header.proposer == proposer)
+            .map(|((_, first_hash), _)| *first_hash);
+        if let Some(first_hash) = earlier {
+            if !self.equivocating_proposers.insert((height, proposer)) {
+                return IngestOutcome::Rejected(format!(
+                    "proposer {} already equivocated at height {height}",
+                    hex::encode(proposer)
+                ));
+            }
+            let evidence = Equivocation {
+                validator: proposer,
+                height,
+                first_hash,
+                second_hash: hash,
+            };
+            self.collector.record_equivocation(evidence.clone());
+            return IngestOutcome::EquivocationDetected(evidence);
+        }
+        // Proposals live only at the next height, so the rule above bounds
+        // them by the validator count; this ceiling covers very large sets.
         const MAX_PROPOSALS_TOTAL: usize = 256;
-        let at_height = self.proposals.keys().filter(|(h, _)| *h == height).count();
-        if at_height >= MAX_PROPOSALS_PER_HEIGHT || self.proposals.len() >= MAX_PROPOSALS_TOTAL {
+        if self.proposals.len() >= MAX_PROPOSALS_TOTAL {
             return IngestOutcome::Rejected(format!(
                 "proposal capacity reached at height {height}; try again after commit"
             ));
@@ -638,6 +679,7 @@ impl ChainSyncHub {
                 self.proposals.remove(&key);
                 // Prune decided heights so state stays bounded.
                 self.proposals.retain(|(h, _), _| *h > height);
+                self.equivocating_proposers.retain(|(h, _)| *h > height);
                 Some(IngestOutcome::Committed {
                     height,
                     hash: hex::encode(committed),
@@ -685,7 +727,8 @@ impl ChainSyncHub {
                 let set = self.ledger.validator_set().clone();
                 self.collector.set_validator_set(set);
                 self.collector.mark_certified(height, hash);
-                self.proposals.remove(&(height, hash));
+                self.proposals.retain(|(h, _), _| *h > height);
+                self.equivocating_proposers.retain(|(h, _)| *h > height);
                 IngestOutcome::Committed {
                     height,
                     hash: hex::encode(hash),
@@ -1323,10 +1366,11 @@ mod tests {
                 None,
             )
             .unwrap();
+        // Two validators propose competing blocks at height 1.
         let block_y = hubs[0]
             .ledger()
             .propose_block(
-                &signers[0],
+                &signers[1],
                 vec![client_tx(&client, 0xcc, 0xdd, 1)],
                 2_000,
                 None,
@@ -1339,7 +1383,7 @@ mod tests {
             ChainSyncMsg::Proposal(ProposalMsg { block: block_x }),
         ));
         let raw_y = raw(&ChainSyncEnvelope::seal(
-            &signers[0],
+            &signers[1],
             ChainSyncMsg::Proposal(ProposalMsg { block: block_y }),
         ));
         assert!(matches!(
@@ -1367,6 +1411,57 @@ mod tests {
         assert_eq!(evidence.validator, signers[3].public_key());
         assert_eq!(evidence.height, 1);
         assert_ne!(evidence.first_hash, evidence.second_hash);
+    }
+
+    /// Review CC-09: one validator flooding a height with proposals must not
+    /// crowd out other validators' proposals; its second proposal is
+    /// equivocation evidence (relayed once), the rest are refused.
+    #[test]
+    fn test_one_proposal_per_proposer_per_height() {
+        let (signers, _set, mut hubs) = setup(4);
+        let client = ConsensusSigner::generate();
+        let sealed = |hub: &ChainSyncHub, signer: &ConsensusSigner, salt: u8| {
+            let block = hub
+                .ledger()
+                .propose_block(signer, vec![client_tx(&client, salt, salt, 1)], 2_000, None)
+                .unwrap();
+            raw(&ChainSyncEnvelope::seal(
+                signer,
+                ChainSyncMsg::Proposal(ProposalMsg { block }),
+            ))
+        };
+
+        let first = sealed(&hubs[0], &signers[0], 0x00);
+        assert!(matches!(
+            hubs[0].ingest(&first),
+            IngestOutcome::ProposalAccepted { .. }
+        ));
+        // Re-sending the same proposal is a duplicate, not equivocation.
+        assert!(matches!(hubs[0].ingest(&first), IngestOutcome::Duplicate));
+
+        // The second different proposal is evidence; the next 20 are refused.
+        let second = sealed(&hubs[0], &signers[0], 0x01);
+        match hubs[0].ingest(&second) {
+            IngestOutcome::EquivocationDetected(evidence) => {
+                assert_eq!(evidence.validator, signers[0].public_key());
+                assert_eq!(evidence.height, 1);
+                assert_ne!(evidence.first_hash, evidence.second_hash);
+            }
+            other => panic!("expected proposer equivocation, got {other:?}"),
+        }
+        for salt in 0x02..0x16u8 {
+            let flood = sealed(&hubs[0], &signers[0], salt);
+            assert!(matches!(hubs[0].ingest(&flood), IngestOutcome::Rejected(_)));
+        }
+        assert_eq!(hubs[0].collector().equivocations().len(), 1);
+
+        // Another validator's proposal at the same height is still accepted
+        // (with the old shared cap of 16 it was refused).
+        let other = sealed(&hubs[0], &signers[1], 0x40);
+        assert!(matches!(
+            hubs[0].ingest(&other),
+            IngestOutcome::ProposalAccepted { .. }
+        ));
     }
 
     #[test]

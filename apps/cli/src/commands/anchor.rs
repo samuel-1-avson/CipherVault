@@ -258,10 +258,13 @@ pub(crate) async fn cmd_anchor(
         hex::encode(ledger.state_root()).dimmed()
     );
     println!(
-        "  Finality Guarantee: {}",
-        "Deterministic Sovereign Finality (Zero-Gas, Self-Custodial)"
-            .green()
-            .bold()
+        "  Trust:             {}",
+        if validator_set.len() == 1 {
+            "solo chain signed by this device (tamper-evident against parties without its key)"
+                .yellow()
+        } else {
+            "committed with validator quorum signatures".green()
+        }
     );
     println!(
         "{}",
