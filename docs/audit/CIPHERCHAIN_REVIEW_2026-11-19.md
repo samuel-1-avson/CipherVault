@@ -652,6 +652,9 @@ These should be corrected now, whatever is decided about the design:
 
 ## Strategic decision
 
+> **Decided 2026-11-19: Option B.** The design and phased plan are in
+> [ADR-014: CipherChain becomes a witnessed transparency log](../adr/014-witnessed-transparency-log.md).
+
 Voting is not implemented yet (CC-04), so this is the cheapest point
 to choose what CipherChain should be.
 

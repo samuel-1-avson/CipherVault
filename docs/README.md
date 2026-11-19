@@ -53,7 +53,7 @@ flowchart TB
             ApiRef["API_REFERENCE.md\n(Operator HTTP & P2P RPC)"]
             DashRef["DASHBOARD_API_REFERENCE.md\n(Web Dashboard & Explorer)"]
             Platforms["PLATFORM_SUPPORT.md\n(OS Keyrings & Token Drivers)"]
-            ADR["adr/ (001 - 013)\n(Architecture Decision Records)"]
+            ADR["adr/ (001 - 014)\n(Architecture Decision Records)"]
             Diagrams["diagrams/ (01 - 07)\n(Publication-Grade SVGs)"]
         end
 
@@ -188,7 +188,8 @@ Historical architectural decisions are permanently recorded as ADRs:
 | [`010-incentives-sla-abuse.md`](./adr/010-incentives-sla-abuse.md) | Node SLA & Abuse Vocabulary | Codified peer quarantine rules, DoS defense limits, and rate-limiting enforcement. |
 | [`011-quorum-admission.md`](./adr/011-quorum-admission.md) | Multi-Party Quorum Admission | Required $K$-of-$N$ fleet keyholder approval for admitting new storage nodes to eliminate central gatekeepers. |
 | [`012-unified-login-split-custody.md`](./adr/012-unified-login-split-custody.md) | Unified Login, Split Custody | One login experience over a preserved account/vault cryptographic split. |
-| [`013-chain-liveness.md`](./adr/013-chain-liveness.md) | CipherChain Liveness Under Split Votes | Mitigations for block production under split validator votes; view-change designed, not yet implemented. |
+| [`013-chain-liveness.md`](./adr/013-chain-liveness.md) | CipherChain Liveness Under Split Votes | Mitigations for block production under split validator votes; view-change designed, not yet implemented. Superseded in direction by ADR-014. |
+| [`014-witnessed-transparency-log.md`](./adr/014-witnessed-transparency-log.md) | CipherChain Becomes a Witnessed Transparency Log | Replaces CipherChain consensus with per-operator RFC 9162 logs, C2SP checkpoints and witness cosignatures; six-phase plan, existing anchors stay verifiable. |
 
 ---
 
