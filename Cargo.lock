@@ -796,6 +796,7 @@ dependencies = [
  "ciphervault-format",
  "ciphervault-recovery",
  "ciphervault-storage",
+ "ciphervault-translog",
  "clap",
  "colored",
  "ed25519-dalek",
@@ -876,6 +877,18 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "ciphervault-translog"
+version = "1.0.37"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.8",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

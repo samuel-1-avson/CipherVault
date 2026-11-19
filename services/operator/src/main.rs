@@ -159,6 +159,25 @@ struct Args {
     )]
     max_voucher_quota_bytes: u64,
 
+    #[arg(
+        long,
+        help = "Transparency-log origin (default cipherchain.<operator-id>.cipherv.online/log). Pinned in the log directory on first run; changing it later fails closed."
+    )]
+    log_origin: Option<String>,
+
+    #[arg(
+        long,
+        help = "Transparency-log submissions per device per minute; unset uses CIPHERVAULT_LOG_ADD_LIMIT_PER_MIN or 120. 0 disables the per-device limit."
+    )]
+    log_add_limit_per_min: Option<u32>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Print the transparency-log origin and checkpoint verifier key for client pinning, then exit"
+    )]
+    print_log_key: bool,
+
     #[command(subcommand)]
     command: Option<OperatorCommand>,
 }
@@ -291,7 +310,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_command(command);
     }
 
-    if !args.print_identity {
+    // The print-and-exit modes bind no listener and serve nothing, so they
+    // need no service token.
+    if !args.print_identity && !args.print_log_key {
         validate_security_configuration()?;
     }
 
@@ -330,11 +351,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    let state = Arc::new(OperatorState::new(
+    // The log origin is pinned in the log directory on first open, so the
+    // log configuration must be fixed before the state (and its log) is
+    // constructed; flags win over the environment.
+    let mut log_config = ciphervault_operator::log_store::LogConfig::from_env();
+    if let Some(origin) = &args.log_origin {
+        log_config.origin = Some(origin.clone());
+    }
+    if let Some(limit) = args.log_add_limit_per_min {
+        log_config.add_limit_per_min = limit;
+    }
+    let state = Arc::new(OperatorState::new_with_options(
         args.operator_id.clone(),
         args.data_dir.clone(),
         signing_key,
+        ciphervault_operator::state::OperatorSecurityConfig::from_env(),
+        log_config,
     ));
+    if args.print_log_key {
+        match state.transparency_log() {
+            Ok(store) => {
+                let info = store.info();
+                println!("origin={}", info.origin);
+                println!("verifier_key={}", info.verifier_key);
+                println!("tree_size={}", info.tree_size);
+                return Ok(());
+            }
+            Err(e) => return Err(Box::new(io::Error::other(e.to_string()))),
+        }
+    }
     if args.enable_p2p
         && std::env::var("CIPHERVAULT_TRUSTED_PEER_KEYS")
             .ok()

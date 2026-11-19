@@ -10,6 +10,7 @@ members = [
     "crates/redact",
     "crates/storage",
     "crates/chain",
+    "crates/translog",
     "services/operator",
     "services/account",
     "services/maintenance",
@@ -80,6 +81,7 @@ ciphervault-recovery = { path = "crates/recovery" }
 ciphervault-redact = { path = "crates/redact" }
 ciphervault-storage = { path = "crates/storage" }
 ciphervault-chain = { path = "crates/chain" }
+ciphervault-translog = { path = "crates/translog" }
 ciphervault-operator = { path = "services/operator" }
 ciphervault-maintenance = { path = "services/maintenance" }
 ciphervault-agent = { path = "apps/agent" }

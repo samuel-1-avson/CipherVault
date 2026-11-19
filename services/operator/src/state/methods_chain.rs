@@ -36,11 +36,30 @@ impl OperatorState {
         signing_key: SigningKey,
         security: OperatorSecurityConfig,
     ) -> Self {
+        Self::new_with_options(
+            operator_id,
+            data_dir,
+            signing_key,
+            security,
+            crate::log_store::LogConfig::from_env(),
+        )
+    }
+
+    /// Full constructor: security policy plus transparency-log config
+    /// (ADR-014 Phase 2). The log origin is fixed at construction
+    /// because it is pinned in the log directory on first open.
+    pub fn new_with_options(
+        operator_id: String,
+        data_dir: PathBuf,
+        signing_key: SigningKey,
+        security: OperatorSecurityConfig,
+        log_config: crate::log_store::LogConfig,
+    ) -> Self {
         fs::create_dir_all(data_dir.join("objects")).expect("operator data dir must be creatable");
         fs::create_dir_all(data_dir.join("recovery")).expect("operator data dir must be creatable");
         fs::create_dir_all(data_dir.join("leases")).expect("operator data dir must be creatable");
 
-        let state = Self {
+        let mut state = Self {
             operator_id,
             signing_key,
             data_dir,
@@ -70,7 +89,10 @@ impl OperatorState {
             repair_budget: Mutex::new(TokenBucket::new(DEFAULT_REPAIR_BUDGET_PER_SEC)),
             swarm_handle: Mutex::new(None),
             chain_sync: Mutex::new(ChainSyncSlot::default()),
+            transparency_log: None,
+            transparency_log_error: None,
         };
+        state.open_transparency_log(&log_config);
         state.load_enrolled_identities();
         state.load_sessions();
         state.load_challenges();

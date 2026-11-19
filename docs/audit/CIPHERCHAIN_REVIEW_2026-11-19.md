@@ -45,7 +45,11 @@ verification layer and the multi-node consensus were not:
 | Low | 6 |
 
 CC-01, CC-02, CC-03, CC-05, CC-08, CC-09 and CC-11 are **fixed**, and
-CC-12 and CC-18 are partly fixed. Every other finding is **open**.
+CC-12 and CC-18 are partly fixed. CC-04 is **resolved by re-scoping**
+(ADR-014): the operator transparency log's submission path (Phase 2)
+replaces multi-validator voting, and CLI anchoring to it is Phase 4.
+Every other finding below is **open** as a CipherChain finding;
+ADR-014 records which of them the log design closes by construction.
 
 ## Fixed since the review
 
@@ -63,6 +67,7 @@ The critical fixes (CC-01 to CC-03) landed first, in
 | CC-09 | MEDIUM | `ChainSyncHub::ingest_proposal` keeps at most one proposal per proposer per height, replacing the 16-slot pool shared by all validators. A second, different, validly signed proposal from the same proposer is recorded as equivocation evidence and relayed once; further ones are refused. Re-proposing at a stalled height now needs a different validator, until the view change in ADR-013 exists. |
 | CC-12 (part) | MEDIUM | `advance_to_rotation` verifies the rotation header's quorum under the current trusted set before switching trust. `verify-anchor` also requires the configured validator set (`validators.json`) to be the chain's genesis set or the set active at the proof's height, so a replaced genesis record can't become its trust root. Genesis-hash pinning is still open, and `SovereignLedger::open` still prefers the on-disk genesis file. |
 | CC-18 (part) | LOW | The light client uses `InclusionProof::verify_bound`: each step's direction comes from `leaf_index`, the step count must match `total_leaves`, and a lone right-edge node must be paired with itself. A path can no longer be relabelled with another position. The tree size itself is still not committed in block headers. |
+| CC-04 (re-scoped) | HIGH | ADR-014 Option B was chosen over finishing BFT voting. Phase 1 built the RFC 9162 / C2SP log core (`crates/translog`); Phase 2 built the operator log: `services/operator/src/log_store.rs` (append-only entry storage, immediate sequencer, crash-safe writes, torn-tail recovery) with `POST /v1/log/add` under device-session auth and per-device rate limits, signed checkpoints, tlog-tiles and entry bundles, and inclusion/consistency/lookup proof endpoints (`services/operator/src/log_api.rs`, `docs/TRANSPARENCY_LOG.md`). Devices submit commitments and are never validators, so the "clients must be validators" and "no submission path" parts of CC-04 are closed server-side. Nothing casts `VoteMsg` in the new design — by construction, not omission. What remains is Phase 3 (witness cosignatures) and Phase 4 (CLI policy, `anchor` to N logs, evidence v2); until Phase 4 the CLI still anchors solo and says so. |
 
 **PR #59 review hardening** (Sourcery review, commit `f22519f`):
 
@@ -157,7 +162,7 @@ The critical fixes (CC-01 to CC-03) landed first, in
 | CC-01 | CRITICAL | Fixed | The light client never checks that the Merkle proof's leaf is the commitment being verified |
 | CC-02 | CRITICAL | Fixed | Block timestamps (header v2+) are covered by no signature, and the light client reports an unchecked proof field |
 | CC-03 | CRITICAL | Fixed | `verify-anchor` fails open, trusts only the block's proposer, and can never verify private (v2) anchors |
-| CC-04 | HIGH | Open | Multi-validator anchoring cannot commit: nothing casts votes, clients must be validators, and there is no transaction submission or CLI sync |
+| CC-04 | HIGH | Resolved by re-scoping (ADR-014; CLI part lands Phase 4) | Multi-validator anchoring cannot commit: nothing casts votes, clients must be validators, and there is no transaction submission or CLI sync |
 | CC-05 | HIGH | Fixed | Backfill takes the genesis validator set from the serving peer and replaces the local chain with no continuity check |
 | CC-06 | HIGH | Open | Certificates are non-deterministic, so honest replicas fork with 4 or more validators |
 | CC-07 | HIGH | Open | The default 3-validator fleet tolerates zero failures (quorum is 3 of 3) |
@@ -655,6 +660,9 @@ All of these were corrected after the review:
   **C9** row for the chain protocol.
 
 ## Strategic decision
+
+> **Decided 2026-11-19: Option B.** The design and phased plan are in
+> [ADR-014: CipherChain becomes a witnessed transparency log](../adr/014-witnessed-transparency-log.md).
 
 Voting is not implemented yet (CC-04), so this is the cheapest point
 to choose what CipherChain should be.

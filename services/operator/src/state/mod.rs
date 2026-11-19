@@ -34,6 +34,7 @@ mod methods_chain;
 mod methods_identity;
 mod methods_leases;
 mod methods_ledger;
+mod methods_log;
 mod methods_peers;
 mod methods_recovery;
 mod methods_sessions;
@@ -164,6 +165,11 @@ pub struct OperatorState {
             ),
         >,
     >,
+    // Transparency log (ADR-014 Phase 2): one append-only log per
+    // operator. `None` only when the log failed to open; the endpoints
+    // then answer 503 and `transparency_log_error` says why.
+    pub(crate) transparency_log: Option<crate::log_store::LogStore>,
+    pub(crate) transparency_log_error: Option<String>,
 }
 
 /// Pre-consensus admission verdict for one chain envelope. Shared by the
