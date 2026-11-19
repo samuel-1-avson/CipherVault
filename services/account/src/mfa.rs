@@ -483,7 +483,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use axum::Router;
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     struct KeyEnvironment(Option<String>);
     impl KeyEnvironment {

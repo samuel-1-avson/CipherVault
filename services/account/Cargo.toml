@@ -33,4 +33,4 @@ tower-http.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-tower05 = { package = "tower", version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }

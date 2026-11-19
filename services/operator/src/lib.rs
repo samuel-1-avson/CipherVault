@@ -318,24 +318,24 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         )
         .route("/v1/vouchers", post(handlers::post_issue_voucher))
         .route(
-            "/v1/objects/:cid",
+            "/v1/objects/{cid}",
             put(handlers::put_object).get(handlers::get_object),
         )
         .route(
-            "/v1/objects/:cid/challenge",
+            "/v1/objects/{cid}/challenge",
             post(handlers::post_object_challenge),
         )
         .route(
             "/v1/leases",
             post(handlers::post_lease).get(handlers::list_leases),
         )
-        .route("/v1/leases/:id/renew", post(handlers::post_renew_lease))
+        .route("/v1/leases/{id}/renew", post(handlers::post_renew_lease))
         .route(
-            "/v1/recovery/:locator/records",
+            "/v1/recovery/{locator}/records",
             post(handlers::post_recovery_record),
         )
         .route(
-            "/v1/recovery/:locator/records",
+            "/v1/recovery/{locator}/records",
             // Anonymous capability-URL reads get their own stricter tier
             // (default 60/min vs 600 global) to bound locator-guessing.
             get(handlers::get_recovery_records).route_layer(middleware::from_fn_with_state(
@@ -359,7 +359,7 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             post(handlers::post_peer_join_request).get(handlers::get_peer_join_requests),
         )
         .route(
-            "/v1/peers/join-requests/:request_id/resolve",
+            "/v1/peers/join-requests/{request_id}/resolve",
             post(handlers::post_peer_join_request_resolve),
         )
         .route(
@@ -368,7 +368,7 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         )
         .route("/v1/peers/membership", get(handlers::get_peer_membership))
         .route("/v1/peers/admissions", get(handlers::get_peer_admissions))
-        .route("/v1/peers/:id/graduate", post(handlers::post_peer_graduate))
+        .route("/v1/peers/{id}/graduate", post(handlers::post_peer_graduate))
         // Sovereign chain sync: catch-up reads are public; proposal
         // publication is public too (envelopes self-authenticate).
         .route("/v1/chain/publish", post(handlers::post_chain_publish))
@@ -382,11 +382,11 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
             get(handlers::get_pending_challenges),
         )
         .route(
-            "/v1/auth/challenges/:id",
+            "/v1/auth/challenges/{id}",
             get(handlers::get_challenge_status),
         )
         .route(
-            "/v1/auth/challenges/:id/approve",
+            "/v1/auth/challenges/{id}/approve",
             post(handlers::post_submit_approval),
         );
     #[cfg(test)]
@@ -436,7 +436,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn p2p_info_reports_unavailable_without_swarm() {

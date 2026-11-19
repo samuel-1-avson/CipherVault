@@ -3,7 +3,7 @@ use axum::http::{Request, StatusCode};
 use ciphervault_crypto::generate_signing_key;
 use ciphervault_operator::{create_router, OperatorState};
 use std::sync::Arc;
-use tower05::ServiceExt;
+use tower::ServiceExt;
 
 /// Recovery reads are intentionally anonymous: the 32-byte locator is a
 /// KDF-derived capability, and clean-machine recovery has no session by

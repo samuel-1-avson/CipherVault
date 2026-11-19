@@ -735,7 +735,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use ciphervault_crypto::generate_signing_key;
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[test]
     fn base32_round_trip() {

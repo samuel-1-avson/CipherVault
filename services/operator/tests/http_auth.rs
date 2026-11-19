@@ -5,7 +5,7 @@ use ciphervault_operator::{create_router, OperatorState};
 use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
-use tower05::ServiceExt;
+use tower::ServiceExt;
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 

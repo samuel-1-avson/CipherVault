@@ -444,7 +444,7 @@ mod tests {
     use ciphervault_crypto::{generate_signing_key, signatures::sign_with_domain};
     use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn account_device_proof_login_and_revocation_lifecycle() {

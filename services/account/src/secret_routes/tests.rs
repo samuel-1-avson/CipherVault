@@ -2,7 +2,7 @@ use super::*;
 use axum::body::Body;
 use axum::http::Request;
 use ciphervault_format::{EnvironmentId, ProjectId, TenantId};
-use tower05::ServiceExt;
+use tower::ServiceExt;
 
 use crate::policy::{grant_project_role, ProjectRole};
 use crate::scope_tokens::mint_scope_token;

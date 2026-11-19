@@ -138,18 +138,18 @@ pub fn create_router(state: AccountState) -> axum::Router {
         )
         .route("/v1/capabilities", get(get_capabilities))
         .route("/v1/accounts", post(post_account))
-        .route("/v1/accounts/:account_id", get(get_account))
-        .route("/v1/accounts/:account_id/audit", get(get_account_audit))
+        .route("/v1/accounts/{account_id}", get(get_account))
+        .route("/v1/accounts/{account_id}/audit", get(get_account_audit))
         .route(
-            "/v1/accounts/:account_id/devices/challenge",
+            "/v1/accounts/{account_id}/devices/challenge",
             post(post_device_challenge),
         )
         .route(
-            "/v1/accounts/:account_id/devices",
+            "/v1/accounts/{account_id}/devices",
             post(post_device_enrollment),
         )
         .route(
-            "/v1/accounts/:account_id/devices/:device_id_hex/revoke",
+            "/v1/accounts/{account_id}/devices/{device_id_hex}/revoke",
             post(post_device_revoke),
         )
         .route("/v1/sessions/challenge", post(post_login_challenge))
@@ -157,11 +157,11 @@ pub fn create_router(state: AccountState) -> axum::Router {
         .route("/v1/sessions/revoke", post(post_session_revoke))
         .route("/v1/sessions/mfa/totp", post(mfa::post_step_up))
         .route(
-            "/v1/accounts/:account_id/mfa",
+            "/v1/accounts/{account_id}/mfa",
             get(mfa::get_policy).patch(mfa::patch_policy),
         )
         .route(
-            "/v1/accounts/:account_id/mfa/recovery-reset",
+            "/v1/accounts/{account_id}/mfa/recovery-reset",
             post(mfa::post_recovery_reset),
         )
         .route("/v1/sessions/handoff", post(post_session_handoff))
@@ -170,15 +170,15 @@ pub fn create_router(state: AccountState) -> axum::Router {
             post(post_session_handoff_consume),
         )
         .route(
-            "/v1/accounts/:account_id/webauthn/registration/options",
+            "/v1/accounts/{account_id}/webauthn/registration/options",
             post(post_webauthn_registration_options),
         )
         .route(
-            "/v1/accounts/:account_id/webauthn/credentials/:credential_id_hex/revoke",
+            "/v1/accounts/{account_id}/webauthn/credentials/{credential_id_hex}/revoke",
             post(post_webauthn_revoke),
         )
         .route(
-            "/v1/accounts/:account_id/webauthn/registration/verify",
+            "/v1/accounts/{account_id}/webauthn/registration/verify",
             post(post_webauthn_registration_verify),
         )
         .route(
@@ -198,117 +198,117 @@ pub fn create_router(state: AccountState) -> axum::Router {
             post(post_totp_authentication_verify),
         )
         .route(
-            "/v1/accounts/:account_id/totp/enrollment",
+            "/v1/accounts/{account_id}/totp/enrollment",
             post(post_totp_enrollment),
         )
         .route(
-            "/v1/accounts/:account_id/totp/enrollment/verify",
+            "/v1/accounts/{account_id}/totp/enrollment/verify",
             post(post_totp_enrollment_verify),
         )
         .route(
-            "/v1/accounts/:account_id/totp/revoke",
+            "/v1/accounts/{account_id}/totp/revoke",
             post(post_totp_revoke),
         )
-        .route("/v1/accounts/:account_id/vaults", post(post_vault_link))
+        .route("/v1/accounts/{account_id}/vaults", post(post_vault_link))
         .route(
-            "/v1/accounts/:account_id/invitations",
+            "/v1/accounts/{account_id}/invitations",
             post(post_invitation).get(get_invitations),
         )
         .route("/v1/invitations/accept", post(post_invitation_accept))
-        .route("/v1/accounts/:account_id/memberships", get(get_memberships))
+        .route("/v1/accounts/{account_id}/memberships", get(get_memberships))
         .route(
-            "/v1/accounts/:account_id/memberships/:member_account_id/revoke",
+            "/v1/accounts/{account_id}/memberships/{member_account_id}/revoke",
             post(post_membership_revoke),
         )
         .route(
-            "/v1/accounts/:account_id/recovery/codes",
+            "/v1/accounts/{account_id}/recovery/codes",
             post(post_recovery_codes),
         )
         .route("/v1/recovery/redeem", post(post_recovery_redeem))
         .route(
-            "/v1/projects/:project_id/environments/:environment_id/secrets",
+            "/v1/projects/{project_id}/environments/{environment_id}/secrets",
             post(post_secret),
         )
         .route(
-            "/v1/projects/:project_id/environments/:environment_id/secrets/:name",
+            "/v1/projects/{project_id}/environments/{environment_id}/secrets/{name}",
             get(get_secret_value_route),
         )
         .route(
-            "/v1/projects/:project_id/environments/:environment_id/materialize",
+            "/v1/projects/{project_id}/environments/{environment_id}/materialize",
             post(post_materialize),
         )
         .route(
-            "/v1/projects/:project_id/keys/rewrap",
+            "/v1/projects/{project_id}/keys/rewrap",
             post(post_rewrap_keys),
         )
-        .route("/v1/projects/:project_id/secrets", get(get_secrets))
+        .route("/v1/projects/{project_id}/secrets", get(get_secrets))
         .route(
-            "/v1/projects/:project_id/secrets/:secret_id",
+            "/v1/projects/{project_id}/secrets/{secret_id}",
             patch(patch_secret).delete(delete_secret_route),
         )
         .route(
-            "/v1/projects/:project_id/secrets/:secret_id/move",
+            "/v1/projects/{project_id}/secrets/{secret_id}/move",
             post(post_secret_move),
         )
         .route(
-            "/v1/projects/:project_id/secrets/:secret_id/rebind",
+            "/v1/projects/{project_id}/secrets/{secret_id}/rebind",
             post(post_secret_rebind),
         )
         .route(
-            "/v1/projects/:project_id/secrets/:secret_id/rotate",
+            "/v1/projects/{project_id}/secrets/{secret_id}/rotate",
             post(post_secret_rotate),
         )
         .route(
-            "/v1/projects/:project_id/members",
+            "/v1/projects/{project_id}/members",
             post(post_project_member).delete(delete_project_member),
         )
         .route(
-            "/v1/projects/:project_id/members/requests",
+            "/v1/projects/{project_id}/members/requests",
             get(list_grant_requests_route),
         )
         .route(
-            "/v1/projects/:project_id/members/requests/:request_id/decision",
+            "/v1/projects/{project_id}/members/requests/{request_id}/decision",
             post(decide_grant_request_route),
         )
         .route(
-            "/v1/projects/:project_id/invites",
+            "/v1/projects/{project_id}/invites",
             post(create_invite_route).get(list_invites_route),
         )
         .route(
-            "/v1/projects/:project_id/invites/:invite_id",
+            "/v1/projects/{project_id}/invites/{invite_id}",
             delete(revoke_invite_route),
         )
         .route("/v1/invites/accept", post(accept_invite_route))
         .route(
-            "/v1/projects/:project_id/migrations",
+            "/v1/projects/{project_id}/migrations",
             post(post_migration).get(get_migrations),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id",
+            "/v1/projects/{project_id}/migrations/{migration_id}",
             get(get_migration),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id/entries",
+            "/v1/projects/{project_id}/migrations/{migration_id}/entries",
             post(post_migration_entries),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id/entries/:ledger_id/migrated",
+            "/v1/projects/{project_id}/migrations/{migration_id}/entries/{ledger_id}/migrated",
             post(post_migration_entry_migrated),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id/entries/:ledger_id/resolve",
+            "/v1/projects/{project_id}/migrations/{migration_id}/entries/{ledger_id}/resolve",
             post(post_migration_entry_resolve),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id/verify",
+            "/v1/projects/{project_id}/migrations/{migration_id}/verify",
             post(post_migration_verify),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id/disable-legacy",
+            "/v1/projects/{project_id}/migrations/{migration_id}/disable-legacy",
             post(post_migration_disable_legacy),
         )
         .route(
-            "/v1/projects/:project_id/migrations/:migration_id/abort",
+            "/v1/projects/{project_id}/migrations/{migration_id}/abort",
             post(post_migration_abort),
         )
         .route(
@@ -316,28 +316,28 @@ pub fn create_router(state: AccountState) -> axum::Router {
             post(post_scope_token).delete(delete_scope_token),
         )
         .route(
-            "/v1/projects/:project_id/repositories",
+            "/v1/projects/{project_id}/repositories",
             post(post_repository).get(get_repositories),
         )
         .route(
-            "/v1/projects/:project_id/repositories/:binding_id",
+            "/v1/projects/{project_id}/repositories/{binding_id}",
             delete(delete_repository),
         )
         .route(
-            "/v1/projects/:project_id/repositories/:binding_id/prove",
+            "/v1/projects/{project_id}/repositories/{binding_id}/prove",
             post(post_repository_prove),
         )
         .route(
-            "/v1/projects/:project_id/repositories/:binding_id/reactivate",
+            "/v1/projects/{project_id}/repositories/{binding_id}/reactivate",
             post(post_repository_reactivate),
         )
-        .route("/v1/webhooks/vcs/:provider", post(post_vcs_webhook))
+        .route("/v1/webhooks/vcs/{provider}", post(post_vcs_webhook))
         .route("/v1/projects", get(get_projects))
         .route(
-            "/v1/projects/:project_id/audit/export",
+            "/v1/projects/{project_id}/audit/export",
             get(get_audit_export),
         )
-        .route("/v1/projects/:project_ref", get(get_project));
+        .route("/v1/projects/{project_ref}", get(get_project));
     #[cfg(test)]
     let router = router.route("/__test_panic", get(test_panic_handler));
     router
@@ -356,7 +356,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use tower05::ServiceExt;
+    use tower::ServiceExt;
 
     #[test]
     fn connection_lock_wait_stats_count_acquisitions() {
