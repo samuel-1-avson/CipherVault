@@ -70,6 +70,18 @@ pub enum ChainError {
     #[error("Invalid validator rotation: {0}")]
     InvalidRotation(String),
 
+    #[error("Duplicate transaction in block (commitment {0})")]
+    DuplicateTransaction(String),
+
+    #[error(
+        "Transaction nonce {nonce} for {pubkey} does not exceed {previous} from an earlier transaction in the same block"
+    )]
+    InBlockNonceReplay {
+        pubkey: String,
+        nonce: u64,
+        previous: u64,
+    },
+
     #[error(
         "Block timestamp {declared} is not the median {median} of the validator-signed observed times"
     )]

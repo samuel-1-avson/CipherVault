@@ -146,6 +146,16 @@ fn verify_endorsement(
         .map_err(|e| ChainError::InvalidSignature(format!("Endorsement failure: {e}")))
 }
 
+/// Whether two validator sets have the same members (order-insensitive:
+/// configured files and rotation payloads may list keys differently).
+fn same_members(a: &ValidatorSet, b: &ValidatorSet) -> bool {
+    let mut left = a.validators().to_vec();
+    let mut right = b.validators().to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
+}
+
 /// Conflicting endorsements from one validator at one height.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Equivocation {
@@ -345,21 +355,28 @@ impl ChainSyncHub {
         tip: CipherChainBlock,
         storage: Option<std::path::PathBuf>,
     ) -> Result<Self, ChainError> {
-        let ledger =
-            SovereignLedger::from_certified_tip(chain_id, validator_set.clone(), tip, storage)?;
+        let ledger = SovereignLedger::from_certified_tip(chain_id, validator_set, tip, storage)?;
+        // The tip's own rotation (if any) is already applied to the ledger.
+        let collector = VoteCollector::new(ledger.validator_set().clone());
         Ok(Self {
             ledger,
-            collector: VoteCollector::new(validator_set),
+            collector,
             proposals: HashMap::new(),
             complete: false,
         })
     }
 
     /// Rebuilds genesis-anchored history (backfill) and marks the replica
-    /// complete. Prunes proposals at or below the new tip. `genesis_set`
-    /// must be the set that certified block 0 (fetched alongside the
-    /// blocks): block 0 verifies against it, and in-band rotations derive
-    /// every later set during replay.
+    /// complete. Prunes proposals at or below the new tip. `genesis_set` is
+    /// the set the serving peer says certified block 0: block 0 verifies
+    /// against it, and in-band rotations derive every later set.
+    ///
+    /// The served history is untrusted (review CC-05). It is accepted only
+    /// if it contains this replica's own tip (certified by the set this
+    /// replica trusts) and derives that same validator set at the tip, so a
+    /// peer can extend the chain but never replace it or change who signs
+    /// it. Everything is validated in memory before anything touches disk;
+    /// on any error the replica is left exactly as it was.
     pub fn backfill(
         &mut self,
         blocks: Vec<CipherChainBlock>,
@@ -367,7 +384,38 @@ impl ChainSyncHub {
     ) -> Result<(), ChainError> {
         let chain_id = self.ledger.chain_id().to_string();
         let storage = self.ledger.storage_path();
-        let ledger = SovereignLedger::rebuild_from_blocks(&chain_id, genesis_set, blocks, storage)?;
+        let anchor_height = self.ledger.height();
+        let anchor_hash = self.ledger.latest_block().header.block_hash();
+        let trusted_set = self.ledger.validator_set().clone();
+
+        let mut ledger =
+            SovereignLedger::rebuild_from_blocks(&chain_id, genesis_set.clone(), blocks, None)?;
+        // Hash linkage pins the whole served history to our tip.
+        match ledger.block_at_height(anchor_height) {
+            Some(block) if block.header.block_hash() == anchor_hash => {}
+            other => {
+                return Err(ChainError::ForkDetected {
+                    height: anchor_height,
+                    existing: hex::encode(anchor_hash),
+                    incoming: other
+                        .map(|b| hex::encode(b.header.block_hash()))
+                        .unwrap_or_else(|| "missing".to_string()),
+                });
+            }
+        }
+        // The peer-supplied genesis set must lead to the set we trust at the
+        // tip, so it cannot narrow or swap who certifies future blocks.
+        let derived = ledger.validator_set_after(anchor_height, &genesis_set)?;
+        if !same_members(&derived, &trusted_set) {
+            return Err(ChainError::InvalidRotation(format!(
+                "backfilled history derives a different validator set at height {anchor_height} \
+                 than the one this replica trusts"
+            )));
+        }
+        if let Some(dir) = storage {
+            ledger.persist_history(dir, &genesis_set)?;
+        }
+
         let tip = ledger.height();
         let active = ledger.validator_set().clone();
         self.ledger = ledger;
@@ -1639,6 +1687,254 @@ mod tests {
                 .unwrap();
         assert_eq!(rebuilt.height(), 2);
         assert!(!dir.join("tip.json").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review CC-08: a block with a duplicated tail shares the genuine
+    /// block's roots, header and hash, so it must be rejected on content.
+    #[test]
+    fn test_mutated_block_with_duplicated_tail_is_rejected() {
+        let (signers, set, _) = setup(3);
+        let refs: Vec<&ConsensusSigner> = signers.iter().collect();
+        let mut ledger =
+            SovereignLedger::create_genesis(CHAIN_ID, set, &refs, 1_000, None).unwrap();
+        let client = ConsensusSigner::generate();
+        let txs = vec![
+            client_tx(&client, 0x01, 0x01, 1),
+            client_tx(&client, 0x02, 0x02, 2),
+            client_tx(&client, 0x03, 0x03, 3),
+        ];
+        let mut block = ledger.propose_block(&signers[0], txs, 2_000, None).unwrap();
+        for signer in &signers[1..] {
+            block
+                .header
+                .signatures
+                .push(signer.sign_header(&block.header));
+        }
+
+        // Three leaves pad the last with itself, so a copy of the last
+        // transaction leaves both roots, the signed header and its hash as-is.
+        let mut mutated = block.clone();
+        let last = mutated.transactions[2].clone();
+        mutated.transactions.push(last);
+        let tx_root = crate::merkle::MerkleTree::new(
+            mutated
+                .transactions
+                .iter()
+                .map(|t| t.tx_leaf_hash())
+                .collect(),
+        )
+        .root();
+        let state_root = crate::merkle::MerkleTree::new(
+            mutated
+                .transactions
+                .iter()
+                .map(|t| crate::merkle::hash_leaf(&t.commitment))
+                .collect(),
+        )
+        .root();
+        assert_eq!(tx_root, block.header.tx_root);
+        assert_eq!(state_root, block.header.state_root);
+        assert_eq!(mutated.header.block_hash(), block.header.block_hash());
+
+        assert!(matches!(
+            ledger.check_block(&mutated),
+            Err(ChainError::DuplicateTransaction(_))
+        ));
+        assert!(ledger.commit_block(mutated).is_err());
+        ledger.commit_block(block).unwrap();
+        assert_eq!(ledger.height(), 1);
+    }
+
+    #[test]
+    fn test_in_block_nonce_replay_is_rejected() {
+        let (signers, _set, hubs) = setup(3);
+        let client = ConsensusSigner::generate();
+        let ledger = hubs[0].ledger();
+        // Same client and nonce, different content.
+        let err = ledger
+            .propose_block(
+                &signers[0],
+                vec![
+                    client_tx(&client, 0xaa, 0xbb, 1),
+                    client_tx(&client, 0xcc, 0xdd, 1),
+                ],
+                2_000,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ChainError::InBlockNonceReplay { .. }));
+        // Decreasing nonces within one block.
+        let err = ledger
+            .propose_block(
+                &signers[0],
+                vec![
+                    client_tx(&client, 0xaa, 0xbb, 5),
+                    client_tx(&client, 0xcc, 0xdd, 4),
+                ],
+                2_000,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ChainError::InBlockNonceReplay { .. }));
+        // Increasing nonces are fine.
+        ledger
+            .propose_block(
+                &signers[0],
+                vec![
+                    client_tx(&client, 0xaa, 0xbb, 1),
+                    client_tx(&client, 0xcc, 0xdd, 2),
+                ],
+                2_000,
+                None,
+            )
+            .unwrap();
+    }
+
+    /// Review CC-05: a serving peer can extend a replica's chain but never
+    /// replace it with history minted under other keys.
+    #[test]
+    fn test_backfill_rejects_foreign_history_and_keeps_replica() {
+        let (signers, set, _) = setup(3);
+        let client = ConsensusSigner::generate();
+        let genuine = full_chain(&signers, &set, &client, 3);
+        let tip_hash = genuine.latest_block().header.block_hash();
+
+        // A longer chain under the attacker's own keys and genesis set.
+        let (rogue_signers, rogue_set, _) = setup(3);
+        let forged = full_chain(&rogue_signers, &rogue_set, &client, 5);
+
+        // An adopted (incomplete) replica keeps its tip and validator set.
+        let mut adopted =
+            ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), genuine.latest_block().clone(), None)
+                .unwrap();
+        assert!(matches!(
+            adopted.backfill(forged.blocks().to_vec(), rogue_set.clone()),
+            Err(ChainError::ForkDetected { .. })
+        ));
+        assert!(!adopted.is_complete());
+        assert_eq!(
+            adopted.ledger().latest_block().header.block_hash(),
+            tip_hash
+        );
+        assert_eq!(adopted.ledger().validator_set(), &set);
+
+        // A complete replica is protected the same way...
+        let mut complete = ChainSyncHub::new(genuine.clone());
+        assert!(complete
+            .backfill(forged.blocks().to_vec(), rogue_set)
+            .is_err());
+        assert_eq!(complete.ledger().height(), 3);
+        assert_eq!(
+            complete.ledger().latest_block().header.block_hash(),
+            tip_hash
+        );
+
+        // ...and still catches up on genuine history that extends it.
+        let longer = full_chain(&signers, &set, &client, 5);
+        assert_eq!(
+            longer.block_at_height(3).unwrap().header.block_hash(),
+            tip_hash
+        );
+        complete
+            .backfill(longer.blocks().to_vec(), set.clone())
+            .unwrap();
+        assert_eq!(complete.ledger().height(), 5);
+    }
+
+    /// Review CC-05: a peer-supplied genesis set that verifies the genuine
+    /// history but derives a different set at the tip (here: dropping a
+    /// validator from admission) is refused.
+    #[test]
+    fn test_backfill_rejects_history_deriving_another_validator_set() {
+        // Four validators; every block carries the same three signatures.
+        let signers: Vec<ConsensusSigner> = (0..4).map(|_| ConsensusSigner::generate()).collect();
+        let set = ValidatorSet::new(signers.iter().map(|s| s.public_key()).collect()).unwrap();
+        let client = ConsensusSigner::generate();
+        let mut chain = SovereignLedger::create_genesis(
+            CHAIN_ID,
+            set.clone(),
+            &[&signers[0], &signers[1], &signers[2]],
+            1_000,
+            None,
+        )
+        .unwrap();
+        for n in 1..=2u64 {
+            let mut block = chain
+                .propose_block(
+                    &signers[0],
+                    vec![client_tx(&client, n as u8, n as u8, n)],
+                    1_000 + n * 1_000,
+                    None,
+                )
+                .unwrap();
+            for signer in [&signers[1], &signers[2]] {
+                block
+                    .header
+                    .signatures
+                    .push(signer.sign_header(&block.header));
+            }
+            chain.commit_block(block).unwrap();
+        }
+        let mut hub =
+            ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), chain.latest_block().clone(), None)
+                .unwrap();
+
+        let narrowed =
+            ValidatorSet::new(signers[..3].iter().map(|s| s.public_key()).collect()).unwrap();
+        assert!(matches!(
+            hub.backfill(chain.blocks().to_vec(), narrowed),
+            Err(ChainError::InvalidRotation(_))
+        ));
+        assert!(!hub.is_complete());
+
+        hub.backfill(chain.blocks().to_vec(), set.clone()).unwrap();
+        assert!(hub.is_complete());
+        assert_eq!(hub.ledger().validator_set(), &set);
+    }
+
+    /// Review CC-11: a backfill interrupted after writing part of the
+    /// history (and a torn temp file) must not stop the replica reopening.
+    #[test]
+    fn test_interrupted_backfill_reopens_as_tip_replica() {
+        let (signers, set, _) = setup(3);
+        let client = ConsensusSigner::generate();
+        let full = full_chain(&signers, &set, &client, 3);
+        let dir = support_dir("interrupted-backfill");
+
+        let tip = full.latest_block().clone();
+        drop(
+            ChainSyncHub::adopt_tip(CHAIN_ID, set.clone(), tip.clone(), Some(dir.clone())).unwrap(),
+        );
+        let blocks_dir = dir.join("blocks");
+        for h in 0..=1u64 {
+            let block = full.block_at_height(h).unwrap();
+            std::fs::write(
+                blocks_dir.join(format!("{h:012}.json")),
+                serde_json::to_string_pretty(block).unwrap(),
+            )
+            .unwrap();
+        }
+        std::fs::write(blocks_dir.join(format!("{:012}.json.tmp", 2)), b"{ torn").unwrap();
+
+        let reopened = SovereignLedger::open(CHAIN_ID, set.clone(), &dir).unwrap();
+        assert_eq!(reopened.height(), 3);
+        assert_eq!(reopened.earliest_height(), 3);
+        assert_eq!(
+            reopened.latest_block().header.block_hash(),
+            tip.header.block_hash()
+        );
+
+        // Completing the backfill writes the history and drops the snapshot
+        // last; the directory then reopens genesis-anchored.
+        let mut hub = ChainSyncHub::new(reopened);
+        hub.mark_syncing();
+        hub.backfill(full.blocks().to_vec(), set.clone()).unwrap();
+        assert!(!dir.join("tip.json").exists());
+        let complete = SovereignLedger::open(CHAIN_ID, set, &dir).unwrap();
+        assert_eq!(complete.earliest_height(), 0);
+        assert_eq!(complete.height(), 3);
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -107,7 +107,11 @@ impl InclusionProof {
     }
 }
 
-/// Binary Merkle tree implementation with RFC 6962 domain separation.
+/// Binary Merkle tree with RFC 6962-style leaf/node domain separation.
+///
+/// Unlike RFC 6962, an odd node is paired with itself (as in Bitcoin), so
+/// `[a, b, c]` and `[a, b, c, c]` share a root. Callers must reject repeated
+/// leaves: the ledger refuses blocks that repeat a transaction (review CC-08).
 #[derive(Debug, Clone)]
 pub struct MerkleTree {
     leaf_hashes: Vec<[u8; 32]>,

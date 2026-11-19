@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +16,53 @@ use crate::types::{
 /// one file lets `open` and backfill verify block 0 even after rotations.
 /// Human-managed `validators.json` (operator config) is separate.
 pub const GENESIS_VALIDATORS_FILE: &str = "genesis_validators.json";
+
+/// Tip snapshot of an adopted, not-yet-backfilled replica. Removed only after
+/// a complete genesis-anchored history is on disk.
+const TIP_SNAPSHOT_FILE: &str = "tip.json";
+
+/// Writes `bytes` to `path` crash-safely (review CC-11): a sibling temp file
+/// is written and fsynced, then renamed over the target, so a crash leaves
+/// either the old file or the new one, never a truncated one. `open` ignores
+/// the `.tmp` leftovers of an interrupted write (they lack the `.json`
+/// extension).
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ChainError> {
+    use std::io::Write;
+    let io = |e: std::io::Error| ChainError::Io(format!("{}: {e}", path.display()));
+    let mut tmp_name = path
+        .file_name()
+        .ok_or_else(|| ChainError::Io(format!("{} has no file name", path.display())))?
+        .to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    {
+        let mut file = fs::File::create(&tmp).map_err(io)?;
+        file.write_all(bytes).map_err(io)?;
+        file.sync_all().map_err(io)?;
+    }
+    fs::rename(&tmp, path).map_err(io)?;
+    sync_parent_dir(path);
+    Ok(())
+}
+
+/// Makes a rename or removal in `path`'s directory durable (Unix). Windows
+/// has no directory fsync; NTFS journals the rename itself.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) {
+    if let Some(dir) = path.parent().and_then(|p| fs::File::open(p).ok()) {
+        let _ = dir.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) {}
+
+fn read_block(path: &Path) -> Result<CipherChainBlock, ChainError> {
+    let json =
+        fs::read_to_string(path).map_err(|e| ChainError::Io(format!("{}: {e}", path.display())))?;
+    serde_json::from_str(&json)
+        .map_err(|e| ChainError::Serialization(format!("{}: {e}", path.display())))
+}
 
 /// Stored index record for an anchored vault commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,86 +225,74 @@ impl SovereignLedger {
 
         entries.sort();
 
+        // Tip-snapshot replica: an adopted certified tip whose backfill has
+        // not completed (the snapshot is removed only after a complete
+        // history is on disk). History files below the tip are leftovers of
+        // an interrupted backfill: unverified, ignored here, and refetched by
+        // the next backfill, so a crash mid-backfill never bricks the replica
+        // (review CC-11).
+        let tip_path = dir.join(TIP_SNAPSHOT_FILE);
+        if tip_path.exists() {
+            let tip = read_block(&tip_path)?;
+            let tip_height = tip.header.height;
+            let tip_hash = tip.header.block_hash();
+            let mut ledger = Self::certified_tip_ledger(
+                chain_id,
+                validator_set,
+                tip,
+                Some(dir.to_path_buf()),
+                false,
+            )?;
+            for path in &entries {
+                let block = read_block(path)?;
+                match block.header.height.cmp(&tip_height) {
+                    std::cmp::Ordering::Less => continue,
+                    std::cmp::Ordering::Equal => {
+                        if block.header.block_hash() != tip_hash {
+                            return Err(ChainError::Serialization(
+                                "blocks dir conflicts with tip snapshot".to_string(),
+                            ));
+                        }
+                    }
+                    std::cmp::Ordering::Greater => ledger.commit_block_internal(block, false)?,
+                }
+            }
+            return Ok(ledger);
+        }
+
         if entries.is_empty() {
             return Err(ChainError::BlockNotFound(0));
         }
-
-        let first_json =
-            fs::read_to_string(&entries[0]).map_err(|e| ChainError::Io(e.to_string()))?;
-        let first_block: CipherChainBlock = serde_json::from_str(&first_json)
-            .map_err(|e| ChainError::Serialization(e.to_string()))?;
+        let first_block = read_block(&entries[0])?;
+        if first_block.header.height != 0 {
+            return Err(ChainError::InvalidHeight {
+                expected: 0,
+                found: first_block.header.height,
+            });
+        }
 
         // The genesis set is the replay trust anchor: the on-disk record
         // when present, else the caller-supplied set (pre-rotation chain
         // dirs written before the genesis record existed).
         let genesis_set = match Self::read_genesis_validators(dir)? {
             Some(set) => set,
-            None => validator_set.clone(),
+            None => validator_set,
         };
-        // Tip-snapshot replicas (adopted certified tips, not yet backfilled)
-        // resume from tip.json instead of requiring height 0 on disk.
-        let (mut ledger, skip_through) = if first_block.header.height == 0 {
-            genesis_set.verify_header_signatures(&first_block.header)?;
-            (
-                Self {
-                    chain_id: chain_id.to_string(),
-                    validator_set: genesis_set.clone(),
-                    blocks: vec![first_block],
-                    cumulative_commitments: Vec::new(),
-                    commitments_index: HashMap::new(),
-                    cid_to_commitment: HashMap::new(),
-                    nonces: HashMap::new(),
-                    state_merkle_tree: MerkleTree::new(Vec::new()),
-                    storage_path: Some(dir.to_path_buf()),
-                },
-                0,
-            )
-        } else {
-            let tip_path = dir.join("tip.json");
-            if !tip_path.exists() {
-                return Err(ChainError::InvalidHeight {
-                    expected: 0,
-                    found: first_block.header.height,
-                });
-            }
-            let tip_json =
-                fs::read_to_string(&tip_path).map_err(|e| ChainError::Io(e.to_string()))?;
-            let tip: CipherChainBlock = serde_json::from_str(&tip_json)
-                .map_err(|e| ChainError::Serialization(e.to_string()))?;
-            if tip.header.block_hash() != first_block.header.block_hash() {
-                return Err(ChainError::Serialization(
-                    "blocks dir conflicts with tip snapshot".to_string(),
-                ));
-            }
-            let tip_height = tip.header.height;
-            (
-                Self::from_certified_tip(
-                    chain_id,
-                    validator_set.clone(),
-                    tip,
-                    Some(dir.to_path_buf()),
-                )?,
-                tip_height,
-            )
+        genesis_set.verify_header_signatures(&first_block.header)?;
+        let mut ledger = Self {
+            chain_id: chain_id.to_string(),
+            validator_set: genesis_set,
+            blocks: vec![first_block],
+            cumulative_commitments: Vec::new(),
+            commitments_index: HashMap::new(),
+            cid_to_commitment: HashMap::new(),
+            nonces: HashMap::new(),
+            state_merkle_tree: MerkleTree::new(Vec::new()),
+            storage_path: Some(dir.to_path_buf()),
         };
-
-        for path in entries.into_iter().skip(1) {
-            let block_json =
-                fs::read_to_string(&path).map_err(|e| ChainError::Io(e.to_string()))?;
-            let block: CipherChainBlock = serde_json::from_str(&block_json)
-                .map_err(|e| ChainError::Serialization(e.to_string()))?;
-            if block.header.height <= skip_through {
-                let existing = ledger.block_at_height(block.header.height);
-                if existing.map(|b| b.header.block_hash()) != Some(block.header.block_hash()) {
-                    return Err(ChainError::Serialization(
-                        "blocks dir conflicts with ledger history".to_string(),
-                    ));
-                }
-                continue;
-            }
-            ledger.commit_block_internal(block, false)?;
+        for path in entries.iter().skip(1) {
+            ledger.commit_block_internal(read_block(path)?, false)?;
         }
-
         Ok(ledger)
     }
 
@@ -273,6 +308,18 @@ impl SovereignLedger {
         tip: CipherChainBlock,
         storage_path: Option<PathBuf>,
     ) -> Result<Self, ChainError> {
+        Self::certified_tip_ledger(chain_id, validator_set, tip, storage_path, true)
+    }
+
+    /// [`Self::from_certified_tip`] with persistence optional: `open` rebuilds
+    /// the tip replica from its snapshot without rewriting it.
+    fn certified_tip_ledger(
+        chain_id: &str,
+        validator_set: ValidatorSet,
+        tip: CipherChainBlock,
+        storage_path: Option<PathBuf>,
+        persist: bool,
+    ) -> Result<Self, ChainError> {
         if tip.header.chain_id != chain_id {
             return Err(ChainError::InvalidGenesis(format!(
                 "tip chain {} != {}",
@@ -283,6 +330,22 @@ impl SovereignLedger {
         for tx in &tip.transactions {
             tx.verify_signature(chain_id)?;
         }
+        // The tip's own rotation, if any, is certified by the same quorum and
+        // takes effect after it, exactly as `commit_block_internal` applies
+        // it; the replica's active set must reflect it.
+        let active_set = match &tip.header.next_validators {
+            Some(keys) => {
+                if tip.header.version < 3 {
+                    return Err(ChainError::InvalidRotation(format!(
+                        "rotation payload in version {} tip (requires v3+)",
+                        tip.header.version
+                    )));
+                }
+                ValidatorSet::new(keys.clone())
+                    .map_err(|e| ChainError::InvalidRotation(e.to_string()))?
+            }
+            None => validator_set,
+        };
         let block_hash = tip.header.block_hash();
         let mut commitments_index = HashMap::new();
         let mut cid_to_commitment = HashMap::new();
@@ -305,7 +368,7 @@ impl SovereignLedger {
         }
         let ledger = Self {
             chain_id: chain_id.to_string(),
-            validator_set,
+            validator_set: active_set,
             blocks: vec![tip.clone()],
             cumulative_commitments: Vec::new(),
             commitments_index,
@@ -314,29 +377,96 @@ impl SovereignLedger {
             state_merkle_tree: MerkleTree::new(Vec::new()),
             storage_path,
         };
-        if let Some(ref path) = ledger.storage_path {
+        if let (true, Some(path)) = (persist, ledger.storage_path.as_ref()) {
             let blocks_dir = path.join("blocks");
             if !blocks_dir.exists() {
                 fs::create_dir_all(&blocks_dir).map_err(|e| ChainError::Io(e.to_string()))?;
             }
+            // Snapshot first: a crash before the block file lands still
+            // reopens as this tip replica.
             let tip_json = serde_json::to_string_pretty(&tip)
                 .map_err(|e| ChainError::Serialization(e.to_string()))?;
-            fs::write(path.join("tip.json"), tip_json)
-                .map_err(|e| ChainError::Io(e.to_string()))?;
+            write_atomic(&path.join(TIP_SNAPSHOT_FILE), tip_json.as_bytes())?;
             ledger.persist_block(&tip, path)?;
         }
         Ok(ledger)
     }
 
     /// Rebuilds a complete replica from genesis-anchored blocks (backfill).
-    /// Validates the full sequence (quorum, linkage, nonces, roots),
-    /// persists the rebuilt history, and removes any tip snapshot.
-    /// Genesis must carry no transactions (enforced by `create_genesis`).
+    /// Validates the full sequence (quorum, linkage, nonces, roots) in memory
+    /// first; only a fully valid history is persisted (see
+    /// [`Self::persist_history`]). Genesis must carry no transactions
+    /// (enforced by `create_genesis`).
     pub fn rebuild_from_blocks(
         chain_id: &str,
         validator_set: ValidatorSet,
         blocks: Vec<CipherChainBlock>,
         storage_path: Option<PathBuf>,
+    ) -> Result<Self, ChainError> {
+        let mut ledger = Self::replay_history(chain_id, validator_set.clone(), blocks)?;
+        if let Some(dir) = storage_path {
+            ledger.persist_history(dir, &validator_set)?;
+        }
+        Ok(ledger)
+    }
+
+    /// Persists a replayed, genesis-anchored history crash-safely: every
+    /// block, then the genesis set, and only then removes the tip snapshot.
+    /// A crash at any point leaves a directory that `open` accepts (as the
+    /// tip replica until the snapshot is gone, then as the full history).
+    pub fn persist_history(
+        &mut self,
+        dir: PathBuf,
+        genesis_set: &ValidatorSet,
+    ) -> Result<(), ChainError> {
+        if self.earliest_height() != 0 {
+            return Err(ChainError::InvalidHeight {
+                expected: 0,
+                found: self.earliest_height(),
+            });
+        }
+        for block in &self.blocks {
+            self.persist_block(block, &dir)?;
+        }
+        Self::write_genesis_validators(&dir, genesis_set)?;
+        let tip_path = dir.join(TIP_SNAPSHOT_FILE);
+        if tip_path.exists() {
+            fs::remove_file(&tip_path).map_err(|e| ChainError::Io(e.to_string()))?;
+            sync_parent_dir(&tip_path);
+        }
+        self.storage_path = Some(dir);
+        Ok(())
+    }
+
+    /// The validator set active after `height` (every rotation in blocks at
+    /// or below it applied), replayed from `genesis_set`. Requires
+    /// genesis-anchored history.
+    pub fn validator_set_after(
+        &self,
+        height: u64,
+        genesis_set: &ValidatorSet,
+    ) -> Result<ValidatorSet, ChainError> {
+        if self.earliest_height() != 0 {
+            return Err(ChainError::InvalidHeight {
+                expected: 0,
+                found: self.earliest_height(),
+            });
+        }
+        let mut set = genesis_set.clone();
+        for block in self.blocks.iter().take_while(|b| b.header.height <= height) {
+            if let Some(keys) = &block.header.next_validators {
+                set = ValidatorSet::new(keys.clone())
+                    .map_err(|e| ChainError::InvalidRotation(e.to_string()))?;
+            }
+        }
+        Ok(set)
+    }
+
+    /// In-memory replay of a genesis-anchored history (no disk access).
+    fn replay_history(
+        chain_id: &str,
+        validator_set: ValidatorSet,
+        blocks: Vec<CipherChainBlock>,
     ) -> Result<Self, ChainError> {
         let mut sorted = blocks;
         sorted.sort_by_key(|b| b.header.height);
@@ -355,28 +485,17 @@ impl SovereignLedger {
         validator_set.verify_header_signatures(&genesis.header)?;
         let mut ledger = Self {
             chain_id: chain_id.to_string(),
-            validator_set: validator_set.clone(),
+            validator_set,
             blocks: vec![genesis.clone()],
             cumulative_commitments: Vec::new(),
             commitments_index: HashMap::new(),
             cid_to_commitment: HashMap::new(),
             nonces: HashMap::new(),
             state_merkle_tree: MerkleTree::new(Vec::new()),
-            storage_path,
+            storage_path: None,
         };
         for block in sorted.into_iter().skip(1) {
             ledger.commit_block_internal(block, false)?;
-        }
-        if let Some(ref path) = ledger.storage_path {
-            let tip_path = path.join("tip.json");
-            if tip_path.exists() {
-                fs::remove_file(&tip_path).map_err(|e| ChainError::Io(e.to_string()))?;
-            }
-            let persisted = ledger.blocks.clone();
-            for block in &persisted {
-                ledger.persist_block(block, path)?;
-            }
-            Self::write_genesis_validators(path, &validator_set)?;
         }
         Ok(ledger)
     }
@@ -520,11 +639,9 @@ impl SovereignLedger {
             });
         }
 
-        // Validate all transactions: signatures plus strictly-increasing nonces.
-        for tx in &txs {
-            tx.verify_signature(&self.chain_id)?;
-            tx.check_nonce(*self.nonces.get(&tx.client_pubkey).unwrap_or(&0))?;
-        }
+        // Validate all transactions: signatures, no duplicates, and
+        // strictly-increasing nonces (committed state and within the block).
+        self.validate_transactions(&txs)?;
 
         // Compute tx_root
         let tx_leaf_hashes: Vec<[u8; 32]> = txs.iter().map(|tx| tx.tx_leaf_hash()).collect();
@@ -599,11 +716,9 @@ impl SovereignLedger {
             });
         }
 
-        // 4. Verify transactions (signatures + nonces) and compute tx_root
-        for tx in &block.transactions {
-            tx.verify_signature(&self.chain_id)?;
-            tx.check_nonce(*self.nonces.get(&tx.client_pubkey).unwrap_or(&0))?;
-        }
+        // 4. Verify transactions (signatures, no duplicates, nonces) and
+        // compute tx_root
+        self.validate_transactions(&block.transactions)?;
         let tx_leaf_hashes: Vec<[u8; 32]> = block
             .transactions
             .iter()
@@ -721,6 +836,36 @@ impl SovereignLedger {
         Ok(())
     }
 
+    /// Validates a block's transactions against committed state and against
+    /// each other (review CC-08): signatures, no repeated transaction, and
+    /// per-client nonces strictly increasing across the committed table and
+    /// the earlier transactions of the same block. The Merkle tree pairs an
+    /// odd node with itself, so a block with a duplicated tail can carry the
+    /// genuine block's roots, header and hash; every such block repeats a
+    /// transaction, so it is rejected here.
+    fn validate_transactions(&self, txs: &[CommitmentTx]) -> Result<(), ChainError> {
+        let mut leaves = HashSet::with_capacity(txs.len());
+        let mut in_block: HashMap<[u8; 32], u64> = HashMap::new();
+        for tx in txs {
+            tx.verify_signature(&self.chain_id)?;
+            if !leaves.insert(tx.tx_leaf_hash()) {
+                return Err(ChainError::DuplicateTransaction(hex::encode(tx.commitment)));
+            }
+            tx.check_nonce(*self.nonces.get(&tx.client_pubkey).unwrap_or(&0))?;
+            if let Some(&previous) = in_block.get(&tx.client_pubkey) {
+                if tx.nonce <= previous {
+                    return Err(ChainError::InBlockNonceReplay {
+                        pubkey: hex::encode(tx.client_pubkey),
+                        nonce: tx.nonce,
+                        previous,
+                    });
+                }
+            }
+            in_block.insert(tx.client_pubkey, tx.nonce);
+        }
+        Ok(())
+    }
+
     fn persist_block(&self, block: &CipherChainBlock, base_dir: &Path) -> Result<(), ChainError> {
         let blocks_dir = base_dir.join("blocks");
         if !blocks_dir.exists() {
@@ -729,8 +874,7 @@ impl SovereignLedger {
         let file_path = blocks_dir.join(format!("{:012}.json", block.header.height));
         let serialized = serde_json::to_string_pretty(block)
             .map_err(|e| ChainError::Serialization(e.to_string()))?;
-        fs::write(file_path, serialized).map_err(|e| ChainError::Io(e.to_string()))?;
-        Ok(())
+        write_atomic(&file_path, serialized.as_bytes())
     }
 
     /// Persists the genesis validator set beside the blocks (same hex-array
@@ -739,9 +883,7 @@ impl SovereignLedger {
         let raw: Vec<String> = set.validators().iter().map(hex::encode).collect();
         let json = serde_json::to_string_pretty(&raw)
             .map_err(|e| ChainError::Serialization(e.to_string()))?;
-        fs::write(dir.join(GENESIS_VALIDATORS_FILE), json)
-            .map_err(|e| ChainError::Io(e.to_string()))?;
-        Ok(())
+        write_atomic(&dir.join(GENESIS_VALIDATORS_FILE), json.as_bytes())
     }
 
     /// Loads the genesis validator record. `Ok(None)` when the chain dir

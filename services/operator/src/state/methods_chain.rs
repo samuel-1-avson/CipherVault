@@ -150,6 +150,9 @@ impl OperatorState {
                 Ok(hub) => {
                     let height = hub.ledger().height();
                     let hash = hex::encode(hub.ledger().latest_block().header.block_hash());
+                    // A rotation carried by the adopted tip is already
+                    // applied: admission follows the chain from here on.
+                    slot.validators = Some(hub.ledger().validator_set().clone());
                     slot.hub = Some(hub);
                     return IngestOutcome::Committed { height, hash };
                 }
@@ -172,9 +175,12 @@ impl OperatorState {
     }
 
     /// Rebuilds the hub replica from backfilled blocks (marks complete).
-    /// `genesis` must be the set that certified block 0 (served alongside
-    /// the blocks); `None` (legacy peers) falls back to the hub's current
-    /// set, which verifies block 0 only when no rotation ever happened.
+    /// `genesis` is the set the serving peer says certified block 0; `None`
+    /// (legacy peers) falls back to the hub's current set, which verifies
+    /// block 0 only when no rotation ever happened. Both the blocks and the
+    /// set are untrusted: the hub accepts them only if they contain its own
+    /// tip and derive its trusted validator set there (review CC-05), so a
+    /// lying peer cannot replace the replica or change admission.
     pub fn chain_backfill(
         &self,
         blocks: Vec<ciphervault_chain::CipherChainBlock>,

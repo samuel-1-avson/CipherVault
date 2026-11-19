@@ -44,17 +44,31 @@ verification layer and the multi-node consensus were not:
 | Medium | 6 |
 | Low | 6 |
 
-CC-01, CC-02 and CC-03 are **fixed in this change**, and part of CC-12
-is fixed. Every other finding is **open**.
+CC-01, CC-02, CC-03, CC-05, CC-08 and CC-11 are **fixed**, and part
+of CC-12 is fixed. Every other finding is **open**.
 
-## Fixed in this change
+## Fixed since the review
+
+The critical fixes (CC-01 to CC-03) landed first, in
+`fix/cipherchain-critical-cc01-03`; CC-05, CC-08 and CC-11 followed.
 
 | ID | Sev | Fix |
 |---|---|---|
 | CC-01 | CRITICAL | `AnchorProofResponse` now carries the committed `CommitmentTx`. The light client: recomputes the commitment from its own preimage; requires the carried transaction to be for that commitment (and, for v0/v1 transactions, to carry the same preimage); verifies the transaction's signature; recomputes its Merkle leaf; and requires that leaf to be the audit path's leaf at `tx_index`. |
 | CC-02 | CRITICAL | Block **version 4** (`SIGNED_TIME_VERSION`): every signature carries and signs the signer's observed time (`BlockHeader::vote_bytes_v4`). `verify_header_signatures` and the light client require `timestamp_ms` to equal the median of the verified signers' samples. Votes must sign the time they report. A block's version can never drop below its parent's. The light client takes the time from the header, rejects a proof whose copy differs, and reports `timestamp_signed: false` for v2/v3 blocks. |
 | CC-03 | CRITICAL | `verify-anchor` now runs `verify_anchor_evidence` and exits non-zero on every failure: tampered evidence, legacy EVM evidence, a missing or non-reverifying ledger, a commitment not on-chain, evidence naming a different block, or a failed light-client check. It verifies against the set that certified genesis, walked forward through certified rotations. Private (v2) anchors verify through the local preimage. |
-| CC-12 (part) | MEDIUM | `advance_to_rotation` verifies the rotation header's quorum under the current trusted set before switching trust. Genesis-hash pinning and the precedence of the on-disk genesis file are still open. |
+| CC-05 | HIGH | `ChainSyncHub::backfill` treats the served history and genesis set as untrusted. It rebuilds the history in memory and accepts it only if it contains the replica's own tip (same hash at the same height) and derives the same validator set at that tip. Only then is anything written. A peer can extend a replica's chain but can no longer replace it or narrow who signs it. An adopted tip that carries a rotation now applies it, and operator admission follows. |
+| CC-08 | MEDIUM | `check_block` and `propose_block` reject a block that repeats a transaction, and require each client's nonces to increase strictly within a block as well as across committed state. Every block mutated by duplicating its tail repeats a transaction, so it is rejected even though its roots and hash match the genuine block. The Merkle tree's doc comment now states the odd-node behavior instead of claiming RFC 6962. |
+| CC-11 | MEDIUM | Block files, `tip.json` and `genesis_validators.json` are written to a temp file, fsynced and renamed into place, and `open` ignores leftover `.tmp` files. A backfill writes every block and the genesis set before removing `tip.json`. While `tip.json` exists, `open` reopens the directory as the tip replica and ignores partial history below the tip, so an interrupted backfill no longer stops the node from starting. |
+| CC-12 (part) | MEDIUM | `advance_to_rotation` verifies the rotation header's quorum under the current trusted set before switching trust. `verify-anchor` also requires the configured validator set (`validators.json`) to be the chain's genesis set or the set active at the proof's height, so a replaced genesis record can't become its trust root. Genesis-hash pinning is still open, and `SovereignLedger::open` still prefers the on-disk genesis file. |
+| CC-18 (part) | LOW | The light client uses `InclusionProof::verify_bound`: each step's direction comes from `leaf_index`, the step count must match `total_leaves`, and a lone right-edge node must be paired with itself. A path can no longer be relabelled with another position. The tree size itself is still not committed in block headers. |
+
+**PR #59 review hardening** (Sourcery review, commit `f22519f`):
+
+- The light client rejects block versions outside `1..=PROTOCOL_VERSION`, and requires the proposer to be trusted, as the ledger does.
+- Private (v2) transactions must carry zero `salt`/`head_cid`, since neither field is signed or hashed. Unknown transaction versions are rejected.
+- Proofs carry `format_version`. Legacy proofs still parse, and are refused with `UnsupportedProofFormat`.
+- Rolling upgrades: multi-validator chains keep their parent's block version until the operator activates the latest one (`CIPHERVAULT_CHAIN_ACTIVATE_LATEST=1`). Single-validator chains use it at once.
 
 **Compatibility:**
 
@@ -69,6 +83,15 @@ is fixed. Every other finding is **open**.
   older builds fail to parse (closed, not open).
 - **Exit codes.** `verify-anchor` now exits non-zero for legacy EVM
   evidence.
+- **Blocks with repeated transactions** (CC-08) are now invalid. Honest
+  proposers never produce them, so no format change is involved.
+- **Backfill** (CC-05) now refuses history that doesn't contain the
+  replica's tip, so a replica on a different chain than its peers
+  (for example, after a manual re-genesis) stays put instead of being
+  overwritten.
+- **Reopening** (CC-11): while `tip.json` exists, a chain directory
+  reopens as the tip replica even if full history files are present,
+  because the snapshot is removed only once that history is complete.
 
 **Regression tests added:**
 
@@ -84,6 +107,12 @@ is fixed. Every other finding is **open**.
 - `verify_anchor_evidence_accepts_legacy_and_private_anchors` and
   `verify_anchor_evidence_fails_closed`
   (`apps/cli/src/commands/anchor.rs`)
+- `test_mutated_block_with_duplicated_tail_is_rejected` and
+  `test_in_block_nonce_replay_is_rejected` (CC-08, `sync.rs`)
+- `test_backfill_rejects_foreign_history_and_keeps_replica` and
+  `test_backfill_rejects_history_deriving_another_validator_set`
+  (CC-05, `sync.rs`)
+- `test_interrupted_backfill_reopens_as_tip_replica` (CC-11, `sync.rs`)
 
 ## Verified sound
 
@@ -127,20 +156,20 @@ is fixed. Every other finding is **open**.
 | CC-02 | CRITICAL | Fixed | Block timestamps (header v2+) are covered by no signature, and the light client reports an unchecked proof field |
 | CC-03 | CRITICAL | Fixed | `verify-anchor` fails open, trusts only the block's proposer, and can never verify private (v2) anchors |
 | CC-04 | HIGH | Open | Multi-validator anchoring cannot commit: nothing casts votes, clients must be validators, and there is no transaction submission or CLI sync |
-| CC-05 | HIGH | Open | Backfill takes the genesis validator set from the serving peer and replaces the local chain with no continuity check |
+| CC-05 | HIGH | Fixed | Backfill takes the genesis validator set from the serving peer and replaces the local chain with no continuity check |
 | CC-06 | HIGH | Open | Certificates are non-deterministic, so honest replicas fork with 4 or more validators |
 | CC-07 | HIGH | Open | The default 3-validator fleet tolerates zero failures (quorum is 3 of 3) |
-| CC-08 | MEDIUM | Open | Duplicating the last Merkle node lets a block be mutated with an unchanged hash; nonces are not checked within a block |
+| CC-08 | MEDIUM | Fixed | Duplicating the last Merkle node lets a block be mutated with an unchanged hash; nonces are not checked within a block |
 | CC-09 | MEDIUM | Open | The per-height proposal cap is shared by all validators, so one validator can block the rest |
 | CC-10 | MEDIUM | Open | The default v1 transactions publish the salt, snapshot ID and vault ID on-chain |
-| CC-11 | MEDIUM | Open | Ledger files are written non-atomically, so a crash can stop a replica from starting |
+| CC-11 | MEDIUM | Fixed | Ledger files are written non-atomically, so a crash can stop a replica from starting |
 | CC-12 | MEDIUM | Partly fixed | No pinned genesis hash, the on-disk genesis file overrides the caller, and light-client rotation is unsigned |
 | CC-13 | MEDIUM | Open | A quorum can rotate the validator set to anything, instantly |
 | CC-14 | LOW | Open | Scalability: O(n) rebuild per commit, all blocks held in memory, unbounded `certified` set |
 | CC-15 | LOW | Open | Gossip signatures cover re-serialized JSON rather than canonical bytes |
 | CC-16 | LOW | Open | Evidence of conflicting votes is in-memory only, capped, and has no consequence |
 | CC-17 | LOW | Open | Validator keys are raw seed files with no hardware option |
-| CC-18 | LOW | Open | Proof position fields are unauthenticated, and the RFC 6962 claim is inaccurate |
+| CC-18 | LOW | Partly fixed | Proof position fields are unauthenticated, and the RFC 6962 claim is inaccurate |
 | CC-19 | LOW | Open | A dead anchor client targets endpoints that don't exist, and the vault ID silently defaults to zero |
 
 ### CC-01 — CRITICAL: the inclusion proof is not bound to the commitment
@@ -591,16 +620,12 @@ Fail when the vault ID cannot be read.
 
 ## Missing tests
 
-The CC-01, CC-02 and CC-03 tests now exist (listed under
-[Fixed in this change](#fixed-in-this-change)). Each remaining test
+Tests for every fixed finding now exist (listed under
+[Fixed since the review](#fixed-since-the-review)). Each remaining test
 would confirm, and then guard, an open finding:
 
-- **CC-05:** backfill from a peer serving a chain under foreign
-  genesis keys. The replica and its admission set must be unchanged.
 - **CC-06:** four hubs receiving votes in different orders must commit
   identical block hashes.
-- **CC-08:** a mutated block with a duplicated tail must be rejected
-  by `check_block` and by `open()`.
 - **CC-09:** one validator sending 17 proposals at one height must not
   block another validator's proposal.
 
@@ -691,9 +716,10 @@ CC-09, CC-13) entirely.
 
 ## Recommended order
 
-1. **Verification holes:** CC-01, CC-02 and CC-03 are done. CC-08 and
-   CC-11 are next; both stay within a handful of files.
-2. **Operator safety:** CC-05 and CC-09.
+1. **Verification holes:** CC-01, CC-02, CC-03, CC-08 and CC-11 are
+   done.
+2. **Operator safety:** CC-05 is done; CC-09 (one proposal per
+   proposer per height) is next.
 3. **Documentation:** correct the docs that overclaim, and add C9 to
    the engagement pack.
 4. **Design:** decide between Option A and Option B, then implement
