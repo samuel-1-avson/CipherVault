@@ -137,7 +137,7 @@ fn ed25519_rejects_weak_low_order_keys_and_domain_collisions() {
 
 #[test]
 fn x25519_rejects_all_rfc7748_low_order_points() {
-    let recipient_sk = X25519StaticSecret::random_from_rng(rand::thread_rng());
+    let recipient_sk = X25519StaticSecret::from(rand::random::<[u8; 32]>());
     let recipient_pk = X25519PublicKey::from(&recipient_sk);
 
     // RFC 7748 Section 6.1 canonical + non-canonical low-order points.

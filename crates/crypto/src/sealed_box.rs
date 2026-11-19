@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_seal_open_roundtrip() {
-        let recipient_sk = X25519StaticSecret::random_from_rng(rand::thread_rng());
+        let recipient_sk = X25519StaticSecret::from(rand::random::<[u8; 32]>());
         let recipient_pk = X25519PublicKey::from(&recipient_sk);
 
         let vault_epoch_key = [0x55u8; 32];
@@ -138,10 +138,10 @@ mod tests {
 
     #[test]
     fn test_wrong_recipient_fails_open() {
-        let recipient_sk1 = X25519StaticSecret::random_from_rng(rand::thread_rng());
+        let recipient_sk1 = X25519StaticSecret::from(rand::random::<[u8; 32]>());
         let recipient_pk1 = X25519PublicKey::from(&recipient_sk1);
 
-        let recipient_sk2 = X25519StaticSecret::random_from_rng(rand::thread_rng());
+        let recipient_sk2 = X25519StaticSecret::from(rand::random::<[u8; 32]>());
         let recipient_pk2 = X25519PublicKey::from(&recipient_sk2);
 
         let payload = b"secret epoch key 123";
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn low_order_ephemeral_cannot_forge_an_authenticated_box() {
-        let recipient_sk = X25519StaticSecret::random_from_rng(rand::thread_rng());
+        let recipient_sk = X25519StaticSecret::from(rand::random::<[u8; 32]>());
         let recipient_pk = X25519PublicKey::from(&recipient_sk);
         let mut order_one = [0u8; 32];
         order_one[0] = 1;
