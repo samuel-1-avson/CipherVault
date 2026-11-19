@@ -1,9 +1,9 @@
-# CipherVault 1.0.36 (in preparation — not yet tagged)
+# CipherVault 1.0.36
 
 Native in-vault secret mutation, wildcard policy profiles, a streaming-safe
-credential proxy, and Hermes plugin v0.7.1. This section is written ahead of
-the `v1.0.36` tag per `docs/RELEASE_PROCESS.md`; until that tag and its
-assets exist, treat every item below as source-only.
+credential proxy, and Hermes plugin v0.7.1. Tagged `v1.0.36` from `main`;
+release assets publish via the release workflow or the local publish path
+(see `docs/RELEASE_PROCESS.md`).
 
 ## Highlights
 
@@ -45,8 +45,9 @@ assets exist, treat every item below as source-only.
   suite (1,324 tests, 0 failures), Hermes plugin suite, MCP suite,
   Hermes Desktop tests, and the dashboard audit test all pass; sealed
   `vault generate`/`unset` was exercised
-  live with no plaintext written to disk. Do not tag until hosted CI is
-  restored or this note is updated to record the exception.
+  live with no plaintext written to disk. This tag is cut under that
+  recorded local-only exception; re-validate with hosted CI once it is
+  restored, and treat cross-platform assets as unverified until then.
 
 ---
 
