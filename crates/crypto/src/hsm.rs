@@ -94,7 +94,7 @@ impl SoftwareHsmSimulator {
     /// Generates a new software HSM simulator with cryptographically random keys.
     pub fn generate() -> Self {
         let sig_key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-        let ecdh_key = X25519StaticSecret::random_from_rng(rand::thread_rng());
+        let ecdh_key = X25519StaticSecret::from(rand::random::<[u8; 32]>());
         Self { sig_key, ecdh_key }
     }
 
