@@ -2688,6 +2688,15 @@ def test_plugin_yaml_declares_v071_and_new_lifecycle_hooks():
     assert cv.PLUGIN_VERSION == "0.7.1"
 
 
+def test_dashboard_manifest_version_matches_plugin_version():
+    # The dashboard manifest drifted to 0.4.0 while the plugin moved to
+    # 0.7.x; pin them together so the next bump cannot drift again.
+    manifest = json.loads(
+        (PLUGIN_DIR / "dashboard" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["version"] == cv.PLUGIN_VERSION
+
+
 def test_secret_generate_prefers_native_vault_generate_without_writing_disk(ctx, tmp_path, monkeypatch):
     vault = _marker_vault(tmp_path)
     seen = []

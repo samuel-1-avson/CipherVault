@@ -2,12 +2,15 @@
 /**
  * Single-sources the release version: reads [workspace.package] version
  * from Cargo.toml and rewrites the current-release strings + Windows
- * download URLs in apps/ui and apps/landing. Linux/macOS asset links
- * intentionally keep pointing at the last release that published them
- * (and are labeled with that version) — this script never touches a
- * version string that labels a non-Windows asset.
+ * download URLs in apps/ui/index.html and the README version badge.
+ * apps/landing is intentionally not rewritten here; its strings are
+ * updated at deploy time (scripts/deploy-web.sh --expect vX.Y.Z).
+ * Linux/macOS asset links intentionally keep pointing at the last
+ * release that published them (and are labeled with that version) —
+ * this script never touches a version string that labels a
+ * non-Windows asset.
  *
- * Usage: node scripts/sync-version.mjs [--check]
+ * Usage: node scripts/sync-version.cjs [--check]
  */
 const fs = require('fs');
 const path = require('path');
@@ -16,13 +19,6 @@ const root = path.join(__dirname, '..');
 const cargo = fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8');
 const version = cargo.match(/\[workspace\.package\][\s\S]*?version = "([^"]+)"/)[1];
 const checkOnly = process.argv.includes('--check');
-
-function currentReleaseFiles() {
-  return [
-    // [file, replace-all patterns that mean "current release"]
-    ['apps/ui/index.html', [/1\.0\.\d+/g]],
-  ];
-}
 
 let dirty = [];
 function apply(file, transforms) {
@@ -45,10 +41,25 @@ apply('apps/ui/index.html', [
   (t) => t.replace(/(CLI |Release |Download CLI |upgrade to |download the )v1\.0\.\d+/g, (m, pre) => `${pre}v${version}`),
   (t) => t.replace(/\(v1\.0\.\d+\)/g, (m, idx, s) =>
     s.slice(Math.max(0, idx - 200), idx).includes('v1.0.28') ? m : `(v${version})`),
+  // Download-card version labels. The non-Windows cards read
+  // "v1.0.28 · .tar.gz", so requiring </span> right after the digits
+  // keeps them untouched.
+  (t) => t.replace(/(<span class="cli-dl-meta">)v1\.0\.\d+(<\/span>)/g, (m, a, b) => `${a}v${version}${b}`),
+  (t) => t.replace(/These v1\.0\.\d+ binaries/g, `These v${version} binaries`),
+  (t) => t.replace(/>v1\.0\.\d+ release downloads</g, `>v${version} release downloads<`),
 ]);
 
-// README badge
+// apps/ui/app.js: the only version strings are current-release labels
+// (terminal banner, downloads-modal log line, command-palette badge).
+apply('apps/ui/app.js', [
+  (t) => t.replace(/(CipherVault )v1\.0\.\d+/g, (m, pre) => `${pre}v${version}`),
+  (t) => t.replace(/(\()v1\.0\.\d+(\))/g, (m, a, b) => `${a}v${version}${b}`),
+  (t) => t.replace(/(badge: ')v1\.0\.\d+(')/g, (m, a, b) => `${a}v${version}${b}`),
+]);
+
+// README badge (alt text and shields.io URL both carry the version)
 apply('README.md', [
+  (t) => t.replace(/Version: v1\.0\.\d+/, `Version: v${version}`),
   (t) => t.replace(/Version-v1\.0\.\d+/, `Version-v${version}`),
 ]);
 
