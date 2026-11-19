@@ -25,13 +25,14 @@ HOMEBREW_TARGETS = (
     "x86_64-unknown-linux-gnu",
 )
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
-HERMES_PLUGIN_ASSETS = (
-    "ciphervault.exe",
-    "ciphervault-linux-amd64",
-    "ciphervault-linux-arm64",
-    "ciphervault-macos-amd64",
-    "ciphervault-macos-arm64",
-)
+# Hermes plugin platform keys (plugins/ciphervault/binary.py RELEASE_ASSETS)
+# mapped to the standalone release asset each platform downloads.
+HERMES_PLUGIN_ASSET_BY_PLATFORM = {
+    "windows-amd64": "ciphervault.exe",
+    "linux-amd64": "ciphervault-linux-amd64",
+    "macos-arm64": "ciphervault-macos-arm64",
+    "macos-amd64": "ciphervault-macos-amd64",
+}
 REPO_RELEASE_URL = "https://github.com/samuel-1-avson/CipherVault/releases/download/"
 
 
@@ -190,35 +191,37 @@ def update_winget(manifests_root: Path, version: str, checksums: dict[str, str],
     write_preserving_newlines(installer, text)
 
 
+def require_hermes_checksums(checksums: dict[str, str]) -> None:
+    for asset in HERMES_PLUGIN_ASSET_BY_PLATFORM.values():
+        if asset not in checksums:
+            raise ValueError(f"missing checksum for {asset} (required by Hermes plugin)")
+
+
 def update_hermes_plugin(path: Path, version: str, checksums: dict[str, str]) -> None:
     text = path.read_bytes().decode("utf-8")
     newline = "\r\n" if "\r\n" in text else "\n"
-    if "ciphervault.exe" not in checksums:
-        raise ValueError("missing checksum for ciphervault.exe (required by Hermes plugin)")
-    win_sha = checksums["ciphervault.exe"]
+    require_hermes_checksums(checksums)
     text = exact_substitution(
         text,
         re.compile(r'(?m)^RELEASE_VERSION = "[^"]+"(\r?)$'),
         lambda match: f'RELEASE_VERSION = "{version}"{match.group(1)}',
         f"{path} (RELEASE_VERSION)",
     )
+    # The modularized plugin pins per-platform (asset, sha256) tuples in
+    # binary.py; RELEASE_BINARY_SHA256 is derived from the Windows entry,
+    # so rewriting RELEASE_ASSETS is sufficient.
+    entries = []
+    for platform, asset in HERMES_PLUGIN_ASSET_BY_PLATFORM.items():
+        entries.append(f'    "{platform}": (')
+        entries.append(f'        "{asset}",')
+        entries.append(f'        "{checksums[asset]}",')
+        entries.append("    ),")
+    block = "RELEASE_ASSETS = {" + newline + newline.join(entries) + newline + "}"
     text = exact_substitution(
         text,
-        re.compile(r'(?m)^RELEASE_BINARY_SHA256 = "[0-9a-f]{64}"(\r?)$'),
-        lambda match: f'RELEASE_BINARY_SHA256 = "{win_sha}"{match.group(1)}',
-        f"{path} (RELEASE_BINARY_SHA256)",
-    )
-    entries = [
-        f'    "{asset}": "{checksums[asset]}",'
-        for asset in HERMES_PLUGIN_ASSETS
-        if asset in checksums
-    ]
-    block = "RELEASE_BINARY_SHA256S = {" + newline + newline.join(entries) + newline + "}"
-    text = exact_substitution(
-        text,
-        re.compile(r"(?ms)^RELEASE_BINARY_SHA256S = \{.*?^\}"),
+        re.compile(r"(?ms)^RELEASE_ASSETS = \{.*?^\}"),
         lambda _match: block,
-        f"{path} (RELEASE_BINARY_SHA256S)",
+        f"{path} (RELEASE_ASSETS)",
     )
     write_preserving_newlines(path, text)
 
@@ -231,6 +234,10 @@ def update_manifests(
     version = tag[1:] if tag.startswith("v") else tag
     tag = f"v{version}"
     checksums = read_checksums(sums_path, tag)
+    if plugin_path is not None:
+        # Fail before writing anything: a sums file that cannot sync the
+        # Hermes pin must not advance the package-manager manifests alone.
+        require_hermes_checksums(checksums)
 
     update_homebrew(dist / "homebrew/Formula/ciphervault.rb", version, tag, checksums)
     update_scoop(dist / "scoop/ciphervault.json", version, tag, checksums)
@@ -249,7 +256,7 @@ def main() -> None:
         "--plugin",
         type=Path,
         default=None,
-        help="optional Hermes plugin __init__.py to sync RELEASE_VERSION and RELEASE_BINARY_SHA256S",
+        help="optional Hermes plugin binary.py to sync RELEASE_VERSION and RELEASE_ASSETS",
     )
     args = parser.parse_args()
     update_manifests(args.dist, args.sums, args.tag, plugin_path=args.plugin)
