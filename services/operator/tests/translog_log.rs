@@ -11,6 +11,7 @@ use ciphervault_operator::{
     create_router,
     log_store::LogConfig,
     state::{OperatorSecurityConfig, PERMISSION_VAULT_DEFAULT},
+    witness_store::WitnessConfig,
     OperatorState,
 };
 use ciphervault_translog::{open_checkpoint, Ed25519NoteVerifier, LogEntry};
@@ -34,10 +35,8 @@ fn state_with_log(
         root.to_path_buf(),
         operator_key.clone(),
         OperatorSecurityConfig::from_flags(None, None),
-        LogConfig {
-            origin: Some(origin.into()),
-            add_limit_per_min: limit,
-        },
+        LogConfig::new(Some(origin.into()), limit),
+        WitnessConfig::default(),
     ))
 }
 

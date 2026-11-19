@@ -6,9 +6,12 @@
 pub mod handlers;
 pub mod log_api;
 pub mod log_store;
+pub mod log_witnessing;
 pub mod metrics;
 pub mod state;
 pub mod swarm;
+pub mod witness_api;
+pub mod witness_store;
 
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
@@ -58,6 +61,9 @@ fn classify_route(path: &str) -> &'static str {
     if path.starts_with("/v1/log") {
         return "log";
     }
+    if path.starts_with("/v1/witness") {
+        return "witness";
+    }
     if path.starts_with("/v1/identities") {
         return "identities";
     }
@@ -95,6 +101,10 @@ async fn json_error_envelope(request: Request, next: Next) -> Response {
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
+    // The body changes length. A nested service (such as `/v1/witness`)
+    // has already set Content-Length for the old body, and a stale value
+    // makes hyper abort the response.
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
     Response::from_parts(parts, axum::body::Body::from(envelope.to_string()))
 }
 
@@ -384,10 +394,17 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         .route("/v1/log/add", post(log_api::post_log_add))
         .route("/v1/log/info", get(log_api::get_log_info))
         .route("/v1/log/checkpoint", get(log_api::get_log_checkpoint))
+        .route(
+            "/v1/log/checkpoint/witnessed",
+            get(log_api::get_log_witnessed_checkpoint),
+        )
         .route("/v1/log/inclusion/{index}", get(log_api::get_log_inclusion))
         .route("/v1/log/consistency", get(log_api::get_log_consistency))
         .route("/v1/log/lookup/{commitment}", get(log_api::get_log_lookup))
         .route("/v1/log/tile/{*path}", get(log_api::get_log_tile))
+        // Witness (ADR-014 Phase 3): c2sp.org/tlog-witness, public by
+        // design; it only acts on checkpoints signed by a trusted log key.
+        .nest_service("/v1/witness", witness_api::router(state.witness_service()))
         // Out-of-Band Cryptographic Approval routes
         .route(
             "/v1/auth/challenges",

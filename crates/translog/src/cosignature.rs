@@ -23,6 +23,7 @@ use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 
 use crate::checkpoint::Checkpoint;
 use crate::encoding::is_valid_cosigner_name;
+use crate::mldsa::{MlDsa44CosignatureVerifier, MLDSA44_COSIGNATURE_LEN, SIG_TYPE_MLDSA44};
 use crate::note::{
     checked_ed25519_key, ed25519_key_from_vkey, ed25519_verify, key_id, KeyError, NoteError,
     NoteSignature, NoteVerifier, VerifierKey,
@@ -44,22 +45,31 @@ pub fn signed_message(checkpoint: &Checkpoint, timestamp: u64) -> Vec<u8> {
     format!("cosignature/v1\ntime {timestamp}\n{}", checkpoint.to_text()).into_bytes()
 }
 
-/// The timestamp of a `cosignature/v1` note signature, or `None` if the
-/// signature has the wrong length or an out-of-range timestamp.
+/// The timestamp of a checkpoint cosignature, Ed25519 `cosignature/v1` or
+/// ML-DSA-44, or `None` if the signature has neither length or has an
+/// out-of-range timestamp.
 ///
 /// This only reads the bytes. The timestamp is authenticated only once the
 /// signature has verified, for example through
 /// [`crate::checkpoint::open_checkpoint`].
 pub fn cosignature_timestamp(signature: &NoteSignature) -> Option<u64> {
-    timestamp_of(signature.signature())
+    let raw = signature.signature();
+    if raw.len() != COSIGNATURE_V1_LEN && raw.len() != MLDSA44_COSIGNATURE_LEN {
+        return None;
+    }
+    leading_timestamp(raw)
 }
 
 fn timestamp_of(signature: &[u8]) -> Option<u64> {
     if signature.len() != COSIGNATURE_V1_LEN {
         return None;
     }
+    leading_timestamp(signature)
+}
+
+fn leading_timestamp(signature: &[u8]) -> Option<u64> {
     let mut ts = [0u8; 8];
-    ts.copy_from_slice(&signature[..8]);
+    ts.copy_from_slice(signature.get(..8)?);
     let timestamp = u64::from_be_bytes(ts);
     (timestamp <= MAX_TIMESTAMP).then_some(timestamp)
 }
@@ -208,5 +218,104 @@ impl fmt::Debug for CosignatureV1Signer {
             .field("name", &self.name)
             .field("key_id", &format_args!("{:08x}", self.key_id))
             .finish_non_exhaustive()
+    }
+}
+
+/// A trusted witness key of either checkpoint cosignature type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WitnessVerifier {
+    /// An Ed25519 `cosignature/v1` key (type `0x04`).
+    Ed25519(CosignatureV1Verifier),
+    /// An ML-DSA-44 cosignature key (type `0x06`).
+    MlDsa44(MlDsa44CosignatureVerifier),
+}
+
+impl WitnessVerifier {
+    /// A witness key from a verifier key string of type `0x04` or `0x06`.
+    pub fn from_vkey(vkey: &str) -> Result<Self, KeyError> {
+        Self::from_verifier_key(&VerifierKey::parse(vkey)?)
+    }
+
+    /// A witness key from a parsed verifier key of type `0x04` or `0x06`.
+    pub fn from_verifier_key(vkey: &VerifierKey) -> Result<Self, KeyError> {
+        match vkey.sig_type() {
+            SIG_TYPE_COSIGNATURE_V1 => {
+                CosignatureV1Verifier::from_verifier_key(vkey).map(Self::Ed25519)
+            }
+            SIG_TYPE_MLDSA44 => {
+                MlDsa44CosignatureVerifier::from_verifier_key(vkey).map(Self::MlDsa44)
+            }
+            other => Err(KeyError::UnsupportedType(other)),
+        }
+    }
+
+    /// The witness name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Ed25519(v) => NoteVerifier::name(v),
+            Self::MlDsa44(v) => v.name(),
+        }
+    }
+
+    /// The key ID.
+    pub fn key_id(&self) -> u32 {
+        match self {
+            Self::Ed25519(v) => NoteVerifier::key_id(v),
+            Self::MlDsa44(v) => v.key_id(),
+        }
+    }
+
+    /// The signature type byte.
+    pub fn sig_type(&self) -> u8 {
+        match self {
+            Self::Ed25519(_) => SIG_TYPE_COSIGNATURE_V1,
+            Self::MlDsa44(_) => SIG_TYPE_MLDSA44,
+        }
+    }
+
+    /// The verifier key for this witness.
+    pub fn verifier_key(&self) -> Result<VerifierKey, KeyError> {
+        match self {
+            Self::Ed25519(v) => v.verifier_key(),
+            Self::MlDsa44(v) => v.verifier_key(),
+        }
+    }
+
+    /// Verifies a cosignature (without its key ID) over `checkpoint` and
+    /// returns its timestamp.
+    pub fn verify_cosignature(&self, checkpoint: &Checkpoint, signature: &[u8]) -> Option<u64> {
+        match self {
+            Self::Ed25519(v) => v.verify_cosignature(checkpoint, signature),
+            Self::MlDsa44(v) => v.verify_cosignature(checkpoint, signature),
+        }
+    }
+}
+
+impl From<CosignatureV1Verifier> for WitnessVerifier {
+    fn from(verifier: CosignatureV1Verifier) -> Self {
+        Self::Ed25519(verifier)
+    }
+}
+
+impl From<MlDsa44CosignatureVerifier> for WitnessVerifier {
+    fn from(verifier: MlDsa44CosignatureVerifier) -> Self {
+        Self::MlDsa44(verifier)
+    }
+}
+
+impl NoteVerifier for WitnessVerifier {
+    fn name(&self) -> &str {
+        WitnessVerifier::name(self)
+    }
+
+    fn key_id(&self) -> u32 {
+        WitnessVerifier::key_id(self)
+    }
+
+    fn verify(&self, text: &[u8], signature: &[u8]) -> bool {
+        match self {
+            Self::Ed25519(v) => v.verify(text, signature),
+            Self::MlDsa44(v) => v.verify(text, signature),
+        }
     }
 }

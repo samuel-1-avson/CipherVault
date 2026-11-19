@@ -55,6 +55,9 @@ pub const DEFAULT_LOG_ADD_LIMIT_PER_MIN: u32 = 120;
 const LOG_RATE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_LOG_RATE_TRACKED_KEYS: usize = 4096;
 
+/// Default seconds between rounds of pushing the checkpoint to witnesses.
+pub const DEFAULT_LOG_WITNESS_INTERVAL_SECS: u64 = 10;
+
 /// Transparency-log configuration, fixed when the operator state is built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogConfig {
@@ -63,6 +66,20 @@ pub struct LogConfig {
     pub origin: Option<String>,
     /// Per-device submissions per minute; 0 disables the limiter.
     pub add_limit_per_min: u32,
+    /// Witnesses this log pushes its checkpoints to, each
+    /// `<witness vkey>@<submission URL>` (`CIPHERVAULT_LOG_WITNESSES`,
+    /// separated by commas or whitespace / `--log-witness`, repeatable).
+    /// Validated by `LogConfig::witness_plan` at startup.
+    pub witnesses: Vec<String>,
+    /// Cosignatures a checkpoint needs before it is published as witnessed
+    /// (`CIPHERVAULT_LOG_WITNESS_QUORUM` / `--log-witness-quorum`). `None`
+    /// means ADR-014's default of 2, or every witness when fewer are
+    /// configured.
+    pub witness_quorum: Option<usize>,
+    /// Seconds between witnessing rounds
+    /// (`CIPHERVAULT_LOG_WITNESS_INTERVAL_SECS` /
+    /// `--log-witness-interval-secs`).
+    pub witness_interval_secs: u64,
 }
 
 impl Default for LogConfig {
@@ -96,9 +113,39 @@ impl LogConfig {
             },
             _ => DEFAULT_LOG_ADD_LIMIT_PER_MIN,
         };
+        let witnesses = std::env::var("CIPHERVAULT_LOG_WITNESSES")
+            .map(|value| crate::witness_store::split_list(&value))
+            .unwrap_or_default();
+        // An invalid quorum is kept as an impossible one, so startup
+        // validation fails instead of silently lowering it.
+        let witness_quorum = std::env::var("CIPHERVAULT_LOG_WITNESS_QUORUM")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse::<usize>().unwrap_or(usize::MAX));
+        let witness_interval_secs = std::env::var("CIPHERVAULT_LOG_WITNESS_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .unwrap_or(DEFAULT_LOG_WITNESS_INTERVAL_SECS);
         Self {
             origin,
             add_limit_per_min,
+            witnesses,
+            witness_quorum,
+            witness_interval_secs,
+        }
+    }
+
+    /// A configuration with the given origin and limit and no witnesses,
+    /// independent of the environment.
+    pub fn new(origin: Option<String>, add_limit_per_min: u32) -> Self {
+        Self {
+            origin,
+            add_limit_per_min,
+            witnesses: Vec::new(),
+            witness_quorum: None,
+            witness_interval_secs: DEFAULT_LOG_WITNESS_INTERVAL_SECS,
         }
     }
 
@@ -109,18 +156,10 @@ impl LogConfig {
         if let Some(origin) = &self.origin {
             return origin.clone();
         }
-        let slug: String = operator_id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        let slug = if slug.is_empty() { "operator" } else { &slug };
-        format!("cipherchain.{slug}.cipherv.online/log")
+        format!(
+            "cipherchain.{}.cipherv.online/log",
+            crate::witness_store::slug(operator_id)
+        )
     }
 }
 
@@ -153,13 +192,13 @@ pub enum LogError {
     Checkpoint(String),
 }
 
-fn io_err(path: &Path, error: io::Error) -> LogError {
+pub(crate) fn io_err(path: &Path, error: io::Error) -> LogError {
     LogError::Io(format!("{}: {error}", path.display()))
 }
 
 /// Writes `bytes` to `path` crash-safely, mirroring the chain ledger's
 /// CC-11 pattern: sibling temp file, fsync, rename, parent-dir fsync.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), LogError> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), LogError> {
     let mut tmp_name = path
         .file_name()
         .ok_or_else(|| LogError::Io(format!("{} has no file name", path.display())))?
@@ -177,14 +216,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), LogError> {
 }
 
 #[cfg(unix)]
-fn sync_parent_dir(path: &Path) {
+pub(crate) fn sync_parent_dir(path: &Path) {
     if let Some(dir) = path.parent().and_then(|p| fs::File::open(p).ok()) {
         let _ = dir.sync_all();
     }
 }
 
 #[cfg(not(unix))]
-fn sync_parent_dir(_path: &Path) {}
+pub(crate) fn sync_parent_dir(_path: &Path) {}
 
 /// Loads the log signing key, creating it owner-only on first use. A
 /// wrong-length file is rejected and never overwritten (CC-17 posture:
@@ -290,6 +329,18 @@ pub struct LogInfo {
     pub tree_size: u64,
     /// Current root hash.
     pub root: Hash,
+    /// Size of the latest checkpoint published with a witness quorum.
+    pub witnessed_tree_size: Option<u64>,
+}
+
+/// The latest checkpoint published with a quorum of witness cosignatures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WitnessedCheckpoint {
+    /// Its tree size.
+    pub size: u64,
+    /// The signed note: the log's signature and the witnesses'
+    /// cosignatures.
+    pub note: String,
 }
 
 struct LogInner {
@@ -309,6 +360,7 @@ pub struct LogStore {
     add_limit_per_min: u32,
     inner: Mutex<LogInner>,
     rate_hits: Mutex<HashMap<String, VecDeque<Instant>>>,
+    witnessed: Mutex<Option<WitnessedCheckpoint>>,
 }
 
 impl LogStore {
@@ -409,11 +461,117 @@ impl LogStore {
                 range,
             }),
             rate_hits: Mutex::new(HashMap::new()),
+            witnessed: Mutex::new(None),
         };
         // Republish the checkpoint from the rebuilt tree so static
         // serving never shows a pre-crash copy.
         store.publish_checkpoint()?;
+        store.load_witnessed_checkpoint();
         Ok(store)
+    }
+
+    fn witnessed_path(&self) -> PathBuf {
+        self.dir.join("checkpoint.witnessed")
+    }
+
+    /// Reloads the published witnessed checkpoint. It is a cache of what
+    /// witnesses already returned, so a copy that no longer matches this
+    /// log is dropped with a warning instead of failing the open.
+    fn load_witnessed_checkpoint(&self) {
+        let path = self.witnessed_path();
+        let note = match fs::read_to_string(&path) {
+            Ok(note) => note,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+            Err(e) => {
+                eprintln!("transparency log: cannot read {}: {e}", path.display());
+                return;
+            }
+        };
+        match self.check_own_checkpoint(&note) {
+            Ok(checkpoint) => {
+                *lock_or_recover(&self.witnessed, "log_witnessed") = Some(WitnessedCheckpoint {
+                    size: checkpoint.size(),
+                    note,
+                })
+            }
+            Err(e) => eprintln!(
+                "transparency log: ignoring {} ({e}); witnesses will cosign again",
+                path.display()
+            ),
+        }
+    }
+
+    /// Checks that `note` is a checkpoint of this log, signed by its key,
+    /// whose root matches the tree at that size.
+    fn check_own_checkpoint(&self, note: &str) -> Result<Checkpoint, LogError> {
+        let verifier = self
+            .signer()?
+            .verifier()
+            .map_err(|e| LogError::Checkpoint(e.to_string()))?;
+        let opened =
+            ciphervault_translog::open_checkpoint(note.as_bytes(), &self.origin, &verifier, &[])
+                .map_err(|e| LogError::Checkpoint(e.to_string()))?;
+        let checkpoint = opened.checkpoint().clone();
+        let inner = lock_or_recover(&self.inner, "transparency_log");
+        let size = usize::try_from(checkpoint.size())
+            .ok()
+            .filter(|size| *size <= inner.leaf_hashes.len())
+            .ok_or_else(|| LogError::Checkpoint("checkpoint is beyond the tree".into()))?;
+        if &root_from_leaf_hashes(&inner.leaf_hashes[..size]) != checkpoint.root() {
+            return Err(LogError::Checkpoint(
+                "checkpoint root does not match the tree".into(),
+            ));
+        }
+        Ok(checkpoint)
+    }
+
+    /// Signs the current tree head and returns the checkpoint with its
+    /// encoded signed note, both from the same state.
+    pub fn signed_head(&self) -> Result<(Checkpoint, String), LogError> {
+        let inner = lock_or_recover(&self.inner, "transparency_log");
+        let note = self.sign_checkpoint_locked(&inner)?;
+        let root = inner
+            .range
+            .root()
+            .map_err(|e| LogError::Checkpoint(e.to_string()))?;
+        let checkpoint = Checkpoint::new(self.origin.clone(), inner.range.end(), root)
+            .map_err(|e| LogError::Checkpoint(e.to_string()))?;
+        Ok((checkpoint, note))
+    }
+
+    /// Publishes `note`, a checkpoint of this log carrying a witness
+    /// quorum's cosignatures, as the latest witnessed checkpoint. Returns
+    /// `false` without change when a larger one is already published, so
+    /// the published size never goes backwards. The caller checks the
+    /// cosignatures; this checks the log's own signature and root.
+    pub fn publish_witnessed(&self, note: String) -> Result<bool, LogError> {
+        // A round with no new entries and the same cosignatures changes
+        // nothing: skip the tree check and the fsync.
+        if self
+            .witnessed_checkpoint()
+            .is_some_and(|current| current.note == note)
+        {
+            return Ok(false);
+        }
+        let checkpoint = self.check_own_checkpoint(&note)?;
+        let mut witnessed = lock_or_recover(&self.witnessed, "log_witnessed");
+        if witnessed
+            .as_ref()
+            .is_some_and(|current| current.size > checkpoint.size())
+        {
+            return Ok(false);
+        }
+        write_atomic(&self.witnessed_path(), note.as_bytes())?;
+        *witnessed = Some(WitnessedCheckpoint {
+            size: checkpoint.size(),
+            note,
+        });
+        Ok(true)
+    }
+
+    /// The latest checkpoint published with a witness quorum.
+    pub fn witnessed_checkpoint(&self) -> Option<WitnessedCheckpoint> {
+        lock_or_recover(&self.witnessed, "log_witnessed").clone()
     }
 
     fn signer(&self) -> Result<Ed25519NoteSigner, LogError> {
@@ -453,12 +611,14 @@ impl LogStore {
 
     /// Origin, pinning key and current tree head.
     pub fn info(&self) -> LogInfo {
+        let witnessed_tree_size = self.witnessed_checkpoint().map(|w| w.size);
         let inner = lock_or_recover(&self.inner, "transparency_log");
         LogInfo {
             origin: self.origin.clone(),
             verifier_key: self.verifier_key.clone(),
             tree_size: inner.range.end(),
             root: inner.range.root().unwrap_or([0u8; 32]),
+            witnessed_tree_size,
         }
     }
 
@@ -689,10 +849,7 @@ mod tests {
     }
 
     fn test_config(limit: u32) -> LogConfig {
-        LogConfig {
-            origin: Some("example.com/log".into()),
-            add_limit_per_min: limit,
-        }
+        LogConfig::new(Some("example.com/log".into()), limit)
     }
 
     fn entry(byte: u8) -> LogEntry {
@@ -746,10 +903,7 @@ mod tests {
         let root = fresh_dir("origin");
         let store = LogStore::open(&root, &test_config(0), "op-test").unwrap();
         drop(store);
-        let other = LogConfig {
-            origin: Some("other.example/log".into()),
-            add_limit_per_min: 0,
-        };
+        let other = LogConfig::new(Some("other.example/log".into()), 0);
         assert!(matches!(
             LogStore::open(&root, &other, "op-test"),
             Err(LogError::OriginMismatch { .. })

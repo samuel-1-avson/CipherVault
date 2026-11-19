@@ -178,6 +178,47 @@ struct Args {
     )]
     print_log_key: bool,
 
+    #[arg(
+        long = "log-witness",
+        help = "Witness this log pushes checkpoints to, as <witness vkey>@<submission URL> (e.g. ...@https://op2.example/v1/witness). Repeatable; replaces CIPHERVAULT_LOG_WITNESSES."
+    )]
+    log_witnesses: Vec<String>,
+
+    #[arg(
+        long,
+        help = "Witness cosignatures a checkpoint needs before it is published as witnessed (default 2, or every witness when fewer)"
+    )]
+    log_witness_quorum: Option<usize>,
+
+    #[arg(long, help = "Seconds between witnessing rounds (default 10)")]
+    log_witness_interval_secs: Option<u64>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run the witness (c2sp.org/tlog-witness at /v1/witness); also enabled by --witness-trusted-log"
+    )]
+    witness: bool,
+
+    #[arg(
+        long,
+        help = "Witness name (default cipherchain.<operator-id>.cipherv.online/witness). Pinned on first run."
+    )]
+    witness_name: Option<String>,
+
+    #[arg(
+        long = "witness-trusted-log",
+        help = "Ed25519 verifier key of a log this witness cosigns; its key name is the log origin. Repeatable; adds to CIPHERVAULT_WITNESS_TRUSTED_LOGS."
+    )]
+    witness_trusted_logs: Vec<String>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Print the witness name and ML-DSA-44 verifier key, then exit"
+    )]
+    print_witness_key: bool,
+
     #[command(subcommand)]
     command: Option<OperatorCommand>,
 }
@@ -312,7 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The print-and-exit modes bind no listener and serve nothing, so they
     // need no service token.
-    if !args.print_identity && !args.print_log_key {
+    if !args.print_identity && !args.print_log_key && !args.print_witness_key {
         validate_security_configuration()?;
     }
 
@@ -361,13 +402,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(limit) = args.log_add_limit_per_min {
         log_config.add_limit_per_min = limit;
     }
+    if !args.log_witnesses.is_empty() {
+        log_config.witnesses = args.log_witnesses.clone();
+    }
+    if let Some(quorum) = args.log_witness_quorum {
+        log_config.witness_quorum = Some(quorum);
+    }
+    if let Some(secs) = args.log_witness_interval_secs {
+        log_config.witness_interval_secs = secs.max(1);
+    }
+    // Validate witnessing before anything is opened: a bad witness key or
+    // quorum must stop startup, not silently weaken the policy.
+    let witness_plan = log_config
+        .witness_plan()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut witness_config = ciphervault_operator::witness_store::WitnessConfig::from_env();
+    witness_config.enabled |= args.witness || args.print_witness_key;
+    if let Some(name) = &args.witness_name {
+        witness_config.name = Some(name.clone());
+    }
+    witness_config
+        .trusted_logs
+        .extend(args.witness_trusted_logs.iter().cloned());
     let state = Arc::new(OperatorState::new_with_options(
         args.operator_id.clone(),
         args.data_dir.clone(),
         signing_key,
         ciphervault_operator::state::OperatorSecurityConfig::from_env(),
         log_config,
+        witness_config,
     ));
+    if args.print_witness_key {
+        match state.witness() {
+            Ok(store) => {
+                println!("name={}", store.name());
+                println!("verifier_key={}", store.verifier_key());
+                return Ok(());
+            }
+            Err(e) => return Err(Box::new(io::Error::other(e))),
+        }
+    }
     if args.print_log_key {
         match state.transparency_log() {
             Ok(store) => {
@@ -419,6 +493,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let app = create_router(state.clone());
+    // ADR-014 Phase 3: push checkpoints to the configured witnesses.
+    let _witnessing = match witness_plan {
+        Some(plan) => Some(
+            ciphervault_operator::log_witnessing::spawn(state.clone(), plan)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+        ),
+        None => None,
+    };
 
     // Dual mode: the swarm borrows the same live store as the HTTP API.
     // The handle is held for the daemon's lifetime; dropping it would stop

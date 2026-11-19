@@ -10,6 +10,10 @@ license.workspace = true
 name = "ciphervault-operator"
 path = "src/main.rs"
 
+[[bin]]
+name = "ciphervault-witness"
+path = "src/bin/ciphervault-witness.rs"
+
 [dependencies]
 axum.workspace = true
 tokio.workspace = true
@@ -30,6 +34,9 @@ colored.workspace = true
 ed25519-dalek.workspace = true
 libp2p.workspace = true
 futures-util.workspace = true
+# Log-to-witness pushes (ADR-014 Phase 3); already a workspace dependency.
+reqwest.workspace = true
+zeroize.workspace = true
 ciphervault-crypto = { path = "../../crates/crypto" }
 ciphervault-file-lock = { path = "../../crates/file-lock" }
 ciphervault-format = { path = "../../crates/format" }
