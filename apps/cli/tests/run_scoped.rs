@@ -147,7 +147,7 @@ async fn start_stub() -> (String, Stub) {
     };
     let app = axum::Router::new()
         .route("/v1/projects", axum::routing::get(get_projects))
-        .route("/v1/projects/:id", axum::routing::get(get_project))
+        .route("/v1/projects/{id}", axum::routing::get(get_project))
         .route(
             "/v1/projects/proj-1/secrets",
             axum::routing::get(get_secrets),

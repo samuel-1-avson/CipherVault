@@ -72,7 +72,8 @@ Developer: run & automate:
   watch                Watch tracked confidential files and automatically create snapshots on save
   anchor               Anchor a snapshot head commitment to CipherChain (sovereign PoA ledger)
   verify-anchor        Verify a CipherChain sovereign commitment and Merkle inclusion proof
-  approve              Out-of-band cryptographic approval and multi-party authorization
+  chain-explorer       Read verified local CipherChain blocks as JSON without opening private keys
+  approve             Out-of-band cryptographic approval and multi-party authorization
   token                Manage physical hardware security tokens (YubiKey PIV / PC/SC)
 
 Node operator:
