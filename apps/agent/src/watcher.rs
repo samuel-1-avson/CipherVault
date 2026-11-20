@@ -448,9 +448,15 @@ impl VaultWatcher {
             match outcome {
                 Ok(()) => {
                     self.store.mark_upload_completed(&item.snapshot_id)?;
+                    let snapshot_hex = hex::encode(item.snapshot_id);
+                    let _ = self.store.record_activity(
+                        "WATCH_SYNC_OK",
+                        &format!("Watcher replicated pending snapshot {snapshot_hex}"),
+                        &serde_json::json!({ "snapshot_id": snapshot_hex }).to_string(),
+                    );
                     println!(
                         "Agent: Retry succeeded for pending snapshot {}",
-                        hex::encode(item.snapshot_id)
+                        snapshot_hex
                     );
                 }
                 Err(error) => {

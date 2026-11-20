@@ -29,9 +29,9 @@ mod sandbox;
 mod tests;
 
 pub(crate) use policy::*;
-pub(crate) use sandbox::validate_sandbox_read_path;
 #[cfg(not(target_os = "windows"))]
 pub(crate) use sandbox::apply_no_net_sandbox;
+pub(crate) use sandbox::validate_sandbox_read_path;
 #[cfg(target_os = "windows")]
 use sandbox::windows_no_net;
 
@@ -138,10 +138,7 @@ pub(crate) async fn cmd_run(
                     sandbox_read_paths.push(path.clone());
                 }
             }
-            if !no_net
-                && !proxy
-                && proxy_upstream.is_empty()
-                && policy.default_no_net == Some(true)
+            if !no_net && !proxy && proxy_upstream.is_empty() && policy.default_no_net == Some(true)
             {
                 no_net = true;
             }
@@ -1497,11 +1494,7 @@ fn validate_filter_against_keys(
                     cli_pats.join(", ")
                 );
             }
-            let pats = filter
-                .profile_patterns
-                .as_deref()
-                .unwrap_or(&[])
-                .join(", ");
+            let pats = filter.profile_patterns.as_deref().unwrap_or(&[]).join(", ");
             bail!(
                 "Profile '{prof_name}' allow_keys matched 0 variables in {source_label} (patterns: {pats})"
             );
@@ -1601,4 +1594,3 @@ fn filter_loaded_vars_by_allow_keys(
     };
     filter_loaded_vars_with_policy(loaded_vars, &filter)
 }
-

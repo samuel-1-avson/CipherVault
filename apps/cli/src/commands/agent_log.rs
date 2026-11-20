@@ -181,7 +181,9 @@ pub(crate) fn verify_audit_caller_hmac(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            anyhow::anyhow!("agent-log record rejected: missing --hmac for CIPHERVAULT_AUDIT_HMAC_KEY")
+            anyhow::anyhow!(
+                "agent-log record rejected: missing --hmac for CIPHERVAULT_AUDIT_HMAC_KEY"
+            )
         })?;
     let provided = hex::decode(provided_hex)
         .map_err(|_| anyhow::anyhow!("agent-log record rejected: malformed --hmac hex"))?;
@@ -423,7 +425,8 @@ mod tests {
     fn audit_checkpoint_uses_domain_separation_with_legacy_fallback() {
         let sk = ciphervault_crypto::generate_signing_key();
         let vk = sk.verifying_key();
-        let payload = checkpoint_payload("aa".repeat(32).as_str(), 3, "bb".repeat(32).as_str(), 1700);
+        let payload =
+            checkpoint_payload("aa".repeat(32).as_str(), 3, "bb".repeat(32).as_str(), 1700);
         let domain_sig = hex::encode(ciphervault_crypto::sign_with_domain(
             &sk,
             AUDIT_CHECKPOINT_SIG_DOMAIN,
@@ -509,9 +512,7 @@ mod tests {
             Some(&valid_tag),
         )
         .is_ok());
-        assert!(
-            verify_audit_caller_hmac("terminal", "blocked", ".env", "{}", None).is_err()
-        );
+        assert!(verify_audit_caller_hmac("terminal", "blocked", ".env", "{}", None).is_err());
 
         match prev_key {
             Some(v) => std::env::set_var("CIPHERVAULT_AUDIT_HMAC_KEY", v),

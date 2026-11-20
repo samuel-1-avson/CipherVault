@@ -155,7 +155,7 @@ async fn start_stub() -> (String, Stub) {
             axum::routing::post(post_repositories).get(get_repositories),
         )
         .route(
-            "/v1/projects/proj-1/repositories/:id",
+            "/v1/projects/proj-1/repositories/{id}",
             axum::routing::delete(delete_repository),
         )
         .with_state(stub.clone());

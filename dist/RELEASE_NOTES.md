@@ -1,3 +1,45 @@
+# CipherVault 1.0.38
+
+Network Explorer and recovery release, plus a fix that keeps the operator
+mesh alive. The public fleet (op1–op3) runs 1.0.38 with transparency-log
+witnessing wired (each operator cosigns the other two logs).
+
+- **Operator mesh no longer decays.** A routing entry used to expire 24 h
+  after its announce no matter what, so every mesh silently fell apart a
+  day later and heartbeats dropped as `unknown_sender` (the public fleet
+  sat at `peers_live 0` on 1.0.28). Verified heartbeats, signed by the
+  routed key, now count as proof of life: they keep the route alive in
+  memory, are persisted at most hourly, and keep it across restarts. A
+  silent peer still expires after 24 h. `scripts/gcp/mesh-node.sh` meshes
+  a node target-local with its own service token, which the per-node
+  tokens on the public fleet require.
+- **Network Explorer and local CipherChain.** The public explorer, the
+  TUI Explorer tab (`[b]` opens Local CipherChain), and Hermes Desktop show
+  verified local CipherChain history; recovery drills bind to the saved
+  recovery checkpoint (`recover --expect-record-cid`); `status --json`
+  reports backup health in its `backup` object.
+- **Windows TUI keys.** Windows consoles report every key as a press and
+  a release, and the TUI acted on both, so toggles fired twice: `[b]`
+  opened Local CipherChain and its own release closed it again. Releases
+  are now ignored.
+- **Windows sandbox.** `run --no-net` startup is repaired on Windows.
+- **Test repairs.** Five CLI integration suites used axum 0.7 `/:param`
+  stub routes that axum 0.8 rejects, and the help template missed
+  `chain-explorer`; both are fixed.
+- **Verified locally** (hosted CI is still billing-locked, so nothing here
+  was validated by CI). Rust workspace on Windows: 107 suites; the first
+  run had 1,101 passed and 28 failed, all in the stale-route suites, the
+  help template and the timing-flaky NAT `dcutr` test; after the fixes
+  the seven affected suites re-ran clean (332 passed) and the NAT suite
+  passed 3/3. Three tests were skipped because they hang on this machine
+  for environmental reasons (`auth_connect` x2, `maintenance_inventory`).
+  Hermes plugin 266 passed (7 skipped), MCP 14 passed, Hermes Desktop
+  10/10, dashboard audit passed. Linux and macOS binaries are
+  cross-built and were not run on real Linux/macOS hosts, except the
+  Linux operator, which runs the public fleet.
+
+---
+
 # CipherVault 1.0.37
 
 Release-signing key rotation release. Functional content is the merged

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 #[cfg(unix)]
@@ -112,6 +112,11 @@ pub struct OperatorState {
     // entries read as Full (pre-verified-join meshes); ticket joins
     // insert Probation. Persisted via peer-membership.json.
     peer_membership: Mutex<HashMap<String, PeerMembership>>,
+    // Unix time of the last heartbeat-driven membership persist. Verified
+    // heartbeats move `last_seen_utc` in memory every few seconds; it is
+    // written to disk at most once per MEMBERSHIP_LIVENESS_PERSIST_SECS
+    // so routes kept alive by heartbeats also survive a restart.
+    membership_persisted_utc: AtomicU64,
     // Spent join-invite nonces: nonce_hex -> invite expiry. Single-use
     // enforcement for ticket joins; expired entries are pruned on every
     // write so the set cannot grow without bound. Persisted via

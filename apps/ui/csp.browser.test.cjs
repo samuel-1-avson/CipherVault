@@ -122,11 +122,27 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
     document.getElementById('input-account-mfa-code').value = '123456';
     closeAccountManagementModal();
     result.mfaCodeCleared = document.getElementById('input-account-mfa-code').value === '';
+    state.accessMode = 'public_explorer';
+    applyAccessContext({mode:'public_explorer'});
+    switchTab('tab-explorer');
+    const chainPanel = document.getElementById('explorer-chain-heading').closest('[data-private-surface]');
+    result.publicChainHidden = chainPanel.hidden;
+    state.accessMode = 'local_private';
+    applyAccessContext({mode:'local_private'});
+    result.localChainVisible = !chainPanel.hidden;
+    await loadLocalChainExplorer('7');
+    result.chainText = document.getElementById('explorer-chain-result').textContent;
+    const cid = 'ab'.repeat(32);
+    await lookupExplorerObject(cid);
+    result.objectText = document.getElementById('explorer-result').textContent;
+    document.getElementById('explorer-clear').click();
+    result.lookupCleared = document.getElementById('explorer-result').textContent === '';
     closeSseStream(); clearInterval(state.pollTimer);
     await new Promise(resolve => setTimeout(resolve, 50));
   } catch (error) { result.error = String(error.stack || error); }
   result.cspViolations = cspViolations; result.scriptErrors = scriptErrors;
-  document.body.setAttribute('data-csp-test', btoa(JSON.stringify(result)));
+  const encoded = new TextEncoder().encode(JSON.stringify(result));
+  document.body.setAttribute('data-csp-test', btoa(String.fromCharCode(...encoded)));
 }, 150));
 `;
 
@@ -144,9 +160,12 @@ const server = http.createServer((request, response) => {
     response.end(fs.readFileSync(path.join(__dirname, url.pathname.slice(1))));
   } else if (url.pathname.startsWith('/api/')) {
     response.setHeader('Content-Type', 'application/json');
+    const block = {height:7, hash:'ab'.repeat(32), commitments:1, signatures:1, timestamp_signed:true, timestamp_ms:1760000000000};
     const payload = url.pathname === '/api/context' ? {mode:'local_private'}
       : url.pathname === '/api/snapshots' ? {snapshots:[]}
       : url.pathname === '/api/operators' ? {operators:[]}
+      : url.pathname === '/api/explorer/chain' ? {state:'ready', solo:true, blocks:[block], detail:{block,parent_hash:'cd'.repeat(32),transaction_root:'ef'.repeat(32),signers:[],commitments:[]}}
+      : url.pathname.startsWith('/api/explorer/object/') ? {cid:'ab'.repeat(32),quorum:{present:2,checked:3,required:3,satisfied:false},replicas:[{operator_id:'Operator A',status:'present'}]}
       : url.pathname === '/api/events' ? null : {};
     if (payload === null) { response.statusCode = 204; response.end(); }
     else response.end(JSON.stringify(payload));
@@ -156,6 +175,7 @@ const server = http.createServer((request, response) => {
 (async () => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-csp-browser-'));
   let child;
+  let failure;
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = 'http://127.0.0.1:' + server.address().port;
@@ -187,6 +207,13 @@ const server = http.createServer((request, response) => {
     assert(!result.error, result.error);
     assert.deepEqual(result.scriptErrors, [], 'Actual browser script errors');
     assert.deepEqual(result.cspViolations, [], 'Production CSP violations');
+    assert.equal(result.publicChainHidden, true);
+    assert.equal(result.localChainVisible, true);
+    assert.match(result.chainText, /Solo ledger/);
+    assert.match(result.chainText, /Block #7/);
+    assert.match(result.objectText, /QUORUM 2\/3/);
+    assert.match(result.objectText, /Operator A/);
+    assert.equal(result.lookupCleared, true);
     assert.equal(result.downloadsInitialHidden, true);
     assert.equal(result.downloadsInitialDisplay, 'none', 'Downloads start hidden');
     assert.equal(result.downloadsOpenStates.length, 2);
@@ -232,9 +259,16 @@ const server = http.createServer((request, response) => {
     assert.equal(result.mfaPolicyEnabled, true);
     assert.equal(result.mfaCodeCleared, true);
     console.log('Actual Chromium dashboard CSP regression passed: computed download-modal visibility, close/reopen focus, hosted/local auth visibility, forwarded controls, layout, truthful signatures, zero policy violations.');
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     child?.kill(); server.close();
     await new Promise(resolve => setTimeout(resolve, 150));
-    fs.rmSync(profile, {recursive:true, force:true});
+    try { fs.rmSync(profile, {recursive:true, force:true, maxRetries:12, retryDelay:100}); }
+    catch (error) {
+      if (!failure) throw error;
+      console.warn('Browser test profile cleanup failed:', error.code);
+    }
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });

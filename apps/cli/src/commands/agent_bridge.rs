@@ -547,9 +547,9 @@ fn handle_stdio_line(line: &str, cache: &mut BridgeSecretCache) -> serde_json::V
                 None => "{}".to_string(),
             };
             let hmac_hex = req.get("hmac").and_then(|v| v.as_str());
-            if let Err(e) = super::agent_log::verify_audit_caller_hmac(
-                tool, decision, path, &detail, hmac_hex,
-            ) {
+            if let Err(e) =
+                super::agent_log::verify_audit_caller_hmac(tool, decision, path, &detail, hmac_hex)
+            {
                 return serde_json::json!({ "ok": false, "error": e.to_string() });
             }
             match get_vault_store() {
@@ -732,7 +732,11 @@ mod tests {
             .filter(|(k, _)| k == "PRIVATE_KEY")
             .map(|(_, v)| v.as_str())
             .collect();
-        assert_eq!(blocks.len(), 2, "expected both private PEM blocks: {blocks:?}");
+        assert_eq!(
+            blocks.len(),
+            2,
+            "expected both private PEM blocks: {blocks:?}"
+        );
         assert!(blocks[0].contains(line1));
         assert!(blocks[1].contains(line3));
 
@@ -769,7 +773,10 @@ mod tests {
                 .find(|(k, _)| k == key)
                 .map(|(_, v)| v.as_str().to_string())
         };
-        assert_eq!(find_val("secrets.yaml.db_pass").as_deref(), Some("abc#def123"));
+        assert_eq!(
+            find_val("secrets.yaml.db_pass").as_deref(),
+            Some("abc#def123")
+        );
         assert_eq!(
             find_val("secrets.yaml.api_pass").as_deref(),
             Some("p@ss#word12")
@@ -807,7 +814,10 @@ mod tests {
             assert_ne!(fp1, fp2, "WAL creation must invalidate fingerprint");
 
             // Seed a stale sentinel so we verify refresh_if_needed reloads when WAL grows.
-            cache.values = vec![("STALE".to_string(), Zeroizing::new("stale_sentinel_99".to_string()))];
+            cache.values = vec![(
+                "STALE".to_string(),
+                Zeroizing::new("stale_sentinel_99".to_string()),
+            )];
             cache.fingerprint = Some(fp2.clone());
             std::fs::write(&wal_path, b"wal-commit-frame-1-and-frame-2").unwrap();
             cache.refresh_if_needed();

@@ -2,12 +2,12 @@
 
 <div align="center">
 
-[![Version: v1.0.37](https://img.shields.io/badge/Version-v1.0.37-blue.svg)](dist/RELEASE_NOTES.md)
+[![Version: v1.0.38](https://img.shields.io/badge/Version-v1.0.38-blue.svg)](dist/RELEASE_NOTES.md)
 [![Rust: 1.89+](https://img.shields.io/badge/Rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens-yubikey-piv)
-[![Hermes Plugin: v0.7.2](https://img.shields.io/badge/Hermes%20Plugin-v0.7.2-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
+[![Hermes Plugin: v0.7.3](https://img.shields.io/badge/Hermes%20Plugin-v0.7.3-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
 [![Verification](https://img.shields.io/badge/Verification-Quality%20Gates-blue.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
@@ -17,7 +17,7 @@
 
 Captures default to [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) featuring content-defined chunk deduplication across edits, keyed identifiers (public candidate-file hashes no longer match v2 metadata), and domain-isolated HKDF-SHA256 derivations. Legacy chunk v1 remains supported for backward compatibility (or via CIPHERVAULT_CHUNK_V2_WRITE=0); both versions remain transparently readable. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
 
-**Current release: v1.0.37.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 or newer for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles and the tamper-evident agent audit log. The [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.7.2 pins v1.0.37. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
+**Current release: v1.0.38.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 or newer for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles and the tamper-evident agent audit log. The [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.7.3 pins v1.0.38. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
@@ -258,7 +258,7 @@ Highlights of v1.0.30 through v1.0.35. The [release notes](dist/RELEASE_NOTES.md
 
 | Area | What changed |
 |---|---|
-| 🤖 **AI agents** | Native **Hermes plugin** (now v0.7.2, 12 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
+| 🤖 **AI agents** | Native **Hermes plugin** (now v0.7.3, 12 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
 | 🔒 **Running secrets** | `run --allow-keys`, `--no-net` sandboxing (Linux, macOS, Windows), `--proxy` credential proxy, and `--profile` execution profiles from `.ciphervault/policy.toml`. |
 | 🧹 **Sealing** | `push --shred` (`--seal`) removes plaintext from the working tree after sealing; `[vault] sealed_mode = true` makes it the default. |
 | 🩺 **Diagnostics** | `env-doctor` zero-knowledge environment and schema checks; `status --json` reports sealed state. |
@@ -485,7 +485,7 @@ ciphervault tui
 * **`[4] Operators`**: Real-time roundtrip latency gauges, healthy/degraded replica states, and PoS status.
 * **`[5] FastCDC`**: Content-defined chunk distributions and deduplication efficiency graphs.
 * **`[6] Token`**: Hardware token reader presence, PIV slot status, and touch policies.
-* **`[7] Explorer`**: Public checkpoint feed, cluster health, and object quorum lookup.
+* **`[7] Explorer`**: Public checkpoints, operator reachability, and object replica lookup. Press **`[/]`** to look up a CID or **`[b]`** to browse and search local CipherChain blocks.
 * **Hotkeys**: Press `[p]` to commit and push a new snapshot; press `[a]` to anchor to CipherChain; press `[q]` to quit.
 
 ---
@@ -499,6 +499,11 @@ ciphervault ui --port 8080
 ```
 
 Open **`http://127.0.0.1:8080`** in your browser to inspect chunk graphs, review telemetry, and test recovery ceremonies. (A `--port` implies `--local`; bare `ciphervault ui` opens the public cloud explorer instead, and `--serve` runs the public read-only explorer server.)
+
+Open **Network Explorer** for operator reachability, anchor receipts, and
+object replica checks. The local dashboard also has **Local CipherChain**,
+where you can filter by height, block hash, or commitment and verify inclusion.
+Hermes Desktop offers both views on its **Open Network Explorer** page.
 
 ---
 
@@ -549,6 +554,32 @@ A replicated push (`push` without `--local`, all required operators verified) al
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
+
+Run `ciphervault status` or open the TUI Overview to see whether the active
+snapshot has a confirmed remote backup and whether a completed drill matched
+that exact snapshot. These indicators use local records of past checks. They
+refer to the captured snapshot, so push any working-file changes you want backed up.
+
+To verify your first remote backup, run `ciphervault push` with enrolled
+operators, then run `ciphervault status` for the checkpoint and drill command.
+Run the drill from the project directory and choose a new private destination
+outside the project. The drill restores plaintext files and records the
+result in the active vault. When you capture a newer snapshot, run a new drill
+to verify it.
+
+After a push reports `RemoteDurable`, save the printed **Recovery checkpoint**
+with your offline recovery materials. It is the 64-character CID of the signed
+snapshot record. Use the saved CID to require that exact backup on a replacement machine.
+
+```bash
+ciphervault recover --kit recovery-kit.txt --to ./restored --expect-record-cid <CID>
+```
+
+`ciphervault recovery test` accepts the same flag. A mismatch stops recovery
+before it writes files or creates a vault in the destination. Save a new
+checkpoint after each push you want to be able to verify. Recovery can verify
+the checkpoint you saved even if an operator serves an older signed history.
+With no checkpoint, the CLI reports that freshness is unverified.
 
 If your workstation is lost, stolen, or destroyed, CipherVault enables complete secret restoration onto a clean replacement computer without access to any prior databases or cloud coordinators.
 
@@ -628,7 +659,7 @@ AI coding agents are useful and dangerous around secrets: they read `.env` files
 
 ### The Hermes plugin
 
-The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.7.2**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
+The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.7.3**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
 
 ```mermaid
 flowchart LR
@@ -646,13 +677,13 @@ flowchart LR
 
 **Quickest path to try it:** `hermes ciphervault quickstart` runs the whole loop in a throwaway vault in about two minutes.
 
-**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. On 19 November 2026 that catalog entry was still **v0.6.5 (7 tools)**; the update to v0.7.2 is in review upstream ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)). To get **v0.7.2 (all 12 tools)** now, install from this repository:
+**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. On 20 November 2026 that catalog entry was still **v0.6.5 (7 tools)**; the update to v0.7.3 is in review upstream ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)). To get **v0.7.3 (all 12 tools)** now, install from this repository:
 
 ```bash
 # from a CipherVault checkout; use $HERMES_HOME instead of ~/.hermes if you set it
 cp -r plugins/ciphervault ~/.hermes/plugins/ciphervault
 hermes plugins enable ciphervault
-hermes ciphervault bootstrap   # downloads the pinned, checksum-verified CLI (v1.0.37)
+hermes ciphervault bootstrap   # downloads the pinned, checksum-verified CLI (v1.0.38)
 hermes ciphervault doctor      # confirms the CLI is compatible; exits nonzero if not
 # restart Hermes: the ciphervault_* tools appear
 ```
@@ -737,12 +768,12 @@ An agent then calls `ciphervault_run` with `profile="test"`, or you run `cipherv
 
 * **Approval is never bypassed.** Every `ciphervault_run` goes through Hermes' human-approval gate. An "always" grant covers only the same execution envelope: program, profile, inline-code hash, network mode and `allow_keys`. Approving an offline test run never covers inline code or wider access.
 * **Provable, not just promised.** Every block, approval request, scrubbed result and agent write is appended to a hash-chained, device-signed audit log. Each scrubbed result records the SHA-256 of the exact output that reached the model. The chain head is anchored to your operator fleet on replicated pushes and when a run approval is requested. Verify with `ciphervault agent-log verify` and `ciphervault agent-log verify-remote`.
-* **Minimal network use.** The plugin makes no network calls except two you trigger: `bootstrap` (downloads the pinned CLI and checks its SHA-256) and the audit-head checkpoint (entry count and head hash only, no contents) sent to your own configured operators. No telemetry.
+* **Network use.** The plugin downloads a pinned CLI during `bootstrap`, sends audit-head checkpoints to your configured operators, and reads the public dashboard when you open the Desktop Network Explorer. An explicit object lookup sends the entered CID. The local CipherChain view reads the local ledger.
 * **Honest limits.** `ciphervault_run` still gives the approved child process the secrets it asked for: approve consciously, and prefer `allow_keys`, `--no-net` or `--proxy`. Scrubbing is exact-value plus credential-shape matching, not magic. The plugin has not had an external security audit, and the Linux and macOS paths are unverified (see above).
 
 #### Requirements and validation
 
-The plugin needs a CLI whose `redact --json` reports `exact_values_complete`. The pinned **v1.0.37** release does; v1.0.32 and earlier do not, and the plugin withholds vault-scoped output with them. Run `hermes ciphervault doctor` to check.
+The plugin needs a CLI whose `redact --json` reports `exact_values_complete`. The pinned **v1.0.38** release does; v1.0.32 and earlier do not, and the plugin withholds vault-scoped output with them. Run `hermes ciphervault doctor` to check.
 
 ```bash
 hermes plugins validate ./plugins/ciphervault --install-deps

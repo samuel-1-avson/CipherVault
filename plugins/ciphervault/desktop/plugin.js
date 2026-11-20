@@ -753,6 +753,7 @@ function VaultPane({ ctx }) {
         className: 'truncate rounded-lg border border-(--ui-stroke-secondary) p-2 text-xs text-(--ui-text-secondary)',
         children: t('cwd', String(cwd || '—'))
       }),
+      jsx(ExplorerLink, {}),
       jsx(StatusBody, { ctx }),
       jsx('div', { className: 'mt-auto pt-2 text-[0.6875rem] leading-snug text-(--ui-text-quaternary)', children: t('foot') })
     ]
@@ -766,9 +767,240 @@ function VaultPage({ ctx }) {
     children: [
       jsx('h1', { className: 'text-xl font-semibold', children: t('pageTitle') }),
       jsx('p', { className: 'mt-1 max-w-prose text-(--ui-text-secondary)', children: t('pageSub') }),
+      jsx(ExplorerLink, {}),
       jsx('div', { className: 'mt-4 max-w-md', children: jsx(StatusBody, { ctx }) })
     ]
   })
+}
+
+const EXPLORER_ROUTE = '/ciphervault/explorer'
+const EXPLORER_WEB_URL = 'https://vault.cipherv.online/#explorer'
+const EXPLORER_BUTTON = 'rounded-md border border-(--ui-stroke-secondary) px-3 py-1.5 text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2 disabled:opacity-50'
+const EXPLORER_CARD = 'min-w-0 rounded-lg border border-(--ui-stroke-secondary) p-4'
+const EXPLORER_MUTED = 'text-xs leading-relaxed text-(--ui-text-secondary)'
+
+function ExplorerLink() {
+  return jsx('button', {
+    type: 'button', className: EXPLORER_BUTTON + ' self-start',
+    onClick: () => host.navigate(EXPLORER_ROUTE),
+    children: 'Open Network Explorer',
+  })
+}
+
+function explorerCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : '—'
+}
+
+function explorerHash(value) {
+  const hash = typeof value === 'string' ? value : ''
+  return hash.length > 26 ? hash.slice(0, 12) + '…' + hash.slice(-8) : hash || '—'
+}
+
+function explorerDate(value) {
+  if (value == null) return 'Time unavailable'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'Time unavailable' : date.toLocaleString()
+}
+
+function explorerRows(rows, label) {
+  return jsx('ul', {
+    className: 'divide-y divide-(--ui-stroke-secondary)',
+    'aria-label': label,
+    children: rows,
+  })
+}
+
+function ExplorerOverview({ data, operatorFilter }) {
+  const [receipt, setReceipt] = useState(null)
+  const operators = Array.isArray(data.operators) ? data.operators : []
+  const anchors = Array.isArray(data.anchors) ? data.anchors : []
+  const reachable = explorerCount(data.counts?.reachable)
+  const total = explorerCount(data.counts?.total)
+  const needle = operatorFilter.trim().toLowerCase()
+  const visible = operators.filter(row => [row.operator_id, row.display_name, row.region]
+    .some(value => String(value || '').toLowerCase().includes(needle)))
+  const selected = receipt ? anchors.find(row => (row.tx_hash_hex || row.tx_hash || row.commitment_hex) === receipt) : null
+  return jsxs('div', {
+    className: 'grid min-w-0 gap-3',
+    children: [
+      jsxs('div', { className: 'grid grid-cols-1 gap-3 sm:grid-cols-2', children: [
+        jsxs('section', { className: EXPLORER_CARD, children: [
+          jsx('h2', { className: 'font-semibold', children: 'Storage operators' }),
+          jsx('p', { className: 'mt-1 text-2xl tabular-nums', children: `${reachable} / ${total} responding` }),
+          typeof total === 'number' && total > 0 && typeof reachable === 'number'
+            ? jsx('meter', { className: 'w-full', min: 0, max: total, value: Math.min(total, reachable), 'aria-label': 'Responding operators' }) : null,
+          jsx('p', { className: EXPLORER_MUTED, children: explorerDate(data.observed_at_utc) }),
+        ] }),
+        jsxs('section', { className: EXPLORER_CARD, children: [
+          jsx('h2', { className: 'font-semibold', children: 'Public checkpoints' }),
+          jsx('p', { className: 'mt-1 text-2xl tabular-nums', children: explorerCount(data.feed?.count) }),
+          jsx('p', { className: EXPLORER_MUTED, children: data.feed?.status === 'unconfigured'
+            ? 'Feed not configured' : data.feed?.status === 'unavailable' ? 'Feed unavailable' : 'Published anchor receipts' }),
+        ] }),
+      ] }),
+      jsxs('section', { className: EXPLORER_CARD, children: [
+        jsx('h2', { className: 'mb-2 font-semibold', children: 'Operators' }),
+        visible.length ? explorerRows(visible.map((row, index) => jsxs('li', {
+          className: 'flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2',
+          children: [
+            jsx('span', { className: 'break-all', children: row.display_name || row.operator_id || 'Operator' }),
+            jsx('span', { className: EXPLORER_MUTED, children: [
+              row.status === 'reachable' || row.status === 'online' || row.online === true ? 'Responding' : 'No response',
+              row.region, Number.isFinite(row.latency_ms) ? `${row.latency_ms} ms` : null,
+            ].filter(Boolean).join(' · ') }),
+          ],
+        }, String(row.operator_id || index))), 'Operators') :
+          jsx('p', { className: EXPLORER_MUTED, children: data.operators_available
+            ? (operators.length ? 'No operators match that filter.' : 'No operators reported.') : 'Operator details are unavailable.' }),
+      ] }),
+      jsxs('section', { className: EXPLORER_CARD, children: [
+        jsx('h2', { className: 'mb-2 font-semibold', children: 'Anchor receipts' }),
+        anchors.length ? explorerRows(anchors.map((row, index) => {
+          const id = row.tx_hash_hex || row.tx_hash || row.commitment_hex
+          const height = row.reported_block_number ?? row.block_number
+          return jsxs('li', { className: 'flex flex-wrap items-baseline justify-between gap-2 py-2', children: [
+            jsx('button', { type: 'button', className: EXPLORER_BUTTON + ' font-mono', title: id,
+              disabled: !id, onClick: () => setReceipt(id), children: explorerHash(id) }),
+            jsx('span', { className: EXPLORER_MUTED, children: [
+              Number.isSafeInteger(height) ? 'Block #' + height : null, row.finality_status || 'unverified',
+            ].filter(Boolean).join(' · ') }),
+          ] }, String(id || index) + ':' + index)
+        }), 'Anchor receipts') : jsx('p', { className: EXPLORER_MUTED, children: data.anchors_available
+          ? 'No anchor receipts are available.' : 'Anchor receipts are unavailable.' }),
+        selected ? jsxs('div', { className: 'mt-3 break-all text-xs', role: 'status', children: [
+          jsx('p', { className: 'font-mono', children: selected.tx_hash_hex || selected.tx_hash || 'Receipt hash unavailable' }),
+          jsx('p', { className: EXPLORER_MUTED, children: selected.commitment_hex
+            ? 'Commitment ' + selected.commitment_hex : 'Commitment unavailable' }),
+        ] }) : null,
+      ] }),
+    ],
+  })
+}
+
+function ExplorerObject({ data }) {
+  if (data.state !== 'ready') return jsx('p', { role: 'alert', children: data.error || 'Object lookup unavailable.' })
+  const quorum = data.quorum || {}
+  return jsxs('section', { className: EXPLORER_CARD, children: [
+    jsx('h2', { className: 'font-semibold', children: quorum.satisfied === true ? 'Quorum reported' : 'Quorum shortfall' }),
+    jsx('code', { className: 'block break-all text-xs', children: data.cid }),
+    jsx('p', { className: EXPLORER_MUTED, children: `${explorerCount(quorum.present)} present · ${explorerCount(quorum.required)} required · ${explorerDate(data.checked_at_utc)}` }),
+    explorerRows((data.replicas || []).map((row, index) => jsx('li', {
+      className: 'break-all py-2', children: [row.operator_id || row.endpoint, row.status,
+        Number.isFinite(row.latency_ms) ? row.latency_ms + ' ms' : null].filter(Boolean).join(' · '),
+    }, String(index))), 'Replica reports'),
+    jsx('p', { className: EXPLORER_MUTED, children: 'Operators report presence. Object bytes are not downloaded.' }),
+  ] })
+}
+
+function ExplorerChain({ data, onSearch }) {
+  if (data.state === 'empty') return jsx('p', { className: EXPLORER_MUTED, children: 'No local blocks. Anchor a snapshot to start this ledger.' })
+  if (data.error) return jsx('p', { role: 'alert', children: data.error })
+  const detail = data.detail
+  return jsxs('section', { className: EXPLORER_CARD, children: [
+    jsx('h2', { className: 'font-semibold', children: 'Local CipherChain' }),
+    jsx('p', { className: EXPLORER_MUTED, children: data.solo
+      ? 'Solo ledger. One validator per block.' : 'Verified against the saved genesis validator set.' }),
+    data.state === 'not_found' ? jsx('p', { role: 'status', children: 'No block or commitment matched that search.' }) : null,
+    detail?.block ? jsxs('div', { className: 'my-3 grid gap-2 break-all text-xs', children: [
+      jsx('h3', { className: 'font-semibold', children: 'Block #' + detail.block.height }),
+      jsx('code', { children: detail.block.hash }),
+      jsx('p', { children: `${explorerDate(detail.block.timestamp_ms)} · ${detail.block.timestamp_signed ? 'Signed time' : 'Unsigned time'}` }),
+      jsx('p', { children: 'Transaction root ' + detail.transaction_root }),
+      jsx('p', { children: 'Parent ' + detail.parent_hash }),
+      jsxs('details', { children: [
+        jsx('summary', { children: 'Validator keys' }),
+        explorerRows((detail.signers || []).map((key, index) => jsx('li', { children: key }, String(index))), 'Signers'),
+      ] }),
+      detail.inclusion ? jsx('p', { role: 'status', children: `Inclusion verified at index ${detail.inclusion.index} (${detail.inclusion.proof_steps} proof steps).` }) : null,
+      (detail.commitments || []).map((commitment, index) => jsx('button', { type: 'button', className: EXPLORER_BUTTON,
+        title: commitment, onClick: () => onSearch(commitment), children: 'Verify ' + explorerHash(commitment) }, String(index))),
+    ] }) : null,
+    explorerRows((data.blocks || []).map((block, index) => jsxs('li', { className: 'flex flex-wrap items-center justify-between gap-2 py-2', children: [
+      jsx('button', { type: 'button', className: EXPLORER_BUTTON, onClick: () => onSearch(String(block.height)), children: 'Block #' + block.height }),
+      jsx('code', { title: block.hash, children: explorerHash(block.hash) }),
+      jsx('span', { className: EXPLORER_MUTED, children: `${explorerCount(block.commitments)} commitments · ${explorerCount(block.signatures)} signatures` }),
+    ] }, String(index))), 'Recent blocks'),
+  ] })
+}
+
+function ExplorerPage({ ctx }) {
+  const cwd = String(useValue(host.state.cwd) || '')
+  const [mode, setMode] = useState('network')
+  const [draft, setDraft] = useState('')
+  const [query, setQuery] = useState('')
+  const [operatorFilter, setOperatorFilter] = useState('')
+  const network = useQuery({ queryKey: [ID, 'explorer'], enabled: mode === 'network', retry: false,
+    staleTime: 30000, refetchOnWindowFocus: false,
+    queryFn: () => ctx.rest('/explorer', { timeoutMs: 12000 }) })
+  const lookup = useQuery({ queryKey: [ID, 'explorer-object', query], enabled: mode === 'network' && Boolean(query),
+    retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    queryFn: () => ctx.rest('/explorer/object?cid=' + encodeURIComponent(query), { timeoutMs: 12000 }) })
+  const chain = useQuery({ queryKey: [ID, 'explorer-chain', cwd, query], enabled: mode === 'chain',
+    retry: false, refetchOnWindowFocus: false,
+    queryFn: () => ctx.rest('/explorer/chain?cwd=' + encodeURIComponent(cwd) + '&query=' + encodeURIComponent(query), { timeoutMs: 18000 }) })
+  const current = mode === 'network' ? network : chain
+  function switchMode(next) {
+    setMode(next)
+    setQuery('')
+    setDraft('')
+  }
+  function search(value) {
+    const next = value.trim()
+    if (!next) return
+    if (query === next) (mode === 'network' ? lookup : chain).refetch()
+    else setQuery(next)
+  }
+  return jsxs('main', { className: 'h-full overflow-auto p-4 text-sm text-(--ui-text-primary) sm:p-6', children: [
+    jsxs('div', { className: 'mx-auto grid max-w-5xl gap-4', children: [
+      jsxs('header', { className: 'flex flex-wrap items-start justify-between gap-3', children: [
+        jsxs('div', { children: [
+          jsx('h1', { className: 'text-2xl font-semibold tracking-tight', children: 'Network Explorer' }),
+          jsx('p', { className: EXPLORER_MUTED, children: 'Inspect operators, encrypted object presence, and the local ledger.' }),
+        ] }),
+        jsx('button', { type: 'button', className: EXPLORER_BUTTON, onClick: () => host.navigate('/ciphervault'), children: 'Vault status' }),
+      ] }),
+      jsxs('nav', { className: 'flex flex-wrap gap-2', 'aria-label': 'Explorer views', children: [
+        jsx('button', { type: 'button', className: EXPLORER_BUTTON, 'aria-pressed': mode === 'network',
+          onClick: () => switchMode('network'), children: 'Public network' }),
+        jsx('button', { type: 'button', className: EXPLORER_BUTTON, 'aria-pressed': mode === 'chain',
+          onClick: () => switchMode('chain'), children: 'Local CipherChain' }),
+        jsx('button', { type: 'button', className: EXPLORER_BUTTON, disabled: current.isFetching,
+          onClick: () => current.refetch(), children: current.isFetching ? 'Refreshing…' : 'Refresh' }),
+        ctx.os?.openExternal ? jsx('button', {
+          type: 'button', className: EXPLORER_BUTTON,
+          onClick: async () => {
+            if (!await ctx.os.openExternal(EXPLORER_WEB_URL)) {
+              host.notify({ kind: 'warning', message: 'Open vault.cipherv.online in your browser.' })
+            }
+          },
+          children: 'Open web explorer',
+        }) : jsx('a', { className: EXPLORER_BUTTON, href: EXPLORER_WEB_URL, target: '_blank', rel: 'noreferrer noopener', children: 'Open web explorer' }),
+      ] }),
+      jsxs('form', { role: 'search', className: 'flex flex-wrap gap-2', onSubmit: event => { event.preventDefault(); search(draft) }, children: [
+        jsx('input', { type: 'search', value: draft, required: true, maxLength: 66, autoComplete: 'off', spellCheck: false,
+          onChange: event => setDraft(event.currentTarget.value),
+          className: 'min-w-0 flex-1 rounded-md border border-(--ui-stroke-secondary) bg-transparent px-3 py-2',
+          'aria-label': mode === 'network' ? 'Object CID' : 'Block height, hash, or commitment',
+          placeholder: mode === 'network' ? 'Object CID' : 'Block height, hash, or commitment' }),
+        jsx('button', { type: 'submit', className: EXPLORER_BUTTON, children: mode === 'network' ? 'Check replicas' : 'Find block' }),
+        query ? jsx('button', { type: 'button', className: EXPLORER_BUTTON, onClick: () => { setQuery(''); setDraft('') }, children: 'Clear' }) : null,
+      ] }),
+      mode === 'network' ? jsxs('div', { className: 'grid gap-3', children: [
+        jsx('p', { className: EXPLORER_MUTED, children: 'Object lookups send the entered CID to the public explorer.' }),
+        query && lookup.isFetching ? jsx('p', { role: 'status', children: 'Checking operators…' }) : null,
+        query && lookup.isError ? jsx('p', { role: 'alert', children: 'Object lookup unavailable. Submit it again to retry.' }) : null,
+        query && lookup.data ? jsx(ExplorerObject, { data: lookup.data }) : null,
+        jsx('input', { type: 'search', value: operatorFilter, maxLength: 100,
+          className: 'rounded-md border border-(--ui-stroke-secondary) bg-transparent px-3 py-2',
+          onChange: event => setOperatorFilter(event.currentTarget.value), 'aria-label': 'Filter operators', placeholder: 'Filter operators by name, ID, or region' }),
+      ] }) : null,
+      current.isLoading ? jsx('p', { role: 'status', children: mode === 'network' ? 'Loading network…' : 'Verifying local ledger…' }) : null,
+      current.isError || (mode === 'network' && current.data?.state === 'unavailable')
+        ? jsx('p', { role: 'alert', children: 'Explorer data is unavailable. Use Refresh to retry.' }) : null,
+      mode === 'network' && current.data?.state === 'ready' ? jsx(ExplorerOverview, { data: current.data, operatorFilter }) : null,
+      mode === 'chain' && current.data ? jsx(ExplorerChain, { data: current.data, onSearch: search }) : null,
+    ] }),
+  ] })
 }
 
 function VaultChip({ ctx }) {
@@ -881,6 +1113,20 @@ export default {
       area: ROUTES_AREA,
       data: { path: '/ciphervault' },
       render: () => jsx(VaultPage, { ctx })
+    })
+    ctx.register({
+      id: 'explorer',
+      area: ROUTES_AREA,
+      data: { path: EXPLORER_ROUTE },
+      render: () => jsx(ExplorerPage, { ctx })
+    })
+    ctx.register({
+      id: 'explorer-open',
+      area: PALETTE_AREA,
+      data: { id: 'ciphervault.explorer', label: 'CipherVault: Network Explorer',
+        keywords: ['network', 'cipherchain', 'operator', 'checkpoint'],
+        run: () => host.navigate(EXPLORER_ROUTE) },
+      render: () => null
     })
 
     ctx.register({

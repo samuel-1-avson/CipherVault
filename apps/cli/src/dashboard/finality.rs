@@ -37,19 +37,27 @@ const EXPLORER_PROBE_CACHE_MAX: usize = 512;
 /// Bound on concurrent outbound PoS probes across all object lookups.
 const EXPLORER_PROBE_MAX_CONCURRENT: usize = 16;
 
+type ExplorerProbeKey = ([u8; 32], Vec<String>);
+
+#[derive(Clone)]
+pub(crate) struct ExplorerProbeObservation {
+    pub checked_at_utc: String,
+    pub replicas: Vec<serde_json::Value>,
+}
+
 struct ExplorerProbeCache {
-    entries: std::collections::HashMap<[u8; 32], (Instant, Vec<serde_json::Value>)>,
+    entries: std::collections::HashMap<ExplorerProbeKey, (Instant, ExplorerProbeObservation)>,
 }
 
 impl ExplorerProbeCache {
-    fn get(&self, cid: &[u8; 32]) -> Option<Vec<serde_json::Value>> {
+    fn get(&self, key: &ExplorerProbeKey) -> Option<ExplorerProbeObservation> {
         self.entries
-            .get(cid)
+            .get(key)
             .filter(|(probed_at, _)| probed_at.elapsed() < EXPLORER_PROBE_CACHE_TTL)
-            .map(|(_, replicas)| replicas.clone())
+            .map(|(_, observation)| observation.clone())
     }
 
-    fn insert(&mut self, cid: [u8; 32], replicas: Vec<serde_json::Value>) {
+    fn insert(&mut self, key: ExplorerProbeKey, observation: ExplorerProbeObservation) {
         self.entries
             .retain(|_, (probed_at, _)| probed_at.elapsed() < EXPLORER_PROBE_CACHE_TTL);
         if self.entries.len() >= EXPLORER_PROBE_CACHE_MAX {
@@ -57,12 +65,17 @@ impl ExplorerProbeCache {
             // everything rather than growing without bound.
             self.entries.clear();
         }
-        self.entries.insert(cid, (Instant::now(), replicas));
+        self.entries.insert(key, (Instant::now(), observation));
     }
 
     #[cfg(test)]
-    fn insert_at(&mut self, cid: [u8; 32], replicas: Vec<serde_json::Value>, probed_at: Instant) {
-        self.entries.insert(cid, (probed_at, replicas));
+    fn insert_at(
+        &mut self,
+        key: ExplorerProbeKey,
+        observation: ExplorerProbeObservation,
+        probed_at: Instant,
+    ) {
+        self.entries.insert(key, (probed_at, observation));
     }
 }
 
@@ -87,13 +100,16 @@ pub(crate) async fn explorer_probe_cache_stats() -> (usize, usize) {
     (cache_len, in_flight)
 }
 
-async fn probe_explorer_object_cached(
+pub(crate) async fn probe_explorer_object_cached(
     cid: [u8; 32],
-    endpoints: Vec<String>,
-) -> Vec<serde_json::Value> {
+    mut endpoints: Vec<String>,
+) -> ExplorerProbeObservation {
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    let key = (cid, endpoints.clone());
     {
         let cache = explorer_probe_cache().lock().await;
-        if let Some(replicas) = cache.get(&cid) {
+        if let Some(replicas) = cache.get(&key) {
             return replicas;
         }
     }
@@ -105,11 +121,15 @@ async fn probe_explorer_object_cached(
         probe_explorer_replica(endpoint, cid).await
     });
     let replicas = join_all(probes).await;
+    let observation = ExplorerProbeObservation {
+        checked_at_utc: Utc::now().to_rfc3339(),
+        replicas,
+    };
     explorer_probe_cache()
         .lock()
         .await
-        .insert(cid, replicas.clone());
-    replicas
+        .insert(key, observation.clone());
+    observation
 }
 
 pub(crate) fn explorer_error_response(
@@ -206,7 +226,8 @@ pub(crate) async fn api_explorer_object_handler(
             "Explorer has no operator endpoints configured".to_string(),
         );
     }
-    let replicas = probe_explorer_object_cached(cid, endpoints).await;
+    let observation = probe_explorer_object_cached(cid, endpoints).await;
+    let replicas = observation.replicas;
     let present = replicas
         .iter()
         .filter(|replica| {
@@ -217,7 +238,7 @@ pub(crate) async fn api_explorer_object_handler(
     let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
     axum::Json(serde_json::json!({
         "cid": cid_hex,
-        "checked_at_utc": Utc::now().to_rfc3339(),
+        "checked_at_utc": observation.checked_at_utc,
         "quorum": {
             "present": present,
             "checked": checked,
@@ -225,13 +246,16 @@ pub(crate) async fn api_explorer_object_handler(
             "satisfied": present >= required,
         },
         "replicas": replicas,
-        "note": "Presence only: the explorer proves possession via PoS challenge and never fetches object bytes.",
+        "note": "Presence reported by the operator. The explorer does not download or verify object bytes.",
     }))
     .into_response()
 }
 
 pub(crate) async fn api_explorer_overview_handler() -> impl axum::response::IntoResponse {
-    let telemetry = public_operator_telemetry().await;
+    let (telemetry, feed) = tokio::join!(
+        public_operator_telemetry(),
+        load_public_feed_with_finality()
+    );
     let total = telemetry.operators.len();
     let reachable = telemetry
         .operators
@@ -240,11 +264,11 @@ pub(crate) async fn api_explorer_overview_handler() -> impl axum::response::Into
             operator.get("status").and_then(|status| status.as_str()) == Some("reachable")
         })
         .count();
-    let checkpoints = load_public_feed_with_finality()
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let (feed_status, checkpoints) = match feed {
+        Ok(Some(rows)) => ("available", rows),
+        Ok(None) => ("unconfigured", Vec::new()),
+        Err(_) => ("unavailable", Vec::new()),
+    };
     let head = checkpoints
         .first()
         .cloned()
@@ -260,9 +284,42 @@ pub(crate) async fn api_explorer_overview_handler() -> impl axum::response::Into
             "anchors": {
                 "count": checkpoints.len(),
                 "head": head,
+                "status": feed_status,
             },
         })),
     )
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ChainExplorerQuery {
+    query: Option<String>,
+}
+
+pub(crate) async fn api_private_chain_explorer(
+    axum::extract::Query(params): axum::extract::Query<ChainExplorerQuery>,
+) -> axum::response::Response {
+    use axum::{
+        http::{header::CACHE_CONTROL, StatusCode},
+        response::IntoResponse,
+    };
+    let chain_dir = crate::util::get_vault_directory().join("chain");
+    let result = tokio::task::spawn_blocking(move || {
+        crate::commands::chain_explorer::read_chain_explorer_at(&chain_dir, params.query.as_deref())
+    })
+    .await;
+    match result {
+        Ok(Ok(view)) => ([(CACHE_CONTROL, "no-store")], axum::Json(view)).into_response(),
+        Ok(Err(error)) => explorer_error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "CHAIN_UNAVAILABLE",
+            error.to_string(),
+        ),
+        Err(_) => explorer_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "CHAIN_UNAVAILABLE",
+            "The local ledger could not be read.".into(),
+        ),
+    }
 }
 
 /// Returns true when the feed publisher key matches the independently pinned
@@ -707,15 +764,25 @@ mod tests {
         };
         let cid = [7u8; 32];
         let replicas = vec![serde_json::json!({"status": "present"})];
-        assert!(cache.get(&cid).is_none());
-        cache.insert(cid, replicas.clone());
-        assert_eq!(cache.get(&cid), Some(replicas.clone()));
-        cache.insert_at(
-            cid,
+        let key = (cid, vec!["https://operator.example".to_string()]);
+        assert!(cache.get(&key).is_none());
+        let observation = ExplorerProbeObservation {
+            checked_at_utc: "2026-11-20T00:00:00Z".to_string(),
             replicas,
+        };
+        cache.insert(key.clone(), observation.clone());
+        let cached = cache.get(&key).unwrap();
+        assert_eq!(cached.replicas, observation.replicas);
+        assert_eq!(cached.checked_at_utc, observation.checked_at_utc);
+        assert!(cache
+            .get(&(cid, vec!["https://other.example".to_string()]))
+            .is_none());
+        cache.insert_at(
+            key.clone(),
+            observation,
             Instant::now() - EXPLORER_PROBE_CACHE_TTL - Duration::from_secs(1),
         );
-        assert!(cache.get(&cid).is_none());
+        assert!(cache.get(&key).is_none());
     }
 
     #[test]
@@ -732,9 +799,21 @@ mod tests {
         // endpoint serves it: no operator contact, fully deterministic.
         let cid = rand::random::<[u8; 32]>();
         let marker = format!("test-cache-marker-{}", hex::encode(cid));
+        // The cache is keyed by CID plus the normalized endpoint set the
+        // handler will probe (sorted, deduplicated).
+        let mut endpoints = get_configured_operators();
+        assert!(
+            !endpoints.is_empty(),
+            "the explorer needs configured or default operators"
+        );
+        endpoints.sort_unstable();
+        endpoints.dedup();
         explorer_probe_cache().lock().await.insert(
-            cid,
-            vec![serde_json::json!({"status": "present", "operator_id": marker})],
+            (cid, endpoints),
+            ExplorerProbeObservation {
+                checked_at_utc: "2026-11-20T00:00:00Z".to_string(),
+                replicas: vec![serde_json::json!({"status": "present", "operator_id": marker})],
+            },
         );
         let response = api_explorer_object_handler(axum::extract::Path(hex::encode(cid))).await;
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)

@@ -303,6 +303,10 @@ pub(crate) fn private_ui_router() -> axum::Router {
             get(api_scoped_project_handler),
         )
         .route("/api/scoped/secrets", get(api_scoped_secrets_handler))
+        .route(
+            "/api/explorer/chain",
+            get(super::finality::api_private_chain_explorer),
+        )
         .route("/api/explorer/overview", get(api_explorer_overview_handler))
         .route(
             "/api/explorer/object/{cid}",

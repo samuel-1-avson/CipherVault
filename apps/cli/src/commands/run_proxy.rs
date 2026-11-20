@@ -224,7 +224,10 @@ fn allow_provider_override() -> bool {
 }
 
 fn canonical_urls_match(candidate: &str, canonical: &str) -> bool {
-    match (reqwest::Url::parse(candidate), reqwest::Url::parse(canonical)) {
+    match (
+        reqwest::Url::parse(candidate),
+        reqwest::Url::parse(canonical),
+    ) {
         (Ok(a), Ok(b)) => a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/'),
         _ => candidate.trim_end_matches('/') == canonical.trim_end_matches('/'),
     }
@@ -554,9 +557,9 @@ fn pem_overlap_hold(pending: &str) -> usize {
 
     if let Some(pos) = pending.rfind(BEGIN) {
         let tail = &pending[pos..];
-        let closed = tail.find(END_MARK).is_some_and(|end_rel| {
-            tail[end_rel + END_MARK.len()..].contains("-----")
-        });
+        let closed = tail
+            .find(END_MARK)
+            .is_some_and(|end_rel| tail[end_rel + END_MARK.len()..].contains("-----"));
         if !closed {
             let after_begin = &tail[BEGIN.len()..];
             let header_maybe_private = match after_begin.find("-----") {
@@ -1034,7 +1037,9 @@ mod tests {
             parse_proxy_upstream_spec("MY_VAR=https://api.example.com", allow_loopback).is_ok()
         );
         assert!(parse_proxy_upstream_spec("MY_VAR=http://127.0.0.1:8080", allow_loopback).is_ok());
-        assert!(parse_proxy_upstream_spec("MY_VAR=http://evil.example.com", allow_loopback).is_err());
+        assert!(
+            parse_proxy_upstream_spec("MY_VAR=http://evil.example.com", allow_loopback).is_err()
+        );
 
         let (k, u, h, bearer) =
             parse_proxy_upstream_spec("MY_VAR=https://api.example.com@X-Api-Key", allow_loopback)
@@ -1048,7 +1053,11 @@ mod tests {
     #[test]
     fn known_providers_cover_expanded_developer_apis() {
         let expected = [
-            ("RESEND_API_KEY", "https://api.resend.com", "RESEND_BASE_URL"),
+            (
+                "RESEND_API_KEY",
+                "https://api.resend.com",
+                "RESEND_BASE_URL",
+            ),
             ("SLACK_BOT_TOKEN", "https://slack.com/api", "SLACK_API_URL"),
             ("VERCEL_TOKEN", "https://api.vercel.com", ""),
             (
@@ -1186,10 +1195,9 @@ mod tests {
                     let hex_a = hex_copy[..split_hex].to_string();
                     let hex_b = hex_copy[split_hex..].to_string();
 
-                    let (tx, rx) =
-                        tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(
-                            8,
-                        );
+                    let (tx, rx) = tokio::sync::mpsc::channel::<
+                        std::result::Result<Vec<u8>, std::io::Error>,
+                    >(8);
                     tokio::spawn(async move {
                         let _ = tx
                             .send(Ok(b"data: {\"delta\":\"hello\"}\n\n".to_vec()))
@@ -1203,9 +1211,7 @@ mod tests {
                         let _ = tx
                             .send(Ok(format!("{raw_b}\",\"hex\":\"{hex_a}").into_bytes()))
                             .await;
-                        let _ = tx
-                            .send(Ok(format!("{hex_b}\"}}\n\n").into_bytes()))
-                            .await;
+                        let _ = tx.send(Ok(format!("{hex_b}\"}}\n\n").into_bytes())).await;
                         let _ = tx.send(Ok(b"data: [DONE]\n\n".to_vec())).await;
                     });
 
@@ -1348,13 +1354,19 @@ mod tests {
         out2.extend_from_slice(&scrubber2.push_chunk(b"\n"));
         out2.extend_from_slice(&scrubber2.finish());
         let text2 = String::from_utf8(out2).unwrap();
-        assert!(!text2.contains("_extended"), "longer secret suffix leaked: {text2}");
-        assert!(!text2.contains("alpha_line"), "multiline secret leaked: {text2}");
-        assert!(!text2.contains("beta_line"), "multiline secret leaked: {text2}");
-        assert_eq!(
-            text2,
-            "a=[REDACTED:LONG_KEY]\nb=[REDACTED:ML_KEY] tail\n"
+        assert!(
+            !text2.contains("_extended"),
+            "longer secret suffix leaked: {text2}"
         );
+        assert!(
+            !text2.contains("alpha_line"),
+            "multiline secret leaked: {text2}"
+        );
+        assert!(
+            !text2.contains("beta_line"),
+            "multiline secret leaked: {text2}"
+        );
+        assert_eq!(text2, "a=[REDACTED:LONG_KEY]\nb=[REDACTED:ML_KEY] tail\n");
     }
 
     #[tokio::test]
@@ -1363,10 +1375,9 @@ mod tests {
             .route(
                 "/slow-steady",
                 get(|| async {
-                    let (tx, rx) =
-                        tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(
-                            8,
-                        );
+                    let (tx, rx) = tokio::sync::mpsc::channel::<
+                        std::result::Result<Vec<u8>, std::io::Error>,
+                    >(8);
                     tokio::spawn(async move {
                         for idx in 0..5 {
                             tokio::time::sleep(Duration::from_millis(70)).await;
@@ -1388,10 +1399,9 @@ mod tests {
             .route(
                 "/stalled",
                 get(|| async {
-                    let (tx, rx) =
-                        tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(
-                            4,
-                        );
+                    let (tx, rx) = tokio::sync::mpsc::channel::<
+                        std::result::Result<Vec<u8>, std::io::Error>,
+                    >(4);
                     tokio::spawn(async move {
                         let _ = tx.send(Ok(b"data: first\n\n".to_vec())).await;
                         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1443,7 +1453,10 @@ mod tests {
             .unwrap();
         assert_eq!(ok.status(), reqwest::StatusCode::OK);
         let body = ok.text().await.unwrap();
-        assert!(body.contains("data: tick-4\n\n"), "stream truncated: {body}");
+        assert!(
+            body.contains("data: tick-4\n\n"),
+            "stream truncated: {body}"
+        );
 
         // A genuinely stalled stream must fail once idle_read_timeout expires.
         let mut stalled = client

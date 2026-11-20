@@ -243,7 +243,12 @@ fn gf256_exhaustive_field_axioms_and_shamir_invariants() {
             secret
         );
         // Shuffled tail subset reconstructs secret.
-        let tail: Vec<ShamirShare> = shares.iter().rev().take(threshold as usize).cloned().collect();
+        let tail: Vec<ShamirShare> = shares
+            .iter()
+            .rev()
+            .take(threshold as usize)
+            .cloned()
+            .collect();
         assert_eq!(
             combine_shares_with_threshold(&tail, threshold).unwrap(),
             secret
@@ -333,18 +338,35 @@ fn aead_and_envelope_bitflip_and_truncation_exhaustion() {
     let aad_scope = scope_aad(&[1; 16], &[2; 16], &[3; 16], &[4; 16], 1);
     let dek = DataEncryptionKey::generate();
     let wrapped_secret = seal_secret_value(&dek, pt, &aad_scope).unwrap();
-    assert_eq!(open_secret_value(&dek, &wrapped_secret, &aad_scope).unwrap(), pt);
+    assert_eq!(
+        open_secret_value(&dek, &wrapped_secret, &aad_scope).unwrap(),
+        pt
+    );
 
     let kek = LocalKekService::new("kek-audit-1", [0x55; KEY_SIZE]);
     let wrapped_dek = kek.wrap_dek(&dek).unwrap();
-    assert_eq!(kek.unwrap_dek(&wrapped_dek).unwrap().as_bytes(), dek.as_bytes());
+    assert_eq!(
+        kek.unwrap_dek(&wrapped_dek).unwrap().as_bytes(),
+        dek.as_bytes()
+    );
 
     // 4. Passphrase CVKB1 envelope
     let pass = b"audit-passphrase-material-1234";
     let backup = seal_passphrase_backup(pass, pt).unwrap();
     assert_eq!(open_passphrase_backup(pass, &backup).unwrap(), pt);
     // Test magic, KDF byte, salt boundaries, nonce boundaries, ciphertext, and tag.
-    for idx in [0, 4, 5, 6, 21, 22, 45, 46, backup.len() - 17, backup.len() - 1] {
+    for idx in [
+        0,
+        4,
+        5,
+        6,
+        21,
+        22,
+        45,
+        46,
+        backup.len() - 17,
+        backup.len() - 1,
+    ] {
         let mut tampered = backup.clone();
         tampered[idx] ^= 0x01;
         assert!(open_passphrase_backup(pass, &tampered).is_err());

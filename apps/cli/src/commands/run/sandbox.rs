@@ -92,9 +92,8 @@ pub(crate) fn validate_sandbox_read_path(
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
             Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("inspecting sandbox_read_paths entry '{trimmed}'")
-                });
+                return Err(e)
+                    .with_context(|| format!("inspecting sandbox_read_paths entry '{trimmed}'"));
             }
         }
     }
@@ -203,6 +202,8 @@ pub(crate) mod windows_no_net {
     const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
     const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
     const INFINITE: u32 = 0xFFFF_FFFF;
+    const WAIT_TIMEOUT: u32 = 258;
+    const PREFLIGHT_TIMEOUT_MS: u32 = 5_000;
     const SE_WINDOW_OBJECT: u32 = 7;
     const DACL_SECURITY_INFORMATION: u32 = 4;
     const GENERIC_ALL: u32 = 0x1000_0000;
@@ -383,6 +384,7 @@ pub(crate) mod windows_no_net {
             lp_overlapped: *mut c_void,
         ) -> i32;
         fn WaitForSingleObject(h_handle: isize, dw_milliseconds: u32) -> u32;
+        fn TerminateProcess(h_process: isize, u_exit_code: u32) -> i32;
         fn GetExitCodeProcess(h_process: isize, lp_exit_code: *mut u32) -> i32;
         fn CloseHandle(h_object: isize) -> i32;
     }
@@ -501,9 +503,8 @@ pub(crate) mod windows_no_net {
                 )
             };
             if hr == E_ALREADY_EXISTS || (hr < 0 && psid.is_null()) {
-                let hr_derive = unsafe {
-                    DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut psid)
-                };
+                let hr_derive =
+                    unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut psid) };
                 if hr_derive < 0 || psid.is_null() {
                     bail!(
                         "--no-net Windows AppContainer setup failed (CreateAppContainerProfile=0x{:08X}, Derive=0x{:08X})",
@@ -624,6 +625,17 @@ pub(crate) mod windows_no_net {
             env_map: &BTreeMap<String, (String, Zeroizing<String>)>,
             stream_to_stdio: bool,
         ) -> Result<(u32, Vec<u8>, Vec<u8>)> {
+            self.execute_with_timeout(bin, args, env_map, stream_to_stdio, INFINITE)
+        }
+
+        fn execute_with_timeout(
+            &self,
+            bin: &str,
+            args: &[String],
+            env_map: &BTreeMap<String, (String, Zeroizing<String>)>,
+            stream_to_stdio: bool,
+            timeout_ms: u32,
+        ) -> Result<(u32, Vec<u8>, Vec<u8>)> {
             let sa = SecurityAttributes {
                 n_length: std::mem::size_of::<SecurityAttributes>() as u32,
                 lp_security_descriptor: std::ptr::null_mut(),
@@ -724,7 +736,8 @@ pub(crate) mod windows_no_net {
 
             let mut cmd_line = build_windows_cmdline(bin, args);
             let env_block = build_windows_env_block(env_map);
-            let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+            let flags =
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
             let created = unsafe {
                 CreateProcessW(
                     std::ptr::null(),
@@ -739,6 +752,7 @@ pub(crate) mod windows_no_net {
                     &mut pi,
                 )
             };
+            let launch_error = (created == 0).then(std::io::Error::last_os_error);
             drop(env_block);
 
             unsafe {
@@ -748,15 +762,12 @@ pub(crate) mod windows_no_net {
                 CloseHandle(err_write);
             }
 
-            if created == 0 {
-                let err = std::io::Error::last_os_error();
+            if let Some(err) = launch_error {
                 unsafe {
                     CloseHandle(out_read);
                     CloseHandle(err_read);
                 }
-                return Err(err).with_context(|| {
-                    format!("--no-net CreateProcessW failed for command '{bin}'")
-                });
+                bail!("--no-net CreateProcessW failed for command '{bin}': {err}");
             }
 
             fn read_pipe(handle: isize, is_stderr: bool, stream_to_stdio: bool) -> Vec<u8> {
@@ -798,8 +809,24 @@ pub(crate) mod windows_no_net {
             let t_out = std::thread::spawn(move || read_pipe(out_read, false, stream_to_stdio));
             let t_err = std::thread::spawn(move || read_pipe(err_read, true, stream_to_stdio));
 
-            unsafe {
-                WaitForSingleObject(pi.h_process, INFINITE);
+            let wait = unsafe { WaitForSingleObject(pi.h_process, timeout_ms) };
+            let wait_error = match wait {
+                0 => None,
+                WAIT_TIMEOUT => Some(anyhow::anyhow!(
+                    "--no-net AppContainer preflight timed out after {PREFLIGHT_TIMEOUT_MS} ms"
+                )),
+                _ => Some(
+                    anyhow::Error::from(std::io::Error::last_os_error())
+                        .context("--no-net failed while waiting for the sandboxed process"),
+                ),
+            };
+            if let Some(error) = wait_error {
+                unsafe {
+                    TerminateProcess(pi.h_process, 1);
+                    CloseHandle(pi.h_process);
+                    CloseHandle(pi.h_thread);
+                }
+                return Err(error);
             }
             let mut exit_code: u32 = 1;
             unsafe {
@@ -820,10 +847,23 @@ pub(crate) mod windows_no_net {
                 "SYSTEMROOT".to_string(),
                 ("SystemRoot".to_string(), Zeroizing::new(sr)),
             );
-            let args = vec!["/c".to_string(), "exit".to_string(), "0".to_string()];
+            let args = vec![
+                "/d".to_string(),
+                "/c".to_string(),
+                "exit".to_string(),
+                "0".to_string(),
+            ];
             let (code, _, _) = self
-                .execute("C:\\Windows\\System32\\cmd.exe", &args, &env_map, false)
-                .context("--no-net AppContainer preflight could not launch cmd.exe")?;
+                .execute_with_timeout(
+                    "C:\\Windows\\System32\\cmd.exe",
+                    &args,
+                    &env_map,
+                    false,
+                    PREFLIGHT_TIMEOUT_MS,
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("--no-net AppContainer preflight failed: {error:#}")
+                })?;
             if code != 0 {
                 bail!("--no-net AppContainer preflight exited with code 0x{code:08X}");
             }
@@ -832,15 +872,18 @@ pub(crate) mod windows_no_net {
     }
 
     fn is_windows_system_path(path: &Path) -> bool {
-        let lower = path.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
+        let lower = path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .replace('/', "\\");
         lower.contains("\\windows\\system32\\")
             || lower.contains("\\windows\\syswow64\\")
             || lower.eq_ignore_ascii_case("cmd.exe")
     }
 
-    fn grant_appcontainer_rx(path: &Path, is_dir: bool) {
+    fn grant_appcontainer_rx(path: &Path, is_dir: bool) -> Result<()> {
         if is_windows_system_path(path) {
-            return;
+            return Ok(());
         }
         let mut cmd = std::process::Command::new("C:\\Windows\\System32\\icacls.exe");
         cmd.arg(path).arg("/grant");
@@ -859,25 +902,20 @@ pub(crate) mod windows_no_net {
             }
             cmd.arg("*S-1-15-2-1:(RX)");
         }
-        let _ = cmd
+        let status = cmd
             .arg("/Q")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
-            .status();
-    }
-
-    fn crc32_ieee(data: &[u8]) -> u32 {
-        let mut crc = 0xFFFF_FFFFu32;
-        for &b in data {
-            crc ^= b as u32;
-            for _ in 0..8 {
-                let mask = 0u32.wrapping_sub(crc & 1);
-                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-            }
-        }
-        !crc
+            .status()
+            .with_context(|| format!("--no-net could not run icacls for '{}'", path.display()))?;
+        anyhow::ensure!(
+            status.success(),
+            "--no-net could not grant AppContainer read access to '{}' ({status})",
+            path.display()
+        );
+        Ok(())
     }
 
     /// Packs Python's standard library (`Lib/` excluding `site-packages`, `test`,
@@ -929,7 +967,7 @@ pub(crate) mod windows_no_net {
                 continue;
             }
             let size = data.len() as u32;
-            let crc = crc32_ieee(&data);
+            let crc = crc32fast::hash(&data);
 
             // Local file header (30 bytes + name)
             let mut lfh = Vec::with_capacity(30 + name_bytes.len());
@@ -1012,15 +1050,16 @@ pub(crate) mod windows_no_net {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let mut hasher = Sha256::new();
-        hasher.update(b"cv-ac-v2:");
+        hasher.update(b"cv-ac-v3:");
         hasher.update(canonical.to_string_lossy().as_bytes());
         hasher.update(meta.len().to_le_bytes());
         hasher.update(mtime.to_le_bytes());
         let cache_id = &hex::encode(hasher.finalize())[..16];
 
         let cache_root = std::env::temp_dir().join("ciphervault-ac-cache");
-        let _ = std::fs::create_dir_all(&cache_root);
-        grant_appcontainer_rx(&cache_root, true);
+        std::fs::create_dir_all(&cache_root).with_context(|| {
+            format!("creating Windows runtime cache '{}'", cache_root.display())
+        })?;
         let cache_dir = cache_root.join(cache_id);
         let file_name = canonical
             .file_name()
@@ -1031,72 +1070,91 @@ pub(crate) mod windows_no_net {
             return Ok(staged_exe.to_string_lossy().to_string());
         }
 
-        let tmp_dir = cache_root.join(format!("{cache_id}.tmp.{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir)?;
-        grant_appcontainer_rx(&tmp_dir, true);
-
-        let parent = canonical.parent().context("executable has no parent dir")?;
-        std::fs::copy(&canonical, tmp_dir.join(file_name))?;
-        if let Ok(entries) = std::fs::read_dir(parent) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if p.is_file() {
-                    if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                        if ext.eq_ignore_ascii_case("dll") {
-                            if let Some(fname) = p.file_name() {
-                                let _ = std::fs::copy(&p, tmp_dir.join(fname));
-                            }
-                        }
-                    }
-                }
+        let tmp_dir = cache_root.join(format!(
+            "{cache_id}.tmp.{}.{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&tmp_dir)?;
+        let staged = (|| {
+            copy_runtime(&canonical, &tmp_dir)?;
+            grant_appcontainer_rx(&cache_root, true)?;
+            grant_appcontainer_rx(&tmp_dir, true)?;
+            match std::fs::rename(&tmp_dir, &cache_dir) {
+                Ok(()) => Ok(()),
+                Err(_) if staged_exe.is_file() => Ok(()),
+                Err(error) => Err(error).context("publishing the Windows runtime cache"),
             }
-        }
-
-        // Python runtime support: stage DLLs/*.pyd + *.dll and pack Lib/ into python3XX.zip.
-        let lib_dir = parent.join("Lib");
-        let dlls_dir = parent.join("DLLs");
-        if lib_dir.is_dir() && dlls_dir.is_dir() {
-            let staged_dlls = tmp_dir.join("DLLs");
-            let _ = std::fs::create_dir_all(&staged_dlls);
-            if let Ok(entries) = std::fs::read_dir(&dlls_dir) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let p = entry.path();
-                    if p.is_file() {
-                        if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                            if ext.eq_ignore_ascii_case("pyd") || ext.eq_ignore_ascii_case("dll") {
-                                if let Some(fname) = p.file_name() {
-                                    let _ = std::fs::copy(&p, staged_dlls.join(fname));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let fname = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                    if fname.starts_with("python3") && fname.ends_with(".dll") {
-                        let stem = fname.trim_end_matches(".dll");
-                        let zip_name = format!("{stem}.zip");
-                        if !tmp_dir.join(&zip_name).exists() {
-                            let _ = write_python_stdlib_zip(&lib_dir, &tmp_dir.join(&zip_name));
-                        }
-                    }
-                }
-            }
-        }
-
-        grant_appcontainer_rx(&tmp_dir, true);
-        if std::fs::rename(&tmp_dir, &cache_dir).is_err() && !staged_exe.is_file() {
+        })();
+        if tmp_dir.exists() {
             let _ = std::fs::remove_dir_all(&tmp_dir);
+        }
+        if let Err(error) = staged {
             bail!(
-                "Failed to populate AppContainer runtime cache for {}",
+                "--no-net could not stage Windows runtime '{}': {error:#}",
                 exe_path.display()
             );
         }
-        grant_appcontainer_rx(&cache_dir, true);
         Ok(staged_exe.to_string_lossy().to_string())
+    }
+
+    fn copy_runtime(canonical: &Path, tmp_dir: &Path) -> Result<()> {
+        let parent = canonical.parent().context("executable has no parent dir")?;
+        let file_name = canonical
+            .file_name()
+            .context("executable has no filename")?;
+        std::fs::copy(canonical, tmp_dir.join(file_name))
+            .with_context(|| format!("copying executable '{}'", canonical.display()))?;
+        let mut python_zip = None;
+        for entry in std::fs::read_dir(parent)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() && has_runtime_extension(&path, &["dll"]) {
+                std::fs::copy(&path, tmp_dir.join(entry.file_name()))
+                    .with_context(|| format!("copying runtime library '{}'", path.display()))?;
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if let Some(stem) = name.strip_suffix(".dll") {
+                    if stem.strip_prefix("python3").is_some_and(|minor| {
+                        !minor.is_empty() && minor.bytes().all(|ch| ch.is_ascii_digit())
+                    }) {
+                        python_zip = Some(format!("{stem}.zip"));
+                    }
+                }
+            }
+        }
+
+        if let Some(zip_name) = python_zip {
+            let dlls_dir = parent.join("DLLs");
+            let bundled_zip = parent.join(&zip_name);
+            let lib_dir = parent.join("Lib");
+            if bundled_zip.is_file() {
+                std::fs::copy(&bundled_zip, tmp_dir.join(&zip_name))?;
+            } else if lib_dir.is_dir() {
+                write_python_stdlib_zip(&lib_dir, &tmp_dir.join(&zip_name))?;
+            }
+            if dlls_dir.is_dir() {
+                let staged_dlls = tmp_dir.join("DLLs");
+                std::fs::create_dir(&staged_dlls)?;
+                for entry in std::fs::read_dir(&dlls_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.is_file() && has_runtime_extension(&path, &["pyd", "dll"]) {
+                        std::fs::copy(&path, staged_dlls.join(entry.file_name()))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn has_runtime_extension(path: &Path, extensions: &[&str]) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extensions
+                    .iter()
+                    .any(|ext| extension.eq_ignore_ascii_case(ext))
+            })
     }
 
     fn grant_appcontainer_rx_readonly(path: &Path, is_dir: bool) {
@@ -1135,9 +1193,8 @@ pub(crate) mod windows_no_net {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("inspecting sandbox_read_paths entry '{rel}'")
-                    });
+                    return Err(e)
+                        .with_context(|| format!("inspecting sandbox_read_paths entry '{rel}'"));
                 }
             }
         }
@@ -1156,14 +1213,14 @@ pub(crate) mod windows_no_net {
         if let Ok(cwd) = std::env::current_dir() {
             let temp_root = std::env::temp_dir();
             if cwd.starts_with(&temp_root) {
-                grant_appcontainer_rx(&cwd, true);
+                grant_appcontainer_rx(&cwd, true)?;
             }
         }
         for arg in resolved_prefix.iter().chain(raw_args.iter()) {
             if !arg.starts_with('-') && arg.len() <= 512 {
                 let p = Path::new(arg);
                 if p.is_file() && !is_windows_system_path(p) {
-                    grant_appcontainer_rx(p, false);
+                    grant_appcontainer_rx(p, false)?;
                 }
             }
         }

@@ -807,12 +807,20 @@ mod tests {
     fn macos_and_linux_keyring_command_helpers_are_well_formed() {
         let key = [0xABu8; 32];
         let cmd = format_macos_security_add_command(&key);
-        assert!(cmd.starts_with("add-generic-password -s io.ciphervault.local-store -a master-key -w "));
-        assert!(!cmd.contains(" -U "), "must omit -U so existing key is never clobbered");
+        assert!(
+            cmd.starts_with("add-generic-password -s io.ciphervault.local-store -a master-key -w ")
+        );
+        assert!(
+            !cmd.contains(" -U "),
+            "must omit -U so existing key is never clobbered"
+        );
         assert!(cmd.ends_with('\n'));
         let hex_part = cmd.trim_end().rsplit(' ').next().unwrap();
         assert_eq!(hex_part.len(), 64);
-        assert_eq!(parse_hex_keyring_secret(&format!("  {hex_part}\n")), Some(key));
+        assert_eq!(
+            parse_hex_keyring_secret(&format!("  {hex_part}\n")),
+            Some(key)
+        );
         assert_eq!(parse_hex_keyring_secret("short"), None);
         assert_eq!(parse_hex_keyring_secret(&"zz".repeat(32)), None);
     }

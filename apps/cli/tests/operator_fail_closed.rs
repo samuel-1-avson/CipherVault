@@ -28,12 +28,12 @@ async fn unavailable_operator_key_prevents_receipt_acceptance() {
         .route("/v1/challenges", post(handlers::post_challenge))
         .route("/v1/sessions", post(handlers::post_session))
         .route(
-            "/v1/objects/:cid",
+            "/v1/objects/{cid}",
             put(handlers::put_object).get(handlers::get_object),
         )
         .route("/v1/leases", post(handlers::post_lease))
         .route(
-            "/v1/recovery/:locator/records",
+            "/v1/recovery/{locator}/records",
             post(handlers::post_recovery_record).get(handlers::get_recovery_records),
         )
         .with_state(state);

@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.37"
+version = "1.0.38"
 edition = "2021"
 rust-version = "1.89"
 authors = ["CipherVault Contributors"]

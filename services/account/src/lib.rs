@@ -215,7 +215,10 @@ pub fn create_router(state: AccountState) -> axum::Router {
             post(post_invitation).get(get_invitations),
         )
         .route("/v1/invitations/accept", post(post_invitation_accept))
-        .route("/v1/accounts/{account_id}/memberships", get(get_memberships))
+        .route(
+            "/v1/accounts/{account_id}/memberships",
+            get(get_memberships),
+        )
         .route(
             "/v1/accounts/{account_id}/memberships/{member_account_id}/revoke",
             post(post_membership_revoke),

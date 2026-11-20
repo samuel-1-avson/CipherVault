@@ -35,6 +35,24 @@ This fetches each operator's public `/v1/peers/self` descriptor
 (fresh same-second signature) and POSTs it to every other node's
 `/v1/peers/announce`. Re-run after any membership change.
 
+`ciphervault peers --mesh` sends one service token to every target. The
+public fleet uses a different token per node, so mesh it target-local
+instead: on each box, announce the other two nodes to itself with its
+own token (read from the box `.env`, never printed):
+
+```sh
+# on op1; op2 and op3 likewise with their two peers
+sudo bash scripts/gcp/mesh-node.sh https://op2.cipherv.online https://op3.cipherv.online
+```
+
+Route lifetime: an entry stays while its newest proof of life is under
+24 h old. From 1.0.38, a verified heartbeat (signed by the routed key)
+counts as proof of life and is persisted at most hourly, so a live mesh
+no longer decays. Before 1.0.38 only the announce timestamp counted, so
+every mesh expired 24 h after it was run and heartbeats fell back to
+`unknown_sender` (the 2026-11 fleet state). Re-mesh after adding or
+replacing a node, or after a node was down for more than 24 h.
+
 ## 3. Issue a write voucher
 
 ```sh

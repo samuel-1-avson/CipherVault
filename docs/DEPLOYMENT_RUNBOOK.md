@@ -493,6 +493,46 @@ stack (proven procedure — one node at a time, quorum holds the rest):
    before moving to the next node. Rollback is the reverse swap; the
    data dir needs no migration.
 
+### R5c: no-CI promotion from a checksum-pinned binary (compose fleet)
+
+Used for 1.0.38 (2026-11-20) while GitHub Actions is billing-locked, so no
+signed GHCR digest exists. Costs nothing: the build runs on the release
+machine and uploads to GCP are ingress.
+
+1. **Build once, from the commit.** `git worktree add <dir> <sha>`, then in
+   that clean tree `cargo zigbuild --release --locked --target
+   x86_64-unknown-linux-gnu.2.31 -p ciphervault-operator` with
+   `CIPHERVAULT_BUILD_SHA=<short sha>` set (zig from the `ziglang` pip
+   package via `CARGO_ZIGBUILD_ZIG_PATH`). Record the binary's SHA-256.
+2. **Stage and promote one node at a time** with
+   `scripts/gcp/rollout-operator-node.sh <stage> <sha256> <version> <sha>`,
+   run as root on the box with the binary and
+   `deploy/docker/Dockerfile.operator.prebuilt` in `<stage>`. It health-gates,
+   refuses a binary whose hash or `--version` differ, builds the runtime
+   image around it, tags the running image `rollback-<old version>`,
+   stops the node and tars the whole data dir to
+   `/opt/ciphervault/backups/`, prints the log and witness keys, then
+   recreates the service and asserts `/healthz` ready plus `/v1/info`
+   `binary_version`/`build_sha`. Any failure after the stop rolls back to
+   the previous image automatically.
+3. **Gate between nodes** from outside: `/healthz`, `/v1/info` (same
+   identity key), `ciphervault_swarm_peers_live` and the dashboard's
+   `/api/operators` (`verified`, `pinned`).
+4. **Wire witnessing** (TRANSPARENCY_LOG.md) with
+   `scripts/gcp/set-operator-flags.py`, which rewrites only the witnessing
+   flags in the compose command after a backup; recreate one node at a time.
+5. **Verify sync** with `crates/translog/examples/verify_checkpoint.rs`
+   against keys pinned from step 2's output: each log's
+   `/v1/log/checkpoint/witnessed` and every peer witness's stored
+   checkpoint must verify and agree.
+
+Rollback per node: `docker tag ciphervault-operator:rollback-<old>
+ciphervault-operator:gcp && docker compose -f /opt/ciphervault/docker-compose.yml
+up -d operator`; restore `docker-compose.yml.pre-witness-*` first if the
+witnessing flags were added. The data backup is only needed if the data
+dir itself is damaged. Image IDs differ per node (each builds its own apt
+layer); the binary layer is the pinned hash on all of them.
+
 ### Phase 1 exit criteria
 - R1: dashboard env pins all 3 operator identities; cards show Verified; rotation drilled.
 - R2: publisher deployed + key pinned; RPC finality live; canary ok; alarm tested (stale).
@@ -709,10 +749,15 @@ HTTP serves (see rollback).
   (`--p2p-advertise-addr /ip4/<external>/tcp/9101` + `.../udp/9102/quic-v1`).
 - Rendezvous/relay seed: op1 (`--p2p-rendezvous-server`). Every node is a
   rendezvous client; only op1 serves.
-- Routing mesh is separate from the P2P mesh: after any restart, re-run
-  the playbook §2 mesh or heartbeats drop as `unknown_sender` and repair
-  cannot push. Service tokens are per-node — announce target-local (each
-  node POSTs to its own `/v1/peers/announce` with its own token).
+- Routing mesh is separate from the P2P mesh: a node only accepts
+  heartbeats and repair pushes from senders in its routing table, or they
+  drop as `unknown_sender`. Service tokens are per-node, so mesh
+  target-local with `scripts/gcp/mesh-node.sh` (playbook §2): each node
+  announces its peers to itself with its own token. From 1.0.38 verified
+  heartbeats keep routes alive across days and restarts; before 1.0.38
+  every route expired 24 h after its announce, which is why the 1.0.28
+  fleet sat at `peers_live 0` until re-meshed. Re-mesh after membership
+  changes or a node outage longer than 24 h.
 
 Bootstrap rotation (IP/PeerId change): re-collect external IPs from
 `gcloud compute instances list` and PeerIds from each node's

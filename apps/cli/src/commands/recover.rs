@@ -18,11 +18,12 @@ use ciphervault_local_store::LocalVaultStore;
 use ciphervault_recovery::{ApprovalChallenge, OfflineRecoveryKit, SignedApprovalReceipt};
 use ciphervault_snapshot::restore_snapshot;
 use ciphervault_storage::invites::{InviteApproval, InviteRequest, JoinInvite};
-use ciphervault_storage::{OperatorClient, StorageError};
+use ciphervault_storage::{MultiOperatorPool, OperatorClient, StorageError};
 
 use crate::util::{
-    configured_operator_pool, get_configured_operators, load_configured_operators,
-    operator_service_request, DB_FILE, DEFAULT_PRODUCTION_OPERATORS, OPERATORS_FILE, VAULT_DIR,
+    configured_operator_pins, configured_operator_pool, get_configured_operators,
+    load_configured_operators, operator_service_request, DB_FILE, DEFAULT_PRODUCTION_OPERATORS,
+    OPERATORS_FILE, VAULT_DIR,
 };
 
 /// Normalizes `--via` endpoints: http(s) URLs with a host, trailing
@@ -130,15 +131,35 @@ fn find_valid_approval(
     (None, rejected)
 }
 
-pub(crate) async fn cmd_recover(
-    kit_opt: Option<PathBuf>,
-    shares_opt: Option<Vec<PathBuf>>,
-    to_dir: PathBuf,
-    require_approval: bool,
-    approver_keys: Vec<String>,
-    force: bool,
-    via: Vec<String>,
-) -> Result<()> {
+pub(crate) struct RecoveryRequest {
+    pub kit: Option<PathBuf>,
+    pub shares: Option<Vec<PathBuf>>,
+    pub to: PathBuf,
+    pub require_approval: bool,
+    pub approver_keys: Vec<String>,
+    pub force: bool,
+    pub via: Vec<String>,
+    pub expect_record_cid: Option<[u8; 32]>,
+}
+
+pub(crate) fn parse_recovery_checkpoint(value: &str) -> Result<[u8; 32]> {
+    let mut cid = [0; 32];
+    hex::decode_to_slice(value, &mut cid)
+        .context("expected a recovery checkpoint of exactly 64 hexadecimal characters")?;
+    Ok(cid)
+}
+
+pub(crate) async fn cmd_recover(request: RecoveryRequest) -> Result<()> {
+    let RecoveryRequest {
+        kit: kit_opt,
+        shares: shares_opt,
+        to: to_dir,
+        require_approval,
+        approver_keys,
+        force,
+        via,
+        expect_record_cid,
+    } = request;
     let via = normalize_via_endpoints(&via)?;
     println!(
         "{}",
@@ -243,7 +264,28 @@ pub(crate) async fn cmd_recover(
         locator == secret.derive_recovery_locator()?,
         "Recovery locator does not match offline secret"
     );
-    let pool = configured_operator_pool(endpoints.clone());
+    let mut pool = configured_operator_pool(endpoints.clone());
+    if !configured_operator_pins()?.is_empty() {
+        let checks = pool.clients().iter().map(|client| async move {
+            match client.get_info().await {
+                Ok(_) => Some(client.clone()),
+                Err(error) => {
+                    eprintln!("Skipping recovery operator {}: {error}", client.endpoint());
+                    None
+                }
+            }
+        });
+        let verified: Vec<_> = futures_util::future::join_all(checks)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        anyhow::ensure!(
+            !verified.is_empty(),
+            "No recovery operators verified against the configured identity pins"
+        );
+        pool = MultiOperatorPool::from_clients(verified);
+    }
 
     println!("\nQuerying operators directly for recovery records...");
     let raw_records = pool.query_recovery_records(&locator).await;
@@ -269,6 +311,15 @@ pub(crate) async fn cmd_recover(
 
     let (chosen_head, certificate) =
         ciphervault_recovery::trust::select_head(&raw_records, &vault_id, &recovery_signing_pk)?;
+
+    if let Some(expected) = expect_record_cid {
+        anyhow::ensure!(
+            chosen_head.snapshot_id == expected,
+            "Recovery checkpoint mismatch: expected {}, operators supplied authenticated head {}. Nothing was restored.",
+            hex::encode(expected),
+            hex::encode(&chosen_head.snapshot_id)
+        );
+    }
 
     if require_approval {
         println!();
@@ -306,7 +357,8 @@ pub(crate) async fn cmd_recover(
         // Broadcast challenge to operator federation
         let mut broadcast_count = 0;
         let http = reqwest::Client::new();
-        for op in &endpoints {
+        let approval_endpoints = pool.endpoints();
+        for op in &approval_endpoints {
             let url = format!("{}/v1/auth/challenges", op.trim_end_matches('/'));
             if let Ok(resp) = operator_service_request(http.post(&url))
                 .json(&challenge)
@@ -349,7 +401,7 @@ pub(crate) async fn cmd_recover(
         let mut rejected_total = 0usize;
         let start_time = std::time::Instant::now();
         while start_time.elapsed().as_secs() < 300 {
-            for op in &endpoints {
+            for op in &approval_endpoints {
                 let url = format!(
                     "{}/v1/auth/challenges/{}",
                     op.trim_end_matches('/'),
@@ -460,6 +512,19 @@ pub(crate) async fn cmd_recover(
         &all_chunks,
     )?;
 
+    rebuild_store_after_recovery(
+        &endpoints,
+        &secret,
+        &raw_records,
+        &vault_id,
+        &locator,
+        &record,
+        &chosen_head,
+        &epoch_key,
+        &to_dir,
+        force,
+    )?;
+
     println!(
         "{}",
         "=======================================================".green()
@@ -478,19 +543,12 @@ pub(crate) async fn cmd_recover(
     for p in restored {
         println!("  - {}", p.display().to_string().cyan());
     }
-
-    rebuild_store_after_recovery(
-        &endpoints,
-        &secret,
-        &raw_records,
-        &vault_id,
-        &locator,
-        &record,
-        &chosen_head,
-        &epoch_key,
-        &to_dir,
-        force,
-    )?;
+    println!("  Recovery checkpoint: {}", hex::encode(snap_cid));
+    if expect_record_cid.is_some() {
+        println!("  Matched the expected recovery checkpoint.");
+    } else {
+        println!("  No expected recovery checkpoint supplied. The recovered head's freshness is unverified.");
+    }
 
     Ok(())
 }

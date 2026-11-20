@@ -7,6 +7,7 @@ use std::fs;
 
 use ciphervault_storage::OperatorClient;
 
+use super::backup_status::BackupStatus;
 use crate::util::{
     epoch_key_status, get_active_vault_path, get_configured_operators, get_vault_store,
     mask_operator_endpoint, DEFAULT_REKEY_WARN_DAYS,
@@ -107,6 +108,7 @@ struct StatusReport {
     operators: Vec<String>,
     pending_uploads: usize,
     sync_health: SyncHealthJson,
+    backup: BackupStatus,
     active_epoch_age_days: Option<u64>,
     active_epoch_stale: bool,
     leases: Vec<LeaseStatusJson>,
@@ -127,6 +129,7 @@ impl StatusReport {
         operators: Vec<String>,
         pending_uploads: usize,
         sync_health: SyncHealthJson,
+        backup: BackupStatus,
         active_epoch_created_at: Option<u64>,
         warn_days: u64,
         now_utc: u64,
@@ -157,6 +160,7 @@ impl StatusReport {
                 .collect::<Vec<_>>(),
             pending_uploads,
             sync_health,
+            backup,
             active_epoch_age_days: age_days,
             active_epoch_stale: stale,
             leases,
@@ -411,6 +415,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         .collect();
 
     let sync_health = build_sync_health(&store)?;
+    let backup = BackupStatus::load(&store, head_cid.as_ref())?;
     let root_dir = crate::util::get_workspace_root()?;
     let plaintext_on_disk_count = tracked
         .iter()
@@ -433,6 +438,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
             operators,
             pending_uploads,
             sync_health,
+            backup,
             epoch_created_at,
             DEFAULT_REKEY_WARN_DAYS,
             now_utc,
@@ -463,6 +469,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         );
     }
 
+    print_backup_status(&backup, now_utc);
     println!("\nConfigured Operators ({}):", operators.len());
     for op in operators {
         println!("  - {}", mask_operator_endpoint(&op).cyan());
@@ -527,13 +534,37 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
     Ok(())
 }
 
+fn print_backup_status(backup: &BackupStatus, now_utc: u64) {
+    println!("\nActive Snapshot Backup");
+    println!("  Backup:          {}", backup.replication_label());
+    println!("  Recovery drill:  {}", backup.drill_label());
+    if let Some(at) = backup.head_verified_at_utc.or(backup.last_drill_at_utc) {
+        let age = now_utc.saturating_sub(at.max(0) as u64);
+        println!("  Drill age:       {} ago", humane_age(age));
+    }
+    if let Some(cid) = backup
+        .head_record_cid
+        .as_deref()
+        .filter(|_| backup.replicated_at_utc.is_some())
+    {
+        println!("  Recovery checkpoint: {cid}");
+        if backup.head_verified_at_utc.is_none() {
+            println!(
+                "  Test in a new private directory with 'ciphervault recovery test --kit <file> --to <directory> --expect-record-cid {cid}'."
+            );
+        }
+    } else if backup.head_record_cid.is_some() {
+        println!("  The snapshot is saved locally. Run 'ciphervault push' with enrolled operators to verify a remote backup.");
+    }
+}
+
 fn print_sync_health(health: &SyncHealthJson, now_utc: u64) {
     let state = if health.failed > 0 {
         "Degraded".red().bold()
     } else if health.pending > 0 {
         "Behind".yellow().bold()
     } else if health.last_ok_at_utc.is_some() {
-        "Healthy".green().bold()
+        "Queue clear".green().bold()
     } else {
         "Never replicated".red().bold()
     };
@@ -890,9 +921,13 @@ fn expected_key_prefixes(key: &str) -> Option<&'static [&'static str]> {
         "OPENAI_API_KEY" => Some(&["sk-"]),
         "ANTHROPIC_API_KEY" => Some(&["sk-ant-"]),
         "GEMINI_API_KEY" | "GOOGLE_API_KEY" => Some(&["AIza"]),
-        "STRIPE_SECRET_KEY" | "STRIPE_API_KEY" => Some(&["sk_live_", "sk_test_", "rk_live_", "rk_test_"]),
+        "STRIPE_SECRET_KEY" | "STRIPE_API_KEY" => {
+            Some(&["sk_live_", "sk_test_", "rk_live_", "rk_test_"])
+        }
         "STRIPE_PUBLISHABLE_KEY" => Some(&["pk_live_", "pk_test_"]),
-        "GITHUB_TOKEN" | "GH_TOKEN" => Some(&["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]),
+        "GITHUB_TOKEN" | "GH_TOKEN" => {
+            Some(&["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"])
+        }
         "HF_TOKEN" | "HUGGINGFACE_TOKEN" => Some(&["hf_"]),
         "OPENROUTER_API_KEY" => Some(&["sk-or-"]),
         _ => None,
@@ -914,7 +949,10 @@ pub(crate) fn lint_dotenv_bytes(
             continue;
         }
         let body = line_no_bom.trim_start();
-        let body = body.strip_prefix("export ").map(str::trim_start).unwrap_or(body);
+        let body = body
+            .strip_prefix("export ")
+            .map(str::trim_start)
+            .unwrap_or(body);
         let Some((raw_key, raw_rhs)) = body.split_once('=') else {
             continue;
         };
@@ -931,43 +969,44 @@ pub(crate) fn lint_dotenv_bytes(
             None => (raw_no_nl, false),
         };
         let stripped = raw_no_nl.trim();
-        let val: String = if (stripped.starts_with('"') && stripped.ends_with('"') && stripped.len() >= 2)
-            || (stripped.starts_with('\'') && stripped.ends_with('\'') && stripped.len() >= 2)
-        {
-            let inner = &stripped[1..stripped.len() - 1];
-            if inner != inner.trim() || had_cr {
-                issues.push("WHITESPACE_WRAPPED");
-            }
-            if (inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2)
-                || (inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2)
+        let val: String =
+            if (stripped.starts_with('"') && stripped.ends_with('"') && stripped.len() >= 2)
+                || (stripped.starts_with('\'') && stripped.ends_with('\'') && stripped.len() >= 2)
             {
-                issues.push("UNSTRIPPED_QUOTES");
-            }
-            inner.to_string()
-        } else {
-            let before_comment = strip_dotenv_inline_comment(raw_no_nl);
-            let before_comment = if before_comment.starts_with('#') {
-                ""
+                let inner = &stripped[1..stripped.len() - 1];
+                if inner != inner.trim() || had_cr {
+                    issues.push("WHITESPACE_WRAPPED");
+                }
+                if (inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2)
+                    || (inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2)
+                {
+                    issues.push("UNSTRIPPED_QUOTES");
+                }
+                inner.to_string()
             } else {
-                before_comment
+                let before_comment = strip_dotenv_inline_comment(raw_no_nl);
+                let before_comment = if before_comment.starts_with('#') {
+                    ""
+                } else {
+                    before_comment
+                };
+                if !before_comment.is_empty()
+                    && (before_comment != before_comment.trim_matches([' ', '\t']) || had_cr)
+                {
+                    issues.push("WHITESPACE_WRAPPED");
+                }
+                let v = before_comment.trim();
+                if (v.starts_with('"') && !v.ends_with('"'))
+                    || (v.ends_with('"') && !v.starts_with('"'))
+                    || (v.starts_with('\'') && !v.ends_with('\''))
+                    || (v.ends_with('\'') && !v.starts_with('\''))
+                    || v == "\""
+                    || v == "'"
+                {
+                    issues.push("UNSTRIPPED_QUOTES");
+                }
+                v.to_string()
             };
-            if !before_comment.is_empty()
-                && (before_comment != before_comment.trim_matches([' ', '\t']) || had_cr)
-            {
-                issues.push("WHITESPACE_WRAPPED");
-            }
-            let v = before_comment.trim();
-            if (v.starts_with('"') && !v.ends_with('"'))
-                || (v.ends_with('"') && !v.starts_with('"'))
-                || (v.starts_with('\'') && !v.ends_with('\''))
-                || (v.ends_with('\'') && !v.starts_with('\''))
-                || v == "\""
-                || v == "'"
-            {
-                issues.push("UNSTRIPPED_QUOTES");
-            }
-            v.to_string()
-        };
 
         let val_trimmed = val.trim();
         if val_trimmed.is_empty() {
@@ -984,13 +1023,16 @@ pub(crate) fn lint_dotenv_bytes(
                     false
                 } else if let Some((scheme, rest)) = val_trimmed.split_once("://") {
                     let scheme_ok = !scheme.is_empty()
-                        && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                        && scheme
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic())
                         && scheme
                             .chars()
                             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
                     let host_ok = !rest.is_empty() && !rest.starts_with('/');
-                    let file_ok =
-                        matches!(scheme.to_ascii_lowercase().as_str(), "sqlite" | "file") && !rest.is_empty();
+                    let file_ok = matches!(scheme.to_ascii_lowercase().as_str(), "sqlite" | "file")
+                        && !rest.is_empty();
                     scheme_ok && (host_ok || file_ok)
                 } else {
                     false
@@ -999,7 +1041,9 @@ pub(crate) fn lint_dotenv_bytes(
                     issues.push("INVALID_URL");
                 }
             }
-            if key.ends_with("_JSON") && serde_json::from_str::<serde_json::Value>(val_trimmed).is_err() {
+            if key.ends_with("_JSON")
+                && serde_json::from_str::<serde_json::Value>(val_trimmed).is_err()
+            {
                 issues.push("INVALID_JSON");
             }
             if let Some(prefixes) = expected_key_prefixes(key) {
@@ -1079,7 +1123,9 @@ fn scan_code_env_refs(root: &std::path::Path) -> std::collections::BTreeSet<Stri
         "dist",
         "build",
     ];
-    let exts = ["py", "js", "ts", "tsx", "jsx", "rs", "go", "rb", "sh", "yml", "yaml"];
+    let exts = [
+        "py", "js", "ts", "tsx", "jsx", "rs", "go", "rb", "sh", "yml", "yaml",
+    ];
     let mut stack = vec![root.to_path_buf()];
     let mut files_seen = 0usize;
     while let Some(dir) = stack.pop() {
@@ -1146,7 +1192,9 @@ fn scan_code_env_refs(root: &std::path::Path) -> std::collections::BTreeSet<Stri
                         .sum::<usize>();
                     if ident_len > 0 {
                         let cand = &after[..ident_len];
-                        if cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                        if cand
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
                             && is_valid_env_ident(cand)
                         {
                             refs.insert(cand.to_string());
@@ -1204,11 +1252,17 @@ pub(crate) fn cmd_env_doctor(
             .cloned()
             .collect()
     } else {
-        [".env", ".env.local", ".env.development", ".env.production", ".env.test"]
-            .iter()
-            .filter(|name| root.join(name).is_file())
-            .map(|s| (*s).to_string())
-            .collect()
+        [
+            ".env",
+            ".env.local",
+            ".env.development",
+            ".env.production",
+            ".env.test",
+        ]
+        .iter()
+        .filter(|name| root.join(name).is_file())
+        .map(|s| (*s).to_string())
+        .collect()
     };
 
     let mut any_on_disk = false;
@@ -1256,7 +1310,10 @@ pub(crate) fn cmd_env_doctor(
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let line = line.strip_prefix("export ").map(str::trim_start).unwrap_or(line);
+            let line = line
+                .strip_prefix("export ")
+                .map(str::trim_start)
+                .unwrap_or(line);
             if let Some((k, _)) = line.split_once('=') {
                 let k = k.trim();
                 if is_valid_env_ident(k) {
@@ -1305,7 +1362,10 @@ pub(crate) fn cmd_env_doctor(
     });
     if sync_env_example {
         if let Some(obj) = out.as_object_mut() {
-            obj.insert("env_example_synced".to_string(), serde_json::Value::Bool(true));
+            obj.insert(
+                "env_example_synced".to_string(),
+                serde_json::Value::Bool(true),
+            );
             obj.insert(
                 "env_example_added".to_string(),
                 serde_json::json!(synced_added),
@@ -1317,9 +1377,24 @@ pub(crate) fn cmd_env_doctor(
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!("{}", "CipherVault Environment Doctor".bold());
-        println!("  Vault keys:       {}", out["vault_keys"].as_array().map(|a| a.len()).unwrap_or(0));
-        println!("  Missing keys:     {}", out["missing_in_vault"].as_array().map(|a| a.len()).unwrap_or(0));
-        println!("  Value anomalies:  {}", out["value_anomalies"].as_array().map(|a| a.len()).unwrap_or(0));
+        println!(
+            "  Vault keys:       {}",
+            out["vault_keys"].as_array().map(|a| a.len()).unwrap_or(0)
+        );
+        println!(
+            "  Missing keys:     {}",
+            out["missing_in_vault"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        );
+        println!(
+            "  Value anomalies:  {}",
+            out["value_anomalies"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        );
     }
     Ok(())
 }
@@ -1372,6 +1447,7 @@ mod tests {
                 key_backup_locator_hex: Some("cc".repeat(32)),
                 key_backup_at_utc: Some(2_000_000_000 - 3600),
             },
+            BackupStatus::default(),
             Some(2_000_000_000 - 100 * 86_400),
             90,
             2_000_000_000,
@@ -1425,6 +1501,7 @@ mod tests {
                 key_backup_locator_hex: None,
                 key_backup_at_utc: None,
             },
+            BackupStatus::default(),
             None,
             90,
             2_000_000_000,
@@ -1519,7 +1596,10 @@ mod tests {
         assert!(!serialized.contains("padded_secret_123"));
         assert!(!serialized.contains("wrong_prefix_secret_999"));
         assert!(seen.contains(&("EMPTY_VAR".to_string(), "EMPTY_VALUE".to_string())));
-        assert!(seen.contains(&("PLACEHOLDER_VAR".to_string(), "PLACEHOLDER_VALUE".to_string())));
+        assert!(seen.contains(&(
+            "PLACEHOLDER_VAR".to_string(),
+            "PLACEHOLDER_VALUE".to_string()
+        )));
         assert!(seen.contains(&("WRAP_VAR".to_string(), "WHITESPACE_WRAPPED".to_string())));
         assert!(seen.contains(&("QUOTE_VAR".to_string(), "UNSTRIPPED_QUOTES".to_string())));
         assert!(seen.contains(&("DATABASE_URL".to_string(), "INVALID_URL".to_string())));

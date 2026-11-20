@@ -1,0 +1,47 @@
+# ==============================================================================
+# Dashboard runtime image from a prebuilt, checksum-verified Linux CLI.
+#
+# No-CI web promotion (DEPLOYMENT_RUNBOOK.md §5b): the web VM has ~1 GB RAM
+# and little disk, so instead of compiling the workspace there, it builds
+# this image around the published `ciphervault-linux-amd64` release asset
+# after checking its SHA-256. Same runtime stage as Dockerfile.dashboard.
+#
+#   docker build -f Dockerfile.dashboard.prebuilt \
+#     --build-arg SOURCE_REVISION=<sha> --build-arg BINARY_SHA256=<hash> \
+#     -t ciphervault-dashboard:<ver> <dir with ciphervault + entrypoints>
+# ==============================================================================
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+ARG SOURCE_REVISION=unknown
+ARG BINARY_SHA256=unknown
+LABEL online.ciphervault.signing="unsigned-local-build" \
+      online.ciphervault.source-revision="${SOURCE_REVISION}" \
+      online.ciphervault.binary-sha256="${BINARY_SHA256}"
+
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 10001 ciphervault && \
+    useradd -u 10001 -g ciphervault -s /bin/bash -m ciphervault
+
+RUN mkdir -p /var/lib/ciphervault-ui && \
+    chown -R ciphervault:ciphervault /var/lib/ciphervault-ui
+
+COPY ciphervault /usr/local/bin/ciphervault
+COPY entrypoint-dashboard.sh /usr/local/bin/entrypoint-dashboard.sh
+COPY entrypoint-public-feed-publisher.sh /usr/local/bin/entrypoint-public-feed-publisher.sh
+RUN chmod 0755 /usr/local/bin/ciphervault && \
+    sed -i 's/\r$//' /usr/local/bin/entrypoint-dashboard.sh /usr/local/bin/entrypoint-public-feed-publisher.sh && \
+    chmod +x /usr/local/bin/entrypoint-dashboard.sh /usr/local/bin/entrypoint-public-feed-publisher.sh
+
+USER ciphervault
+WORKDIR /var/lib/ciphervault-ui
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl --fail --silent --show-error http://127.0.0.1:8080/api/vault || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-dashboard.sh"]

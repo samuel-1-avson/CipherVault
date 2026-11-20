@@ -512,42 +512,42 @@ async fn start_stub_with(fail_create: bool) -> (String, Stub) {
     stub.inner.lock().unwrap().fail_create = fail_create;
     let app = axum::Router::new()
         .route("/v1/projects", axum::routing::get(get_projects))
-        .route("/v1/projects/:id", axum::routing::get(get_project))
+        .route("/v1/projects/{id}", axum::routing::get(get_project))
         .route(
-            "/v1/projects/:id/migrations",
+            "/v1/projects/{id}/migrations",
             axum::routing::post(post_migration).get(get_migrations),
         )
         .route(
-            "/v1/projects/:id/migrations/:mid",
+            "/v1/projects/{id}/migrations/{mid}",
             axum::routing::get(get_migration),
         )
         .route(
-            "/v1/projects/:id/migrations/:mid/entries",
+            "/v1/projects/{id}/migrations/{mid}/entries",
             axum::routing::post(post_entries),
         )
         .route(
-            "/v1/projects/:id/migrations/:mid/entries/:eid/migrated",
+            "/v1/projects/{id}/migrations/{mid}/entries/{eid}/migrated",
             axum::routing::post(post_migrated),
         )
         .route(
-            "/v1/projects/:id/migrations/:mid/entries/:eid/resolve",
+            "/v1/projects/{id}/migrations/{mid}/entries/{eid}/resolve",
             axum::routing::post(post_resolve),
         )
         .route(
-            "/v1/projects/:id/migrations/:mid/verify",
+            "/v1/projects/{id}/migrations/{mid}/verify",
             axum::routing::post(post_verify),
         )
         .route(
-            "/v1/projects/:id/migrations/:mid/disable-legacy",
+            "/v1/projects/{id}/migrations/{mid}/disable-legacy",
             axum::routing::post(post_disable),
         )
         .route(
-            "/v1/projects/:id/environments/:env/secrets",
+            "/v1/projects/{id}/environments/{env}/secrets",
             axum::routing::post(post_secret),
         )
-        .route("/v1/projects/:id/secrets", axum::routing::get(get_secrets))
+        .route("/v1/projects/{id}/secrets", axum::routing::get(get_secrets))
         .route(
-            "/v1/projects/:id/secrets/:sid",
+            "/v1/projects/{id}/secrets/{sid}",
             axum::routing::get(get_secret_value),
         )
         .with_state(stub.clone());

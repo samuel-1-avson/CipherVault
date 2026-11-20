@@ -54,3 +54,6 @@ rpassword = { workspace = true }
 
 [dev-dependencies]
 ciphervault-operator = { path = "../../services/operator" }
+
+[target.'cfg(windows)'.dependencies]
+crc32fast.workspace = true

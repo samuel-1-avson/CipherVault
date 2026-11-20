@@ -151,10 +151,7 @@ fn ensure_no_symlink_escape(workspace_root: &Path, rel_path: &Path) -> Result<()
         match std::fs::symlink_metadata(&cursor) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
-                    bail!(
-                        "Refusing symlink in path '{}'",
-                        rel_path.to_string_lossy()
-                    );
+                    bail!("Refusing symlink in path '{}'", rel_path.to_string_lossy());
                 }
                 #[cfg(windows)]
                 {
@@ -177,9 +174,8 @@ fn ensure_no_symlink_escape(workspace_root: &Path, rel_path: &Path) -> Result<()
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
             Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("inspecting path '{}'", rel_path.to_string_lossy())
-                });
+                return Err(e)
+                    .with_context(|| format!("inspecting path '{}'", rel_path.to_string_lossy()));
             }
         }
     }
@@ -414,9 +410,9 @@ fn generate_secret_value(format: &str, bytes: usize) -> Result<(&'static str, Ze
             }
             Ok(("alphanumeric", out))
         }
-        other => bail!(
-            "Invalid --format '{other}': expected one of base64url, hex, uuid, alphanumeric"
-        ),
+        other => {
+            bail!("Invalid --format '{other}': expected one of base64url, hex, uuid, alphanumeric")
+        }
     }
 }
 
@@ -428,7 +424,10 @@ fn normalize_rel_key(path: &Path) -> String {
     norm
 }
 
-fn read_regular_file_zeroizing(workspace_root: &Path, rel_path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+fn read_regular_file_zeroizing(
+    workspace_root: &Path,
+    rel_path: &Path,
+) -> Result<Zeroizing<Vec<u8>>> {
     ensure_no_symlink_escape(workspace_root, rel_path)?;
     let full = workspace_root.join(rel_path);
     let mut file = ciphervault_file_lock::open_regular_file(&full)
@@ -456,11 +455,7 @@ fn read_regular_file_zeroizing(workspace_root: &Path, rel_path: &Path) -> Result
     Ok(buf)
 }
 
-fn write_secret_file_atomic(
-    workspace_root: &Path,
-    rel_norm: &str,
-    plaintext: &[u8],
-) -> Result<()> {
+fn write_secret_file_atomic(workspace_root: &Path, rel_norm: &str, plaintext: &[u8]) -> Result<()> {
     let rel_path = Path::new(rel_norm);
     ensure_no_symlink_escape(workspace_root, rel_path)?;
     let full = workspace_root.join(rel_path);
@@ -719,9 +714,8 @@ async fn apply_vault_secret_mutation(
         .get(&norm_env_file)
         .map(|b| b.as_slice())
         .unwrap_or(&[]);
-    let updated_target = mutate_dotenv_bytes(existing_target, &key_name, op).with_context(|| {
-        format!("updating '{key_name}' in '{norm_env_file}'")
-    })?;
+    let updated_target = mutate_dotenv_bytes(existing_target, &key_name, op)
+        .with_context(|| format!("updating '{key_name}' in '{norm_env_file}'"))?;
     files_in_ram.insert(norm_env_file.clone(), updated_target);
 
     // Auto-track target env file (and ensure .gitignore covers it) on set/generate.
@@ -946,11 +940,11 @@ pub(crate) async fn cmd_vault_unset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
-    use ciphervault_format::{DeviceCertificate, GenesisRecord};
     use crate::commands::run::load_local_snapshot_bundle_sync;
     use crate::dotenv::parse_dotenv_bytes;
     use crate::util::{VaultContext, REQUEST_VAULT_CONTEXT};
+    use ciphervault_crypto::{generate_signing_key, RecoverySecret, VaultEpochKey};
+    use ciphervault_format::{DeviceCertificate, GenesisRecord};
 
     fn init_test_vault(root: &Path) -> (VaultContext, LocalVaultStore) {
         let vault_dir = root.join(".ciphervault");
@@ -1021,7 +1015,10 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("cv-vsec-path-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(validate_and_normalize_env_file(".env", &dir).unwrap(), ".env");
+        assert_eq!(
+            validate_and_normalize_env_file(".env", &dir).unwrap(),
+            ".env"
+        );
         assert_eq!(
             validate_and_normalize_env_file("./config/.env.prod", &dir).unwrap(),
             "config/.env.prod"
@@ -1094,7 +1091,10 @@ mod tests {
             .into_iter()
             .collect();
         assert!(!parsed_unset.contains_key("TARGET"));
-        assert_eq!(parsed_unset.get("EXISTING").map(String::as_str), Some("one"));
+        assert_eq!(
+            parsed_unset.get("EXISTING").map(String::as_str),
+            Some("one")
+        );
         assert_eq!(parsed_unset.get("KEEP_ME").map(String::as_str), Some("two"));
 
         // Unset of missing key errors
@@ -1161,9 +1161,10 @@ mod tests {
         REQUEST_VAULT_CONTEXT
             .scope(ctx.clone(), async {
                 // 1. Generate a new key on a sealed vault (without passing --seal; stays sealed!).
-                let gen1 = vault_generate_value("JWT_SECRET", "base64url", 32, ".env", false, false)
-                    .await
-                    .unwrap();
+                let gen1 =
+                    vault_generate_value("JWT_SECRET", "base64url", 32, ".env", false, false)
+                        .await
+                        .unwrap();
                 assert!(gen1.success);
                 assert_eq!(gen1.name, "JWT_SECRET");
                 assert_eq!(gen1.format, "base64url");
@@ -1187,7 +1188,10 @@ mod tests {
                     .unwrap()
                     .into_iter()
                     .collect();
-                assert_eq!(map1.get("EXISTING_KEY").map(String::as_str), Some("alpha_1"));
+                assert_eq!(
+                    map1.get("EXISTING_KEY").map(String::as_str),
+                    Some("alpha_1")
+                );
                 assert_eq!(map1.get("KEEP_ME").map(String::as_str), Some("beta_2"));
                 let jwt1 = map1.get("JWT_SECRET").unwrap().clone();
                 assert_eq!(jwt1.len(), 43);
@@ -1203,10 +1207,9 @@ mod tests {
                 assert_eq!(extra1.plaintext, b"EXTRA_SECRET=gamma_3\n");
 
                 // 2. Re-generating existing key without --overwrite MUST fail closed.
-                let dup_err =
-                    vault_generate_value("JWT_SECRET", "hex", 32, ".env", true, false)
-                        .await
-                        .unwrap_err();
+                let dup_err = vault_generate_value("JWT_SECRET", "hex", 32, ".env", true, false)
+                    .await
+                    .unwrap_err();
                 assert!(format!("{dup_err:#}").contains("--overwrite"));
 
                 // 3. Re-generating with --overwrite succeeds and preserves all other keys.
@@ -1227,7 +1230,10 @@ mod tests {
                     .unwrap()
                     .into_iter()
                     .collect();
-                assert_eq!(map2.get("EXISTING_KEY").map(String::as_str), Some("alpha_1"));
+                assert_eq!(
+                    map2.get("EXISTING_KEY").map(String::as_str),
+                    Some("alpha_1")
+                );
                 assert_eq!(map2.get("KEEP_ME").map(String::as_str), Some("beta_2"));
                 assert_ne!(map2.get("JWT_SECRET").unwrap(), &jwt1);
                 assert_eq!(map2.get("JWT_SECRET").unwrap().len(), 48);
@@ -1258,7 +1264,10 @@ mod tests {
                     map3.get("API_KEY").map(String::as_str),
                     Some("token with #hash and spaces")
                 );
-                assert_eq!(map3.get("EXISTING_KEY").map(String::as_str), Some("alpha_1"));
+                assert_eq!(
+                    map3.get("EXISTING_KEY").map(String::as_str),
+                    Some("alpha_1")
+                );
                 assert_eq!(map3.get("KEEP_ME").map(String::as_str), Some("beta_2"));
                 assert!(map3.contains_key("JWT_SECRET"));
 
@@ -1279,7 +1288,10 @@ mod tests {
                     .into_iter()
                     .collect();
                 assert!(!map4.contains_key("KEEP_ME"));
-                assert_eq!(map4.get("EXISTING_KEY").map(String::as_str), Some("alpha_1"));
+                assert_eq!(
+                    map4.get("EXISTING_KEY").map(String::as_str),
+                    Some("alpha_1")
+                );
                 assert!(map4.contains_key("JWT_SECRET"));
                 assert!(map4.contains_key("API_KEY"));
                 let extra4 = bundle4
@@ -1315,11 +1327,10 @@ mod tests {
                 assert!(!root.join(".env").exists());
 
                 let bundle = load_local_snapshot_bundle_sync(&store).unwrap();
-                let map: BTreeMap<String, String> =
-                    parse_dotenv_bytes(&bundle.files[0].plaintext)
-                        .unwrap()
-                        .into_iter()
-                        .collect();
+                let map: BTreeMap<String, String> = parse_dotenv_bytes(&bundle.files[0].plaintext)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
                 assert!(map.contains_key("FIRST_KEY"));
             })
             .await;
@@ -1327,7 +1338,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
 
         // Now test unsealed vault + policy.toml sealed_mode=true auto-seal
-        let root2 = std::env::temp_dir().join(format!("cv-vsec-unsealed-{}", rand::random::<u64>()));
+        let root2 =
+            std::env::temp_dir().join(format!("cv-vsec-unsealed-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&root2).unwrap();
         let (ctx2, _store2) = init_test_vault(&root2);
         std::fs::write(root2.join(".env"), b"PREEXISTING=keep_me\n").unwrap();
@@ -1348,7 +1360,10 @@ mod tests {
                 let disk = std::fs::read(root2.join(".env")).unwrap();
                 let disk_map: BTreeMap<String, String> =
                     parse_dotenv_bytes(&disk).unwrap().into_iter().collect();
-                assert_eq!(disk_map.get("PREEXISTING").map(String::as_str), Some("keep_me"));
+                assert_eq!(
+                    disk_map.get("PREEXISTING").map(String::as_str),
+                    Some("keep_me")
+                );
                 assert_eq!(disk_map.get("ADDED").map(String::as_str), Some("added_val"));
 
                 // Enable sealed_mode = true in policy.toml -> next mutation auto-seals & shreds disk

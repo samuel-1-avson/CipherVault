@@ -251,9 +251,9 @@ async fn start_stub() -> (String, Stub) {
     };
     let app = axum::Router::new()
         .route("/v1/projects", axum::routing::get(get_projects))
-        .route("/v1/projects/:id", axum::routing::get(get_project))
+        .route("/v1/projects/{id}", axum::routing::get(get_project))
         .route(
-            "/v1/projects/:id/repositories",
+            "/v1/projects/{id}/repositories",
             axum::routing::get(get_repositories),
         )
         .route(
@@ -261,7 +261,7 @@ async fn start_stub() -> (String, Stub) {
             axum::routing::post(post_secret),
         )
         .route(
-            "/v1/projects/proj-1/environments/env-1/secrets/:name",
+            "/v1/projects/proj-1/environments/env-1/secrets/{name}",
             axum::routing::get(get_secret_value),
         )
         .route(
@@ -269,11 +269,11 @@ async fn start_stub() -> (String, Stub) {
             axum::routing::get(get_secrets),
         )
         .route(
-            "/v1/projects/proj-1/secrets/:id",
+            "/v1/projects/proj-1/secrets/{id}",
             axum::routing::patch(patch_secret).delete(delete_secret),
         )
         .route(
-            "/v1/projects/proj-1/secrets/:id/rotate",
+            "/v1/projects/proj-1/secrets/{id}/rotate",
             axum::routing::post(rotate_secret),
         )
         .with_state(stub.clone());

@@ -1,7 +1,15 @@
 use super::app::{StatusLevel, TuiApp, TuiTab, TuiTable};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
+    // Windows consoles report every physical key twice: a Press and then a
+    // Release (crossterm forwards both; Unix terminals send Press only).
+    // Acting on the Release made toggles fire twice — [b] opened Local
+    // CipherChain on press and its own release closed it again. Only
+    // presses (and auto-repeats while held) are commands.
+    if key.kind == KeyEventKind::Release {
+        return;
+    }
     // If Help modal is open, Esc / ? / Enter closes it (other keys ignored).
     if app.show_help {
         if let KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter = key.code {
@@ -103,14 +111,45 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
                 app.show_explorer_search_modal = false;
                 // The probe runs in a background task; the status line and the
                 // object panel update when it completes.
-                app.spawn_object_probe();
-                app.explorer_search_buffer.clear();
+                if app.show_chain_explorer {
+                    let query = app.explorer_search_buffer.trim().to_string();
+                    app.explorer_search_buffer.clear();
+                    if !query.is_empty() {
+                        app.spawn_chain_explorer(Some(query));
+                    }
+                } else {
+                    app.spawn_object_probe();
+                    app.explorer_search_buffer.clear();
+                }
             }
             KeyCode::Backspace => {
                 app.explorer_search_buffer.pop();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if app.explorer_search_buffer.len() < 70 => {
                 app.explorer_search_buffer.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    if app.show_chain_explorer {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('b' | 'q') => app.show_chain_explorer = false,
+            KeyCode::Char('/') if !app.chain_loading => {
+                app.explorer_search_buffer.clear();
+                app.show_explorer_search_modal = true;
+            }
+            KeyCode::Char('r') => app.spawn_chain_explorer(None),
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.chain_index =
+                    (app.chain_index + 1).min(app.chain_rows().len().saturating_sub(1));
+            }
+            KeyCode::Up | KeyCode::Char('k') => app.chain_index = app.chain_index.saturating_sub(1),
+            KeyCode::Enter => {
+                if let Some(block) = app.chain_rows().get(app.chain_index) {
+                    app.spawn_chain_explorer(Some(block.height.to_string()));
+                }
             }
             _ => {}
         }
@@ -164,6 +203,10 @@ pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
         KeyCode::Char('7') => {
             app.switch_tab(TuiTab::Explorer);
             app.spawn_explorer_refresh();
+        }
+        KeyCode::Char('b') if app.active_tab == TuiTab::Explorer => {
+            app.show_chain_explorer = true;
+            app.spawn_chain_explorer(None);
         }
 
         // Explorer object lookup

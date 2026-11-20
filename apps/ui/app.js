@@ -85,6 +85,8 @@ const state = {
   explorerOverview: null,
   explorerObject: null,
   explorerQuery: '',
+  explorerSearchRequest: 0,
+  chainExplorerRequest: 0,
   commandPaletteOpen: false,
   paletteItems: [],
   paletteSelectedIndex: 0,
@@ -1685,9 +1687,12 @@ async function fetchAnchors() {
     state.anchors = data;
 
     renderAnchors(data);
+    renderExplorerAnchors();
   } catch (e) {
+    if (e.name === 'AbortError') return;
     state.anchors = [];
     renderAnchors([]);
+    renderExplorerAnchors();
     console.warn("fetchAnchors error:", e);
   }
 }
@@ -2910,11 +2915,17 @@ function closeModal(modal) {
 // Network Explorer (blockchain-style browsing)
 // -------------------------------------------------------------
 
-function classifyExplorerQuery(raw) {
+function classifyExplorerQuery(raw, kind = 'auto') {
   const query = (raw || '').trim();
-  if (/^[0-9a-fA-F]{64}$/.test(query)) return { kind: 'object', cid: query.toLowerCase() };
-  if (/^0x[0-9a-fA-F]{64}$/.test(query)) return { kind: 'anchor-tx', txHash: query.toLowerCase() };
-  if (query.length >= 3) {
+  const digest = query.replace(/^0x/i, '');
+  const isDigest = /^[0-9a-f]{64}$/i.test(digest);
+  if (isDigest && (kind === 'object' || (kind === 'auto' && query === digest))) {
+    return { kind: 'object', cid: digest.toLowerCase() };
+  }
+  if (isDigest && (kind === 'anchor-tx' || (kind === 'auto' && query !== digest))) {
+    return { kind: 'anchor-tx', txHash: `0x${digest.toLowerCase()}` };
+  }
+  if ((kind === 'auto' || kind === 'operator') && query.length >= 2) {
     const needle = query.toLowerCase();
     const match = (state.operators || []).findIndex(op =>
       String(op.operator_id || '').toLowerCase().includes(needle)
@@ -2930,6 +2941,7 @@ async function fetchExplorerOverview() {
     if (!res.ok) throw new Error(`Explorer overview request failed (${res.status})`);
     state.explorerOverview = await res.json();
   } catch (err) {
+    if (err.name === 'AbortError') return;
     state.explorerOverview = { error: err.message };
   }
   renderExplorerOverview();
@@ -2941,66 +2953,44 @@ function renderExplorerOverview() {
   if (!grid) return;
   const overview = state.explorerOverview;
   if (!overview || overview.error) {
-    const ops = state.operators || [];
-    const online = ops.filter(operatorResponded).length;
-    const total = ops.length;
-    if (total > 0) {
-      grid.innerHTML = `
-        <article class="operator-card">
-          <div class="op-header"><div class="op-title-wrap">
-            <span class="op-id">Storage Operators</span>
-            <span class="${online > 0 ? 'badge-online' : 'badge-offline'}">${online}/${total} active</span>
-          </div></div>
-          <div class="op-meta-row"><span class="op-meta-label">Reachability</span><span class="op-meta-val cv-layout-6a43a34635">Quorum Probed</span></div>
-          <div class="op-meta-row"><span class="op-meta-label">Coverage</span><span class="op-meta-val">100% of configured endpoints</span></div>
-        </article>
-        <article class="operator-card">
-          <div class="op-header"><div class="op-title-wrap">
-            <span class="op-id">CipherChain Anchors</span>
-            <span class="badge-online">${(state.anchors || []).length} registered</span>
-          </div></div>
-          <div class="op-meta-row"><span class="op-meta-label">Target Ledger</span><span class="op-meta-val">CipherChain (777777)</span></div>
-          <div class="op-meta-row"><span class="op-meta-label">Head Status</span><span class="op-meta-val">SHA-256 Commit Ready</span></div>
-        </article>`;
-      return;
-    }
-    const detail = overview && overview.error ? `Network overview: ${overview.error}` : 'Loading network overview...';
-    grid.innerHTML = `<div class="loading-placeholder">${escapeHtml(detail)}</div>`;
+    grid.innerHTML = `<p>${overview?.error ? 'Network overview unavailable. Use Refresh network to retry.' : 'Loading network overview…'}</p>`;
     return;
   }
   const ops = overview.operators || {};
   const anchors = overview.anchors || {};
   const head = anchors.head || {};
   const headTx = head.tx_hash_hex || head.tx_hash || '';
-  const reachable = Number(ops.reachable || 0);
-  const total = Number(ops.total || 0);
+  const total = Math.max(0, Math.floor(Number(ops.total) || 0));
+  const reachable = Math.max(0, Math.min(total, Math.floor(Number(ops.reachable) || 0)));
+  const feedState = anchors.status === 'unavailable' ? 'Feed unavailable' :
+    anchors.status === 'unconfigured' ? 'Feed not configured' : 'Published checkpoint feed';
   grid.innerHTML = `
-    <article class="operator-card">
-      <div class="op-header"><div class="op-title-wrap">
-        <span class="op-id">Operators</span>
-        <span class="${reachable > 0 ? 'badge-online' : 'badge-offline'}">${escapeHtml(String(ops.reachable ?? '--'))}/${escapeHtml(String(ops.total ?? '--'))} responding</span>
-      </div></div>
-      <div class="op-meta-row"><span class="op-meta-label">Observed</span><span class="op-meta-val">${escapeHtml(overview.observed_at_utc || 'recently')}</span></div>
-      <div class="op-meta-row"><span class="op-meta-label">Coverage</span><span class="op-meta-val">${total > 0 ? `${Math.round((reachable / total) * 100)}% of configured endpoints` : 'No endpoints configured'}</span></div>
+    <article class="network-explorer-metric">
+      <h3>Storage operators</h3>
+      <div class="network-explorer-number">${reachable}<span> / ${total} responding</span></div>
+      ${total ? `<meter min="0" max="${total}" value="${reachable}" aria-label="Responding operators"></meter>` : '<p>No operators configured.</p>'}
+      <p>${escapeHtml(overview.observed_at_utc || 'Observation time unavailable')}</p>
     </article>
-    <article class="operator-card">
-      <div class="op-header"><div class="op-title-wrap">
-        <span class="op-id">Anchors</span>
-        <span class="badge-online">${escapeHtml(String(anchors.count ?? 0))} checkpoints</span>
-      </div></div>
-      <div class="op-meta-row"><span class="op-meta-label">Head receipt</span><span class="op-meta-val">${headTx ? `<span title="${escapeHtml(headTx)}">${escapeHtml(truncateHash(headTx, 10, 8))}</span>` : 'No checkpoint feed published.'}</span></div>
+    <article class="network-explorer-metric">
+      <h3>Public checkpoints</h3>
+      <div class="network-explorer-number">${escapeHtml(String(anchors.status && anchors.status !== 'available' ? '—' : anchors.count ?? '—'))}<span> published</span></div>
+      <p>${feedState}</p>
+      ${headTx ? `<p><code title="${escapeHtml(headTx)}">${escapeHtml(truncateHash(headTx, 10, 8))}</code></p>` : ''}
     </article>`;
 }
 
 async function lookupExplorerObject(cid) {
+  const request = ++state.explorerSearchRequest;
   const result = document.getElementById('explorer-result');
   if (result) result.innerHTML = `<div class="loading-placeholder">Probing replicas for <span title="${escapeHtml(cid)}">${escapeHtml(truncateHash(cid, 12, 10))}</span>...</div>`;
   try {
     const res = await workspaceFetch(`/api/explorer/object/${encodeURIComponent(cid)}`);
-    const body = await res.json().catch(() => ({}));
+    const body = await res.json();
     if (!res.ok) throw new Error(body.error || `Object lookup failed (${res.status})`);
+    if (request !== state.explorerSearchRequest) return;
     state.explorerObject = body;
   } catch (err) {
+    if (request !== state.explorerSearchRequest || err.name === 'AbortError') return;
     state.explorerObject = { error: err.message, cid };
   }
   renderExplorerObject();
@@ -3032,31 +3022,29 @@ function renderExplorerObject() {
       + `<td>${escapeHtml(detail)}</td></tr>`;
   }).join('');
   result.innerHTML = `
-    <article class="operator-card">
+    <article class="network-explorer-section network-explorer-object">
       <div class="op-header"><div class="op-title-wrap">
         <span class="op-id" title="${escapeHtml(object.cid || '')}">Object ${escapeHtml(truncateHash(object.cid || '', 12, 10))}</span>
         <span class="${satisfied ? 'badge-online' : 'badge-offline'}">QUORUM ${escapeHtml(String(quorum.present ?? 0))}/${escapeHtml(String(quorum.required ?? 3))}</span>
       </div></div>
+      <button type="button" class="network-explorer-button" data-copy="${escapeHtml(object.cid || '')}">Copy CID</button>
       <div class="op-meta-row"><span class="op-meta-label">Checked</span><span class="op-meta-val">${escapeHtml(object.checked_at_utc || '')} across ${escapeHtml(String(quorum.checked ?? 0))} endpoints</span></div>
-      <table class="data-table"><thead><tr><th>Endpoint</th><th>Status</th><th>Size</th><th>Latency</th><th>Operator / note</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5">No replica reports.</td></tr>'}</tbody></table>
-      <p class="topology-subtext">Presence only: possession is proven by PoS challenge. Ciphertext bytes are never fetched.</p>
+      <div class="network-explorer-table"><table class="data-table"><thead><tr><th>Endpoint</th><th>Status</th><th>Size</th><th>Latency</th><th>Operator / note</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">No replica reports.</td></tr>'}</tbody></table></div>
+      <p class="topology-subtext">Operators report presence. This lookup does not download or verify object bytes.</p>
     </article>`;
 }
 
 function renderExplorerAnchors() {
   const strip = document.getElementById('explorer-anchors-strip');
   if (!strip) return;
-  const anchors = Array.isArray(state.anchors) ? state.anchors.slice(-5).reverse() : [];
+  const anchors = Array.isArray(state.anchors) ? state.anchors.slice().sort((a, b) =>
+    Number(b.reported_block_number ?? b.block_number ?? 0) - Number(a.reported_block_number ?? a.block_number ?? 0)).slice(0, 10) : [];
   if (anchors.length === 0) {
-    strip.innerHTML = `
-      <div class="empty-state-card cv-layout-7e5edeaf6f">
-        <div class="cv-layout-73c6c98026">No CipherChain Anchors Committed Yet</div>
-        <p class="cv-layout-4226eb98e1">
-          Cryptographic commitments are anchored to the CipherChain sovereign ledger. Anchor your active vault head commitment to generate verifiable Merkle inclusion proofs.
-        </p>
-        <span class="canary-badge cv-layout-52213fc812">CipherChain Ready</span>
-      </div>`;
+    const message = state.explorerOverview?.anchors?.status === 'unavailable'
+      ? 'The public checkpoint feed is unavailable.'
+      : 'No anchor receipts are available.';
+    strip.innerHTML = `<p class="network-explorer-empty">${message}</p>`;
     return;
   }
   const rows = anchors.map(entry => {
@@ -3065,16 +3053,19 @@ function renderExplorerAnchors() {
     const block = Number(entry.reported_block_number ?? entry.block_number);
     const display = checkpointDisplayState(entry, tx);
     const url = checkpointExplorerUrl(entry, tx);
-    const receipt = !usable ? '--' : (url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</a>` : `<span title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</span>`);
+    const receipt = !usable ? '--' : (url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</a>` : `<button type="button" class="network-explorer-button" data-explorer-receipt="${escapeHtml(tx)}"><span title="${escapeHtml(tx)}">${escapeHtml(truncateHash(tx, 10, 8))}</span></button>`);
     return `<tr><td>${receipt}</td>`
       + `<td>${usable && Number.isFinite(block) && block > 0 ? `#${block.toLocaleString()}` : '--'}</td>`
       + `<td>${escapeHtml(chainLabel(entry.chain_id))}</td>`
       + `<td>${escapeHtml(display.label)}</td></tr>`;
   }).join('');
-  strip.innerHTML = `<table class="data-table"><thead><tr><th>Receipt</th><th>Block</th><th>Chain</th><th>Finality</th></tr></thead><tbody>${rows}</tbody></table>`;
+  strip.innerHTML = `<div class="network-explorer-table"><table class="data-table"><thead><tr><th>Receipt</th><th>Block</th><th>Chain</th><th>Finality</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function renderExplorerAnchorTx(txHash) {
+  state.explorerSearchRequest += 1;
+  const clear = document.getElementById('explorer-clear');
+  if (clear) clear.hidden = false;
   const result = document.getElementById('explorer-result');
   if (!result) return;
   const match = (state.anchors || []).find(entry =>
@@ -3099,36 +3090,125 @@ function renderExplorerAnchorTx(txHash) {
     </article>`;
 }
 
+function renderLocalChainExplorer(view) {
+  const result = document.getElementById('explorer-chain-result');
+  if (!result) return;
+  if (view.state === 'empty') {
+    result.innerHTML = '<p class="network-explorer-empty">No local blocks. Anchor a snapshot to start this ledger.</p>';
+    return;
+  }
+  const detail = view.detail;
+  const rows = (view.blocks || []).map(block => `
+    <tr>
+      <td><button type="button" class="network-explorer-button" data-chain-query="${escapeHtml(String(block.height))}">#${escapeHtml(String(block.height))}</button></td>
+      <td><code title="${escapeHtml(block.hash)}">${escapeHtml(truncateHash(block.hash, 12, 8))}</code></td>
+      <td>${escapeHtml(String(block.commitments))}</td>
+      <td>${escapeHtml(String(block.signatures))}</td>
+      <td>${block.timestamp_signed === true ? 'Signed' : 'Unsigned'}</td>
+    </tr>`).join('');
+  result.innerHTML = `
+    <p class="network-explorer-status">${view.solo ? 'Solo ledger. One validator per block.' : 'Verified against the saved genesis validator set.'}</p>
+    ${view.state === 'not_found' ? '<p role="status">No block or commitment matched that search.</p>' : ''}
+    ${detail ? `<article class="network-explorer-block">
+      <h4>Block #${escapeHtml(String(detail.block.height))}</h4>
+      <dl>
+        <dt>Hash</dt><dd><code>${escapeHtml(detail.block.hash)}</code> <button type="button" class="network-explorer-button" data-copy="${escapeHtml(detail.block.hash)}">Copy hash</button></dd>
+        <dt>Parent</dt><dd><code>${escapeHtml(detail.parent_hash)}</code></dd>
+        <dt>Block time</dt><dd>${escapeHtml(formatTimestamp(Number(detail.block.timestamp_ms) / 1000))} · ${detail.block.timestamp_signed ? 'Signed' : 'Unsigned'}</dd>
+        <dt>Transaction root</dt><dd><code>${escapeHtml(detail.transaction_root)}</code></dd>
+        <dt>Signers</dt><dd>${(detail.signers || []).map(key => `<code>${escapeHtml(key)}</code>`).join('<br>') || 'None'}</dd>
+      </dl>
+      ${detail.inclusion ? `<p role="status">Inclusion verified at index ${escapeHtml(String(detail.inclusion.index))} with ${escapeHtml(String(detail.inclusion.proof_steps))} proof steps.</p>` : ''}
+      ${detail.commitments?.length ? `<h4>Commitments</h4><ul>${detail.commitments.map(commitment =>
+        `<li><button type="button" class="network-explorer-button" data-chain-query="${escapeHtml(commitment)}">Verify inclusion</button> <code>${escapeHtml(commitment)}</code></li>`).join('')}</ul>` : ''}
+    </article>` : ''}
+    <div class="network-explorer-table"><table class="data-table">
+      <caption>Recent blocks</caption>
+      <thead><tr><th>Height</th><th>Hash</th><th>Commitments</th><th>Signatures</th><th>Block time</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+async function loadLocalChainExplorer(query = '') {
+  if (isPublicExplorer()) return;
+  const result = document.getElementById('explorer-chain-result');
+  if (!result) return;
+  const request = ++state.chainExplorerRequest;
+  result.setAttribute('aria-busy', 'true');
+  result.innerHTML = '<p>Verifying the local ledger…</p>';
+  try {
+    const res = await workspaceFetch('/api/explorer/chain' + (query ? '?query=' + encodeURIComponent(query) : ''));
+    const data = await res.json();
+    if (request !== state.chainExplorerRequest) return;
+    if (!res.ok || data.status === 'error') throw new Error(data.error || 'The local chain is unavailable.');
+    renderLocalChainExplorer(data);
+  } catch (err) {
+    if (request !== state.chainExplorerRequest || err.name === 'AbortError') return;
+    result.innerHTML = `<p role="alert">${escapeHtml(err.message)}</p>`;
+  } finally {
+    if (request === state.chainExplorerRequest) result.setAttribute('aria-busy', 'false');
+  }
+}
+
 function initExplorer() {
   const form = document.getElementById('explorer-search-form');
   const input = document.getElementById('input-explorer-search');
   if (!form || !input) return;
+  const clear = document.getElementById('explorer-clear');
+  const result = document.getElementById('explorer-result');
   form.addEventListener('submit', event => {
     event.preventDefault();
-    const verdict = classifyExplorerQuery(input.value);
+    state.explorerSearchRequest += 1;
+    const kind = document.getElementById('explorer-search-kind')?.value || 'auto';
+    const verdict = classifyExplorerQuery(input.value, kind);
     state.explorerQuery = input.value;
+    if (clear) clear.hidden = false;
     if (verdict.kind === 'object') {
       lookupExplorerObject(verdict.cid);
     } else if (verdict.kind === 'anchor-tx') {
       renderExplorerAnchorTx(verdict.txHash);
     } else if (verdict.kind === 'operator') {
-      const tabBtn = document.getElementById('tab-btn-operators');
-      if (tabBtn && typeof tabBtn.click === 'function') tabBtn.click();
-      showToast(`Operator match: ${(state.operators[verdict.index] || {}).operator_id || `#${verdict.index + 1}`}.`);
+      const row = state.operators[verdict.index];
+      if (result) result.innerHTML = `<article class="network-explorer-section">
+        <h3>${escapeHtml(row.display_name || row.operator_id || 'Operator')}</h3>
+        <p>${operatorResponded(row) ? 'Responding' : 'No response'} · ${escapeHtml(row.operator_id || '')}</p>
+        <button type="button" class="network-explorer-button" data-click-target="tab-btn-operators">Operator telemetry</button>
+      </article>`;
     } else {
-      showToast('Enter a 64-hex object CID, a 0x anchor receipt hash, or an operator id.', 'warning');
+      if (result) result.innerHTML = '<p role="status">No match. Check the identifier or change the search type.</p>';
     }
   });
 
-  document.querySelectorAll('.quick-chip-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const q = btn.getAttribute('data-search');
-      if (q && input) {
-        input.value = q;
-        form.dispatchEvent(new Event('submit'));
-      }
-    });
+  clear?.addEventListener('click', () => {
+    state.explorerSearchRequest += 1;
+    state.explorerObject = null;
+    state.explorerQuery = '';
+    input.value = '';
+    clear.hidden = true;
+    renderExplorerObject();
+    input.focus();
   });
+  document.getElementById('explorer-refresh')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await Promise.all([fetchExplorerOverview(), fetchAnchors(), fetchOperators()]); }
+    finally { button.disabled = false; }
+  });
+  document.getElementById('explorer-anchors-strip')?.addEventListener('click', event => {
+    const receipt = event.target.closest('[data-explorer-receipt]');
+    if (receipt) renderExplorerAnchorTx(receipt.getAttribute('data-explorer-receipt'));
+  });
+  document.getElementById('explorer-chain-refresh')?.addEventListener('click', () => loadLocalChainExplorer());
+  document.getElementById('explorer-chain-form')?.addEventListener('submit', event => {
+    event.preventDefault();
+    const query = document.getElementById('explorer-chain-query')?.value.trim();
+    if (query) loadLocalChainExplorer(query);
+  });
+  document.getElementById('explorer-chain-result')?.addEventListener('click', event => {
+    const target = event.target.closest('[data-chain-query]');
+    if (target) loadLocalChainExplorer(target.getAttribute('data-chain-query'));
+  });
+  if (globalThis.location?.hash === '#explorer') switchTab('tab-explorer');
 }
 
 const TAB_METADATA = {
@@ -5070,14 +5150,14 @@ function handleTerminalCommand(cmd) {
       break;
     case 'version':
     case 'cv':
-      appendTerminalLog('CLI', 'CipherVault v1.0.37 (cv / ciphervault) · Sovereign CipherChain PoA (777777)', 'var(--ok)');
+      appendTerminalLog('CLI', 'CipherVault v1.0.38 (cv / ciphervault) · Sovereign CipherChain PoA (777777)', 'var(--ok)');
       break;
     case 'download':
     case 'downloads':
     case 'install': {
       const dlBtn = document.getElementById('btn-open-cli-downloads');
       if (dlBtn) dlBtn.click();
-      appendTerminalLog('CLI', 'Opened CLI & Binary Downloads modal (v1.0.37)', 'var(--signal)');
+      appendTerminalLog('CLI', 'Opened CLI & Binary Downloads modal (v1.0.38)', 'var(--signal)');
       break;
     }
     case 'status':
@@ -5633,7 +5713,7 @@ function buildPaletteItems(query) {
       fetchAllData();
       showToast('Cluster telemetry refreshed', 'info');
     }},
-    { title: 'Download CLI & Pre-Compiled Binaries (v1.0.37)...', category: 'Actions', badge: 'v1.0.37', action: () => {
+    { title: 'Download CLI & Pre-Compiled Binaries (v1.0.38)...', category: 'Actions', badge: 'v1.0.38', action: () => {
       const modal = document.getElementById('modal-cli-downloads');
       if (modal) openModal(modal);
     }},
@@ -5918,6 +5998,18 @@ async function switchWorkspace(dbPath) {
       state.vault = null;
       state.snapshots = [];
       state.overview = null;
+      state.explorerSearchRequest += 1;
+      state.chainExplorerRequest += 1;
+      state.explorerObject = null;
+      state.explorerOverview = null;
+      state.anchors = [];
+      renderExplorerObject();
+      renderExplorerAnchors();
+      const chainResult = document.getElementById('explorer-chain-result');
+      if (chainResult) {
+        chainResult.textContent = '';
+        chainResult.setAttribute('aria-busy', 'false');
+      }
       state.fetching = false;
       showToast("✓ " + data.message);
       const wrap = document.getElementById('workspace-switcher-wrap');

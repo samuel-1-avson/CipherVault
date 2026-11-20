@@ -455,7 +455,9 @@ mod tests {
         crate::util::VaultContext::from_db_path(db_path).unwrap()
     }
 
-    async fn json_body(response: axum::response::Response) -> (axum::http::StatusCode, serde_json::Value) {
+    async fn json_body(
+        response: axum::response::Response,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
@@ -467,12 +469,14 @@ mod tests {
     #[tokio::test]
     async fn api_diff_refuses_reveal_unless_explicitly_enabled() {
         let _serialized = crate::util::TEST_PROCESS_STATE.lock().await;
-        let base = std::env::temp_dir().join(format!(
-            "cv-files-api-diff-{}",
-            rand::random::<u64>()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("cv-files-api-diff-{}", rand::random::<u64>()));
         let ws = init_certified_workspace(&base, "ws");
-        std::fs::write(ws.root_dir.join(".env"), "API_KEY=initial_secret_value_abc\n").unwrap();
+        std::fs::write(
+            ws.root_dir.join(".env"),
+            "API_KEY=initial_secret_value_abc\n",
+        )
+        .unwrap();
 
         crate::util::REQUEST_VAULT_CONTEXT
             .scope(ws.clone(), async {
@@ -490,8 +494,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                std::fs::write(ws.root_dir.join(".env"), "API_KEY=rotated_secret_value_xyz\n")
-                    .unwrap();
+                std::fs::write(
+                    ws.root_dir.join(".env"),
+                    "API_KEY=rotated_secret_value_xyz\n",
+                )
+                .unwrap();
 
                 // Default (unset): reveal=true must be refused.
                 {
@@ -556,10 +563,8 @@ mod tests {
     #[tokio::test]
     async fn api_snapshots_restore_records_agent_audit_entry() {
         let _serialized = crate::util::TEST_PROCESS_STATE.lock().await;
-        let base = std::env::temp_dir().join(format!(
-            "cv-files-api-restore-{}",
-            rand::random::<u64>()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("cv-files-api-restore-{}", rand::random::<u64>()));
         let ws = init_certified_workspace(&base, "ws");
         let restore_dir = base.join("restored_out");
         let restore_str = restore_dir.display().to_string();

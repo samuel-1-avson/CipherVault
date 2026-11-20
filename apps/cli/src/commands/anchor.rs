@@ -573,6 +573,24 @@ fn load_validator_set(
     local: &ciphervault_chain::ConsensusSigner,
 ) -> Result<ciphervault_chain::ValidatorSet> {
     let path = chain_dir.join("validators.json");
+    if let Some(set) = read_configured_validator_set(chain_dir)? {
+        return Ok(set);
+    }
+    let set = ciphervault_chain::ValidatorSet::new(vec![local.public_key()])?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&vec![hex::encode(local.public_key())])?,
+    )?;
+    Ok(set)
+}
+
+pub(crate) fn read_configured_validator_set(
+    chain_dir: &std::path::Path,
+) -> Result<Option<ciphervault_chain::ValidatorSet>> {
+    let path = chain_dir.join("validators.json");
     if path.exists() {
         let raw: Vec<String> = serde_json::from_str(
             &std::fs::read_to_string(&path).context("Failed to read validators.json")?,
@@ -589,17 +607,9 @@ fn load_validator_set(
             arr.copy_from_slice(&bytes);
             keys.push(arr);
         }
-        return Ok(ciphervault_chain::ValidatorSet::new(keys)?);
+        return Ok(Some(ciphervault_chain::ValidatorSet::new(keys)?));
     }
-    let set = ciphervault_chain::ValidatorSet::new(vec![local.public_key()])?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&vec![hex::encode(local.public_key())])?,
-    )?;
-    Ok(set)
+    Ok(None)
 }
 
 /// Opens the existing local ledger, or creates a fresh genesis when none exists.

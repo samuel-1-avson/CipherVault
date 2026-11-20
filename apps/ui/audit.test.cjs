@@ -615,6 +615,22 @@ vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   const explorerHtml = getElementById('explorer-result').innerHTML;
   assert(explorerHtml.includes('QUORUM 3/3'), 'Explorer must render the quorum badge');
   assert(explorerHtml.includes('op_8201'), 'Explorer must render replica operator ids');
+  const prefixedObject = vm.runInContext(`classifyExplorerQuery('0x${'CD'.repeat(32)}', 'object')`, context);
+  assert.equal(prefixedObject.cid, 'cd'.repeat(32));
+
+  vm.runInContext(`state.explorerOverview = { operators: { reachable: 1, total: 3 }, anchors: { status: 'unavailable', count: 0 } }; renderExplorerOverview()`, context);
+  const metrics = getElementById('explorer-overview-grid').innerHTML;
+  assert(metrics.includes('<meter min="0" max="3" value="1"'));
+  assert(metrics.includes('Feed unavailable'));
+  assert(!metrics.includes('100%'));
+
+  vm.runInContext(`renderLocalChainExplorer({ state: 'ready', solo: true, blocks: [
+    { height: 5, hash: 'aa'.repeat(32), commitments: 1, signatures: 1, timestamp_signed: true },
+  ] })`, context);
+  const chainHtml = getElementById('explorer-chain-result').innerHTML;
+  assert(chainHtml.includes('Solo ledger'));
+  assert(chainHtml.includes('data-chain-query="5"'));
+  assert(chainHtml.includes('Signed'));
 
   // =========================================================================
   // 18. Output-Encoding Edge Cases (escapeHtml quotes, formatBytes clamp)

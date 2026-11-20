@@ -33,7 +33,10 @@ pub(crate) fn load_workspace_policy(vault_dir: &Path) -> Result<Option<Workspace
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(e).with_context(|| {
-                format!("Failed to read workspace policy '{}'", policy_path.display())
+                format!(
+                    "Failed to read workspace policy '{}'",
+                    policy_path.display()
+                )
             })
         }
     };
@@ -220,7 +223,10 @@ fn parse_toml_string_array(raw: &str) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let items = split_top_level_commas(inner)?;
-    items.into_iter().map(|item| parse_toml_string(&item)).collect()
+    items
+        .into_iter()
+        .map(|item| parse_toml_string(&item))
+        .collect()
 }
 
 fn split_key_value(line: &str) -> Result<(&str, &str)> {
@@ -343,8 +349,7 @@ pub(crate) fn parse_workspace_policy(raw: &str) -> Result<WorkspacePolicy> {
 
     for (line_no, stmt) in logical_statements {
         if stmt.starts_with('[') && stmt.ends_with(']') {
-            let section =
-                parse_section_header(&stmt).with_context(|| format!("line {line_no}"))?;
+            let section = parse_section_header(&stmt).with_context(|| format!("line {line_no}"))?;
             match &section {
                 PolicySection::Profile(name) | PolicySection::ProfileUpstreams(name) => {
                     policy.profiles.entry(name.clone()).or_default();
@@ -372,9 +377,8 @@ pub(crate) fn parse_workspace_policy(raw: &str) -> Result<WorkspacePolicy> {
                         Some(parse_toml_bool(v_raw).with_context(|| format!("line {line_no}"))?);
                 }
                 "description" => {
-                    policy.description = Some(
-                        parse_toml_string(v_raw).with_context(|| format!("line {line_no}"))?,
-                    );
+                    policy.description =
+                        Some(parse_toml_string(v_raw).with_context(|| format!("line {line_no}"))?);
                 }
                 "sandbox_read_paths" => {
                     policy.sandbox_read_paths = parse_toml_string_array(v_raw)
@@ -445,9 +449,7 @@ fn command_matches_allowlist(cmd0: &str, allowed_commands: &[String]) -> bool {
     if cmd_trimmed.is_empty() {
         return false;
     }
-    let basename = Path::new(cmd_trimmed)
-        .file_name()
-        .and_then(|s| s.to_str());
+    let basename = Path::new(cmd_trimmed).file_name().and_then(|s| s.to_str());
 
     allowed_commands.iter().any(|entry| {
         let allowed = entry.trim();
@@ -523,9 +525,7 @@ pub(crate) fn merge_profile_allow_keys(
                 })
                 .collect();
             if intersected.is_empty() {
-                bail!(
-                    "--allow-keys has no keys permitted by profile '{profile_name}'"
-                );
+                bail!("--allow-keys has no keys permitted by profile '{profile_name}'");
             }
             Ok(Some(intersected))
         }
@@ -670,8 +670,7 @@ pub(crate) fn validate_workspace_policy(
 ) -> PolicyCheckReport {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    let allow_loopback =
-        std::env::var("CIPHERVAULT_ALLOW_LOOPBACK_UPSTREAM").as_deref() == Ok("1");
+    let allow_loopback = std::env::var("CIPHERVAULT_ALLOW_LOOPBACK_UPSTREAM").as_deref() == Ok("1");
 
     for rel in &policy.sandbox_read_paths {
         match validate_sandbox_read_path(rel, workspace_root, tracked_paths) {
@@ -699,7 +698,9 @@ pub(crate) fn validate_workspace_policy(
         for req in &prof.require_keys {
             let trimmed = req.trim();
             if trimmed.is_empty() {
-                errors.push(format!("[profiles.{name}].require_keys contains an empty key"));
+                errors.push(format!(
+                    "[profiles.{name}].require_keys contains an empty key"
+                ));
                 continue;
             }
             if trimmed.contains('*') {
@@ -731,9 +732,10 @@ pub(crate) fn validate_workspace_policy(
         }
 
         for (k, v) in &prof.upstreams {
-            if let Err(e) =
-                super::super::run_proxy::parse_proxy_upstream_spec(&format!("{k}={v}"), allow_loopback)
-            {
+            if let Err(e) = super::super::run_proxy::parse_proxy_upstream_spec(
+                &format!("{k}={v}"),
+                allow_loopback,
+            ) {
                 errors.push(format!("[profiles.{name}.upstreams] '{k}': {e}"));
             }
         }

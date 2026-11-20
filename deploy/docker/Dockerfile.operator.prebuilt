@@ -1,0 +1,35 @@
+# ==============================================================================
+# Operator runtime image from a prebuilt, checksum-verified Linux binary.
+#
+# The no-CI promotion path (DEPLOYMENT_RUNBOOK.md R5c): the release machine
+# cross-builds `ciphervault-operator` once from a clean checkout of the
+# release commit (cargo zigbuild, x86_64-unknown-linux-gnu.2.31), records
+# its SHA-256, and each node builds this image around that exact binary
+# after checking the hash. It is the same runtime stage as
+# Dockerfile.operator, without compiling Rust on a 1 GB e2-micro.
+#
+#   docker build -f Dockerfile.operator.prebuilt -t ciphervault-operator:<ver> <dir with the binary>
+# ==============================================================================
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 10001 ciphervault && \
+    useradd -u 10001 -g ciphervault -s /bin/false -m ciphervault
+
+RUN mkdir -p /var/lib/ciphervault && \
+    chown -R ciphervault:ciphervault /var/lib/ciphervault
+
+COPY ciphervault-operator /usr/local/bin/ciphervault-operator
+RUN chmod 0755 /usr/local/bin/ciphervault-operator
+
+USER ciphervault
+WORKDIR /var/lib/ciphervault
+
+EXPOSE 8201
+
+ENTRYPOINT ["ciphervault-operator"]
+CMD ["--port", "8201", "--bind-address", "0.0.0.0", "--data-dir", "/var/lib/ciphervault", "--operator-id", "operator-1"]
