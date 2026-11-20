@@ -9,7 +9,10 @@
  * If the backend or binary is unavailable the pane says so plainly;
  * the agent tools (ciphervault_*) work regardless of this surface.
  */
-import { cn, haptic, host, Tip, usePluginI18n, useQuery, useValue, PALETTE_AREA, ROUTES_AREA } from '@hermes/plugin-sdk'
+import {
+  Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  cn, haptic, host, Tip, usePluginI18n, useQuery, useValue, PALETTE_AREA, ROUTES_AREA
+} from '@hermes/plugin-sdk'
 import { useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
@@ -89,10 +92,18 @@ function SecretEntryDrawer({
   const [saving, setSaving] = useState(false)
 
   const isExpanded = open === null ? pendingKeys.length > 0 : Boolean(open)
-  const envChoices = ['.env', '.env.local', '.env.development', '.env.production']
-  if (envFile && !envChoices.includes(envFile)) {
-    envChoices.push(envFile)
+  const destination = envFile || '.env'
+  const envChoices = [
+    ['.env', t('destinationDefault')],
+    ['.env.local', t('destinationLocal')],
+    ['.env.development', t('destinationDevelopment')],
+    ['.env.production', t('destinationProduction')]
+  ]
+  if (!envChoices.some(([path]) => path === destination)) {
+    envChoices.push([destination, t('destinationRequested')])
   }
+  const fieldLabel = 'grid min-w-0 gap-1 text-xs font-medium text-(--ui-text-secondary)'
+  const inputClass = 'min-h-8 w-full min-w-0 rounded-md border border-(--ui-stroke-secondary) bg-transparent px-2.5 py-1.5 text-xs text-foreground focus-visible:outline focus-visible:outline-ring'
 
   const applyPromptChip = (item) => {
     haptic('tap')
@@ -243,52 +254,94 @@ function SecretEntryDrawer({
                     children: selectedPrompt.reason
                   })
                 : null,
-              jsx('input', {
-                type: 'text',
-                value: keyName,
-                placeholder: t('secretKeyPlaceholder'),
-                autoComplete: 'off',
-                className: 'w-full rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-primary)',
-                onChange: e => setKeyName(e.target.value)
+              jsxs('label', {
+                className: fieldLabel,
+                children: [
+                  t('secretKeyLabel'),
+                  jsx('input', {
+                    type: 'text',
+                    value: keyName,
+                    placeholder: t('secretKeyPlaceholder'),
+                    autoComplete: 'off',
+                    className: inputClass + ' font-mono',
+                    onChange: e => setKeyName(e.target.value)
+                  })
+                ]
               }),
-              jsx('input', {
-                type: 'password',
-                value: secretValue,
-                placeholder: t('secretValPlaceholder'),
-                autoComplete: 'new-password',
-                className: 'w-full rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-xs text-(--ui-text-primary) outline-none focus:border-(--ui-stroke-primary)',
-                onChange: e => setSecretValue(e.target.value)
+              jsxs('label', {
+                className: fieldLabel,
+                children: [
+                  t('secretValLabel'),
+                  jsx('input', {
+                    type: 'password',
+                    value: secretValue,
+                    placeholder: t('secretValPlaceholder'),
+                    autoComplete: 'new-password',
+                    className: inputClass,
+                    onChange: e => setSecretValue(e.target.value)
+                  })
+                ]
               }),
               jsxs('div', {
-                className: 'flex items-center justify-between gap-2',
+                className: fieldLabel,
                 children: [
-                  jsx('select', {
-                    value: envFile,
-                    className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-1.5 py-1 text-[0.6875rem] text-(--ui-text-secondary) outline-none',
-                    onChange: e => setEnvFile(e.target.value),
-                    children: envChoices.map(opt => jsx('option', { value: opt, children: opt }, opt))
-                  }),
-                  jsxs('label', {
-                    className: 'flex items-center gap-1 text-[0.6875rem] text-(--ui-text-secondary)',
+                  jsx('span', { children: t('secretDestination') }),
+                  jsxs(Select, {
+                    value: destination,
+                    onValueChange: setEnvFile,
                     children: [
-                      jsx('input', {
-                        type: 'checkbox',
-                        checked: seal,
-                        onChange: e => setSeal(Boolean(e.target.checked))
+                      jsx(SelectTrigger, {
+                        type: 'button',
+                        className: 'min-h-8 w-full min-w-0',
+                        'aria-label': t('secretDestination'),
+                        title: destination,
+                        children: jsx('span', {
+                          className: 'min-w-0 flex-1 truncate text-left font-mono text-xs',
+                          children: jsx(SelectValue, { children: destination })
+                        })
                       }),
-                      jsx('span', { children: t('secretSealLabel') })
+                      jsx(SelectContent, {
+                        align: 'start',
+                        style: { width: 'var(--radix-select-trigger-width)', maxWidth: 'var(--radix-select-content-available-width)' },
+                        children: envChoices.map(([path, label]) => jsx(SelectItem, {
+                          value: path,
+                          textValue: path,
+                          className: 'min-h-9',
+                          children: jsxs('span', {
+                            className: 'grid min-w-0 gap-0.5',
+                            children: [
+                              jsx('span', { className: 'font-mono text-xs font-medium', style: { overflowWrap: 'anywhere' }, children: path }),
+                              jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: label })
+                            ]
+                          })
+                        }, path))
+                      })
                     ]
                   })
                 ]
               }),
-              jsx('button', {
+              jsxs('label', {
+                className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-2 text-xs',
+                children: [
+                  jsx('input', {
+                    type: 'checkbox',
+                    checked: seal,
+                    className: 'mt-0.5 shrink-0',
+                    onChange: e => setSeal(Boolean(e.target.checked))
+                  }),
+                  jsxs('span', {
+                    className: 'grid gap-0.5',
+                    children: [
+                      jsx('span', { className: 'font-medium text-foreground', children: t('secretSealLabel') }),
+                      jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: t('secretSealHelp') })
+                    ]
+                  })
+                ]
+              }),
+              jsx(Button, {
                 type: 'submit',
                 disabled: saving,
-                className: cn(
-                  'mt-0.5 rounded-md border border-(--ui-stroke-secondary) px-2 py-1 text-xs font-medium',
-                  'text-(--ui-text-primary) hover:bg-(--chrome-action-hover)',
-                  saving && 'opacity-50 cursor-not-allowed'
-                ),
+                className: 'min-h-8 w-full',
                 children: saving ? t('secretSaving') : t('secretSaveBtn')
               })
             ]
@@ -745,13 +798,15 @@ function StatusBody({ ctx }) {
 function VaultPane({ ctx }) {
   const t = usePluginI18n(ID)
   const cwd = useValue(host.state.cwd)
+  const workspace = t('cwd', String(cwd || '—'))
   return jsxs('div', {
     className: 'flex h-full flex-col gap-2 overflow-y-auto p-3 text-sm',
     children: [
-      jsx('div', { className: 'text-xs font-semibold uppercase tracking-wide text-(--ui-text-tertiary)', children: t('paneTitle') }),
+      jsx('div', { className: 'shrink-0 text-xs font-semibold uppercase tracking-wide text-(--ui-text-tertiary)', children: t('paneTitle') }),
       jsx('div', {
-        className: 'truncate rounded-lg border border-(--ui-stroke-secondary) p-2 text-xs text-(--ui-text-secondary)',
-        children: t('cwd', String(cwd || '—'))
+        className: 'shrink-0 truncate rounded-lg border border-(--ui-stroke-secondary) p-2 text-xs text-(--ui-text-secondary)',
+        title: workspace,
+        children: workspace
       }),
       jsx(ExplorerLink, {}),
       jsx(StatusBody, { ctx }),
@@ -1061,9 +1116,18 @@ export default {
         drawerHide: 'Hide',
         pendingCount: n => `${n} requested`,
         pendingHint: 'Agent requested keys (click to fill):',
-        secretKeyPlaceholder: 'KEY_NAME (e.g. OPENAI_API_KEY)',
-        secretValPlaceholder: 'Secret value (never enters chat)',
+        secretKeyLabel: 'Key name',
+        secretKeyPlaceholder: 'e.g. OPENAI_API_KEY',
+        secretValLabel: 'Secret value',
+        secretValPlaceholder: 'Never enters chat',
+        secretDestination: 'Destination file',
+        destinationDefault: 'Default environment',
+        destinationLocal: 'Local overrides',
+        destinationDevelopment: 'Development',
+        destinationProduction: 'Production',
+        destinationRequested: 'Requested workspace file',
         secretSealLabel: 'Seal & shred',
+        secretSealHelp: 'Save an encrypted snapshot and remove working plaintext.',
         secretSaveBtn: 'Save to Vault',
         secretSaving: 'Saving…',
         secretInvalidKey: 'Invalid key name (use A-Z, 0-9, _).',

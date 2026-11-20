@@ -1,5 +1,9 @@
 # Unreleased
 
+- **Hermes plugin v0.8.2.** The Secret Entry destination picker uses the
+  Hermes theme and keyboard controls, shows the exact destination path,
+  and keeps the workspace header readable in the sidebar. No CLI or vault
+  behavior changed.
 - **Hermes plugin v0.8.0** (13 tools) still pins CLI v1.0.38. It adds
   `ciphervault_restore_preview` and the `history_limit` and `watcher_health`
   options of `ciphervault_status`. They use CLI flags that are on `main` but
