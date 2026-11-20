@@ -495,6 +495,18 @@ impl VaultWatcher {
         &self,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) -> Result<()> {
+        // One watcher per vault. Two would race on the device counter and the
+        // head, and overwrite each other's status record. Held until return;
+        // the OS releases it even if the process dies. Dry-run captures
+        // nothing, so it needs no lock and never blocks a real watcher.
+        let _instance_lock = if self.config.dry_run {
+            None
+        } else {
+            Some(
+                crate::status::WatcherInstanceLock::acquire(&self.config.root_dir)
+                    .map_err(|error| anyhow::anyhow!(error))?,
+            )
+        };
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(128);
         let overflow = Arc::new(AtomicBool::new(false));
         let callback_overflow = overflow.clone();
@@ -536,6 +548,9 @@ impl VaultWatcher {
                 let mut worker = VaultWatcher::new(config)?;
                 worker.hash_cache = hashes;
                 worker.status = worker_status;
+                if let Some(status) = &worker.status {
+                    status.worker_started();
+                }
                 let mut last_retry = Instant::now();
                 loop {
                     let label = tokio::select! {
@@ -571,6 +586,11 @@ impl VaultWatcher {
                                 Err(_) => { eprintln!("Watcher upload timed out; durable pending upload will retry");
                                     if let Some(status) = &worker.status { status.synced(None, "timeout", Some("capture or upload exceeded 90s; pending upload retained")); }
                                     let _ = worker.store.record_activity("WATCH_SYNC_TIMEOUT", "Watcher upload timed out; pending upload retained", "{}"); },
+                            }
+                            // Every finished cycle (ok, failed, or timed out) proves the
+                            // worker is still turning over; a hung one stops beating.
+                            if let Some(status) = &worker.status {
+                                status.worker_beat();
                             }
                         }
                     }

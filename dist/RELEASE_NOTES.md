@@ -8,6 +8,15 @@
   they return `cli_unsupported`. The watcher now keeps a heartbeat record in
   `.ciphervault/watcher-status.json`. Verified locally only (hosted CI is
   still billing-locked).
+- **Hermes plugin v0.8.1 and one watcher per vault.**
+  - A watcher holds an OS lock on `.ciphervault/watcher.lock`, so a second
+    `ciphervault watch` or `ciphervault-agent` on the same vault refuses to
+    start. Two watchers would race on the device counter and the head.
+  - `status --json --watcher` uses the lock as OS-verified liveness and adds
+    a capture-worker beat. A live process whose worker or loop has gone quiet
+    is now `stalled`, not `running`, and a lock released without a clean stop
+    is `stopped`.
+  - A test now runs `watch --sync` against three local operators end to end.
 
 # CipherVault 1.0.38
 

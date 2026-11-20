@@ -556,6 +556,7 @@ def test_real_watcher_health_older_verified_backup_then_newer_capture(real_vault
         "version": 1, "vault_id": out["data"]["vault_id_hex"], "instance_id": "fixture",
         "pid": 4242, "sync_enabled": True, "operator_count": 3, "debounce_secs": 2,
         "started_at_utc": now - 7200, "heartbeat_at_utc": now - 3600, "heartbeat_interval_secs": 10,
+        "capture_worker_beat_at_utc": now - 3600,
         "stopped_at_utc": None, "last_change_detected_at_utc": now - 3600,
         "last_capture": None, "last_error": None, "last_sync": None,
     }
@@ -565,8 +566,14 @@ def test_real_watcher_health_older_verified_backup_then_newer_capture(real_vault
     assert (stale["watcher"]["state"], stale["watcher"]["evidence"]) == ("unknown", "stale_heartbeat")
     record["heartbeat_at_utc"] = int(time.time())
     status_file.write_text(json.dumps(record), encoding="utf-8")
+    hung = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))["watcher_health"]
+    assert (hung["watcher"]["state"], hung["watcher"]["evidence"]) == ("stalled", "worker_stalled")
+    assert "Restart it" in " ".join(hung["summary"])
+    record["capture_worker_beat_at_utc"] = int(time.time())
+    status_file.write_text(json.dumps(record), encoding="utf-8")
     fresh = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))["watcher_health"]
     assert fresh["watcher"]["state"] == "running" and fresh["watcher"]["pid"] == 4242
+    assert fresh["watcher"]["lock"] == "absent", "no watcher ran here, so there is no lock file"
     status_file.write_text("{ not json", encoding="utf-8")
     broken = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))
     assert broken["success"] is True

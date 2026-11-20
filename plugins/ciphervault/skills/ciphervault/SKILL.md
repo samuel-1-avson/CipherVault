@@ -63,7 +63,9 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
      whether an edit was backed up. Keep "change detected", "snapshot
      captured", and "remote backup verified" apart, quote recorded times as
      recorded (not live checks), and say "unknown" when the evidence is
-     missing or stale — never "running" without a fresh heartbeat;
+     missing or stale — never "running" unless the tool says so. "stalled"
+     means the watcher process is alive but not capturing: tell the user to
+     restart it;
    - `ciphervault_redact` to mask text you must quote;
    - `ciphervault_status` for names/paths and sealed status;
    - `ciphervault_scan` before any git operation;

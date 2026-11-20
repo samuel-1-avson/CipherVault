@@ -217,8 +217,12 @@ fn build_watcher_health(
     now_utc: u64,
 ) -> Result<WatcherHealthJson> {
     let record = ciphervault_agent::read_watcher_status(root);
+    // The OS lock answers "is a watcher process alive?" without trusting
+    // the record's clock; the record then says whether it is still working.
+    let lock = ciphervault_agent::probe_watcher_lock(root);
     let liveness = ciphervault_agent::assess_liveness(
         record.as_ref().map(Option::as_ref).map_err(String::as_str),
+        &lock,
         &hex::encode(vault_id),
         now_utc,
     );

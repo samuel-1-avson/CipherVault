@@ -7,7 +7,7 @@
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens-yubikey-piv)
-[![Hermes Plugin: v0.8.0](https://img.shields.io/badge/Hermes%20Plugin-v0.8.0-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
+[![Hermes Plugin: v0.8.1](https://img.shields.io/badge/Hermes%20Plugin-v0.8.1-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
 [![Verification](https://img.shields.io/badge/Verification-Quality%20Gates-blue.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
@@ -17,7 +17,7 @@
 
 Captures default to [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) featuring content-defined chunk deduplication across edits, keyed identifiers (public candidate-file hashes no longer match v2 metadata), and domain-isolated HKDF-SHA256 derivations. Legacy chunk v1 remains supported for backward compatibility (or via CIPHERVAULT_CHUNK_V2_WRITE=0); both versions remain transparently readable. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
 
-**Current release: v1.0.38.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 or newer for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles and the tamper-evident agent audit log. The [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.8.0 pins v1.0.38. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
+**Current release: v1.0.38.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 or newer for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles and the tamper-evident agent audit log. The [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.8.1 pins v1.0.38. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
@@ -258,7 +258,7 @@ Highlights of v1.0.30 through v1.0.35. The [release notes](dist/RELEASE_NOTES.md
 
 | Area | What changed |
 |---|---|
-| 🤖 **AI agents** | Native **Hermes plugin** (now v0.8.0, 13 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
+| 🤖 **AI agents** | Native **Hermes plugin** (now v0.8.1, 13 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
 | 🔒 **Running secrets** | `run --allow-keys`, `--no-net` sandboxing (Linux, macOS, Windows), `--proxy` credential proxy, and `--profile` execution profiles from `.ciphervault/policy.toml`. |
 | 🧹 **Sealing** | `push --shred` (`--seal`) removes plaintext from the working tree after sealing; `[vault] sealed_mode = true` makes it the default. |
 | 🩺 **Diagnostics** | `env-doctor` zero-knowledge environment and schema checks; `status --json` reports sealed state. |
@@ -659,7 +659,7 @@ AI coding agents are useful and dangerous around secrets: they read `.env` files
 
 ### The Hermes plugin
 
-The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.8.0**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
+The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.8.1**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
 
 ```mermaid
 flowchart LR
@@ -677,7 +677,7 @@ flowchart LR
 
 **Quickest path to try it:** `hermes ciphervault quickstart` runs the whole loop in a throwaway vault in about two minutes.
 
-**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. On 20 November 2026 that catalog entry was still **v0.6.5 (7 tools)**; the update to v0.8.0 is in review upstream ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)). To get **v0.8.0 (all 13 tools)** now, install from this repository:
+**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. On 20 November 2026 that catalog entry was still **v0.6.5 (7 tools)**; the update to v0.8.0 is in review upstream ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)). To get **v0.8.1 (all 13 tools)** now, install from this repository:
 
 ```bash
 # from a CipherVault checkout; use $HERMES_HOME instead of ~/.hermes if you set it
