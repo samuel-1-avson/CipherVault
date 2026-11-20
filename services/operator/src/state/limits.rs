@@ -23,6 +23,15 @@ pub const MAX_PEER_ANNOUNCE_AGE_SECS: u64 = 86400;
 /// Peer announces farther in the future than this are rejected (clock
 /// bound); without it a future-dated descriptor would never be pruned.
 pub const MAX_PEER_ANNOUNCE_SKEW_SECS: u64 = 3600;
+/// A routing entry is kept while its newest proof of life is younger than
+/// this: the descriptor's own signed timestamp, or the last verified
+/// heartbeat / join refresh / admin announce recorded in membership.
+/// Before 1.0.38 only the descriptor timestamp counted, so every mesh
+/// silently expired 24 h after the announce and heartbeats fell back to
+/// `unknown_sender` even while the peer was alive.
+pub const PEER_ROUTE_TTL_SECS: u64 = 86400;
+/// Minimum spacing between heartbeat-driven `peer-membership.json` writes.
+pub const MEMBERSHIP_LIVENESS_PERSIST_SECS: u64 = 3600;
 /// Number of striped filesystem locks sharding operator disk I/O (R8).
 /// Distinct CIDs/locators hash to different stripes so concurrent uploads
 /// for different objects no longer serialize on a single global lock.

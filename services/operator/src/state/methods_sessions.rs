@@ -97,10 +97,13 @@ impl OperatorState {
         };
         let now = Utc::now().timestamp() as u64;
         let mut peers = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
+        // Membership is loaded first (constructor order), so a route kept
+        // alive by heartbeats before the restart survives it.
+        let membership = lock_or_recover(&self.peer_membership, "peer_membership");
         for (operator_id, peer) in records {
             if peer.operator_id == operator_id
                 && peer.verify().is_ok()
-                && now.saturating_sub(peer.timestamp_utc) < 86400
+                && super::methods_peers::route_is_fresh(now, &peer, &membership)
             {
                 peers.insert(operator_id, peer);
             }

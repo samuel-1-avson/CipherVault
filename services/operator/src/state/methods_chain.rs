@@ -81,6 +81,7 @@ impl OperatorState {
             enrolled_identities: Mutex::new(Vec::new()),
             peer_routing_table: Mutex::new(HashMap::new()),
             peer_membership: Mutex::new(HashMap::new()),
+            membership_persisted_utc: AtomicU64::new(0),
             spent_invites: Mutex::new(HashMap::new()),
             admissions: Mutex::new(Vec::new()),
             join_requests: Mutex::new(Vec::new()),
@@ -100,8 +101,10 @@ impl OperatorState {
         state.load_enrolled_identities();
         state.load_sessions();
         state.load_challenges();
-        state.load_peer_routing_table();
+        // Membership first: route retention at load reads each peer's
+        // last verified proof of life (see `route_is_fresh`).
         state.load_peer_membership();
+        state.load_peer_routing_table();
         state.load_spent_invites();
         state.load_admissions();
         state.load_join_requests();

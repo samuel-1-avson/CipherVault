@@ -2,6 +2,24 @@
 
 use super::*;
 
+/// Whether a routing entry is still live: its newest proof of life must be
+/// younger than `PEER_ROUTE_TTL_SECS`. Proof of life is the descriptor's own
+/// signed timestamp, or the membership `last_seen_utc` that only verified
+/// heartbeats (signed by the routed key), join refreshes and admin
+/// announces move. A silent peer still expires after the TTL; a live one
+/// no longer has to be re-announced every day.
+pub(super) fn route_is_fresh(
+    now: u64,
+    peer: &ciphervault_storage::PeerDescriptor,
+    membership: &HashMap<String, PeerMembership>,
+) -> bool {
+    let seen = membership
+        .get(&peer.operator_id)
+        .map(|record| record.last_seen_utc)
+        .unwrap_or(0);
+    now.saturating_sub(peer.timestamp_utc.max(seen)) < PEER_ROUTE_TTL_SECS
+}
+
 impl OperatorState {
     /// Validates a peer descriptor's self-signature, freshness window, and
     /// endpoint shape. Shared by control-plane announces, verified ticket
@@ -35,9 +53,14 @@ impl OperatorState {
     /// and refreshes; the previous entry is restored when the persist
     /// fails so a failed write never drops a live route.
     fn insert_peer(&self, peer: ciphervault_storage::PeerDescriptor) -> Result<usize, String> {
+        // Lock order: routing table, then membership (same as the
+        // heartbeat path in swarm::accept_control_message).
         let mut lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
         let now = Utc::now().timestamp() as u64;
-        lock.retain(|_, p| now.saturating_sub(p.timestamp_utc) < 86400);
+        {
+            let membership = lock_or_recover(&self.peer_membership, "peer_membership");
+            lock.retain(|_, p| route_is_fresh(now, p, &membership));
+        }
         if !lock.contains_key(&peer.operator_id) && lock.len() >= MAX_ACTIVE_PEERS {
             return Err("Peer routing table capacity reached".into());
         }
@@ -115,7 +138,10 @@ impl OperatorState {
     pub fn get_active_peers(&self) -> Vec<ciphervault_storage::PeerDescriptor> {
         let now = Utc::now().timestamp() as u64;
         let mut lock = lock_or_recover(&self.peer_routing_table, "peer_routing_table");
-        lock.retain(|_, peer| now.saturating_sub(peer.timestamp_utc) < 86400);
+        {
+            let membership = lock_or_recover(&self.peer_membership, "peer_membership");
+            lock.retain(|_, peer| route_is_fresh(now, peer, &membership));
+        }
         lock.values().cloned().collect()
     }
 
@@ -651,15 +677,34 @@ impl OperatorState {
         Ok(status)
     }
 
-    /// Notes a verified P2P heartbeat as proof of life. The in-memory
-    /// `last_seen` moves on every call; the membership file is written
-    /// only on the probation→full transition edge — heartbeats arrive
-    /// every few seconds, and persisting each would burn disk for nothing.
+    /// Notes a verified P2P heartbeat as proof of life. The caller has
+    /// already checked the heartbeat signature against the sender's routed
+    /// key, so this also keeps that route alive (`route_is_fresh`). The
+    /// in-memory `last_seen` moves on every call. The membership file is
+    /// written on the probation→full edge, when a routed peer gets its
+    /// first record, and otherwise at most once per
+    /// `MEMBERSHIP_LIVENESS_PERSIST_SECS`: heartbeats arrive every few
+    /// seconds and persisting each would burn disk for nothing, but a
+    /// restart must still see recent liveness or it drops live routes.
     pub fn note_peer_heartbeat(&self, operator_id: &str) {
         let now = Utc::now().timestamp() as u64;
         let mut lock = lock_or_recover(&self.peer_membership, "peer_membership");
-        let transition = match lock.get_mut(operator_id) {
-            None => return,
+        let (transition, created) = match lock.get_mut(operator_id) {
+            // A routed peer without a record (meshed before verified join,
+            // or by an older binary) reads as Full; record it so its route
+            // can be kept alive by liveness from now on.
+            None => {
+                lock.insert(
+                    operator_id.to_string(),
+                    PeerMembership {
+                        status: MembershipStatus::Full,
+                        joined_utc: now,
+                        last_seen_utc: now,
+                        graduated_utc: None,
+                    },
+                );
+                (false, true)
+            }
             Some(record) => {
                 record.last_seen_utc = now;
                 if record.status == MembershipStatus::Probation
@@ -667,22 +712,33 @@ impl OperatorState {
                 {
                     record.status = MembershipStatus::Full;
                     record.graduated_utc = Some(now);
-                    true
+                    (true, false)
                 } else {
-                    false
+                    (false, false)
                 }
             }
         };
-        if transition {
-            let snapshot = lock.clone();
-            if let Err(error) = self.persist_peer_membership(&snapshot) {
+        let last_persist = self.membership_persisted_utc.load(Ordering::Relaxed);
+        let periodic = now.saturating_sub(last_persist) >= MEMBERSHIP_LIVENESS_PERSIST_SECS;
+        if !(transition || created || periodic) {
+            return;
+        }
+        let snapshot = lock.clone();
+        if let Err(error) = self.persist_peer_membership(&snapshot) {
+            if transition {
                 if let Some(record) = lock.get_mut(operator_id) {
                     record.status = MembershipStatus::Probation;
                     record.graduated_utc = None;
                 }
                 eprintln!("operator membership graduation persist failed: {error}");
-                return;
+            } else {
+                // Liveness stays correct in memory; the next window retries.
+                eprintln!("operator membership liveness persist failed: {error}");
             }
+            return;
+        }
+        self.membership_persisted_utc.store(now, Ordering::Relaxed);
+        if transition {
             self.metrics.observe_peer_graduated();
         }
     }

@@ -709,10 +709,15 @@ HTTP serves (see rollback).
   (`--p2p-advertise-addr /ip4/<external>/tcp/9101` + `.../udp/9102/quic-v1`).
 - Rendezvous/relay seed: op1 (`--p2p-rendezvous-server`). Every node is a
   rendezvous client; only op1 serves.
-- Routing mesh is separate from the P2P mesh: after any restart, re-run
-  the playbook §2 mesh or heartbeats drop as `unknown_sender` and repair
-  cannot push. Service tokens are per-node — announce target-local (each
-  node POSTs to its own `/v1/peers/announce` with its own token).
+- Routing mesh is separate from the P2P mesh: a node only accepts
+  heartbeats and repair pushes from senders in its routing table, or they
+  drop as `unknown_sender`. Service tokens are per-node, so mesh
+  target-local with `scripts/gcp/mesh-node.sh` (playbook §2): each node
+  announces its peers to itself with its own token. From 1.0.38 verified
+  heartbeats keep routes alive across days and restarts; before 1.0.38
+  every route expired 24 h after its announce, which is why the 1.0.28
+  fleet sat at `peers_live 0` until re-meshed. Re-mesh after membership
+  changes or a node outage longer than 24 h.
 
 Bootstrap rotation (IP/PeerId change): re-collect external IPs from
 `gcloud compute instances list` and PeerIds from each node's

@@ -1200,6 +1200,90 @@ fn heartbeat_liveness_graduates_served_probation() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Regression for the 2026-11 fleet outage: every route expired 24 h after
+/// its announce, so the live mesh fell back to `unknown_sender` drops. A
+/// verified heartbeat must now keep the route alive past the descriptor
+/// TTL, in memory and across a restart, while a silent peer still expires.
+#[test]
+fn verified_heartbeats_keep_routes_alive_past_descriptor_ttl() {
+    let _guard = join_test_guard();
+    let (state, root) = join_test_state("routelive");
+    let (peer, peer_key) = join_test_peer("peer-live");
+    assert_eq!(state.register_peer(peer.clone()).unwrap(), 1);
+    let now = Utc::now().timestamp() as u64;
+    let expired = now - PEER_ROUTE_TTL_SECS - 3600;
+    // The announce is 25 h old (re-signed, so only its age differs).
+    let mut aged = peer.clone();
+    aged.timestamp_utc = expired;
+    aged.sign(&peer_key);
+    let age_route = |state: &OperatorState| {
+        lock_or_recover(&state.peer_routing_table, "peer_routing_table")
+            .insert("peer-live".into(), aged.clone());
+    };
+
+    // No liveness for 25 h either: the route expires (pre-fix behaviour
+    // for silent peers is kept).
+    age_route(&state);
+    lock_or_recover(&state.peer_membership, "peer_membership")
+        .get_mut("peer-live")
+        .unwrap()
+        .last_seen_utc = expired;
+    assert!(state.get_active_peers().is_empty());
+
+    // A verified heartbeat keeps the same aged route alive.
+    age_route(&state);
+    state.note_peer_heartbeat("peer-live");
+    assert_eq!(state.get_active_peers().len(), 1);
+    assert!(state.is_routing_member("peer-live"));
+
+    // The heartbeat's liveness was persisted, so a restart keeps the route.
+    let snapshot = lock_or_recover(&state.peer_routing_table, "peer_routing_table").clone();
+    state.persist_peer_routing_table(&snapshot).unwrap();
+    drop(state);
+    let reopened = legacy_state(
+        "test-op".into(),
+        root.clone(),
+        ciphervault_crypto::generate_signing_key(),
+    );
+    assert_eq!(reopened.get_active_peers().len(), 1);
+    drop(reopened);
+
+    // Silent for 25 h before the restart: the aged route is dropped at load.
+    backdate_membership(&root, "peer-live", 90_000, 90_000);
+    let reopened = legacy_state(
+        "test-op".into(),
+        root.clone(),
+        ciphervault_crypto::generate_signing_key(),
+    );
+    assert!(reopened.get_active_peers().is_empty());
+    drop(reopened);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Routed peers meshed before membership records existed get a Full record
+/// on their first verified heartbeat, so liveness can keep them routed.
+#[test]
+fn heartbeat_records_liveness_for_unrecorded_routed_peer() {
+    let _guard = join_test_guard();
+    let (state, root) = join_test_state("routenorecord");
+    let (peer, _) = join_test_peer("legacy-peer");
+    assert_eq!(state.register_peer(peer).unwrap(), 1);
+    lock_or_recover(&state.peer_membership, "peer_membership").remove("legacy-peer");
+    state.note_peer_heartbeat("legacy-peer");
+    assert!(!state.is_probationary("legacy-peer"));
+    let views = state.membership_snapshot();
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].status, MembershipStatus::Full);
+    assert!(views[0].last_seen_utc.is_some());
+    let raw = fs::read_to_string(root.join("peer-membership.json")).unwrap();
+    assert!(
+        raw.contains("legacy-peer"),
+        "record must be persisted: {raw}"
+    );
+    drop(state);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn control_announce_promotes_probation_to_full() {
     let _guard = join_test_guard();
