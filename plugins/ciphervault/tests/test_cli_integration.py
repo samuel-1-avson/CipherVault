@@ -4,6 +4,7 @@ Set CV_TEST_BINARY to a native executable path. No active Hermes install
 is modified, no remote fleet is contacted, and init output is discarded.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -353,6 +355,255 @@ def test_real_sealed_vault_generate_preserves_existing_keys(real_vault):
     }))
     assert gen2["success"] is True, gen2
     assert gen2["sha256_prefix"] != gen1["sha256_prefix"]
+
+
+def _workspace_tree(root):
+    """Every path outside the vault store, with mtime and content digest."""
+    tree = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if rel.split("/")[0] == ".ciphervault":
+            continue
+        if path.is_dir():
+            tree[rel] = "dir"
+        else:
+            tree[rel] = (path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+    return tree
+
+
+def _require_snapshot_features(cwd):
+    cv._CLI_FEATURE_CACHE.clear()
+    if not (cv._cli_supports_history_json(cwd) and cv._cli_supports_restore_preview(cwd)):
+        pytest.skip("resolved CLI predates `history --json` / `restore --dry-run --json`")
+
+
+def _push(cwd, message):
+    pushed = json.loads(cv._tool_push({"cwd": cwd, "local_only": True, "message": message}))
+    assert pushed["success"], "local fake-data snapshot failed"
+
+
+def test_real_history_diff_and_restore_preview_round_trip(real_vault):
+    root, _kit, fake_value = real_vault
+    cwd = str(root)
+    _require_snapshot_features(cwd)
+
+    empty = json.loads(cv._tool_status({"cwd": cwd, "history_limit": 5}))
+    assert empty["success"] and empty["history"]["success"]
+    assert empty["history"]["total"] == 0 and empty["history"]["snapshots"] == []
+    no_snapshot = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": "head"}))
+    assert no_snapshot["error_code"] == "no_snapshots"
+
+    (root / "config").mkdir()
+    (root / "config" / "app.env").write_text("APP_FIXTURE=one\n", encoding="utf-8")
+    assert cv._run_cli(["track", "config/app.env"], cwd)["success"]
+    _push(cwd, "first fixture snapshot")
+    (root / ".env").write_text("DEMO_VALUE=" + fake_value + "-v2\n", encoding="utf-8")
+    _push(cwd, "second fixture snapshot")
+
+    status = json.loads(cv._tool_status({"cwd": cwd, "history_limit": 1}))
+    one = status["history"]
+    assert one["total"] == 2 and one["returned"] == 1 and one["truncated"] is True
+    newest = one["snapshots"][0]
+    assert newest["is_active_head"] is True
+    assert newest["snapshot_id"] == status["data"]["active_head_hex"]
+    both = json.loads(cv._tool_status({"cwd": cwd, "history_limit": 10}))["history"]
+    assert [s["snapshot_id"] for s in both["snapshots"]][0] == newest["snapshot_id"]
+    older, older_logical = both["snapshots"][1]["snapshot_id"], both["snapshots"][1]["logical_id"]
+    assert both["snapshots"][1]["is_active_head"] is False
+
+    # History IDs (record CID and logical ID) work directly with diff.
+    for ref in (older, older_logical):
+        diff = json.loads(cv._tool_diff({"cwd": cwd, "snapshot_a": ref, "snapshot_b": newest["snapshot_id"]}))
+        assert diff["success"], diff
+        assert fake_value not in json.dumps(diff)
+
+    before = _workspace_tree(root)
+    preview = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": older}))
+    assert preview["success"], preview
+    assert {f["path"]: f["action"] for f in preview["files"]} == {
+        ".env": "replace", "config/app.env": "unchanged",
+    }
+    assert preview["counts"] == {"create": 0, "replace": 1, "unchanged": 1, "total": 2}
+    assert preview["verification"]["status"] == "passed"
+    assert preview["restore_requires_force"] is False and preview["uncommitted_changes"] == []
+    assert f"ciphervault restore --snapshot {older}" in preview["next"]
+    by_logical = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": older_logical}))
+    assert by_logical["success"] and by_logical["snapshot_id"] == older
+    head = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": "head"}))
+    assert head["snapshot_id"] == newest["snapshot_id"] and head["is_active_head"] is True
+    assert {f["action"] for f in head["files"]} == {"unchanged"}
+    assert _workspace_tree(root) == before, "previews must leave every working file untouched"
+
+    # Uncommitted edits: the preview says a real restore would need --force.
+    (root / "config" / "app.env").unlink()
+    (root / ".env").write_text("DEMO_VALUE=uncommitted-fixture-edit\n", encoding="utf-8")
+    changed = _workspace_tree(root)
+    pending = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": "head"}))
+    assert {f["path"]: f["action"] for f in pending["files"]} == {
+        ".env": "replace", "config/app.env": "create",
+    }
+    assert pending["counts"]["create"] == 1 and pending["counts"]["replace"] == 1
+    assert pending["restore_requires_force"] is True
+    assert set(pending["uncommitted_changes"]) == {".env", "config/app.env"}
+    assert "--force" in pending["next"]
+    assert _workspace_tree(root) == changed
+    assert not (root / "config" / "app.env").exists(), "a preview creates no restored plaintext"
+    assert not (root / ".ciphervault-restore").exists(), "a preview leaves no staging directory"
+    assert not (root / ".ciphervault-restore.lock").exists(), "a preview takes no restore lock"
+    for result in (preview, by_logical, head, pending):
+        assert fake_value not in json.dumps(result)
+
+    missing = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": "f" * 64}))
+    assert missing["success"] is False and missing["error_code"] == "snapshot_not_found"
+    assert missing["snapshot_ref"] == "f" * 64
+
+    # The history never grows past its bound and stays metadata-only.
+    assert set(both["snapshots"][0]) == {
+        "snapshot_id", "logical_id", "recorded_at_utc", "recorded_at", "epoch", "is_active_head",
+    }
+
+
+def _make_dir_link(link, target):
+    if os.name == "nt":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True, timeout=30)
+        return made.returncode == 0
+    os.symlink(target, link, target_is_directory=True)
+    return True
+
+
+def test_real_preview_refuses_link_destinations(real_vault, tmp_path):
+    root, _kit, _fake_value = real_vault
+    cwd = str(root)
+    _require_snapshot_features(cwd)
+    (root / "config").mkdir()
+    (root / "config" / "app.env").write_text("APP_FIXTURE=one\n", encoding="utf-8")
+    assert cv._run_cli(["track", "config/app.env"], cwd)["success"]
+    _push(cwd, "link fixture")
+    outside = tmp_path / "outside-the-vault"
+    outside.mkdir()
+    shutil.rmtree(root / "config")
+    link = root / "config"
+    if not _make_dir_link(link, outside):
+        pytest.skip("could not create a directory junction or symlink")
+    try:
+        out = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": "head"}))
+        assert out["success"] is False and out["error_code"] == "unsafe_destination", out
+        assert list(outside.iterdir()) == [], "nothing may be written through the link"
+    finally:
+        os.rmdir(link) if os.name == "nt" else link.unlink()
+
+
+def test_real_preview_reports_failed_verification(real_vault):
+    root, _kit, fake_value = real_vault
+    cwd = str(root)
+    _require_snapshot_features(cwd)
+    _push(cwd, "verification fixture")
+    db = sqlite3.connect(root / ".ciphervault" / "vault.db")
+    try:
+        db.execute("DELETE FROM local_chunks")  # disposable fixture store only
+        db.commit()
+    finally:
+        db.close()
+    out = json.loads(cv._tool_restore_preview({"cwd": cwd, "snapshot": "head"}))
+    assert out["success"] is False and out["error_code"] == "verification_failed"
+    assert out["failed_check"] == "chunks_present"
+    assert fake_value not in json.dumps(out)
+    assert (root / ".env").read_text(encoding="utf-8").startswith("DEMO_VALUE=")
+
+
+def test_real_watcher_health_older_verified_backup_then_newer_capture(real_vault):
+    root, _kit, fake_value = real_vault
+    cwd = str(root)
+    cv._CLI_FEATURE_CACHE.clear()
+    if not (cv._cli_supports_watcher_health(cwd) and cv._cli_supports_history_json(cwd)):
+        pytest.skip("resolved CLI predates `status --json --watcher`")
+
+    before = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))
+    health = before["watcher_health"]
+    assert health["success"] is True and health["live_check_performed"] is False
+    assert (health["watcher"]["state"], health["watcher"]["evidence"]) == ("unknown", "no_record")
+    assert "watcher_health" not in before["data"]
+
+    _push(cwd, "verified fixture snapshot")
+    first = json.loads(cv._tool_status({"cwd": cwd, "history_limit": 1}))["history"]["snapshots"][0]
+    db = sqlite3.connect(root / ".ciphervault" / "vault.db")
+    try:
+        # Disposable fixture store: record a quorum replication of the first snapshot.
+        db.execute(
+            "INSERT INTO activity_log (event_type, summary, details_json, created_at_utc) VALUES (?, ?, ?, ?)",
+            ("PUSH_OK", "fixture replication", json.dumps({
+                "snapshot_id": first["logical_id"], "replicas": 3, "required_replicas": 3,
+            }), int(time.time())),
+        )
+        db.commit()
+    finally:
+        db.close()
+    (root / ".env").write_text("DEMO_VALUE=" + fake_value + "-newer\n", encoding="utf-8")
+    _push(cwd, "newer local capture")
+
+    out = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))
+    remote = out["watcher_health"]["remote_verification"]
+    assert remote["verified_snapshot"]["snapshot_id"] == first["snapshot_id"]
+    assert remote["head"]["snapshot_id"] == out["data"]["active_head_hex"] != first["snapshot_id"]
+    assert remote["head_verified"] is False and remote["newer_unverified_snapshots"] == 1
+    summary = " ".join(out["watcher_health"]["summary"])
+    assert "not a live check" in summary and "has no recorded remote verification" in summary
+    assert fake_value not in json.dumps(out)
+
+    now = int(time.time())
+    record = {
+        "version": 1, "vault_id": out["data"]["vault_id_hex"], "instance_id": "fixture",
+        "pid": 4242, "sync_enabled": True, "operator_count": 3, "debounce_secs": 2,
+        "started_at_utc": now - 7200, "heartbeat_at_utc": now - 3600, "heartbeat_interval_secs": 10,
+        "stopped_at_utc": None, "last_change_detected_at_utc": now - 3600,
+        "last_capture": None, "last_error": None, "last_sync": None,
+    }
+    status_file = root / ".ciphervault" / "watcher-status.json"
+    status_file.write_text(json.dumps(record), encoding="utf-8")
+    stale = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))["watcher_health"]
+    assert (stale["watcher"]["state"], stale["watcher"]["evidence"]) == ("unknown", "stale_heartbeat")
+    record["heartbeat_at_utc"] = int(time.time())
+    status_file.write_text(json.dumps(record), encoding="utf-8")
+    fresh = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))["watcher_health"]
+    assert fresh["watcher"]["state"] == "running" and fresh["watcher"]["pid"] == 4242
+    status_file.write_text("{ not json", encoding="utf-8")
+    broken = json.loads(cv._tool_status({"cwd": cwd, "watcher_health": True}))
+    assert broken["success"] is True
+    assert broken["watcher_health"]["watcher"]["evidence"] == "unreadable_record"
+
+
+def test_pinned_release_reports_snapshot_features_unsupported(tmp_path, monkeypatch):
+    """CV_TEST_PINNED_BINARY: the v1.0.38 release the plugin pins."""
+    configured = os.environ.get("CV_TEST_PINNED_BINARY")
+    if not configured:
+        pytest.skip("set CV_TEST_PINNED_BINARY to the pinned release binary")
+    pinned = str(Path(configured).resolve())
+    monkeypatch.setattr(cv, "find_binary", lambda: (pinned, "pinned release"))
+    cv._CLI_FEATURE_CACHE.clear()
+    root = Path(tempfile.mkdtemp(prefix="pinned-vault-", dir=tmp_path))
+    try:
+        proc = subprocess.run(
+            [pinned, "init", "--operators", "http://127.0.0.1:1"], cwd=root,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=30, env=cv._minimal_env(),
+        )
+        assert proc.returncode == 0, "fixture initialization failed (output withheld)"
+        status = json.loads(cv._tool_status({"cwd": str(root), "history_limit": 3}))
+        assert status["success"] is True and status["data"]["vault"] is True
+        assert status["history"]["error_code"] == "cli_unsupported"
+        preview = json.loads(cv._tool_restore_preview({"cwd": str(root), "snapshot": "head"}))
+        assert preview["error_code"] == "cli_unsupported"
+        watched = json.loads(cv._tool_status({"cwd": str(root), "watcher_health": True}))
+        assert watched["success"] is True and watched["data"]["vault"] is True
+        assert watched["watcher_health"]["error_code"] == "cli_unsupported"
+        report = cv.binary_diagnostics(str(root))
+        for name in ("history json", "restore preview", "watcher health"):
+            assert report["optional_capabilities"][name]["supported"] is False, name
+        assert report["success"], "optional features never make the pinned CLI incompatible"
+    finally:
+        cv._close_all_bridges()
+        shutil.rmtree(root)
 
 
 def test_real_wildcard_profile_run_injects_optional_matching_keys(real_vault):

@@ -117,7 +117,22 @@ def test_all_tools_registered(ctx):
         "ciphervault_audit", "ciphervault_env_doctor",
         "ciphervault_secret_generate", "ciphervault_diff",
         "ciphervault_proxy_doctor", "ciphervault_secret_prompt",
+        "ciphervault_restore_preview",
     }
+
+
+def test_manifest_and_registry_list_the_same_tools(ctx):
+    manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    block = manifest.split("provides_tools:", 1)[1].split("provides_hooks:", 1)[0]
+    listed = [line.strip()[2:] for line in block.splitlines() if line.strip().startswith("- ")]
+    registered = [name for name, *_ in cv._TOOLS]
+    assert sorted(listed) == sorted(registered) and len(set(listed)) == len(listed)
+    assert len(listed) == 13
+    readme = (PLUGIN_DIR / "README.md").read_text(encoding="utf-8")
+    for name in listed:
+        assert f"`{name}`" in readme, f"{name} missing from the plugin README"
+    schema = ctx.tools["ciphervault_restore_preview"][0]
+    assert schema["parameters"]["required"] == ["snapshot"]
 
 
 def test_hooks_middleware_source_commands_registered(ctx):

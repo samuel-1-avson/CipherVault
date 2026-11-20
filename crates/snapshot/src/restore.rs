@@ -214,13 +214,29 @@ pub(crate) fn publish_verified_files(
     })
 }
 
-fn publish_with(
+/// Read-only form of the destination checks that publication runs: safe
+/// relative paths, no link or reparse point in any ancestor, regular-file
+/// destinations, and no duplicate or file/directory collisions. Takes no
+/// lock and creates nothing, so a preview reports exactly what a restore
+/// into `target` would refuse.
+pub fn preflight_restore_destinations(
     target: &Path,
     files: &[DecryptedFile],
-    publish: impl Fn(usize, &Path, &Path) -> std::io::Result<()>,
 ) -> Result<Vec<PathBuf>, SnapshotError> {
-    let _lock = acquire(target)?;
-    recover_locked(target)?;
+    validate_no_links(target)?;
+    check_destinations(target, files)
+}
+
+/// Whether an interrupted restore left a journal that the next restore into
+/// `target` rolls back or cleans up before publishing anything.
+pub fn restore_transaction_pending(target: &Path) -> bool {
+    fs::symlink_metadata(target.join(STAGE)).is_ok()
+}
+
+fn check_destinations(
+    target: &Path,
+    files: &[DecryptedFile],
+) -> Result<Vec<PathBuf>, SnapshotError> {
     let mut paths = Vec::with_capacity(files.len());
     let mut seen = std::collections::HashSet::new();
     for file in files {
@@ -254,6 +270,17 @@ fn publish_with(
             ));
         }
     }
+    Ok(paths)
+}
+
+fn publish_with(
+    target: &Path,
+    files: &[DecryptedFile],
+    publish: impl Fn(usize, &Path, &Path) -> std::io::Result<()>,
+) -> Result<Vec<PathBuf>, SnapshotError> {
+    let _lock = acquire(target)?;
+    recover_locked(target)?;
+    let paths = check_destinations(target, files)?;
     let stage = target.join(STAGE);
     fs::create_dir(&stage)?;
     lock_secret_directory(&stage)?;
@@ -458,6 +485,79 @@ mod tests {
         ];
         assert!(publish_verified_files(&root, &files).is_err());
         assert_eq!(fs::read(root.join("a.env")).unwrap(), b"old-a");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preflight_is_read_only_and_refuses_what_publication_refuses() {
+        let root = std::env::temp_dir().join(format!(
+            "cv-restore-preflight-ro-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(root.join("blocked")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        fs::write(root.join("a.env"), b"old-a").unwrap();
+        let file = |path: &str| DecryptedFile {
+            relative_path: path.into(),
+            plaintext: b"new".to_vec(),
+        };
+        let ok = vec![file("a.env"), file("nested/new.env")];
+        let paths = preflight_restore_destinations(&root, &ok).unwrap();
+        assert_eq!(paths, vec![root.join("a.env"), root.join("nested/new.env")]);
+        assert!(
+            !root.join("nested").exists(),
+            "preflight must not create parents"
+        );
+        assert!(!root.join(LOCK).exists() && !root.join(STAGE).exists());
+        assert!(!restore_transaction_pending(&root));
+
+        let missing = root.join("not-yet-created");
+        preflight_restore_destinations(&missing, &ok).unwrap();
+        assert!(!missing.exists(), "preflight must not create the target");
+
+        for bad in [
+            "../escape.env",
+            "blocked",
+            "a.env/child.env",
+            ".ciphervault-restore/journal.json",
+            "CON.env",
+        ] {
+            assert!(
+                preflight_restore_destinations(&root, &[file(bad)]).is_err(),
+                "preflight accepted {bad}"
+            );
+        }
+        assert!(preflight_restore_destinations(&root, &[file("x.env"), file("X.ENV")]).is_err());
+        assert_eq!(fs::read(root.join("a.env")).unwrap(), b"old-a");
+        assert!(!root.join(LOCK).exists());
+
+        #[cfg(windows)]
+        {
+            // A directory junction is a reparse point and needs no privilege.
+            let outside = root.join("outside");
+            fs::create_dir(&outside).unwrap();
+            let junction = root.join("linked");
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&junction)
+                .arg(&outside)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+            if made {
+                assert!(preflight_restore_destinations(&root, &[file("linked/x.env")]).is_err());
+                assert!(!outside.join("x.env").exists());
+                fs::remove_dir(&junction).unwrap();
+            }
+        }
+        #[cfg(unix)]
+        {
+            let outside = root.join("outside");
+            fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+            assert!(preflight_restore_destinations(&root, &[file("linked/x.env")]).is_err());
+            assert!(!outside.join("x.env").exists());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

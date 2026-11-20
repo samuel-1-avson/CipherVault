@@ -233,6 +233,14 @@ enum Commands {
             help = "Show the full My Data overview: snapshots, files, leases, anchors, recent activity"
         )]
         overview: bool,
+
+        #[arg(
+            long,
+            requires = "json",
+            conflicts_with = "overview",
+            help = "With --json, add watcher_health: watcher liveness, last detected change and capture, sync backlog, and the newest snapshot with a recorded remote verification (read-only; no operator is contacted)"
+        )]
+        watcher: bool,
     },
 
     /// Zero-knowledge environment & schema diagnostics (code refs vs .env.example vs vault)
@@ -317,7 +325,21 @@ enum Commands {
     },
 
     /// Display snapshot history DAG
-    History,
+    History {
+        #[arg(
+            long,
+            help = "Emit machine-readable JSON, newest first, with IDs accepted by restore and diff"
+        )]
+        json: bool,
+
+        #[arg(
+            long,
+            requires = "json",
+            value_parser = clap::value_parser!(u16).range(1..=100),
+            help = "With --json, list at most N snapshots (1-100, default 20)"
+        )]
+        limit: Option<u16>,
+    },
 
     /// Prune old snapshots per the retention policy (keeps head + unreplicated)
     Prune {
@@ -385,6 +407,13 @@ enum Commands {
             help = "Overwrite uncommitted working-file changes when restoring into the workspace"
         )]
         force: bool,
+
+        #[arg(
+            long,
+            requires = "dry_run",
+            help = "With --dry-run, print the verified preview as JSON (exit status 3 when the preview is refused)"
+        )]
+        json: bool,
     },
 
     /// Recover a vault from an offline recovery kit or threshold guardian shares on a clean machine

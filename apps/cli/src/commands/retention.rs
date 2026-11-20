@@ -52,6 +52,134 @@ pub(crate) fn cmd_history() -> Result<()> {
     Ok(())
 }
 
+/// Default and hard cap for `history --json --limit`.
+pub(crate) const DEFAULT_HISTORY_JSON_LIMIT: usize = 20;
+pub(crate) const MAX_HISTORY_JSON_LIMIT: usize = 100;
+
+/// One snapshot in `history --json`: metadata only, never manifest
+/// contents, file names, or plaintext.
+#[derive(Debug, Clone, serde::Serialize)]
+struct HistorySnapshotJson {
+    /// Record CID: primary store key, the ID `status` reports as the active
+    /// head, and the recovery checkpoint. Accepted by `restore` and `diff`.
+    snapshot_id: String,
+    /// Logical ID printed by `push` and the text `history`; also accepted.
+    logical_id: String,
+    /// Advisory timestamp signed into the record by the capturing device.
+    recorded_at_utc: Option<u64>,
+    epoch: u64,
+    device_counter: u64,
+    parent_snapshot_ids: Vec<String>,
+    is_active_head: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct HistoryReportJson {
+    vault: bool,
+    cli_version: &'static str,
+    order: &'static str,
+    total: usize,
+    returned: usize,
+    limit: usize,
+    truncated: bool,
+    active_head_id: Option<String>,
+    /// Stored records whose CID could not be computed (skipped, not listed).
+    unreadable_records: usize,
+    snapshots: Vec<HistorySnapshotJson>,
+}
+
+/// Snapshots with their record CIDs, newest first: advisory timestamp, then
+/// device counter, then record CID, so equal timestamps sort deterministically.
+/// Also returns how many records had no computable CID (skipped).
+pub(crate) fn snapshots_newest_first(
+    snapshots: &[ciphervault_format::SnapshotRecord],
+) -> (Vec<([u8; 32], &ciphervault_format::SnapshotRecord)>, usize) {
+    let mut unreadable = 0usize;
+    let mut rows: Vec<([u8; 32], &ciphervault_format::SnapshotRecord)> = Vec::new();
+    for snap in snapshots {
+        match snap.compute_record_cid() {
+            Ok(cid) => rows.push((cid, snap)),
+            Err(_) => unreadable += 1,
+        }
+    }
+    rows.sort_by(|(a_cid, a), (b_cid, b)| {
+        b.advisory_timestamp_utc
+            .cmp(&a.advisory_timestamp_utc)
+            .then_with(|| b.device_counter.cmp(&a.device_counter))
+            .then_with(|| b_cid.cmp(a_cid))
+    });
+    (rows, unreadable)
+}
+
+fn build_history_report(
+    snapshots: &[ciphervault_format::SnapshotRecord],
+    active_head: Option<[u8; 32]>,
+    limit: usize,
+) -> HistoryReportJson {
+    let limit = limit.clamp(1, MAX_HISTORY_JSON_LIMIT);
+    let (rows, unreadable) = snapshots_newest_first(snapshots);
+    let total = rows.len();
+    let listed: Vec<HistorySnapshotJson> = rows
+        .iter()
+        .take(limit)
+        .map(|(cid, snap)| HistorySnapshotJson {
+            snapshot_id: hex::encode(cid),
+            logical_id: hex::encode(&snap.snapshot_id),
+            recorded_at_utc: Some(snap.advisory_timestamp_utc).filter(|at| *at > 0),
+            epoch: snap.epoch,
+            device_counter: snap.device_counter,
+            parent_snapshot_ids: snap.parent_snapshot_ids.iter().map(hex::encode).collect(),
+            is_active_head: active_head == Some(*cid),
+        })
+        .collect();
+    HistoryReportJson {
+        vault: true,
+        cli_version: env!("CARGO_PKG_VERSION"),
+        order: "newest_first",
+        total,
+        returned: listed.len(),
+        limit,
+        truncated: total > listed.len(),
+        active_head_id: active_head.map(hex::encode),
+        unreadable_records: unreadable,
+        snapshots: listed,
+    }
+}
+
+/// `history --json`: bounded, newest-first snapshot metadata for agents
+/// and scripts. A directory without a vault gets a parseable answer.
+pub(crate) fn cmd_history_json(limit: Option<usize>) -> Result<()> {
+    let limit = limit.unwrap_or(DEFAULT_HISTORY_JSON_LIMIT);
+    let store = match get_vault_store() {
+        Ok(store) => store,
+        Err(err) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "vault": false,
+                    "cli_version": env!("CARGO_PKG_VERSION"),
+                    "order": "newest_first",
+                    "total": 0,
+                    "returned": 0,
+                    "limit": limit.clamp(1, MAX_HISTORY_JSON_LIMIT),
+                    "truncated": false,
+                    "snapshots": [],
+                    "error": err.to_string(),
+                    "next": "Run 'ciphervault init' in this directory to create a vault."
+                }))?
+            );
+            return Ok(());
+        }
+    };
+    let snapshots = store.list_snapshots()?;
+    let active_head: Option<[u8; 32]> = store
+        .get_active_head()?
+        .and_then(|head| head.snapshot_id.as_slice().try_into().ok());
+    let report = build_history_report(&snapshots, active_head, limit);
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 const DEFAULT_PRUNE_KEEP_LAST: usize = 10;
 const DEFAULT_PRUNE_KEEP_DAYS: u64 = 30;
 
@@ -213,6 +341,62 @@ pub(crate) fn cmd_rekey(check: bool, warn_days: Option<u64>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(id: u8, at: u64, counter: u64) -> ciphervault_format::SnapshotRecord {
+        ciphervault_format::SnapshotRecord {
+            version: 1,
+            vault_id: vec![1; 32],
+            snapshot_id: vec![id; 32],
+            parent_snapshot_ids: Vec::new(),
+            device_id: vec![2; 32],
+            device_counter: counter,
+            authority_generation: 0,
+            epoch: 1,
+            encrypted_manifest_cid: vec![3; 32],
+            encrypted_manifest_len: 10,
+            advisory_timestamp_utc: at,
+            signature: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn history_json_is_newest_first_bounded_and_marks_head() {
+        let records = vec![
+            record(1, 1_000, 1),
+            record(2, 3_000, 3),
+            record(3, 2_000, 2),
+            record(4, 0, 4), // pre-timestamp record: kept, time unknown
+        ];
+        let head = records[1].compute_record_cid().unwrap();
+        let report = build_history_report(&records, Some(head), 2);
+        assert_eq!(report.total, 4);
+        assert_eq!(report.returned, 2);
+        assert!(report.truncated);
+        assert_eq!(report.snapshots[0].logical_id, hex::encode([2u8; 32]));
+        assert_eq!(report.snapshots[0].snapshot_id, hex::encode(head));
+        assert!(report.snapshots[0].is_active_head);
+        assert_eq!(report.snapshots[1].logical_id, hex::encode([3u8; 32]));
+        assert!(!report.snapshots[1].is_active_head);
+        assert_eq!(report.active_head_id, Some(hex::encode(head)));
+
+        let all = build_history_report(&records, None, MAX_HISTORY_JSON_LIMIT + 50);
+        assert_eq!(all.limit, MAX_HISTORY_JSON_LIMIT);
+        assert_eq!(all.returned, 4);
+        assert!(!all.truncated);
+        assert_eq!(all.snapshots[3].recorded_at_utc, None);
+        let json = serde_json::to_value(&all).unwrap();
+        assert!(json["snapshots"][0]["snapshot_id"].as_str().unwrap().len() == 64);
+    }
+
+    #[test]
+    fn history_json_for_empty_vault_is_explicit() {
+        let report = build_history_report(&[], None, 5);
+        assert_eq!(report.total, 0);
+        assert_eq!(report.returned, 0);
+        assert!(!report.truncated);
+        assert!(report.snapshots.is_empty());
+        assert!(report.active_head_id.is_none());
+    }
 
     #[test]
     fn prune_selection_keeps_head_pending_recent_and_last_n() {

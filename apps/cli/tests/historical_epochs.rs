@@ -167,6 +167,119 @@ fn historical_restore_diff_and_run_use_each_snapshots_epoch_after_rotation() {
     fs::remove_dir_all(root).unwrap();
 }
 
+fn json(output: Output) -> serde_json::Value {
+    serde_json::from_str(&succeeds(output)).unwrap()
+}
+
+#[test]
+fn json_history_and_restore_preview_are_bounded_read_only_contracts() {
+    let root = std::env::temp_dir().join(format!(
+        "cv-history-preview-{:032x}",
+        rand::random::<u128>()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    succeeds(cli(&root, &["init", "--operators", "http://127.0.0.1:1"]));
+    let empty = json(cli(&root, &["history", "--json"]));
+    assert_eq!(empty["total"], 0);
+    assert!(empty["snapshots"].as_array().unwrap().is_empty());
+
+    fs::write(
+        root.join(".env"),
+        b"SYNTHETIC_PREVIEW_SECRET=before_preview\n",
+    )
+    .unwrap();
+    succeeds(cli(&root, &["track", ".env"]));
+    let first_logical = snapshot_id(&succeeds(cli(&root, &["push", "--local"])));
+    fs::write(
+        root.join(".env"),
+        b"SYNTHETIC_PREVIEW_SECRET=after_preview\n",
+    )
+    .unwrap();
+    succeeds(cli(&root, &["push", "--local"]));
+
+    let newest = json(cli(&root, &["history", "--json", "--limit", "1"]));
+    assert_eq!(newest["total"], 2);
+    assert_eq!(newest["returned"], 1);
+    assert_eq!(newest["truncated"], true);
+    assert_eq!(newest["snapshots"][0]["is_active_head"], true);
+    let status = json(cli(&root, &["status", "--json"]));
+    assert_eq!(
+        newest["snapshots"][0]["snapshot_id"],
+        status["active_head_hex"]
+    );
+    assert!(
+        status.get("watcher_health").is_none(),
+        "plain status is unchanged"
+    );
+
+    let all = json(cli(&root, &["history", "--json"]));
+    let older = &all["snapshots"][1];
+    assert_eq!(older["logical_id"], first_logical.as_str());
+    assert_eq!(older["is_active_head"], false);
+    let older_id = older["snapshot_id"].as_str().unwrap().to_string();
+    let text = succeeds(cli(&root, &["history"]));
+    assert!(text.contains("[1] Snapshot:") && text.contains(&first_logical));
+
+    for reference in [older_id.as_str(), first_logical.as_str()] {
+        let preview = json(cli(
+            &root,
+            &["restore", "--snapshot", reference, "--dry-run", "--json"],
+        ));
+        assert_eq!(preview["success"], true);
+        assert_eq!(preview["snapshot_id"], older_id.as_str());
+        assert_eq!(preview["destination"], "workspace");
+        assert_eq!(preview["verification"]["status"], "passed");
+        assert_eq!(
+            preview["verification"]["checks"].as_array().unwrap().len(),
+            6
+        );
+        assert_eq!(preview["files"][0]["path"], ".env");
+        assert_eq!(preview["files"][0]["action"], "replace");
+        assert_eq!(preview["counts"]["replace"], 1);
+        assert_eq!(preview["restore_requires_force"], false);
+        let rendered = preview.to_string();
+        assert!(!rendered.contains("before_preview") && !rendered.contains("after_preview"));
+    }
+    assert_eq!(
+        fs::read(root.join(".env")).unwrap(),
+        b"SYNTHETIC_PREVIEW_SECRET=after_preview\n"
+    );
+    assert!(!root.join(".ciphervault-restore").exists());
+    assert!(!root.join(".ciphervault-restore.lock").exists());
+
+    for (reference, code) in [
+        ("f".repeat(64), "snapshot_not_found"),
+        ("not-hex".to_string(), "invalid_snapshot_id"),
+    ] {
+        let refused = cli(
+            &root,
+            &["restore", "--snapshot", &reference, "--dry-run", "--json"],
+        );
+        assert_eq!(refused.status.code(), Some(3));
+        let report: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(report["success"], false);
+        assert_eq!(report["error_code"], code);
+    }
+
+    assert!(!cli(&root, &["restore", "--json"]).status.success());
+    assert!(!cli(&root, &["history", "--limit", "5"]).status.success());
+    for bad in ["0", "101"] {
+        assert!(!cli(&root, &["history", "--json", "--limit", bad])
+            .status
+            .success());
+    }
+    let elsewhere = std::env::temp_dir().join(format!(
+        "cv-history-vaultless-{:032x}",
+        rand::random::<u128>()
+    ));
+    fs::create_dir_all(&elsewhere).unwrap();
+    let vaultless = json(cli(&elsewhere, &["history", "--json"]));
+    assert_eq!(vaultless["vault"], false);
+    fs::remove_dir_all(elsewhere).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn writer_gate_is_fail_safe_in_real_cli_capture() {
     let root = std::env::temp_dir().join(format!("cv-writer-gate-{:032x}", rand::random::<u128>()));

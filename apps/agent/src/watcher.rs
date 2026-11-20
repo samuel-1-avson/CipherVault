@@ -48,6 +48,8 @@ pub struct VaultWatcher {
     config: WatcherConfig,
     store: LocalVaultStore,
     hash_cache: Arc<Mutex<FileHashCache>>,
+    /// Watcher-owned status record; `None` outside `run_loop` and in dry-run.
+    status: Option<Arc<crate::status::WatcherStatusWriter>>,
 }
 
 impl VaultWatcher {
@@ -103,6 +105,7 @@ impl VaultWatcher {
             config,
             store,
             hash_cache: Arc::new(Mutex::new(baseline)),
+            status: None,
         })
     }
 
@@ -310,6 +313,9 @@ impl VaultWatcher {
         head.sign(&device_sk)?;
         self.store.set_head(&head)?;
         self.acknowledge_capture(&output.captured_file_hashes)?;
+        if let Some(status) = &self.status {
+            status.captured(&record_cid, &output.record.snapshot_id);
+        }
 
         let snapshot_hex = hex::encode(&output.record.snapshot_id);
         println!(
@@ -324,6 +330,7 @@ impl VaultWatcher {
             &format!("Watcher captured snapshot {snapshot_hex}"),
             &serde_json::json!({
                 "snapshot_id": snapshot_hex,
+                "record_cid": hex::encode(record_cid),
                 "files": tracked.len(),
                 "chunks": output.chunks.len(),
             })
@@ -363,6 +370,9 @@ impl VaultWatcher {
             {
                 Ok(_) => {
                     let _ = self.store.mark_upload_completed(&snap_id_arr);
+                    if let Some(status) = &self.status {
+                        status.synced(Some(&record_cid), "verified", None);
+                    }
                     let _ = self.store.record_activity(
                         "WATCH_SYNC_OK",
                         &format!("Watcher replicated snapshot {snapshot_hex}"),
@@ -376,6 +386,9 @@ impl VaultWatcher {
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
+                    if let Some(status) = &self.status {
+                        status.synced(Some(&record_cid), "failed", Some(&err_msg));
+                    }
                     let _ = self.store.record_upload_failure(&snap_id_arr, &err_msg);
                     let _ = self.store.record_activity(
                         "WATCH_SYNC_FAILED",
@@ -448,6 +461,9 @@ impl VaultWatcher {
             match outcome {
                 Ok(()) => {
                     self.store.mark_upload_completed(&item.snapshot_id)?;
+                    if let Some(status) = &self.status {
+                        status.synced(Some(&item.record_cid), "verified", None);
+                    }
                     let snapshot_hex = hex::encode(item.snapshot_id);
                     let _ = self.store.record_activity(
                         "WATCH_SYNC_OK",
@@ -460,6 +476,9 @@ impl VaultWatcher {
                     );
                 }
                 Err(error) => {
+                    if let Some(status) = &self.status {
+                        status.synced(Some(&item.record_cid), "failed", Some(&error.to_string()));
+                    }
                     self.store
                         .record_upload_failure(&item.snapshot_id, &error.to_string())?;
                 }
@@ -497,12 +516,26 @@ impl VaultWatcher {
         let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<String>(1);
         let config = self.config.clone();
         let hashes = self.hash_cache.clone();
+        // Inspector mode persists nothing, so it keeps no status record either.
+        let status = if self.config.dry_run {
+            None
+        } else {
+            Some(Arc::new(crate::status::WatcherStatusWriter::start(
+                &self.config.root_dir,
+                &self.store.get_vault_id()?,
+                self.config.replicate_remote && !self.config.operators.is_empty(),
+                self.config.operators.len(),
+                self.config.debounce.as_secs(),
+            )))
+        };
+        let worker_status = status.clone();
         let mut worker_shutdown = shutdown_rx.resubscribe();
         let worker = std::thread::Builder::new().name("ciphervault-capture".into()).spawn(move || -> Result<()> {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
             runtime.block_on(async move {
                 let mut worker = VaultWatcher::new(config)?;
                 worker.hash_cache = hashes;
+                worker.status = worker_status;
                 let mut last_retry = Instant::now();
                 loop {
                     let label = tokio::select! {
@@ -511,6 +544,9 @@ impl VaultWatcher {
                     };
                     let operation = async {
                         if worker.check_for_changes()? {
+                            if let Some(status) = &worker.status {
+                                status.change_detected();
+                            }
                             if worker.config.dry_run {
                                 let report = worker.inspect_pending_capture()?;
                                 println!("[DRY-RUN] Would capture {} file(s), {} chunks, {} bytes", report.files, report.chunks, report.bytes);
@@ -530,8 +566,10 @@ impl VaultWatcher {
                             match result {
                                 Ok(Ok(())) => {},
                                 Ok(Err(error)) => { eprintln!("Watcher capture/sync failed: {error}");
+                                    if let Some(status) = &worker.status { status.failed(&error.to_string()); }
                                     let _ = worker.store.record_activity("WATCH_CAPTURE_FAILED", "Watcher capture or sync failed; pending work will retry", &serde_json::json!({"error": error.to_string()}).to_string()); },
                                 Err(_) => { eprintln!("Watcher upload timed out; durable pending upload will retry");
+                                    if let Some(status) = &worker.status { status.synced(None, "timeout", Some("capture or upload exceeded 90s; pending upload retained")); }
                                     let _ = worker.store.record_activity("WATCH_SYNC_TIMEOUT", "Watcher upload timed out; pending upload retained", "{}"); },
                             }
                         }
@@ -543,6 +581,8 @@ impl VaultWatcher {
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         let mut last_change = Some((Instant::now(), "startup scan".to_string()));
         let mut last_poll = Instant::now();
+        let mut last_beat = Instant::now();
+        let beat_every = Duration::from_secs(crate::status::HEARTBEAT_INTERVAL_SECS);
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => break,
@@ -569,17 +609,27 @@ impl VaultWatcher {
                         // Lost events never advance the committed baseline.
                         if last_change.is_none() { let _ = work_tx.try_send("fallback scan".into()); }
                     }
+                    if last_beat.elapsed() >= beat_every {
+                        last_beat = Instant::now();
+                        if let Some(status) = &status { status.heartbeat(); }
+                    }
                 }
             }
         }
         drop(watcher);
         drop(work_tx);
-        tokio::task::spawn_blocking(move || {
+        let joined = tokio::task::spawn_blocking(move || {
             worker
                 .join()
                 .map_err(|_| anyhow::anyhow!("Watcher worker panicked"))?
         })
-        .await??;
+        .await;
+        // Only a clean shutdown writes the stop record; a crash leaves the
+        // heartbeat to go stale, which readers report as unknown.
+        if let Some(status) = &status {
+            status.stopped();
+        }
+        joined??;
         Ok(())
     }
 }

@@ -363,6 +363,85 @@ async fn polling_only_change_is_committed_by_the_real_loop() {
 }
 
 #[tokio::test]
+async fn real_loop_keeps_a_vault_scoped_status_record_and_records_a_clean_stop() {
+    use ciphervault_agent::{assess_liveness, read_watcher_status};
+    let fixture = LoopFixture::new(".env");
+    fixture.baseline().await;
+    assert!(
+        read_watcher_status(&fixture.root).unwrap().is_none(),
+        "a capture outside the watcher loop writes no status record"
+    );
+    let running = RunningLoop::start(fixture.config());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fixture.write(b"SYNTHETIC=status_record_capture\n");
+    wait_until("the capture in the watcher status record", || {
+        let head = fixture.store.get_active_head().unwrap().unwrap();
+        head.device_counter >= 2
+            && read_watcher_status(&fixture.root)
+                .ok()
+                .flatten()
+                .and_then(|record| record.last_capture)
+                .is_some_and(|capture| capture.snapshot_id == hex::encode(&head.snapshot_id))
+    })
+    .await;
+    let record = read_watcher_status(&fixture.root).unwrap().unwrap();
+    assert_eq!(record.vault_id, hex::encode([7u8; 32]));
+    assert!(record.last_change_detected_at_utc.is_some());
+    assert!(record.stopped_at_utc.is_none() && !record.sync_enabled);
+    let capture = record.last_capture.clone().unwrap();
+    let (stored, _) = fixture
+        .store
+        .get_snapshot(
+            &hex::decode(&capture.snapshot_id)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(hex::encode(&stored.snapshot_id), capture.logical_id);
+    let now = ciphervault_agent::status::now_utc();
+    let live = assess_liveness(Ok(Some(&record)), &record.vault_id, now);
+    assert_eq!((live.state, live.evidence), ("running", "heartbeat"));
+    assert_eq!(
+        assess_liveness(Ok(Some(&record)), &hex::encode([9u8; 32]), now).state,
+        "unknown",
+        "another vault's record is not evidence for this one"
+    );
+    let activity = fixture.store.list_activity(20).unwrap();
+    let event = activity
+        .iter()
+        .find(|event| event.event_type == "WATCH_SNAPSHOT")
+        .unwrap();
+    assert!(event.details_json.contains(&capture.snapshot_id));
+
+    running.stop();
+    let stopped = read_watcher_status(&fixture.root).unwrap().unwrap();
+    assert!(stopped.stopped_at_utc.is_some());
+    let after = assess_liveness(Ok(Some(&stopped)), &stopped.vault_id, now + 10_000);
+    assert_eq!((after.state, after.evidence), ("stopped", "stop_record"));
+    drop(fixture.store);
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[tokio::test]
+async fn dry_run_loop_writes_no_status_record() {
+    let fixture = LoopFixture::new(".env");
+    fixture.baseline().await;
+    let mut config = fixture.config();
+    config.dry_run = true;
+    let running = RunningLoop::start(config);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fixture.write(b"SYNTHETIC=dry_run_change\n");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    running.stop();
+    assert!(ciphervault_agent::read_watcher_status(&fixture.root)
+        .unwrap()
+        .is_none());
+    drop(fixture.store);
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[tokio::test]
 async fn failed_capture_remains_dirty_and_is_retried_by_polling() {
     let fixture = LoopFixture::new(".git/poll-only.env");
     fixture.baseline().await;

@@ -250,7 +250,10 @@ def _audit_hmac_hex(tool, decision, path, detail_str, cwd=None):
 
 # ---------------------------------------------------------------- CLI subprocess
 
-def _run_cli(args, cwd, timeout=120, input_text=None, extra_env=None):
+def _run_cli(args, cwd, timeout=120, input_text=None, extra_env=None, keep_stdout_on_error=False):
+    """Run the CLI with a minimal environment. `keep_stdout_on_error` adds the
+    (shape-scrubbed) stdout to a failure, for commands that report a refusal
+    as JSON on stdout with a nonzero exit while stderr may carry warnings."""
     bin_path, source = _runtime.resolve(binary, "find_binary")()
     if not bin_path:
         return {
@@ -280,20 +283,25 @@ def _run_cli(args, cwd, timeout=120, input_text=None, extra_env=None):
         return {"success": False, "error": f"could not run ciphervault: {exc}", "binary": source}
     out = (proc.stdout or b"").decode("utf-8", "replace").strip()
     err = (proc.stderr or b"").decode("utf-8", "replace").strip()
+    failure = None
     if re.search(r"(?m)^Error:", out) or re.search(r"(?m)^Error:", err):
-        return {
+        failure = {
             "success": False,
             "error": binary.scrub(out + ("\n" + err if err else "")),
             "binary": source,
             "exit_code": proc.returncode,
         }
-    if proc.returncode != 0:
-        return {
+    elif proc.returncode != 0:
+        failure = {
             "success": False,
             "error": binary.scrub(err or out or f"exit {proc.returncode}"),
             "binary": source,
             "exit_code": proc.returncode,
         }
+    if failure is not None:
+        if keep_stdout_on_error:
+            failure["stdout"] = binary.scrub(out)
+        return failure
     return {
         "success": True,
         "output": out,

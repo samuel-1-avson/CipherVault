@@ -18,7 +18,7 @@ throwaway vault in about two minutes.
 
 | Surface | What it does |
 |---|---|
-| `ciphervault_status` | Vault status as JSON: tracked file **paths**, sealed state (`working_tree_sealed`), head, operator count, CLI version, plus `workspace_posture` |
+| `ciphervault_status` | Vault status as JSON: tracked file **paths**, sealed state (`working_tree_sealed`), head, operator count, CLI version, plus `workspace_posture`. Optional `history_limit` (1–50) adds recent snapshots, newest first: `snapshot_id`, `logical_id`, recorded time, epoch, head flag (`history --json`). Optional `watcher_health` adds watcher liveness, last detected change, last capture, upload queue, and the newest snapshot with a recorded remote verification, plus plain-language `summary` lines (`status --json --watcher`) |
 | `ciphervault_scan` | Secret-sprawl scan of workspace + staged diffs, masked (`hook check --deep --json`; `fix` appends to `.gitignore`) |
 | `ciphervault_run` | Run any command with secrets injected in RAM only (`--no-net` default on Linux, macOS, and Windows AppContainer; `--proxy` loopback credential proxy; `.ciphervault/policy.toml` `profile` support); output exact-value + shape scrubbed (`run --json`). **Every call passes Hermes's human-approval gate** (see Disclosure) |
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local default; `shred_working_copy=true` or `[vault].sealed_mode=true` zero-fills and removes plaintext from disk after sealing; replicates when `local_only=false`) |
@@ -28,6 +28,7 @@ throwaway vault in about two minutes.
 | `ciphervault_env_doctor` | Zero-knowledge environment & schema diagnostics (`ciphervault env-doctor --json`): compares code env references and `.env.example` against vault keys and detects structural value anomalies (`EMPTY_VALUE`, `WHITESPACE_WRAPPED`, `UNSTRIPPED_QUOTES`, `PLACEHOLDER_VALUE`, `INVALID_URL`, `INVALID_JSON`, `PREFIX_MISMATCH`) even on sealed/shredded vaults without exposing values; `sync_env_example` safely updates `.env.example` |
 | `ciphervault_secret_generate` | In-vault CSPRNG secret provisioning (`base64url`, `hex`, `uuid`, `alphanumeric`): generates entropy in RAM, tracks and seals into the vault, and returns only `{name, format, length_chars, sha256_prefix, sealed}`. Only inside an existing vault, after Hermes approval; never replaces an existing key unless `overwrite=true` gets its own one-time approval |
 | `ciphervault_diff` | Masked key-level diff between snapshots or against the working tree (`ciphervault diff --json`, never `--reveal`) |
+| `ciphervault_restore_preview` | Read-only preview of restoring one snapshot (`snapshot_id` or `head`) into the active vault workspace (`restore --dry-run --json`): the CLI checks the record signature, epoch key, manifest, chunks, file integrity and destination paths, then lists each file as `create`, `replace` or `unchanged` with its size, plus counts and any uncommitted changes a real restore would need `--force` for. Writes nothing; the user runs the restore |
 | `ciphervault_proxy_doctor` | Dry-run proxy route diagnostic: reports which vault keys map to built-in provider routes vs `.ciphervault/policy.toml` upstreams vs unmapped keys |
 | `ciphervault_secret_prompt` | Out-of-band human secret request: queues requested key metadata in `.ciphervault/pending_secret_prompts.json` for the Hermes desktop Secret Entry Drawer (or reads via hidden TTY `getpass`) so users never paste secrets into chat. Only inside an existing vault, after Hermes approval; the TTY prompt asks again before replacing a key that already exists |
 | `pre_tool_call` hook | **Leak guard:** blocks secret-file/policy reads & writes, secret-dumping CLI commands, secret-shaped payloads to other tools, and git add/commit/push while sprawl violations exist |
@@ -48,7 +49,8 @@ chain view with the source plugin, build the CLI and set its path with
 ## Disclosure (catalog rule 13)
 
 - **Shell commands:** the only process the plugin spawns is the
-  `ciphervault` CLI (status/scan/run/push/recover/redact/export-env).
+  `ciphervault` CLI (status/history/scan/run/push/recover/redact/export-env,
+  and `restore --dry-run --json` for previews, which never writes).
   `ciphervault_run` asks that CLI to execute the command you approve,
   with vault secrets injected into its environment. **Approval:**
   every `ciphervault_run` call returns Hermes's `approve` directive
@@ -144,6 +146,49 @@ The catalog installs the version it pins, which can lag this repository (it was
 v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.7.3 and all 12
 tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
 (default `~/.hermes`), then run `hermes plugins enable ciphervault`.
+
+### Snapshot history, restore preview, and watcher health (unreleased)
+
+This source tree adds a 13th tool, `ciphervault_restore_preview`, and the
+`history_limit` and `watcher_health` options of `ciphervault_status`. They
+are not in plugin v0.7.3. All three need CLI flags that no published release
+has yet: `history --json --limit`, `restore --dry-run --json`, and
+`status --json --watcher`. The pinned v1.0.38 lacks them. With it, these
+options return `error_code: "cli_unsupported"`, and the plain status and
+every other tool work as before. `hermes ciphervault doctor` reports them
+under `optional_capabilities` without failing. Until a release ships them,
+build the CLI from this source and point `CIPHERVAULT_BIN` at it.
+
+A typical exchange: *"Show me a recent backup and tell me what restoring it
+would change."* The agent calls `ciphervault_status` with `history_limit: 5`,
+picks a `snapshot_id`, calls `ciphervault_diff` for the masked key changes
+and `ciphervault_restore_preview` for the per-file actions. A passed preview
+means the snapshot passed its checks against the local store at
+`checked_at`. Errors are typed (`invalid_snapshot_reference`,
+`snapshot_not_found`, `verification_failed` with `failed_check`,
+`unsafe_destination`, `cli_unsupported`, …). The preview never restores,
+stages, or writes plaintext; it returns the `ciphervault restore` command for
+the user to run.
+
+*"I changed a secret. Did the watcher actually back it up?"* The agent calls
+`ciphervault_status` with `watcher_health: true`. The answer keeps three
+events apart:
+
+- **Save detected:** `last_change_detected_at`, when the watcher last found
+  tracked content that differed from its last capture.
+- **Snapshot captured:** `last_capture`, with its `snapshot_id`.
+- **Backup verified:** `remote_verification`, the newest snapshot with a
+  recorded quorum replication (from `push` or the watcher's sync) and when it
+  was recorded. `head_verified: false` plus `newer_unverified_snapshots` says
+  a newer local snapshot has none yet.
+
+The watcher counts as `running` only on a heartbeat less than 120 s old from
+this vault's own `.ciphervault/watcher-status.json`. A clean stop is
+`stopped`. A missing, foreign, unreadable, or stale record is `unknown`, as
+are watchers from releases before this record existed. Everything here is
+recorded evidence (`live_check_performed: false`); the status call contacts
+no operator, and starting or stopping the watcher stays with
+`ciphervault watch` and the `ciphervault-agent` service.
 
 This plugin version requires a CLI whose `redact --json` attests
 `exact_values_complete` — every tracked working copy was loaded, so a

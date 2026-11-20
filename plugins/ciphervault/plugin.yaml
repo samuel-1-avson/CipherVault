@@ -20,6 +20,7 @@ provides_tools:
   - ciphervault_diff
   - ciphervault_proxy_doctor
   - ciphervault_secret_prompt
+  - ciphervault_restore_preview
 provides_hooks:
   - on_session_start
   - pre_llm_call
