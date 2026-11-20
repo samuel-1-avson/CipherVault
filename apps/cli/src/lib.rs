@@ -405,6 +405,9 @@ enum Commands {
         #[arg(short, long, help = "Directory to restore files into")]
         to: PathBuf,
 
+        #[arg(long, value_name = "CID", value_parser = crate::commands::parse_recovery_checkpoint, help = "Require the recovery checkpoint saved from a RemoteDurable push")]
+        expect_record_cid: Option<[u8; 32]>,
+
         #[arg(
             long,
             help = "Require out-of-band cryptographic approval receipt from team lead or guardian before restoring"
@@ -731,6 +734,12 @@ enum Commands {
             help = "Snapshot head CID (hex) to verify (defaults to active head)"
         )]
         head: Option<String>,
+    },
+
+    /// Read verified local CipherChain blocks as JSON without opening private keys
+    ChainExplorer {
+        #[arg(long, help = "Block height, block hash, or opaque commitment")]
+        query: Option<String>,
     },
 
     /// Multi-party genesis ceremony for the sovereign CipherChain
@@ -2167,7 +2176,10 @@ enum AgentLogSubcommand {
         path: String,
         #[arg(long, default_value = "{}", help = "JSON detail (counts/reasons only)")]
         detail: String,
-        #[arg(long, help = "Optional HMAC-SHA256 hex tag authenticating parent-process caller")]
+        #[arg(
+            long,
+            help = "Optional HMAC-SHA256 hex tag authenticating parent-process caller"
+        )]
         hmac: Option<String>,
     },
     /// List audit entries, newest first
@@ -2262,6 +2274,9 @@ enum RecoverySubcommand {
 
         #[arg(short, long, help = "Test directory to restore into")]
         to: PathBuf,
+
+        #[arg(long, value_name = "CID", value_parser = crate::commands::parse_recovery_checkpoint, help = "Require the recovery checkpoint saved from a RemoteDurable push")]
+        expect_record_cid: Option<[u8; 32]>,
 
         #[arg(
             long,

@@ -383,7 +383,10 @@ pub fn create_router(state: Arc<OperatorState>) -> Router {
         )
         .route("/v1/peers/membership", get(handlers::get_peer_membership))
         .route("/v1/peers/admissions", get(handlers::get_peer_admissions))
-        .route("/v1/peers/{id}/graduate", post(handlers::post_peer_graduate))
+        .route(
+            "/v1/peers/{id}/graduate",
+            post(handlers::post_peer_graduate),
+        )
         // Sovereign chain sync: catch-up reads are public; proposal
         // publication is public too (envelopes self-authenticate).
         .route("/v1/chain/publish", post(handlers::post_chain_publish))

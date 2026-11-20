@@ -36,7 +36,14 @@ throwaway vault in about two minutes.
 | Secret source `ciphervault` | Hermes' own env vars sourced from a vault at startup (`secrets.ciphervault.*`) |
 | `/ciphervault`, `hermes ciphervault` | Chat slash command; terminal `bootstrap`, `setup` (wizard for binary + `.ciphervault/policy.toml`; `--wire-hermes` prints the `hermes config set` commands for the secret source), `status`, `doctor`, `quickstart` |
 | Desktop pane + page + chip | Live vault status, one-click **Seal & shred `.env`**, masked **Secret Entry Drawer** with pending prompt chips, **Env Health** card, and verified **Agent Audit** feed (`dashboard/plugin_api.py` + `desktop/plugin.js`) |
+| Desktop Network Explorer | Open from the CipherVault pane or the command palette. Inspect public operator reports and anchor receipts, look up object replicas by CID, and switch to **Local CipherChain** for signed blocks in the active workspace. |
 | Redaction patterns | `cvst1.*`, Stripe/GitHub/AWS key shapes added to Hermes' redactor |
+
+Public network data works with the bundled CLI. An explicit object lookup sends
+the entered CID to the public explorer at `vault.cipherv.online`. Local blocks
+use a compatible CLI with the `chain-explorer` command. To preview the local
+chain view with the source plugin, build the CLI and set its path with
+`CIPHERVAULT_BIN` or the plugin's `binary_path`.
 
 ## Disclosure (catalog rule 13)
 
@@ -62,7 +69,7 @@ throwaway vault in about two minutes.
   recovery drill restores only
   into a fresh temp dir it creates itself and deletes only that dir.
   The plugin never spawns Hermes itself.
-- **Network:** none, except two user-initiated flows. (1)
+- **Network.** (1)
   `bootstrap` — only when *you* run `hermes ciphervault bootstrap`
   or `/ciphervault setup` — downloads the platform asset
   (`ciphervault.exe` on Windows x64, `ciphervault-linux-amd64` on
@@ -80,7 +87,10 @@ throwaway vault in about two minutes.
   on `ciphervault_run` approval requests and replicated pushes, the
   CLI sends a signed audit checkpoint (entry count + head hash
   only — no contents) to *your own configured operator fleet*, so
-  the log's head exists outside the agent's machine.
+  the log's head exists outside the agent's machine. (3) The Desktop
+  **Network Explorer** reads operator and checkpoint data from
+  `vault.cipherv.online` when you open its public view. Object lookups send
+  the CID you enter. Local CipherChain reads run entirely in the local CLI.
 - **Reads outside its data:** vault metadata via the CLI in the
   workspace you point it at (paths/counts only, via `status --json`),
   tracked secret files *inside the CLI process* for exact-value

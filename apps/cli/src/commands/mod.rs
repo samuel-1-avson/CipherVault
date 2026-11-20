@@ -7,6 +7,8 @@ pub(crate) mod anchor;
 pub(crate) mod approvals;
 pub(crate) mod audit;
 pub(crate) mod auth;
+pub(crate) mod backup_status;
+pub(crate) mod chain_explorer;
 pub(crate) mod context;
 pub(crate) mod dpop;
 pub(crate) mod feed;
@@ -237,7 +239,20 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             approver_key,
             force,
             via,
-        } => cmd_recover(kit, shares, to, require_approval, approver_key, force, via).await,
+            expect_record_cid,
+        } => {
+            cmd_recover(RecoveryRequest {
+                kit,
+                shares,
+                to,
+                require_approval,
+                approver_keys: approver_key,
+                force,
+                via,
+                expect_record_cid,
+            })
+            .await
+        }
         crate::Commands::Recovery { sub } => match sub {
             RecoverySubcommand::ShowDescriptors => cmd_recovery_export(),
             RecoverySubcommand::Split {
@@ -247,7 +262,12 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
                 out_dir,
                 stdout,
             } => cmd_recovery_split(threshold, shares, kit, out_dir, stdout).await,
-            RecoverySubcommand::Test { kit, to, via } => cmd_recovery_test(kit, to, via).await,
+            RecoverySubcommand::Test {
+                kit,
+                to,
+                via,
+                expect_record_cid,
+            } => cmd_recovery_test(kit, to, via, expect_record_cid).await,
             RecoverySubcommand::KeyBackup {
                 kit,
                 share,
@@ -319,6 +339,11 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             }
         }
         crate::Commands::VerifyAnchor { head } => cmd_verify_anchor(head).await,
+        crate::Commands::ChainExplorer { query } => {
+            let view = chain_explorer::read_chain_explorer(query.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&view)?);
+            Ok(())
+        }
         crate::Commands::Genesis { sub } => match sub {
             GenesisSubcommand::Propose {
                 validators,

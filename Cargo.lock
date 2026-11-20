@@ -676,6 +676,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored",
+ "crc32fast",
  "crossterm 0.28.1",
  "ed25519-dalek",
  "futures-util",

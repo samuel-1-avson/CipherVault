@@ -13,6 +13,8 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use ciphervault_crypto::generate_signing_key;
+use ciphervault_local_store::LocalVaultStore;
+use ciphervault_operator::state::{OperatorSecurityConfig, PERMISSION_READ, PERMISSION_WRITE};
 use ciphervault_operator::{create_router, OperatorState};
 
 fn bin() -> PathBuf {
@@ -24,12 +26,19 @@ fn sha256_file(path: &Path) -> Vec<u8> {
 }
 
 fn run(dir: &Path, args: &[&str]) -> Output {
-    Command::new(bin())
+    cli(dir)
         .args(args)
-        .current_dir(dir)
-        .env_remove("CIPHERVAULT_OPERATORS")
         .output()
         .expect("failed to run ciphervault")
+}
+
+fn cli(dir: &Path) -> Command {
+    let mut command = Command::new(bin());
+    command
+        .current_dir(dir)
+        .env_remove("CIPHERVAULT_OPERATORS")
+        .env_remove("CIPHERVAULT_OPERATOR_PINS");
+    command
 }
 
 /// `doctor --json` prints its report even when other checks fail; this
@@ -53,6 +62,14 @@ fn text(output: &Output) -> String {
     )
 }
 
+fn backup_status(dir: &Path) -> serde_json::Value {
+    let status = run(dir, &["status", "--json"]);
+    assert!(status.status.success(), "{}", text(&status));
+    let report: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(report["backup"].is_object());
+    report["backup"].clone()
+}
+
 fn unique_dir(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "{prefix}_{}_{}",
@@ -73,12 +90,237 @@ async fn spawn_operator(name: &str, dir: PathBuf) -> (String, JoinHandle<()>) {
         generate_signing_key(),
         ciphervault_operator::state::OperatorSecurityConfig::legacy(),
     ));
+    serve_operator(state).await
+}
+
+async fn serve_operator(state: Arc<OperatorState>) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
         axum::serve(listener, create_router(state)).await.unwrap();
     });
     (url, task)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clean_recovery_checks_checkpoint_with_strict_operators() {
+    let base = unique_dir("ciphervault_checkpoint");
+    let original = base.join("original");
+    let clean = base.join("clean");
+    fs::create_dir_all(&original).unwrap();
+    fs::create_dir_all(&clean).unwrap();
+    let kit = base.join("kit.txt");
+    let kit = kit.to_str().unwrap();
+    let mut nodes = Vec::new();
+    for (name, dir) in [("current", "current-store"), ("older", "older-store")] {
+        let state = Arc::new(OperatorState::new_with_security(
+            name.into(),
+            base.join(dir),
+            generate_signing_key(),
+            OperatorSecurityConfig {
+                strict_auth: true,
+                require_enrollment: true,
+            },
+        ));
+        let (endpoint, task) = serve_operator(state.clone()).await;
+        nodes.push((state, endpoint, task));
+    }
+    let [(current, current_url, _), (older, older_url, older_task)] = nodes.as_slice() else {
+        unreachable!()
+    };
+    let init = run(
+        &original,
+        &[
+            "init",
+            "--save-kit",
+            kit,
+            "--operators",
+            current_url,
+            older_url,
+        ],
+    );
+    assert!(init.status.success(), "fixture initialization failed");
+    let store = LocalVaultStore::open(original.join(".ciphervault/vault.db")).unwrap();
+    let vault_id = hex::encode(store.get_vault_id().unwrap());
+    let (_, device_key, _, _) = store.get_device_state().unwrap();
+    let device_pk = hex::encode(device_key.verifying_key().to_bytes());
+    drop(store);
+    for state in [current, older] {
+        state
+            .enroll_identity(&vault_id, &device_pk, PERMISSION_READ | PERMISSION_WRITE)
+            .unwrap();
+    }
+    let current_pin = hex::encode(current.signing_key.verifying_key().to_bytes());
+    let older_pin = hex::encode(older.signing_key.verifying_key().to_bytes());
+    let pins = format!("{current_url}={current_pin},{older_url}={older_pin}");
+    let fixture_path = original.join(".env");
+    fs::write(&fixture_path, b"DEMO_VALUE=older-test-value\r\n").unwrap();
+    assert!(run(&original, &["track", ".env"]).status.success());
+    assert!(backup_status(&original)["head_record_cid"].is_null());
+    let local = run(&original, &["push", "--local"]);
+    assert!(local.status.success(), "{}", text(&local));
+    let local_status = backup_status(&original);
+    assert!(local_status["head_record_cid"].is_string());
+    assert!(local_status["replicated_at_utc"].is_null());
+    let first = cli(&original)
+        .env("CIPHERVAULT_OPERATOR_PINS", &pins)
+        .args(["push", "--replicas", "2"])
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success() && text(&first).contains("RemoteDurable"),
+        "{}",
+        text(&first)
+    );
+
+    let expected = b"DEMO_VALUE=expected-test-value\r\n";
+    fs::write(&fixture_path, expected).unwrap();
+    let second = cli(&original)
+        .env("CIPHERVAULT_OPERATOR_PINS", &pins)
+        .env("CIPHERVAULT_OPERATORS", current_url)
+        .args(["push", "--replicas", "1"])
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success() && text(&second).contains("RemoteDurable"),
+        "{}",
+        text(&second)
+    );
+    let output = String::from_utf8(second.stdout).unwrap();
+    let checkpoint = output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Recovery checkpoint: "))
+        .expect("verified replication must print a checkpoint");
+    assert_eq!(checkpoint.len(), 64);
+
+    let target = clean.join("restored");
+    let target_arg = target.to_str().unwrap();
+    let stale = cli(&clean)
+        .env("CIPHERVAULT_OPERATOR_PINS", &pins)
+        .args([
+            "recover",
+            "--kit",
+            kit,
+            "--to",
+            target_arg,
+            "--via",
+            older_url,
+            "--expect-record-cid",
+            checkpoint,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !stale.status.success() && text(&stale).contains("Recovery checkpoint mismatch"),
+        "{}",
+        text(&stale)
+    );
+    assert!(
+        !target.exists(),
+        "a checkpoint mismatch must precede any destination writes"
+    );
+
+    let wrong_pin = format!("{current_url}={older_pin}");
+    let unpinned = cli(&clean)
+        .env("CIPHERVAULT_OPERATOR_PINS", wrong_pin)
+        .args([
+            "recover",
+            "--kit",
+            kit,
+            "--to",
+            target_arg,
+            "--via",
+            current_url,
+            "--expect-record-cid",
+            checkpoint,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !unpinned.status.success() && text(&unpinned).contains("No recovery operators verified"),
+        "{}",
+        text(&unpinned)
+    );
+    assert!(!target.exists());
+
+    let status = backup_status(&original);
+    assert_eq!(status["head_record_cid"], checkpoint);
+    assert!(status["replicated_at_utc"].is_number());
+    assert!(status["head_verified_at_utc"].is_null());
+
+    let drill = cli(&original)
+        .env("CIPHERVAULT_OPERATOR_PINS", &pins)
+        .args([
+            "recovery",
+            "test",
+            "--kit",
+            kit,
+            "--to",
+            base.join("without-checkpoint").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(drill.status.success(), "{}", text(&drill));
+    let status = backup_status(&original);
+    assert!(status["last_drill_at_utc"].is_number());
+    assert!(status["head_verified_at_utc"].is_null());
+
+    let verified_dir = base.join("verified-drill");
+    let drill = cli(&original)
+        .env("CIPHERVAULT_OPERATOR_PINS", &pins)
+        .args([
+            "recovery",
+            "test",
+            "--kit",
+            kit,
+            "--to",
+            verified_dir.to_str().unwrap(),
+            "--expect-record-cid",
+            checkpoint,
+        ])
+        .output()
+        .unwrap();
+    assert!(drill.status.success(), "{}", text(&drill));
+    assert_eq!(fs::read(verified_dir.join(".env")).unwrap(), expected);
+    assert!(backup_status(&original)["head_verified_at_utc"].is_number());
+
+    fs::write(&fixture_path, b"DEMO_VALUE=not-yet-replicated\r\n").unwrap();
+    let newest_local = run(&original, &["push", "--local"]);
+    assert!(newest_local.status.success(), "{}", text(&newest_local));
+    let status = backup_status(&original);
+    assert_ne!(status["head_record_cid"], checkpoint);
+    assert!(status["replicated_at_utc"].is_null());
+    assert!(status["head_verified_at_utc"].is_null());
+    assert!(status["last_drill_at_utc"].is_number());
+
+    older_task.abort();
+    fs::remove_dir_all(&original).unwrap();
+    let recovered = cli(&clean)
+        .env("CIPHERVAULT_OPERATOR_PINS", &pins)
+        .args([
+            "recover",
+            "--kit",
+            kit,
+            "--to",
+            target_arg,
+            "--expect-record-cid",
+            checkpoint,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        recovered.status.success()
+            && text(&recovered).contains("Matched the expected recovery checkpoint"),
+        "{}",
+        text(&recovered)
+    );
+    assert_eq!(fs::read(target.join(".env")).unwrap(), expected);
+    assert!(target.join(".ciphervault/vault.db").is_file());
+
+    for (_, _, task) in nodes {
+        task.abort();
+    }
+    let _ = fs::remove_dir_all(&base);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -185,6 +185,15 @@ Generated 2026-09-19 from the 1.0.7-beta.5 tree; when in doubt the code wins.
   ≤ 512 chunk records, `64 <= min <= avg <= max <= 1 MiB`. Chunk previews
   are always `"Content previews are disabled."`.
 
+### Local Network Explorer
+
+`GET /api/explorer/chain` is available in the authenticated local dashboard.
+It returns the latest 20 verified local blocks. Pass `?query=` with a block
+height, block hash, or opaque commitment to open a block. Commitment results
+include verified inclusion metadata. The response includes block hashes,
+validator public keys, transaction roots and commitments. It omits anchor
+salts, snapshot head IDs, and private keys.
+
 ## Public explorer routes (`--serve`)
 
 No session cookie; all routes are unauthenticated reads (account proxy
@@ -227,12 +236,13 @@ routes pass through caller `Cookie`/`Authorization` headers, see below).
   telemetry: `{ timestamp, operators: [{ operator, online,
   identity_verification, latency_ms }] }`.
 - `GET /api/explorer/overview` → `{ observed_at_utc, operators: { total,
-  reachable }, anchors: { count, head } }`.
+  reachable }, anchors: { count, head, status } }`. Feed status is
+  `available`, `unconfigured`, or `unavailable`.
 - `GET /api/explorer/object/:cid` (`:cid` = 64-hex, case-insensitive) →
   `{ cid (normalized lowercase), checked_at_utc, quorum: { present,
   checked, required: 3, satisfied }, replicas, note }`. Replicas are
-  PoS-presence probes (8 s timeout, anonymous token); object bytes are
-  never fetched. Malformed CID: `400 { status: "error", code:
+  operator-reported presence probes (8 s timeout, anonymous token). The explorer
+  does not fetch object bytes. Malformed CID: `400 { status: "error", code:
   "INVALID_CID", error }`; no operators: `503 NO_OPERATORS_CONFIGURED`; over budget: `429` + `Retry-After` (30/min per client on this route, 600/min elsewhere).
 - `GET /metrics`, `GET /api/metrics` → Prometheus / OpenMetrics 0.0.4 text
   exposition (`text/plain; version=0.0.4; charset=utf-8`, `no-cache`). Exposes:

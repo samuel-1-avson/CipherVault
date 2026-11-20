@@ -722,12 +722,7 @@ fn test_agent_audit_sanitizes_newlines_and_uses_domain_separation() {
     // Legacy raw signature fallback must still verify existing entries.
     let store2 = agent_audit_store();
     let canonical = LocalVaultStore::canonical_audit_preimage(
-        "GENESIS",
-        1700000000,
-        "terminal",
-        "blocked",
-        ".env",
-        "{}",
+        "GENESIS", 1700000000, "terminal", "blocked", ".env", "{}",
     );
     let hash = hex::encode(sha2::Sha256::digest(canonical.as_bytes()));
     let (_, sk2, _, _) = store2.get_device_state().unwrap();
@@ -1046,8 +1041,7 @@ fn certified_hardware_recovery_set_is_valid_and_immutable() {
     let store = LocalVaultStore::open(":memory:").unwrap();
     let recovery = RecoverySecret::generate();
     let root_signer = recovery.derive_recovery_signing_key().unwrap();
-    let (recovery_enc_sk, recovery_enc_pk) =
-        recovery.derive_recovery_encryption_keys().unwrap();
+    let (recovery_enc_sk, recovery_enc_pk) = recovery.derive_recovery_encryption_keys().unwrap();
     let vault = [41; 32];
     let mut genesis = GenesisRecord {
         version: PROTOCOL_VERSION,

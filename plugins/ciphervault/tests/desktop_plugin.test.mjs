@@ -478,13 +478,15 @@ test('all registered surfaces independently destructure { ctx } and invoke statu
   // destructuring in VaultPane, VaultPage, VaultChip, or StatusBody.
   const hPane = createHarness({ cwd, handlers: defaultHandlers() })
   assert.equal(plugin.id, 'ciphervault')
-  assert.deepEqual([...hPane.registered.keys()].sort(), ['chip', 'open', 'page', 'pane'])
+  assert.deepEqual([...hPane.registered.keys()].sort(), ['chip', 'explorer', 'explorer-open', 'open', 'page', 'pane'])
   assert.equal(hPane.registered.get('open').render(), null)
 
   const paneTree = await hPane.renderSurface('pane')
   assert.deepEqual(hPane.queryErrors, [], 'VaultPane/StatusBody must have zero queryFn errors')
   assertNoDuplicateSiblingKeys(paneTree)
   const paneText = collectText(paneTree).join('\n')
+  findButton(paneTree, 'Open Network Explorer').props.onClick()
+  assert.equal(mockState.navigations.at(-1), '/ciphervault/explorer')
   assert.doesNotMatch(paneText, /Vault backend unavailable/)
   assert.match(paneText, /v1234abcd/)
   assert.match(paneText, /sealed \(0B on disk\)/)
@@ -526,6 +528,47 @@ test('all registered surfaces independently destructure { ctx } and invoke statu
   chipBtn.props.onClick()
   hChip.registered.get('open').data.run()
   assert.deepEqual(mockState.navigations, ['/ciphervault', '/ciphervault'])
+})
+
+test('Network Explorer renders in Hermes and supports lookup and local block navigation', async () => {
+  const cid = 'ab'.repeat(32)
+  const block = { height: 2, hash: 'cd'.repeat(32), commitments: 1, signatures: 1, timestamp_signed: true, timestamp_ms: 1760000000000 }
+  const h = createHarness({ cwd: '/workspace/vault', handlers: {
+    '/explorer': () => ({ state: 'ready', counts: { reachable: 2, total: 3 }, feed: { count: 1 },
+      operators_available: true, operators: [{ operator_id: 'op1', status: 'reachable', latency_ms: 42 }],
+      anchors_available: true, anchors: [{ tx_hash_hex: cid, block_number: 2, finality_status: 'unverified' }] }),
+    '/explorer/object': () => ({ state: 'ready', cid, quorum: { present: 2, required: 3, satisfied: false },
+      replicas: [{ operator_id: 'op1', status: 'present' }] }),
+    '/explorer/chain': ({ endpoint }) => ({ state: 'ready', solo: true, blocks: [block],
+      detail: endpoint.endsWith('query=2') ? { block, parent_hash: cid, transaction_root: cid,
+        commitments: [cid], signers: ['de'.repeat(32)] } : null }),
+  } })
+  assert.equal(h.registered.get('explorer').data.path, '/ciphervault/explorer')
+  let tree = await h.renderSurface('explorer')
+  let text = collectText(tree).join('\n')
+  assert.match(text, /Network Explorer/)
+  assert.match(text, /2 \/ 3 responding/)
+  assert.match(text, /42 ms/)
+  assert.equal(h.restCalls.length, 1)
+
+  findAll(tree, node => node.props?.['aria-label'] === 'Object CID')[0]
+    .props.onChange({ currentTarget: { value: cid } })
+  tree = h.rerenderSurface('explorer')
+  findAll(tree, node => node.type === 'form')[0].props.onSubmit({ preventDefault() {} })
+  tree = await h.renderSurface('explorer')
+  assert.match(collectText(tree).join('\n'), /Quorum shortfall/)
+  assert.ok(h.restCalls.some(call => call.endpoint === '/explorer/object?cid=' + cid))
+
+  findButton(tree, 'Local CipherChain').props.onClick()
+  tree = await h.renderSurface('explorer')
+  findButton(tree, 'Block #2').props.onClick()
+  tree = await h.renderSurface('explorer')
+  text = collectText(tree).join('\n')
+  assert.match(text, /Solo ledger/)
+  assert.match(text, /Transaction root/)
+  assert.match(text, /Signed time/)
+  assert.ok(h.restCalls.some(call => call.endpoint === '/explorer/chain?cwd=%2Fworkspace%2Fvault&query=2'))
+  assert.deepEqual(h.queryErrors, [])
 })
 
 test('status card renders active policy profiles and handles policy_error cleanly', async () => {

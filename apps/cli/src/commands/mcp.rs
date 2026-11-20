@@ -22,8 +22,8 @@ use zeroize::Zeroize;
 use super::agent_bridge::BridgeSecretCache;
 use super::hook::scan_hook_violations;
 use crate::util::{
-    get_active_vault_path, get_configured_operators, get_vault_store, VaultContext,
-    DEFAULT_PRODUCTION_OPERATORS, OPERATORS_FILE, REQUEST_VAULT_CONTEXT, VAULT_DIR, DB_FILE,
+    get_active_vault_path, get_configured_operators, get_vault_store, VaultContext, DB_FILE,
+    DEFAULT_PRODUCTION_OPERATORS, OPERATORS_FILE, REQUEST_VAULT_CONTEXT, VAULT_DIR,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -45,11 +45,7 @@ const MINIMAL_ENV_KEEP: &[&str] = &[
     "PATHEXT",
 ];
 
-const BLOCKED_OPERATOR_HOSTS: &[&str] = &[
-    "localhost",
-    "metadata.google.internal",
-    "metadata.goog",
-];
+const BLOCKED_OPERATOR_HOSTS: &[&str] = &["localhost", "metadata.google.internal", "metadata.goog"];
 
 const AUDIT_RECEIPT_WITHHELD_MSG: &str = "[CipherVault] run output withheld: the audit-log write failed, so there is no receipt for it. Exit code and counts are kept.";
 
@@ -285,9 +281,7 @@ fn validate_relative_env_file(raw: &str) -> std::result::Result<String, String> 
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err("`env_file` cannot escape workspace cwd".to_string());
             }
-            Component::Normal(seg)
-                if seg.to_string_lossy().eq_ignore_ascii_case(VAULT_DIR) =>
-            {
+            Component::Normal(seg) if seg.to_string_lossy().eq_ignore_ascii_case(VAULT_DIR) => {
                 return Err("`env_file` cannot target `.ciphervault`".to_string());
             }
             _ => {}
@@ -612,17 +606,20 @@ fn build_run_cli_args_for_cwd(
     }
     // Agent-supplied `proxy_upstream` is intentionally never forwarded over MCP.
     let proxy_flag = args.get("proxy").and_then(|v| v.as_bool()).unwrap_or(false);
-    let no_net = args.get("no_net").and_then(|v| v.as_bool()).unwrap_or_else(|| {
-        if proxy_flag {
-            return false;
-        }
-        if let Some(ref prof_name) = profile_opt {
-            if profile_omits_default_no_net(prof_name, cwd) {
+    let no_net = args
+        .get("no_net")
+        .and_then(|v| v.as_bool())
+        .unwrap_or_else(|| {
+            if proxy_flag {
                 return false;
             }
-        }
-        default_no_net()
-    });
+            if let Some(ref prof_name) = profile_opt {
+                if profile_omits_default_no_net(prof_name, cwd) {
+                    return false;
+                }
+            }
+            default_no_net()
+        });
     if proxy_flag && no_net {
         return Err("`proxy` and `no_net` cannot both be enabled".to_string());
     }
@@ -670,7 +667,10 @@ fn finalize_run_with_audit_receipt(
                     "stdout".to_string(),
                     serde_json::Value::String(AUDIT_RECEIPT_WITHHELD_MSG.to_string()),
                 );
-                obj.insert("stderr".to_string(), serde_json::Value::String(String::new()));
+                obj.insert(
+                    "stderr".to_string(),
+                    serde_json::Value::String(String::new()),
+                );
                 obj.insert("audit_receipt".to_string(), serde_json::Value::Bool(false));
             }
             return (payload, true);
@@ -718,7 +718,9 @@ fn finalize_run_with_audit_receipt(
     let detail_str = detail.to_string();
 
     let recorded = LocalVaultStore::open(&db_path)
-        .and_then(|store| store.append_agent_audit("ciphervault_run", "scrubbed_result", "", &detail_str))
+        .and_then(|store| {
+            store.append_agent_audit("ciphervault_run", "scrubbed_result", "", &detail_str)
+        })
         .is_ok();
 
     if recorded {
@@ -729,7 +731,10 @@ fn finalize_run_with_audit_receipt(
                 "stdout".to_string(),
                 serde_json::Value::String(AUDIT_RECEIPT_WITHHELD_MSG.to_string()),
             );
-            obj.insert("stderr".to_string(), serde_json::Value::String(String::new()));
+            obj.insert(
+                "stderr".to_string(),
+                serde_json::Value::String(String::new()),
+            );
             obj.insert("audit_receipt".to_string(), serde_json::Value::Bool(false));
         }
         (payload, true)
@@ -821,9 +826,7 @@ fn build_secret_generate_cli_args(
         .unwrap_or_else(|| "base64url".to_string())
         .to_ascii_lowercase();
     if !matches!(fmt.as_str(), "base64url" | "hex" | "uuid" | "alphanumeric") {
-        return Err(
-            "invalid format: expected base64url, hex, uuid, or alphanumeric".to_string(),
-        );
+        return Err("invalid format: expected base64url, hex, uuid, or alphanumeric".to_string());
     }
 
     let nbytes: u64 = match args.get("bytes") {
@@ -1207,7 +1210,11 @@ impl TempDrillDir {
         for _ in 0..16 {
             let mut rnd = [0u8; 8];
             rand::thread_rng().fill_bytes(&mut rnd);
-            let cand = base.join(format!("cv-drill-{}-{}", std::process::id(), hex::encode(rnd)));
+            let cand = base.join(format!(
+                "cv-drill-{}-{}",
+                std::process::id(),
+                hex::encode(rnd)
+            ));
             match builder.create(&cand) {
                 Ok(()) => return Ok(Self(cand)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1324,7 +1331,10 @@ fn call_tool(
             });
             match res {
                 Ok(pair) => pair,
-                Err(msg) => (serde_json::json!({ "initialized": false, "error": msg }), true),
+                Err(msg) => (
+                    serde_json::json!({ "initialized": false, "error": msg }),
+                    true,
+                ),
             }
         }
         "ciphervault_scan" => {
@@ -1478,7 +1488,11 @@ fn call_tool(
             spawn_self_json(&cli_args, effective_cwd.as_deref(), cache)
         }
         "ciphervault_proxy_doctor" => {
-            let mut dry_args = vec!["run".to_string(), "--dry-run".to_string(), "--json".to_string()];
+            let mut dry_args = vec![
+                "run".to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ];
             if let Some(ef) = optional_trimmed_str(args, "env_file") {
                 let clean = match validate_relative_env_file(&ef) {
                     Ok(c) => c,
@@ -1499,8 +1513,7 @@ fn call_tool(
             dry_args.extend(["--".to_string(), "echo".to_string(), "ok".to_string()]);
 
             let effective_cwd = vault_cwd_for(cwd.as_deref());
-            let (dry_payload, is_err) =
-                spawn_self_json(&dry_args, effective_cwd.as_deref(), cache);
+            let (dry_payload, is_err) = spawn_self_json(&dry_args, effective_cwd.as_deref(), cache);
             if is_err {
                 return (dry_payload, true);
             }
@@ -1917,7 +1930,8 @@ mod tests {
             ),
             ("NO_COLOR".to_string(), "0".to_string()),
         ];
-        let env_map: BTreeMap<String, String> = build_minimal_env_from(fake_env).into_iter().collect();
+        let env_map: BTreeMap<String, String> =
+            build_minimal_env_from(fake_env).into_iter().collect();
         assert!(!env_map.contains_key("OPENAI_API_KEY"));
         assert!(!env_map.contains_key("ANTHROPIC_API_KEY"));
         assert!(!env_map.contains_key("AWS_SECRET_ACCESS_KEY"));
@@ -1962,7 +1976,11 @@ mod tests {
             rand::random::<u64>()
         ));
         std::fs::create_dir_all(corrupt_dir.join(VAULT_DIR)).unwrap();
-        std::fs::write(corrupt_dir.join(VAULT_DIR).join(DB_FILE), b"not-a-sqlite-db").unwrap();
+        std::fs::write(
+            corrupt_dir.join(VAULT_DIR).join(DB_FILE),
+            b"not-a-sqlite-db",
+        )
+        .unwrap();
 
         let fail_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -2281,7 +2299,9 @@ mod tests {
         assert!(gen_full.iter().any(|a| a == "--overwrite"));
         assert!(gen_full.windows(2).any(|w| w == ["--format", "hex"]));
         assert!(gen_full.windows(2).any(|w| w == ["--bytes", "48"]));
-        assert!(gen_full.windows(2).any(|w| w == ["--env-file", ".env.prod"]));
+        assert!(gen_full
+            .windows(2)
+            .any(|w| w == ["--env-file", ".env.prod"]));
 
         // Reject bad names, formats, byte counts, and path traversal
         assert!(build_secret_generate_cli_args(&serde_json::json!({ "name": "--bad" })).is_err());
@@ -2327,10 +2347,7 @@ mod tests {
         assert_eq!(report["proxy_ready"], true);
 
         let providers = report["mapped_providers"].as_array().unwrap();
-        let provider_keys: Vec<&str> = providers
-            .iter()
-            .filter_map(|p| p["key"].as_str())
-            .collect();
+        let provider_keys: Vec<&str> = providers.iter().filter_map(|p| p["key"].as_str()).collect();
         assert_eq!(
             provider_keys,
             vec!["OPENAI_API_KEY", "RESEND_API_KEY", "GROQ_API_KEY"]
@@ -2435,7 +2452,10 @@ mod tests {
             hex::encode(sha2::Sha256::digest(b"KEY=val\n"))
         );
         drop(dir);
-        assert!(!dir_path.exists(), "TempDrillDir must delete itself on drop");
+        assert!(
+            !dir_path.exists(),
+            "TempDrillDir must delete itself on drop"
+        );
     }
 
     #[test]

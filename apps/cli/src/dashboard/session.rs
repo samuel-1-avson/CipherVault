@@ -332,7 +332,10 @@ mod local_startup_session_tests {
         let token = init_private_ui_bootstrap_token();
         assert_eq!(token.len(), 64);
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(private_ui_bootstrap_token().as_deref(), Some(token.as_str()));
+        assert_eq!(
+            private_ui_bootstrap_token().as_deref(),
+            Some(token.as_str())
+        );
 
         assert!(constant_time_str_eq(&token, &token));
         assert!(!constant_time_str_eq(&token, "wrong"));

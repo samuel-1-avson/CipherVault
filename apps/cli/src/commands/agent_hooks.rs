@@ -51,10 +51,7 @@ fn is_file_write_tool(name: &str) -> bool {
 
 pub(crate) fn is_protected_vault_config_path(path_str: &str) -> bool {
     let norm = path_str.replace('\\', "/").to_ascii_lowercase();
-    if norm
-        .split('/')
-        .any(|seg| seg == ".ciphervault")
-    {
+    if norm.split('/').any(|seg| seg == ".ciphervault") {
         return true;
     }
     let name = Path::new(&norm)
@@ -165,7 +162,10 @@ fn is_allowed_vault_or_git_admin_cmd(cmd: &str) -> bool {
                     Some("show" | "verify" | "check" | "verify-remote" | "export")
                 );
             }
-            matches!(sub, "status" | "track" | "push" | "hook" | "audit" | "doctor")
+            matches!(
+                sub,
+                "status" | "track" | "push" | "hook" | "audit" | "doctor"
+            )
         }
         "git" => {
             matches!(tokens[1], "status" | "check-ignore" | "ls-files")

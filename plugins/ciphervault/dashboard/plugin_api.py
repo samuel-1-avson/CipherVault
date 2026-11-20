@@ -16,7 +16,10 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 try:
     from fastapi import APIRouter, Body
@@ -74,6 +77,144 @@ def _find_binary() -> str | None:
     binary, repo checkout, and `PATH` `ciphervault` — never bare `cv`)."""
     bin_path, _source = _cv_binary.find_binary()
     return bin_path
+
+
+_PUBLIC_EXPLORER = "https://vault.cipherv.online"
+_EXPLORER_BODY_LIMIT = 512 * 1024
+_EXPLORER_CID = re.compile(r"[0-9a-f]{64}", re.IGNORECASE | re.ASCII)
+_CHAIN_QUERY = re.compile(r"(?:#?[0-9]{1,20}|(?:0x)?[0-9a-f]{64})", re.IGNORECASE | re.ASCII)
+
+
+class _ExplorerRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _read_public_explorer(path: str):
+    # Only application-chosen paths reach this client. Refuse redirects
+    # so an upstream response cannot change the destination of a lookup.
+    opener = build_opener(_ExplorerRedirects())
+    with opener.open(
+        Request(_PUBLIC_EXPLORER + path, headers={"Accept": "application/json"}),
+        timeout=8,
+    ) as response:
+        data = response.read(_EXPLORER_BODY_LIMIT + 1)
+    if len(data) > _EXPLORER_BODY_LIMIT:
+        raise ValueError("Explorer response is too large")
+    return json.loads(data)
+
+
+def _pick(row, fields: tuple[str, ...]) -> dict:
+    if not isinstance(row, dict):
+        return {}
+    return {
+        key: value[:512] if isinstance(value, str) else value
+        for key, value in row.items()
+        if key in fields and isinstance(value, (str, int, bool, float))
+    }
+
+
+def _chain_digests(values) -> list[str]:
+    return [value for value in values[:64] if isinstance(value, str) and _EXPLORER_CID.fullmatch(value)] \
+        if isinstance(values, list) else []
+
+
+def _public_explorer_overview() -> dict:
+    paths = ("/api/explorer/overview", "/api/operators", "/api/anchors")
+    results = []
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for request in [pool.submit(_read_public_explorer, path) for path in paths]:
+            try:
+                results.append(request.result())
+            except (OSError, ValueError):
+                results.append(None)
+    overview, operators, anchors = results
+    overview = overview if isinstance(overview, dict) else {}
+    counts = _pick(overview.get("operators"), ("total", "reachable"))
+    feed = _pick(overview.get("anchors"), ("count", "status"))
+    return {
+        "state": "unavailable" if all(result is None for result in results) else "ready",
+        **_pick(overview, ("observed_at_utc",)),
+        "counts": counts,
+        "feed": feed,
+        "operators_available": isinstance(operators, list),
+        "anchors_available": isinstance(anchors, list),
+        "operators": [_pick(row, ("operator_id", "display_name", "region", "latency_ms", "status",
+                                  "online", "identity_verification")) for row in operators[:30]]
+        if isinstance(operators, list) else [],
+        "anchors": [_pick(row, ("tx_hash_hex", "tx_hash", "commitment_hex", "network",
+                                "reported_block_number", "block_number", "finality_status"))
+                    for row in anchors[:20]] if isinstance(anchors, list) else [],
+    }
+
+
+def _public_explorer_object(cid: str) -> dict:
+    normalized = cid.strip().lower().removeprefix("0x")
+    if not _EXPLORER_CID.fullmatch(normalized):
+        return {"state": "invalid", "error": "Enter a 64-character hexadecimal object CID."}
+    try:
+        data = _read_public_explorer("/api/explorer/object/" + normalized)
+    except HTTPError as error:
+        if error.code == 429:
+            return {"state": "unavailable", "error": "Lookup limit reached. Retry shortly."}
+        return {"state": "unavailable", "error": "The public object lookup is unavailable."}
+    except (OSError, ValueError):
+        return {"state": "unavailable", "error": "The public object lookup is unavailable."}
+    if not isinstance(data, dict) or data.get("cid") != normalized:
+        return {"state": "unavailable", "error": "The public explorer returned an invalid lookup."}
+    replicas = data.get("replicas")
+    return {
+        "state": "ready",
+        "cid": normalized,
+        **_pick(data, ("checked_at_utc",)),
+        "quorum": _pick(data.get("quorum"), ("present", "checked", "required", "satisfied")),
+        "replicas": [_pick(row, ("endpoint", "operator_id", "status", "size_bytes", "latency_ms"))
+                     for row in replicas[:40]] if isinstance(replicas, list) else [],
+    }
+
+
+def _local_chain_explorer(cwd: str | None, query: str | None) -> dict:
+    workspace = _safe_cwd(cwd)
+    if workspace is None:
+        return {"state": "invalid", "error": "Select a local workspace."}
+    query = (query or "").strip()
+    if query and not _CHAIN_QUERY.fullmatch(query):
+        return {"state": "invalid", "error": "Enter a block height, hash, or opaque commitment."}
+    binary = _find_binary()
+    if not binary:
+        return {"state": "unsupported", "error": "Set CIPHERVAULT_BIN to a CLI with chain-explorer support."}
+    vault_cwd = str(_cv_bridge._vault_root(workspace) or workspace)
+    args = [binary, "chain-explorer"]
+    if query:
+        args.extend(["--query", query])
+    try:
+        proc = subprocess.run(
+            args, cwd=vault_cwd, env=_minimal_env(), timeout=15,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if proc.returncode:
+            if "unrecognized subcommand" in (proc.stderr or "").lower():
+                return {"state": "unsupported", "error": "Use a CipherVault CLI build with chain-explorer support."}
+            return {"state": "unavailable", "error": "Could not verify the local CipherChain ledger."}
+        payload = json.loads(proc.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {"state": "unavailable", "error": "The local ledger could not be read."}
+    if not isinstance(payload, dict) or payload.get("state") not in ("empty", "ready", "not_found"):
+        return {"state": "unavailable", "error": "The CLI returned an invalid chain response."}
+    fields = ("height", "hash", "timestamp_ms", "timestamp_signed", "signatures", "commitments")
+    blocks = payload.get("blocks")
+    detail = payload.get("detail")
+    return {
+        **_pick(payload, ("state", "chain_id", "solo")),
+        "blocks": [_pick(row, fields) for row in blocks[:20]] if isinstance(blocks, list) else [],
+        "detail": {
+            **_pick(detail, ("parent_hash", "transaction_root")),
+            "signers": _chain_digests(detail.get("signers")),
+            "commitments": _chain_digests(detail.get("commitments")),
+            "block": _pick(detail.get("block"), fields),
+            "inclusion": _pick(detail.get("inclusion"), ("commitment", "index", "proof_steps")) or None,
+        } if isinstance(detail, dict) else None,
+    }
 
 
 def _safe_cwd(cwd: str | None) -> str | None:
@@ -838,6 +979,17 @@ def _env_health(cwd: str | None) -> dict:
 
 
 if router is not None:
+    @router.get("/explorer")
+    def explorer():
+        return _public_explorer_overview()
+
+    @router.get("/explorer/object")
+    def explorer_object(cid: str):
+        return _public_explorer_object(cid)
+
+    @router.get("/explorer/chain")
+    def explorer_chain(cwd: str | None = None, query: str | None = None):
+        return _local_chain_explorer(cwd, query)
 
     @router.get("/status")
     def status(cwd: str | None = None):

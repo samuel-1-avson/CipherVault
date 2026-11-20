@@ -7,6 +7,7 @@ is modified, no remote fleet is contacted, and init output is discarded.
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -58,6 +59,8 @@ def real_vault(real_cli, tmp_path, monkeypatch):
         yield root, kit, fake_value
     finally:
         # Remove the generated kit, store, and fake plaintext immediately.
+        # On Windows a live redaction bridge holds the workspace open.
+        cv._close_all_bridges()
         shutil.rmtree(root)
 
 
@@ -78,7 +81,7 @@ def test_real_handlers_scrub_receipt_run_and_failed_recovery_cleanup(real_vault,
     ran = json.loads(cv._tool_run({"cwd": cwd, "command": [
         sys.executable, "-c", "import os; print(os.environ['DEMO_VALUE'])",
     ]}))
-    assert ran["success"], "fake-data command failed"
+    assert ran["success"], ran.get("error", "fake-data command failed")
     assert fake_value not in ran["data"]["stdout"]
     assert ran["data"]["redactions"] > 0
 
@@ -113,6 +116,32 @@ def test_real_handlers_scrub_receipt_run_and_failed_recovery_cleanup(real_vault,
     assert drilled["success"] is False
     assert len(created) == 1
     assert not created[0].exists(), "failed recovery must remove its staging directory"
+
+
+def test_real_node_sandbox_redacts_output_and_blocks_network(real_vault):
+    root, _, fake_value = real_vault
+    node = shutil.which("node")
+    assert node, "Node.js is required for the live sandbox test"
+    push = json.loads(cv._tool_push({"cwd": str(root), "local_only": True}))
+    assert push["success"], "local fake-data snapshot failed"
+    # A listening loopback socket makes success observable without external traffic.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        script = (
+            "const socket = require('node:net').connect(Number(process.argv[1]), '127.0.0.1');"
+            "socket.on('connect', () => { socket.destroy(); process.exitCode = 3; });"
+            "socket.on('error', () => console.log('network blocked', process.env.DEMO_VALUE));"
+            "socket.setTimeout(3000, () => { socket.destroy(); process.exitCode = 4; });"
+        )
+        result = json.loads(cv._tool_run({
+            "cwd": str(root), "command": [node, "-e", script, str(port)],
+        }))
+    assert result["success"], result.get("error", result)
+    assert "network blocked" in result["data"]["stdout"]
+    assert fake_value not in result["data"]["stdout"]
+    assert result["data"]["redactions"] > 0
 
 
 def test_real_audit_rejects_tampered_entry(real_vault):

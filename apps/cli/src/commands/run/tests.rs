@@ -18,8 +18,8 @@ fn allow_keys_filters_and_rejects_missing_or_empty() {
     assert_eq!(vars[0].0, "PORT");
 
     let mut vars2 = vec![("PORT".to_string(), Zeroizing::new("8080".to_string()))];
-    let err = filter_loaded_vars_by_allow_keys(&mut vars2, Some(&["MISSING".to_string()]))
-        .unwrap_err();
+    let err =
+        filter_loaded_vars_by_allow_keys(&mut vars2, Some(&["MISSING".to_string()])).unwrap_err();
     assert!(err.to_string().contains("MISSING"));
     assert!(vars2.is_empty());
 
@@ -49,9 +49,15 @@ fn no_net_sandbox_fails_closed_when_unsupported() {
         );
         env_map.insert(
             "CV_TEST_VAR".to_string(),
-            ("CV_TEST_VAR".to_string(), Zeroizing::new("val123".to_string())),
+            (
+                "CV_TEST_VAR".to_string(),
+                Zeroizing::new("val123".to_string()),
+            ),
         );
-        let ok_args = vec!["/c".to_string(), "echo SANDBOX_OK_%CV_TEST_VAR%".to_string()];
+        let ok_args = vec![
+            "/c".to_string(),
+            "echo SANDBOX_OK_%CV_TEST_VAR%".to_string(),
+        ];
         let (ok_code, ok_out, _) = ctx
             .execute("C:\\Windows\\System32\\cmd.exe", &ok_args, &env_map, false)
             .unwrap();
@@ -67,9 +73,17 @@ fn no_net_sandbox_fails_closed_when_unsupported() {
             "http://1.1.1.1".to_string(),
         ];
         let (net_code, _, _) = ctx
-            .execute("C:\\Windows\\System32\\curl.exe", &net_args, &env_map, false)
+            .execute(
+                "C:\\Windows\\System32\\curl.exe",
+                &net_args,
+                &env_map,
+                false,
+            )
             .unwrap();
-        assert_ne!(net_code, 0, "outbound network should fail inside AppContainer");
+        assert_ne!(
+            net_code, 0,
+            "outbound network should fail inside AppContainer"
+        );
     }
     #[cfg(target_vendor = "apple")]
     {
@@ -191,18 +205,14 @@ fn profile_command_allowlist_and_allow_keys_intersection() {
         &allowed
     )
     .is_ok());
-    assert!(enforce_profile_command_allowlist(
-        &["/venv/bin/pytest".to_string()],
-        "test",
-        &allowed
-    )
-    .is_ok());
-    assert!(enforce_profile_command_allowlist(
-        &["/usr/bin/python3".to_string()],
-        "test",
-        &allowed
-    )
-    .is_ok());
+    assert!(
+        enforce_profile_command_allowlist(&["/venv/bin/pytest".to_string()], "test", &allowed)
+            .is_ok()
+    );
+    assert!(
+        enforce_profile_command_allowlist(&["/usr/bin/python3".to_string()], "test", &allowed)
+            .is_ok()
+    );
     // Path-qualified allowlist entry must not match an arbitrary directory's python3
     assert!(enforce_profile_command_allowlist(
         &["/tmp/evil/python3".to_string()],
@@ -210,12 +220,7 @@ fn profile_command_allowlist_and_allow_keys_intersection() {
         &allowed
     )
     .is_err());
-    assert!(enforce_profile_command_allowlist(
-        &["curl".to_string()],
-        "test",
-        &allowed
-    )
-    .is_err());
+    assert!(enforce_profile_command_allowlist(&["curl".to_string()], "test", &allowed).is_err());
 
     let profile_keys = vec!["DB_PASS".to_string(), "API_KEY".to_string()];
     // No caller allow_keys -> uses profile keys
@@ -235,12 +240,10 @@ fn profile_command_allowlist_and_allow_keys_intersection() {
     assert_eq!(narrowed, vec!["API_KEY"]);
 
     // Disjoint -> error (never widens)
-    assert!(merge_profile_allow_keys(
-        Some(vec!["ADMIN_TOKEN".to_string()]),
-        &profile_keys,
-        "test",
-    )
-    .is_err());
+    assert!(
+        merge_profile_allow_keys(Some(vec!["ADMIN_TOKEN".to_string()]), &profile_keys, "test",)
+            .is_err()
+    );
 }
 
 #[test]
@@ -271,10 +274,16 @@ fn profile_upper_bound_wildcards_optional_and_require_keys() {
     ];
     let filter = build_profile_allow_keys_filter(None, &test_allow, &[], "test").unwrap();
     let mut vars = vec![
-        ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+        (
+            "DATABASE_URL".to_string(),
+            Zeroizing::new("pg://db".to_string()),
+        ),
         ("TEST_TOKEN".to_string(), Zeroizing::new("t1".to_string())),
         ("TEST_SECRET".to_string(), Zeroizing::new("t2".to_string())),
-        ("PROD_STRIPE_KEY".to_string(), Zeroizing::new("sk_live_x".to_string())),
+        (
+            "PROD_STRIPE_KEY".to_string(),
+            Zeroizing::new("sk_live_x".to_string()),
+        ),
     ];
     filter_loaded_vars_with_policy(&mut vars, &filter).unwrap();
     let names: Vec<&str> = vars.iter().map(|(k, _)| k.as_str()).collect();
@@ -286,11 +295,16 @@ fn profile_upper_bound_wildcards_optional_and_require_keys() {
         "ANTHROPIC_API_KEY".to_string(),
         "GEMINI_API_KEY".to_string(),
     ];
-    let llm_filter =
-        build_profile_allow_keys_filter(None, &llm_allow, &[], "llm_eval").unwrap();
+    let llm_filter = build_profile_allow_keys_filter(None, &llm_allow, &[], "llm_eval").unwrap();
     let mut llm_vars = vec![
-        ("OPENAI_API_KEY".to_string(), Zeroizing::new("sk-123".to_string())),
-        ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+        (
+            "OPENAI_API_KEY".to_string(),
+            Zeroizing::new("sk-123".to_string()),
+        ),
+        (
+            "DATABASE_URL".to_string(),
+            Zeroizing::new("pg://db".to_string()),
+        ),
     ];
     filter_loaded_vars_with_policy(&mut llm_vars, &llm_filter).unwrap();
     assert_eq!(llm_vars.len(), 1);
@@ -314,7 +328,10 @@ fn profile_upper_bound_wildcards_optional_and_require_keys() {
     )
     .unwrap();
     let mut vars_narrow = vec![
-        ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+        (
+            "DATABASE_URL".to_string(),
+            Zeroizing::new("pg://db".to_string()),
+        ),
         ("TEST_TOKEN".to_string(), Zeroizing::new("t1".to_string())),
         ("TEST_OTHER".to_string(), Zeroizing::new("t2".to_string())),
     ];
@@ -356,16 +373,11 @@ fn profile_upper_bound_wildcards_optional_and_require_keys() {
     assert_eq!(wild_vars[0].0, "TEST_A");
 
     // 6. require_keys fails when missing from vault or excluded by CLI narrowing
-    let req_filter = build_profile_allow_keys_filter(
-        None,
-        &test_allow,
-        &["DATABASE_URL".to_string()],
-        "test",
-    )
-    .unwrap();
+    let req_filter =
+        build_profile_allow_keys_filter(None, &test_allow, &["DATABASE_URL".to_string()], "test")
+            .unwrap();
     let mut missing_req_vars = vec![("TEST_A".to_string(), Zeroizing::new("a".to_string()))];
-    let req_err =
-        filter_loaded_vars_with_policy(&mut missing_req_vars, &req_filter).unwrap_err();
+    let req_err = filter_loaded_vars_with_policy(&mut missing_req_vars, &req_filter).unwrap_err();
     assert!(req_err.to_string().contains("require_keys"));
     assert!(req_err.to_string().contains("DATABASE_URL"));
     assert!(missing_req_vars.is_empty());
@@ -378,7 +390,10 @@ fn profile_upper_bound_wildcards_optional_and_require_keys() {
     )
     .unwrap();
     let mut both_vars = vec![
-        ("DATABASE_URL".to_string(), Zeroizing::new("pg://db".to_string())),
+        (
+            "DATABASE_URL".to_string(),
+            Zeroizing::new("pg://db".to_string()),
+        ),
         ("TEST_A".to_string(), Zeroizing::new("a".to_string())),
     ];
     assert!(filter_loaded_vars_with_policy(&mut both_vars, &req_excluded_filter).is_err());
@@ -419,7 +434,10 @@ require_explicit_approval = true
     assert_eq!(policy.description.as_deref(), Some("My repo policy"));
     assert_eq!(policy.sandbox_read_paths, vec![".venv", "node_modules"]);
     let test_p = &policy.profiles["test"];
-    assert_eq!(test_p.description.as_deref(), Some("Offline pytest profile"));
+    assert_eq!(
+        test_p.description.as_deref(),
+        Some("Offline pytest profile")
+    );
     assert_eq!(test_p.require_keys, vec!["DATABASE_URL"]);
     assert_eq!(test_p.require_explicit_approval, Some(false));
     assert_eq!(test_p.sandbox_read_paths, vec![".venv"]);
@@ -449,7 +467,11 @@ require_explicit_approval = true
     // Starter policy template must always parse & validate cleanly
     let starter = parse_workspace_policy(&starter_policy_toml(true)).unwrap();
     let starter_rep = validate_workspace_policy(&starter, &dir, &tracked, None);
-    assert!(starter_rep.valid, "starter errors: {:?}", starter_rep.errors);
+    assert!(
+        starter_rep.valid,
+        "starter errors: {:?}",
+        starter_rep.errors
+    );
 
     // Policy check flags incompatible no_net + proxy and require_keys outside allow_keys
     let bad_toml = r#"

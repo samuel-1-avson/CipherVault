@@ -109,7 +109,7 @@
             <circle cx="11" cy="11" r="8"></circle>
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
-          <span class="nav-title">Public Explorer</span>
+          <span class="nav-title">Network Explorer</span>
           <span class="tab-badge" id="badge-tab-explorer">Search</span>
         </button>
 
@@ -607,35 +607,58 @@
 
     <!-- Tab: Network Explorer -->
     <section class="tab-content" id="tab-explorer" role="tabpanel" aria-labelledby="tab-btn-explorer" tabindex="0">
+      <header class="network-explorer-header">
+        <div>
+          <h2>Network Explorer</h2>
+          <p>Check operator reachability, look up encrypted objects, and inspect anchor receipts.</p>
+        </div>
+        <button type="button" class="network-explorer-button" id="explorer-refresh">Refresh network</button>
+      </header>
+      <div class="network-explorer-metrics" id="explorer-overview-grid" aria-live="polite">
+        <p>Loading network overview…</p>
+      </div>
+
       <div class="explorer-search-card">
         <form class="explorer-search-row" id="explorer-search-form" role="search">
           <svg class="search-input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"></circle>
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
-          <input class="explorer-search-input" id="input-explorer-search" type="search" placeholder="Search 64-hex object CID, 0x anchor tx hash, or operator id…" autocomplete="off" spellcheck="false" aria-label="Explorer search">
+          <select id="explorer-search-kind" class="network-explorer-select" aria-label="Search by">
+            <option value="auto">Any identifier</option>
+            <option value="object">Object CID</option>
+            <option value="anchor-tx">Anchor receipt</option>
+            <option value="operator">Operator</option>
+          </select>
+          <input class="explorer-search-input" id="input-explorer-search" type="search" maxlength="100" placeholder="Paste an object CID, receipt hash, or operator name" autocomplete="off" spellcheck="false" aria-label="Explorer search">
           <button class="explorer-search-button" id="btn-explorer-search" type="submit">Search</button>
+          <button type="button" class="network-explorer-button" id="explorer-clear" hidden>Clear</button>
         </form>
-        <div class="explorer-quick-chips" id="explorer-quick-chips">
-          <span class="quick-chip-label">Quick probe:</span>
-          <button type="button" class="quick-chip-btn" data-search="cv-operator-1">cv-operator-1</button>
-          <button type="button" class="quick-chip-btn" data-search="cv-operator-2">cv-operator-2</button>
-          <button type="button" class="quick-chip-btn" data-search="cv-operator-3">cv-operator-3</button>
-        </div>
-      </div>
-
-      <div class="operators-grid cv-layout-cfec463e2f" id="explorer-overview-grid">
-        <div class="loading-placeholder">Loading network overview...</div>
       </div>
 
       <div id="explorer-result" aria-live="polite"></div>
 
-      <div class="card-section cv-layout-a005516828">
-        <h3 class="card-subheading cv-layout-3106344cde">Latest Anchors</h3>
+      <section class="network-explorer-section" aria-labelledby="explorer-anchors-heading">
+        <h3 id="explorer-anchors-heading">Anchor receipts</h3>
         <div id="explorer-anchors-strip">
           <div class="loading-placeholder">Loading anchors...</div>
         </div>
-      </div>
+      </section>
+
+      <section class="network-explorer-section" data-private-surface hidden aria-labelledby="explorer-chain-heading">
+        <div class="network-explorer-section-heading">
+          <div>
+            <h3 id="explorer-chain-heading">Local CipherChain</h3>
+            <p>Browse the signed ledger stored with this vault.</p>
+          </div>
+          <button type="button" class="network-explorer-button" id="explorer-chain-refresh">Load blocks</button>
+        </div>
+        <form class="network-explorer-chain-search" id="explorer-chain-form" role="search">
+          <input id="explorer-chain-query" type="search" maxlength="66" placeholder="Block height, hash, or commitment" aria-label="Search local chain" autocomplete="off" required>
+          <button class="explorer-search-button" type="submit">Find block</button>
+        </form>
+        <div id="explorer-chain-result" aria-live="polite"></div>
+      </section>
     </section>
 
     <!-- Tab 2: Snapshot DAG Explorer -->

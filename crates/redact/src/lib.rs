@@ -1201,7 +1201,10 @@ mod tests {
 
             let url_blob = base64url_encode(combined.as_bytes(), false);
             let (out_url, n_url) = scrub_exact_values(&url_blob, &values);
-            assert!(n_url >= 1, "expected b64url shift match for prefix={prefix:?}");
+            assert!(
+                n_url >= 1,
+                "expected b64url shift match for prefix={prefix:?}"
+            );
             assert!(out_url.contains("[REDACTED:EMBED]"), "out={out_url}");
         }
 

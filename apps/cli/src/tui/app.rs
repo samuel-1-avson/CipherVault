@@ -1,3 +1,5 @@
+use crate::commands::backup_status::BackupStatus;
+use crate::commands::chain_explorer::ChainExplorer;
 use crate::diff::{ChangeType, DiffReport};
 use ciphervault_crypto::hsm::{
     list_pcsc_readers, probe_all as probe_hw_tokens, HardwareSecurityModule, HsmSlot,
@@ -262,7 +264,8 @@ pub enum InspectError {
 /// probe, and file inspection runs inside `TuiApp::tasks`; the event loop
 /// drains these each tick and applies them via `apply_task_out`, so input and
 /// rendering never stall on I/O.
-pub enum TuiTaskOut {
+pub(crate) enum TuiTaskOut {
+    ChainExplored(Result<ChainExplorer, String>),
     OperatorsPolled {
         endpoints: Vec<String>,
         probes: Vec<OperatorProbeResult>,
@@ -504,6 +507,7 @@ pub struct TuiApp {
     pub vault_id_hex: String,
     pub active_epoch: u64,
     pub head_cid_hex: String,
+    pub(crate) backup_status: Option<BackupStatus>,
     pub recovery_signing_pk_hex: String,
     pub recovery_locator_hex: String,
 
@@ -585,6 +589,10 @@ pub struct TuiApp {
     pub track_input_buffer: String,
     pub show_explorer_search_modal: bool,
     pub explorer_search_buffer: String,
+    pub(crate) show_chain_explorer: bool,
+    pub(crate) chain_explorer: Option<Result<ChainExplorer, String>>,
+    pub(crate) chain_index: usize,
+    pub(crate) chain_loading: bool,
     pub show_help: bool,
     pub show_snapshot_modal: bool,
     /// Pending destructive/expensive action staged by `[a]`/`[x]`.
@@ -633,6 +641,7 @@ impl TuiApp {
             vault_id_hex: "Not Initialized".into(),
             active_epoch: 0,
             head_cid_hex: "None".into(),
+            backup_status: None,
             recovery_signing_pk_hex: "None".into(),
             recovery_locator_hex: "None".into(),
 
@@ -706,6 +715,10 @@ impl TuiApp {
             track_input_buffer: String::new(),
             show_explorer_search_modal: false,
             explorer_search_buffer: String::new(),
+            show_chain_explorer: false,
+            chain_explorer: None,
+            chain_index: 0,
+            chain_loading: false,
             show_help: false,
             show_snapshot_modal: false,
             confirm_action: None,
@@ -751,6 +764,7 @@ impl TuiApp {
 
     pub fn refresh_local_state(&mut self) {
         self.load_attempted = true;
+        self.backup_status = None;
         self.refresh_account_state();
         let store_result = crate::get_vault_store();
         match store_result {
@@ -763,8 +777,12 @@ impl TuiApp {
                     self.active_epoch = epoch;
                 }
                 if let Ok(head_opt) = store.get_active_head() {
-                    self.head_cid_hex = head_opt
-                        .map(|h| hex::encode(&h.snapshot_id))
+                    let head_cid = head_opt
+                        .as_ref()
+                        .and_then(|head| <&[u8; 32]>::try_from(head.snapshot_id.as_slice()).ok());
+                    self.backup_status = BackupStatus::load(&store, head_cid).ok();
+                    self.head_cid_hex = head_cid
+                        .map(hex::encode)
                         .unwrap_or_else(|| "Genesis (No commits)".into());
                 }
                 if let Ok(desc) = store.get_recovery_descriptors() {
@@ -1661,6 +1679,30 @@ impl TuiApp {
     /// Presence-only object lookup in a background task: PoS-challenge every
     /// configured operator for the CID in the search buffer. Object bytes are
     /// never fetched.
+    pub(crate) fn spawn_chain_explorer(&mut self, query: Option<String>) {
+        if self.chain_loading || !have_runtime() {
+            return;
+        }
+        self.chain_loading = true;
+        self.tasks.spawn(async move {
+            let data = tokio::task::spawn_blocking(move || {
+                crate::commands::chain_explorer::read_chain_explorer(query.as_deref())
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+            TuiTaskOut::ChainExplored(data)
+        });
+    }
+
+    pub(crate) fn chain_rows(&self) -> &[crate::commands::chain_explorer::ExplorerBlock] {
+        self.chain_explorer
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map_or(&[], |view| view.blocks.as_slice())
+    }
+
     pub fn spawn_object_probe(&mut self) {
         if self.object_probe_in_flight {
             self.set_status("Object probe already running...", StatusLevel::Info);
@@ -1844,6 +1886,7 @@ impl TuiApp {
                 Err(error) => {
                     self.poll_in_flight = false;
                     self.explorer_in_flight = false;
+                    self.chain_loading = false;
                     self.token_in_flight = false;
                     self.object_probe_in_flight = false;
                     self.push_in_flight = false;
@@ -1948,6 +1991,13 @@ impl TuiApp {
                         level,
                     );
                 }
+            }
+            TuiTaskOut::ChainExplored(result) => {
+                self.chain_loading = false;
+                self.chain_explorer = Some(result);
+                self.chain_index = self
+                    .chain_index
+                    .min(self.chain_rows().len().saturating_sub(1));
             }
             TuiTaskOut::ExplorerRefreshed(snapshot) => {
                 self.explorer_in_flight = false;
@@ -2502,13 +2552,16 @@ async fn fetch_operator_probes(
 /// Collects cluster telemetry and the signed checkpoint feed, reusing the
 /// same collectors as the public web explorer.
 async fn fetch_explorer_snapshot() -> ExplorerSnapshot {
-    let telemetry = crate::public_operator_telemetry().await;
+    let (telemetry, feed) = tokio::join!(
+        crate::public_operator_telemetry(),
+        crate::load_public_feed_with_finality()
+    );
     let observed_at = telemetry
         .observed_at
         .format("%Y-%m-%d %H:%M:%S UTC")
         .to_string();
     let operators = explorer_operator_rows(&telemetry.operators);
-    match crate::load_public_feed_with_finality().await {
+    match feed {
         Ok(Some(checkpoints)) => ExplorerSnapshot {
             observed_at,
             operators,
@@ -2548,14 +2601,9 @@ async fn probe_object_presence(query: String) -> ObjectProbeOutcome {
     if endpoints.is_empty() {
         return fail("Explorer has no operator endpoints configured.");
     }
-    let replicas = futures_util::future::join_all(
-        endpoints
-            .into_iter()
-            .map(|endpoint| crate::probe_explorer_replica(endpoint, cid)),
-    )
-    .await;
+    let observation = crate::probe_explorer_object_cached(cid, endpoints).await;
     let required = ciphervault_storage::pool::DEFAULT_REQUIRED_REPLICAS;
-    let result = explorer_object_result(&cid_hex, &replicas, required);
+    let result = explorer_object_result(&cid_hex, &observation.replicas, required);
     let verdict = if result.satisfied {
         "quorum satisfied"
     } else {

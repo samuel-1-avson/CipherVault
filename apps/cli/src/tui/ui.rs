@@ -65,6 +65,8 @@ pub fn draw(frame: &mut Frame, app: &mut TuiApp) {
         render_track_modal(frame, app);
     } else if app.show_explorer_search_modal {
         render_explorer_search_modal(frame, app);
+    } else if app.show_chain_explorer {
+        render_chain_explorer(frame, app);
     } else if app.show_update_modal {
         render_update_modal(frame, app);
     } else if app.show_help {
@@ -229,7 +231,7 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let head_snippet = elide_hex(&app.head_cid_hex);
     let locator_snippet = elide_hex(&app.recovery_locator_hex);
 
-    let info_text = vec![
+    let mut info_text = vec![
         Line::from(vec![
             Span::styled("Vault ID:        ", Style::default().fg(Color::Gray)),
             Span::styled(
@@ -261,6 +263,21 @@ fn render_overview_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
             Span::styled(store_mode_label(), Style::default().fg(Color::LightGreen)),
         ]),
     ];
+    let (backup_label, drill_label) = app
+        .backup_status
+        .as_ref()
+        .map(|status| (status.replication_label(), status.drill_label()))
+        .unwrap_or(("Unavailable", "Unavailable"));
+    info_text.extend([
+        Line::from(vec![
+            Span::styled("Backup:          ", Style::default().fg(Color::Gray)),
+            Span::raw(backup_label),
+        ]),
+        Line::from(vec![
+            Span::styled("Recovery drill:  ", Style::default().fg(Color::Gray)),
+            Span::raw(drill_label),
+        ]),
+    ]);
 
     let info_block = Paragraph::new(info_text).wrap(Wrap { trim: true }).block(
         Block::default()
@@ -1126,12 +1143,13 @@ fn render_token_tab(frame: &mut Frame, app: &TuiApp, area: Rect) {
 }
 
 fn render_explorer_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
+    let compact = area.width < 100 || area.height < 25;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),
-            Constraint::Length(11),
-            Constraint::Min(8),
+            Constraint::Length(if compact { 5 } else { 7 }),
+            Constraint::Length(if compact { 5 } else { 11 }),
+            Constraint::Min(6),
         ])
         .split(area);
 
@@ -1150,6 +1168,104 @@ fn render_explorer_tab(frame: &mut Frame, app: &mut TuiApp, area: Rect) {
         .split(rows[2]);
     render_explorer_operators_table(frame, app, tables[0]);
     render_explorer_checkpoints_table(frame, app, tables[1]);
+}
+
+fn render_chain_explorer(frame: &mut Frame, app: &TuiApp) {
+    let area = centered_rect(90, 86, frame.area());
+    frame.render_widget(Clear, area);
+    let mut lines = vec![Line::from(
+        "[/] Find   [Enter] Inspect   [Up/Down] Select   [r] Refresh   [Esc] Close",
+    )];
+    if app.chain_loading {
+        lines.push(Line::from("Verifying local ledger..."));
+    }
+    match &app.chain_explorer {
+        Some(Ok(view)) => {
+            if view.state == "empty" {
+                lines.push(Line::from(
+                    "No local blocks yet. Anchor a snapshot to begin.",
+                ));
+            } else if view.state == "not_found" {
+                lines.push(Line::from("No block or commitment matched that search."));
+            } else if view.solo {
+                lines.push(Line::from("Solo ledger. One validator per block."));
+            } else {
+                lines.push(Line::from(
+                    "Ledger verified against its saved genesis validators.",
+                ));
+            }
+            let visible = if area.height < 22 { 3 } else { 6 };
+            let first = app.chain_index.saturating_sub(visible - 1);
+            for (index, block) in view.blocks.iter().enumerate().skip(first).take(visible) {
+                let style = if index == app.chain_index {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                let marker = if index == app.chain_index { ">" } else { " " };
+                lines.push(Line::styled(
+                    format!(
+                        "{marker} #{:<6} {}  {} commitment(s)  {} signature(s)",
+                        block.height,
+                        elide_hex(&block.hash),
+                        block.commitments,
+                        block.signatures,
+                    ),
+                    style,
+                ));
+            }
+            if let Some(detail) = &view.detail {
+                let time =
+                    chrono::DateTime::from_timestamp_millis(detail.block.timestamp_ms as i64)
+                        .map(|time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                        .unwrap_or_else(|| "Unknown".into());
+                let time_auth = if detail.block.timestamp_signed {
+                    "signed"
+                } else {
+                    "unsigned"
+                };
+                lines.push(Line::from(format!(
+                    "Block #{}   {time} ({time_auth})",
+                    detail.block.height
+                )));
+                if let Some(proof) = &detail.inclusion {
+                    lines.push(Line::from(format!(
+                        "Inclusion verified at index {} ({} proof steps)",
+                        proof.index, proof.proof_steps,
+                    )));
+                } else if let Some(commitment) = detail.commitments.first() {
+                    lines.push(Line::from(format!(
+                        "First commitment  {}",
+                        elide_hex(commitment)
+                    )));
+                }
+                let hash = |value: &str| {
+                    if area.width < 88 {
+                        elide_hex(value)
+                    } else {
+                        value.to_string()
+                    }
+                };
+                lines.push(Line::from(format!("Hash  {}", hash(&detail.block.hash))));
+                lines.push(Line::from(format!("Parent  {}", hash(&detail.parent_hash))));
+                lines.push(Line::from(format!(
+                    "Transaction root  {}",
+                    hash(&detail.transaction_root)
+                )));
+            }
+        }
+        Some(Err(error)) => lines.push(Line::from(sanitize_cell(error))),
+        None if !app.chain_loading => lines.push(Line::from("Press R to load the local ledger.")),
+        None => {}
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::bordered()
+                .title(" Local CipherChain ")
+                .border_type(BorderType::Rounded),
+        ),
+        area,
+    );
 }
 
 fn render_explorer_cluster_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
@@ -1303,7 +1419,7 @@ fn render_explorer_feed_card(frame: &mut Frame, app: &TuiApp, area: Rect) {
 
 fn render_explorer_object_panel(frame: &mut Frame, app: &TuiApp, area: Rect) {
     let block = Block::default()
-        .title(" Object Quorum Lookup — [/] to search ")
+        .title(" Object Quorum Lookup  [/] Search  [b] CipherChain  [r] Refresh ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Green));
@@ -1585,8 +1701,21 @@ fn render_explorer_search_modal(frame: &mut Frame, app: &TuiApp) {
     let area = centered_rect(60, 24, frame.area());
     frame.render_widget(Clear, area);
 
+    let (title, prompt, help_text) = if app.show_chain_explorer {
+        (
+            " Search Local CipherChain ",
+            "Enter a height, block hash, or commitment.",
+            "[Enter] Search    [Esc] Cancel",
+        )
+    } else {
+        (
+            " Inspect Object by Content ID ",
+            "Enter a 64-character hex content ID.",
+            "[Enter] Probe Quorum    [Esc] Cancel",
+        )
+    };
     let modal_block = Block::default()
-        .title(" Inspect Object by Content ID ")
+        .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::Green));
@@ -1603,7 +1732,7 @@ fn render_explorer_search_modal(frame: &mut Frame, app: &TuiApp) {
 
     frame.render_widget(modal_block, area);
 
-    let label = Paragraph::new("Enter 64-character hex content ID (presence-only lookup):");
+    let label = Paragraph::new(prompt);
     frame.render_widget(label, inner[0]);
 
     let input = Paragraph::new(Line::from(vec![
@@ -1623,7 +1752,7 @@ fn render_explorer_search_modal(frame: &mut Frame, app: &TuiApp) {
     );
     frame.render_widget(input, inner[1]);
 
-    let help = Paragraph::new("[Enter] Probe Quorum    [Esc] Cancel")
+    let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::Gray));
     frame.render_widget(help, inner[2]);

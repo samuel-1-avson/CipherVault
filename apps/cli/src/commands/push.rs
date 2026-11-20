@@ -394,6 +394,7 @@ pub(crate) async fn cmd_push(
                     issued.len(),
                     operators.len()
                 );
+                println!("  Recovery checkpoint: {}", hex::encode(record_cid));
             } else {
                 println!(
                     "  Durability:     {} ({}/{} replicas verified; degraded)",
@@ -469,7 +470,10 @@ pub(crate) fn resolve_push_shred(shred_flag: bool, vault_dir: &Path) -> Result<b
 
 /// Zero-fills and removes tracked plaintext working-tree files so confidential
 /// values live only encrypted in `.ciphervault/vault.db` (and on operators).
-pub(crate) fn shred_working_tree_files(root: &Path, tracked: &[(PathBuf, [u8; 32])]) -> Result<usize> {
+pub(crate) fn shred_working_tree_files(
+    root: &Path,
+    tracked: &[(PathBuf, [u8; 32])],
+) -> Result<usize> {
     let mut shredded = 0usize;
     let zeros = [0u8; 64 * 1024];
     for (rel_path, _) in tracked {
@@ -688,11 +692,19 @@ mod tests {
         assert!(resolve_push_shred(true, &vault_dir).unwrap());
 
         // sealed_mode = false -> false
-        std::fs::write(vault_dir.join("policy.toml"), "[vault]\nsealed_mode = false\n").unwrap();
+        std::fs::write(
+            vault_dir.join("policy.toml"),
+            "[vault]\nsealed_mode = false\n",
+        )
+        .unwrap();
         assert!(!resolve_push_shred(false, &vault_dir).unwrap());
 
         // sealed_mode = true -> true, and shreds tracked files
-        std::fs::write(vault_dir.join("policy.toml"), "[vault]\nsealed_mode = true\n").unwrap();
+        std::fs::write(
+            vault_dir.join("policy.toml"),
+            "[vault]\nsealed_mode = true\n",
+        )
+        .unwrap();
         assert!(resolve_push_shred(false, &vault_dir).unwrap());
 
         let tracked = vec![(PathBuf::from(".env"), [0x44u8; 32])];

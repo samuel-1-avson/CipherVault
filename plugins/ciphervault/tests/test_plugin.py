@@ -3472,6 +3472,55 @@ def test_session_start_and_pre_llm_call_ambient_posture_and_audit_session_id(ctx
         cv.on_session_start()
 
 
+def test_dashboard_explorer_validates_requests_and_limits_chain_projection(tmp_path, monkeypatch):
+    import importlib.util
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("cv_plugin_explorer", PLUGIN_DIR / "dashboard" / "plugin_api.py")
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+    cid = "ab" * 32
+    paths = []
+
+    def public(path):
+        paths.append(path)
+        if path == "/api/explorer/overview":
+            return {"operators": {"total": 2, "reachable": 1}, "anchors": {"count": 0}}
+        if path == "/api/operators":
+            return [{"operator_id": "op1", "private_field": "ignored"}]
+        if path == "/api/explorer/object/" + cid:
+            return {"cid": cid, "quorum": {"required": 3}, "replicas": [{"status": "present", "object_bytes": "ignored"}]}
+        raise OSError("fixture outage")
+
+    monkeypatch.setattr(api, "_read_public_explorer", public)
+    assert api._public_explorer_object("../bad")["state"] == "invalid"
+    assert not paths
+    assert api._public_explorer_object("0x" + cid.upper())["replicas"] == [{"status": "present"}]
+    view = api._public_explorer_overview()
+    assert view["state"] == "ready"
+    assert view["operators"] == [{"operator_id": "op1"}]
+    assert view["anchors_available"] is False
+
+    commands = []
+    monkeypatch.setattr(api, "_find_binary", lambda: "fixture-cli")
+
+    def cli(args, **_kwargs):
+        commands.append(args)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "state": "ready", "solo": True, "blocks": [],
+            "detail": {"block": {"height": 5, "salt": "ignored"}, "salt": "ignored", "commitments": [cid]},
+        }))
+
+    monkeypatch.setattr(api.subprocess, "run", cli)
+    assert api._local_chain_explorer(str(tmp_path), "--help")["state"] == "invalid"
+    assert not commands
+    chain = api._local_chain_explorer(str(tmp_path), "#5")
+    assert chain["detail"]["block"] == {"height": 5}
+    assert chain["detail"]["commitments"] == [cid]
+    assert "salt" not in chain["detail"]
+    assert commands == [["fixture-cli", "chain-explorer", "--query", "#5"]]
+
+
 def test_dashboard_plugin_api_shares_binary_resolver_status_profiles_and_generate(tmp_path, monkeypatch):
     import importlib.util as _ilu
     from fastapi import FastAPI

@@ -485,7 +485,7 @@ ciphervault tui
 * **`[4] Operators`**: Real-time roundtrip latency gauges, healthy/degraded replica states, and PoS status.
 * **`[5] FastCDC`**: Content-defined chunk distributions and deduplication efficiency graphs.
 * **`[6] Token`**: Hardware token reader presence, PIV slot status, and touch policies.
-* **`[7] Explorer`**: Public checkpoint feed, cluster health, and object quorum lookup.
+* **`[7] Explorer`**: Public checkpoints, operator reachability, and object replica lookup. Press **`[/]`** to look up a CID or **`[b]`** to browse and search local CipherChain blocks.
 * **Hotkeys**: Press `[p]` to commit and push a new snapshot; press `[a]` to anchor to CipherChain; press `[q]` to quit.
 
 ---
@@ -499,6 +499,11 @@ ciphervault ui --port 8080
 ```
 
 Open **`http://127.0.0.1:8080`** in your browser to inspect chunk graphs, review telemetry, and test recovery ceremonies. (A `--port` implies `--local`; bare `ciphervault ui` opens the public cloud explorer instead, and `--serve` runs the public read-only explorer server.)
+
+Open **Network Explorer** for operator reachability, anchor receipts, and
+object replica checks. The local dashboard also has **Local CipherChain**,
+where you can filter by height, block hash, or commitment and verify inclusion.
+Hermes Desktop offers both views on its **Open Network Explorer** page.
 
 ---
 
@@ -549,6 +554,32 @@ A replicated push (`push` without `--local`, all required operators verified) al
 ---
 
 ## 🛡 Clean-Machine Disaster Recovery
+
+Run `ciphervault status` or open the TUI Overview to see whether the active
+snapshot has a confirmed remote backup and whether a completed drill matched
+that exact snapshot. These indicators use local records of past checks. They
+refer to the captured snapshot, so push any working-file changes you want backed up.
+
+To verify your first remote backup, run `ciphervault push` with enrolled
+operators, then run `ciphervault status` for the checkpoint and drill command.
+Run the drill from the project directory and choose a new private destination
+outside the project. The drill restores plaintext files and records the
+result in the active vault. When you capture a newer snapshot, run a new drill
+to verify it.
+
+After a push reports `RemoteDurable`, save the printed **Recovery checkpoint**
+with your offline recovery materials. It is the 64-character CID of the signed
+snapshot record. Use the saved CID to require that exact backup on a replacement machine.
+
+```bash
+ciphervault recover --kit recovery-kit.txt --to ./restored --expect-record-cid <CID>
+```
+
+`ciphervault recovery test` accepts the same flag. A mismatch stops recovery
+before it writes files or creates a vault in the destination. Save a new
+checkpoint after each push you want to be able to verify. Recovery can verify
+the checkpoint you saved even if an operator serves an older signed history.
+With no checkpoint, the CLI reports that freshness is unverified.
 
 If your workstation is lost, stolen, or destroyed, CipherVault enables complete secret restoration onto a clean replacement computer without access to any prior databases or cloud coordinators.
 
@@ -737,7 +768,7 @@ An agent then calls `ciphervault_run` with `profile="test"`, or you run `cipherv
 
 * **Approval is never bypassed.** Every `ciphervault_run` goes through Hermes' human-approval gate. An "always" grant covers only the same execution envelope: program, profile, inline-code hash, network mode and `allow_keys`. Approving an offline test run never covers inline code or wider access.
 * **Provable, not just promised.** Every block, approval request, scrubbed result and agent write is appended to a hash-chained, device-signed audit log. Each scrubbed result records the SHA-256 of the exact output that reached the model. The chain head is anchored to your operator fleet on replicated pushes and when a run approval is requested. Verify with `ciphervault agent-log verify` and `ciphervault agent-log verify-remote`.
-* **Minimal network use.** The plugin makes no network calls except two you trigger: `bootstrap` (downloads the pinned CLI and checks its SHA-256) and the audit-head checkpoint (entry count and head hash only, no contents) sent to your own configured operators. No telemetry.
+* **Network use.** The plugin downloads a pinned CLI during `bootstrap`, sends audit-head checkpoints to your configured operators, and reads the public dashboard when you open the Desktop Network Explorer. An explicit object lookup sends the entered CID. The local CipherChain view reads the local ledger.
 * **Honest limits.** `ciphervault_run` still gives the approved child process the secrets it asked for: approve consciously, and prefer `allow_keys`, `--no-net` or `--proxy`. Scrubbing is exact-value plus credential-shape matching, not magic. The plugin has not had an external security audit, and the Linux and macOS paths are unverified (see above).
 
 #### Requirements and validation

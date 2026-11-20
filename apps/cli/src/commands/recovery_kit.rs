@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use ciphervault_recovery::OfflineRecoveryKit;
 
-use crate::cmd_recover;
+use super::{cmd_recover, RecoveryRequest};
 use crate::util::{get_configured_operators, get_vault_store, DB_FILE, RECOVERY_FILE, VAULT_DIR};
 
 pub(crate) fn cmd_recovery_export() -> Result<()> {
@@ -62,6 +62,7 @@ pub(crate) async fn cmd_recovery_test(
     kit_opt: Option<PathBuf>,
     target_dir: PathBuf,
     via: Vec<String>,
+    expect_record_cid: Option<[u8; 32]>,
 ) -> Result<()> {
     let kit_path = match kit_opt {
         Some(p) => p,
@@ -88,24 +89,29 @@ pub(crate) async fn cmd_recovery_test(
         .and_then(|text| OfflineRecoveryKit::parse_from_printable(&text).ok())
         .map(|kit| kit.vault_id_hex.to_ascii_lowercase());
     let used_via = !via.is_empty();
-    cmd_recover(
-        Some(kit_path),
-        None,
-        target_dir,
-        false,
-        Vec::new(),
-        false,
+    cmd_recover(RecoveryRequest {
+        kit: Some(kit_path),
+        shares: None,
+        to: target_dir,
+        require_approval: false,
+        approver_keys: Vec::new(),
+        force: false,
         via,
-    )
+        expect_record_cid,
+    })
     .await?;
-    record_passed_drill(kit_vault_id.as_deref(), used_via);
+    record_passed_drill(kit_vault_id.as_deref(), used_via, expect_record_cid);
     Ok(())
 }
 
 /// A drill run inside the vault it restored is recovery coverage: record
 /// it so `doctor` stops reporting the vault as unrecoverable. Best effort:
 /// the drill itself already passed, so a log failure only warns.
-fn record_passed_drill(kit_vault_id: Option<&str>, used_via: bool) {
+fn record_passed_drill(
+    kit_vault_id: Option<&str>,
+    used_via: bool,
+    expect_record_cid: Option<[u8; 32]>,
+) {
     if !Path::new(VAULT_DIR).join(DB_FILE).exists() {
         return;
     }
@@ -118,7 +124,12 @@ fn record_passed_drill(kit_vault_id: Option<&str>, used_via: bool) {
         store.record_activity(
             "RECOVERY_TEST_OK",
             "Recovery kit drill restored this vault",
-            &serde_json::json!({ "vault_id_short": &vault_id[..8], "via": used_via }).to_string(),
+            &serde_json::json!({
+                "vault_id_short": &vault_id[..8],
+                "via": used_via,
+                "matched_record_cid": expect_record_cid.map(hex::encode),
+            })
+            .to_string(),
         )?;
         Ok(true)
     })();

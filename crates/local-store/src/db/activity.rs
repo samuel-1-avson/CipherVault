@@ -348,6 +348,47 @@ impl LocalVaultStore {
         Ok(rows.next().transpose()?)
     }
 
+    /// Most recent confirmed replication of this logical snapshot ID.
+    pub fn snapshot_replicated_at(
+        &self,
+        snapshot_id: &[u8],
+    ) -> Result<Option<i64>, LocalStoreError> {
+        let at = self.conn.query_row(
+            "SELECT MAX(created_at_utc) FROM activity_log
+             WHERE event_type IN ('PUSH_OK', 'WATCH_SYNC_OK')
+               AND CASE WHEN json_valid(details_json) THEN
+                   json_extract(details_json, '$.snapshot_id') = ?1
+                   AND (event_type = 'WATCH_SYNC_OK' OR (
+                       json_type(details_json, '$.replicas') = 'integer'
+                       AND json_type(details_json, '$.required_replicas') = 'integer'
+                       AND json_extract(details_json, '$.required_replicas') > 0
+                       AND json_extract(details_json, '$.replicas')
+                           >= json_extract(details_json, '$.required_replicas')
+                   ))
+               END",
+            params![hex::encode(snapshot_id)],
+            |row| row.get(0),
+        )?;
+        Ok(at)
+    }
+
+    /// Latest completed drill and latest drill that matched this exact record CID.
+    pub fn recovery_drill_times(
+        &self,
+        record_cid: Option<&[u8; 32]>,
+    ) -> Result<(Option<i64>, Option<i64>), LocalStoreError> {
+        let times = self.conn.query_row(
+            "SELECT MAX(created_at_utc), MAX(CASE WHEN json_valid(details_json) THEN
+                 CASE WHEN json_extract(details_json, '$.matched_record_cid') = ?1
+                     THEN created_at_utc END
+             END)
+             FROM activity_log WHERE event_type = 'RECOVERY_TEST_OK'",
+            params![record_cid.map(hex::encode)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(times)
+    }
+
     /// Latest passphrase-sealed key backup record, or `None` when no
     /// `key-backup` has ever confirmed on operators from this store.
     pub fn latest_key_backup(&self) -> Result<Option<ActivityEntry>, LocalStoreError> {

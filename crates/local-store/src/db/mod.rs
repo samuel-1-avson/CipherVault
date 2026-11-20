@@ -1118,6 +1118,22 @@ impl LocalVaultStore {
         }
     }
 
+    /// Reads snapshot metadata by its record CID without loading the manifest.
+    pub fn get_snapshot_record(
+        &self,
+        record_cid: &[u8; 32],
+    ) -> Result<Option<SnapshotRecord>, LocalStoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT record_cbor FROM snapshots WHERE snapshot_id = ?1",
+                params![record_cid.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(bytes.as_deref().map(from_canonical_cbor).transpose()?)
+    }
+
     /// Derives the deterministic anchor salt for a snapshot head from its
     /// epoch key. The salt is recoverable by the vault owner (epoch keys
     /// replicate inside sealed recovery records) without any new network
@@ -1164,7 +1180,6 @@ impl LocalVaultStore {
         }
         Ok(out)
     }
-
 
     /// Retrieves chunks for a list of chunk CIDs.
     pub fn get_chunks(&self, cids: &[[u8; 32]]) -> Result<Vec<ChunkWireObject>, LocalStoreError> {
@@ -1388,9 +1403,7 @@ impl LocalVaultStore {
         }
         Ok(out)
     }
-
 }
-
 
 mod activity;
 mod retention;
