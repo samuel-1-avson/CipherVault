@@ -1,3 +1,14 @@
+# Unreleased
+
+- **Hermes plugin v0.8.0** (13 tools) still pins CLI v1.0.38. It adds
+  `ciphervault_restore_preview` and the `history_limit` and `watcher_health`
+  options of `ciphervault_status`. They use CLI flags that are on `main` but
+  not yet in a CLI release (`history --json --limit`,
+  `restore --dry-run --json`, `status --json --watcher`), so with v1.0.38
+  they return `cli_unsupported`. The watcher now keeps a heartbeat record in
+  `.ciphervault/watcher-status.json`. Verified locally only (hosted CI is
+  still billing-locked).
+
 # CipherVault 1.0.38
 
 Network Explorer and recovery release, plus a fix that keeps the operator

@@ -2771,10 +2771,12 @@ def test_real_cli_env_doctor_works_on_sealed_shredded_vault(real_vault):
 
 def test_plugin_yaml_declares_version_and_lifecycle_hooks():
     yaml_text = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-    assert 'version: "0.7.3"' in yaml_text
+    assert 'version: "0.8.0"' in yaml_text
     for hook in ("on_session_start", "pre_llm_call", "pre_tool_call", "transform_tool_result", "post_tool_call"):
         assert f"- {hook}" in yaml_text
-    assert cv.PLUGIN_VERSION == "0.7.3"
+    assert cv.PLUGIN_VERSION == "0.8.0"
+    manifest = json.loads((PLUGIN_DIR / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == cv.PLUGIN_VERSION
 
 
 def test_dashboard_manifest_version_matches_plugin_version():

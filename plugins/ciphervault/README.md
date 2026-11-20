@@ -143,20 +143,20 @@ hermes ciphervault doctor
 ```
 
 The catalog installs the version it pins, which can lag this repository (it was
-v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.7.3 and all 12
+v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.8.0 and all 13
 tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
 (default `~/.hermes`), then run `hermes plugins enable ciphervault`.
 
-### Snapshot history, restore preview, and watcher health (unreleased)
+### Snapshot history, restore preview, and watcher health (new in v0.8.0)
 
-This source tree adds a 13th tool, `ciphervault_restore_preview`, and the
-`history_limit` and `watcher_health` options of `ciphervault_status`. They
-are not in plugin v0.7.3. All three need CLI flags that no published release
-has yet: `history --json --limit`, `restore --dry-run --json`, and
-`status --json --watcher`. The pinned v1.0.38 lacks them. With it, these
-options return `error_code: "cli_unsupported"`, and the plain status and
-every other tool work as before. `hermes ciphervault doctor` reports them
-under `optional_capabilities` without failing. Until a release ships them,
+v0.8.0 adds a 13th tool, `ciphervault_restore_preview`, and the
+`history_limit` and `watcher_health` options of `ciphervault_status`. All
+three need CLI flags that no published CLI release has yet: `history --json
+--limit`, `restore --dry-run --json`, and `status --json --watcher`. The
+pinned v1.0.38 lacks them. With it, these options return
+`error_code: "cli_unsupported"`, and the plain status and every other tool
+work as before. `hermes ciphervault doctor` reports them under
+`optional_capabilities` without failing. Until a CLI release ships them,
 build the CLI from this source and point `CIPHERVAULT_BIN` at it.
 
 A typical exchange: *"Show me a recent backup and tell me what restoring it
