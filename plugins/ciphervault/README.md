@@ -141,7 +141,7 @@ hermes ciphervault doctor
 ```
 
 The catalog installs the version it pins, which can lag this repository (it was
-v0.6.5 with 7 tools when last checked, 18 November 2026). For v0.7.2 and all 12
+v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.7.3 and all 12
 tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
 (default `~/.hermes`), then run `hermes plugins enable ciphervault`.
 

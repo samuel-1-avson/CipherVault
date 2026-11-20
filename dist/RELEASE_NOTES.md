@@ -15,8 +15,9 @@ witnessing wired (each operator cosigns the other two logs).
   tokens on the public fleet require.
 - **Network Explorer and local CipherChain.** The public explorer, the
   TUI Explorer tab (`[b]` opens Local CipherChain), and Hermes Desktop show
-  verified local CipherChain history; recovery drills bind to saved
-  checkpoints; `backup status` reports backup health.
+  verified local CipherChain history; recovery drills bind to the saved
+  recovery checkpoint (`recover --expect-record-cid`); `status --json`
+  reports backup health in its `backup` object.
 - **Windows TUI keys.** Windows consoles report every key as a press and
   a release, and the TUI acted on both, so toggles fired twice: `[b]`
   opened Local CipherChain and its own release closed it again. Releases

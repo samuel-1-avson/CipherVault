@@ -1,26 +1,26 @@
 class Ciphervault < Formula
   desc "Decentralized, zero-knowledge encrypted version control for confidential files"
   homepage "https://github.com/samuel-1-avson/CipherVault"
-  version "1.0.37"
+  version "1.0.38"
   license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.37/ciphervault-v1.0.37-aarch64-apple-darwin.tar.gz"
-      sha256 "1a6b8b1b17068fbaca505b5924ddcf031362c91ed9253ebf8f9ed53a7ec6db99"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.38/ciphervault-v1.0.38-aarch64-apple-darwin.tar.gz"
+      sha256 "515b39070b444701b31113d3cb51c39089431c1297bd819d58a08f1a9bb0c630"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.37/ciphervault-v1.0.37-x86_64-apple-darwin.tar.gz"
-      sha256 "74a0305f5c960af52b617e956453d2a9506d937f432451a9e94c7f1a8ab3c654"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.38/ciphervault-v1.0.38-x86_64-apple-darwin.tar.gz"
+      sha256 "0466283a4b348135a70a63bee861f4f86722c138fd3626083a24050c6dc5d555"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.37/ciphervault-v1.0.37-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "0888f755a146e444b919e5c70458b001de3779487820cf277b18fb1cbc98a5a0"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.38/ciphervault-v1.0.38-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "5d24140a71a6f03e1741ce887a3def6b143faa7c9fe46a89a2a4f2bb76bc089c"
     else
-      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.37/ciphervault-v1.0.37-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "f13d0eae8beb8054a7d1c53c925831357e22463b0078c230c54b7d3b891227b3"
+      url "https://github.com/samuel-1-avson/CipherVault/releases/download/v1.0.38/ciphervault-v1.0.38-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "f24e7d6661f12ac54f5c594a58ca6dbf7371c533796226de2f110edad52d0db3"
     end
   end
 
