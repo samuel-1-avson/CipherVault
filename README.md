@@ -7,7 +7,7 @@
 [![Chunk Protocol: v2](https://img.shields.io/badge/Chunk%20Protocol-v2-brightgreen.svg)](crates/snapshot/CHUNK_PROTOCOL_V2.md)
 [![Cryptography: XChaCha20-Poly1305](https://img.shields.io/badge/Cryptography-XChaCha20--Poly1305%20AEAD-purple.svg)](docs/CRYPTOGRAPHIC_AUDIT_SPECIFICATION.md)
 [![Hardware: YubiKey PIV](https://img.shields.io/badge/Hardware%20Token-YubiKey%20PIV%20Native-teal.svg)](#-hardware-security-tokens-yubikey-piv)
-[![Hermes Plugin: v0.7.3](https://img.shields.io/badge/Hermes%20Plugin-v0.7.3-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
+[![Hermes Plugin: v0.8.0](https://img.shields.io/badge/Hermes%20Plugin-v0.8.0-8A2BE2.svg)](#-ai-agent-safety--the-hermes-plugin)
 [![Verification](https://img.shields.io/badge/Verification-Quality%20Gates-blue.svg)](#-verification--quality-gates)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
@@ -17,7 +17,7 @@
 
 Captures default to [Chunk protocol v2](crates/snapshot/CHUNK_PROTOCOL_V2.md) featuring content-defined chunk deduplication across edits, keyed identifiers (public candidate-file hashes no longer match v2 metadata), and domain-isolated HKDF-SHA256 derivations. Legacy chunk v1 remains supported for backward compatibility (or via CIPHERVAULT_CHUNK_V2_WRITE=0); both versions remain transparently readable. Read the [current security and operational guarantees](docs/CURRENT_SECURITY_GUARANTEES.md) before deploying.
 
-**Current release: v1.0.38.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 or newer for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles and the tamper-evident agent audit log. The [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.7.3 pins v1.0.38. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
+**Current release: v1.0.38.** Use v1.0.29 or newer for Protocol v2 as the default writer, and v1.0.35 or newer for the full AI-agent guardrail set: exact-value output scrubbing, `--no-net` sandboxing, execution profiles and the tamper-evident agent audit log. The [Hermes plugin](#-ai-agent-safety--the-hermes-plugin) v0.8.0 pins v1.0.38. Upgrade every reader node before any v2 writer: older binaries cannot read newer v2 chunks. See [What's New](#-whats-new-since-v1029) and the [release notes](dist/RELEASE_NOTES.md).
 
 *Git tracks your source code. CipherVault protects everything Git leaves behind.*
 
@@ -183,7 +183,7 @@ CipherVault is a modular Rust workspace with operating system cryptography, SQLi
 | **Sovereign Ledger** | `crates/chain` | Rust (Ed25519, Sha2) | Zero-gas Proof-of-Authority anchoring ledger, Merkle state accumulator, and light-client verifier. Multi-validator consensus is not finished (see [Project Status](#-project-status--known-limits)). |
 | **Redaction Engine** | `crates/redact` | Rust | Exact-value and credential-shape scrubbing (raw, base64/base64url, hex, percent- and JSON-escaped variants) behind `run --json`, `redact`, the agent bridge and audit paths. |
 | **File Locking** | `crates/file-lock` | Rust (advapi32 FFI on Windows) | Locks secret files down to the current user (Unix `0600`; protected owner-only DACL on Windows) with no `icacls` shell-out. |
-| **Hermes Plugin** | `plugins/ciphervault` | Python | Native [Hermes Agent](https://hermes-agent.nousresearch.com) plugin: 12 tools, leak-guard hooks, result scrubber, secret source and desktop pane. See [AI Agent Safety](#-ai-agent-safety--the-hermes-plugin). |
+| **Hermes Plugin** | `plugins/ciphervault` | Python | Native [Hermes Agent](https://hermes-agent.nousresearch.com) plugin: 13 tools, leak-guard hooks, result scrubber, secret source and desktop pane. See [AI Agent Safety](#-ai-agent-safety--the-hermes-plugin). |
 | **MCP Servers** | `ciphervault mcp` (in `apps/cli`), `services/mcp` | Rust / Python | Stdio Model Context Protocol server for Claude Code, Codex and Cursor (7 tools). Prefer the native `ciphervault mcp`; `services/mcp` is the older Python implementation. |
 | **EVM Legacy (removed)** | *deleted in Phase 1* | Sovereign migration | Contracts/Foundry deleted; historical anchors in git tag `last-evm-anchor`. |
 
@@ -258,7 +258,7 @@ Highlights of v1.0.30 through v1.0.35. The [release notes](dist/RELEASE_NOTES.md
 
 | Area | What changed |
 |---|---|
-| 🤖 **AI agents** | Native **Hermes plugin** (now v0.7.3, 12 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
+| 🤖 **AI agents** | Native **Hermes plugin** (now v0.8.0, 13 tools), `ciphervault mcp`, `hook agent-pre`/`agent-post`, `redact`, `export-env`, and the tamper-evident `agent-log`. |
 | 🔒 **Running secrets** | `run --allow-keys`, `--no-net` sandboxing (Linux, macOS, Windows), `--proxy` credential proxy, and `--profile` execution profiles from `.ciphervault/policy.toml`. |
 | 🧹 **Sealing** | `push --shred` (`--seal`) removes plaintext from the working tree after sealing; `[vault] sealed_mode = true` makes it the default. |
 | 🩺 **Diagnostics** | `env-doctor` zero-knowledge environment and schema checks; `status --json` reports sealed state. |
@@ -653,13 +653,13 @@ AI coding agents are useful and dangerous around secrets: they read `.env` files
 
 | Integration | Best for | What you get |
 |---|---|---|
-| **[Hermes plugin](#the-hermes-plugin)** (`plugins/ciphervault`) | [Hermes Agent](https://hermes-agent.nousresearch.com) users | 12 tools, leak-guard and scrubbing hooks, a Hermes secret source, a desktop pane, and a setup wizard. The most complete integration. |
+| **[Hermes plugin](#the-hermes-plugin)** (`plugins/ciphervault`) | [Hermes Agent](https://hermes-agent.nousresearch.com) users | 13 tools, leak-guard and scrubbing hooks, a Hermes secret source, a desktop pane, and a setup wizard. The most complete integration. |
 | **[`ciphervault mcp`](#claude-code-codex-and-cursor-mcp-and-hooks)** | Claude Code, Codex, Cursor | A stdio MCP server with 7 tools (status, scan, redact, run, push, diff, audit). |
 | **[`hook agent-pre` / `agent-post`](#claude-code-codex-and-cursor-mcp-and-hooks)** | Any agent with tool-call hooks | Blocks secret reads and unsafe commits before they happen; scrubs results after. |
 
 ### The Hermes plugin
 
-The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.7.3**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
+The plugin wraps the CipherVault CLI with agent-safe tools and hooks. It is version **0.8.0**, needs Hermes **0.23.0 or newer**, and lives in [`plugins/ciphervault/`](plugins/ciphervault/README.md).
 
 ```mermaid
 flowchart LR
@@ -677,7 +677,7 @@ flowchart LR
 
 **Quickest path to try it:** `hermes ciphervault quickstart` runs the whole loop in a throwaway vault in about two minutes.
 
-**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. On 20 November 2026 that catalog entry was still **v0.6.5 (7 tools)**; the update to v0.7.3 is in review upstream ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)). To get **v0.7.3 (all 12 tools)** now, install from this repository:
+**Which version do you get?** `hermes plugins install ciphervault` installs the version pinned in the upstream Hermes plugin catalog. On 20 November 2026 that catalog entry was still **v0.6.5 (7 tools)**; the update to v0.8.0 is in review upstream ([NousResearch/hermes-agent#157417](https://github.com/NousResearch/hermes-agent/pull/157417)). To get **v0.8.0 (all 13 tools)** now, install from this repository:
 
 ```bash
 # from a CipherVault checkout; use $HERMES_HOME instead of ~/.hermes if you set it
@@ -698,11 +698,11 @@ Copy-Item -Recurse plugins\ciphervault "$HOME\.hermes\plugins\ciphervault"
 > [!NOTE]
 > **Platform status:** `bootstrap` pins a CLI binary for Windows x64, Linux x64 and macOS 13+ (Apple Silicon and Intel). Windows is the verified path. The Linux and macOS binaries are cross-built and have not yet been exercised on real hosts, so treat those platforms as unverified until [Project Status](#-project-status--known-limits) says otherwise. You can always build the CLI yourself (`cargo build --release -p ciphervault-cli`) and point `$CIPHERVAULT_BIN` at it.
 
-#### The 12 tools
+#### The 13 tools
 
 | Tool | What it does | What the model sees |
 |---|---|---|
-| `ciphervault_status` | Vault status: tracked file **paths**, sealed state, head, operator count, CLI version, workspace posture. | Paths and counts |
+| `ciphervault_status` | Vault status: tracked file **paths**, sealed state, head, operator count, CLI version, workspace posture. Optional `history_limit` lists recent snapshot IDs; optional `watcher_health` reports watcher liveness, last capture, and the newest snapshot with a recorded remote verification. | Paths, counts, IDs and times |
 | `ciphervault_scan` | Masked secret-sprawl scan of the workspace and staged diffs; `fix` appends findings to `.gitignore`. | Masked findings |
 | `ciphervault_run` | Runs a command with secrets injected in RAM only. `--no-net` by default where supported, optional `--proxy`, optional `profile`. **Every call needs human approval.** | Scrubbed output |
 | `ciphervault_push` | Encrypted snapshot of tracked secrets (local by default). `shred_working_copy=true` seals and removes plaintext; `local_only=false` replicates. | Result metadata |
@@ -714,6 +714,9 @@ Copy-Item -Recurse plugins\ciphervault "$HOME\.hermes\plugins\ciphervault"
 | `ciphervault_diff` | Masked key-level diff between snapshots or against the working tree (never `--reveal`). | Masked diff |
 | `ciphervault_proxy_doctor` | Dry run: which vault keys map to built-in provider routes, policy upstreams, or nothing. | Key names |
 | `ciphervault_secret_prompt` | Asks the **human** for a secret out of band (desktop drawer or hidden terminal prompt) so nobody pastes secrets into chat. | Nothing |
+| `ciphervault_restore_preview` | Read-only preview of restoring one snapshot into the workspace: the CLI verifies it, then lists each file as create, replace or unchanged. The restore itself stays the user's command. | Paths, sizes, counts |
+
+`history_limit`, `watcher_health` and `ciphervault_restore_preview` need CLI flags newer than the pinned v1.0.38; with v1.0.38 they return `cli_unsupported` and everything else works as before.
 
 A typical agent session follows this path: `env_doctor` → `scan` → fix sprawl → `secret_generate` or `secret_prompt` (if a key is missing) → `run` (dry run or profile first) → `diff` → `push` → `recovery_drill` after kit or share changes.
 

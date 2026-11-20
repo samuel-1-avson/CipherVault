@@ -1,4 +1,4 @@
-"""CipherVault agent tools (12 tools) and schema definitions."""
+"""CipherVault agent tools (13 tools) and schema definitions."""
 
 from __future__ import annotations
 
@@ -36,10 +36,558 @@ def _attach_posture(payload: dict, cwd):
     return payload
 
 
+# ---------------------------------------------------------------- snapshot history & restore preview
+
+_SNAPSHOT_ID_RE = re.compile(r"[0-9a-f]{64}")
+_HISTORY_LIMIT_MAX = 50
+_PREVIEW_ACTIONS = ("create", "replace", "unchanged")
+_PREVIEW_CHECKS = (
+    "record_signature", "epoch_key", "manifest", "chunks_present",
+    "file_integrity", "destination_paths",
+)
+_PREVIEW_MAX_FILES = 1000
+_PREVIEW_ERROR_HINTS = {
+    "invalid_snapshot_id": "Pass a 64-character snapshot_id from ciphervault_status (history_limit) or 'head'.",
+    "snapshot_not_found": "List recent snapshots with ciphervault_status history_limit=10 and pass one of their snapshot_id values.",
+    "no_snapshots": "This vault has no snapshots yet. Create one with ciphervault_push.",
+    "verification_failed": (
+        "Do not restore this snapshot. Choose another one from ciphervault_status "
+        "history, or prove recovery with ciphervault_recovery_drill."
+    ),
+    "unsafe_destination": (
+        "A destination is a link, reparse point, reserved name, or not a regular "
+        "file, so a real restore would refuse it too. Inspect the path in the error."
+    ),
+    "destination_unreadable": "A workspace file could not be read for comparison; check that it is not locked or unreadable.",
+    "hardware_token_required": "This vault needs its hardware token: run `ciphervault restore --dry-run` in a terminal with the token attached.",
+    "no_vault": "Run this inside a CipherVault workspace (`ciphervault init` creates one).",
+    "store_error": "Run `hermes ciphervault doctor` and `ciphervault doctor` to check the vault store.",
+}
+
+
+def _utc_iso(ts):
+    if type(ts) is not int or ts <= 0:
+        return None
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _hex_id(value):
+    """A full lowercase 64-hex snapshot ID, or None."""
+    if isinstance(value, str) and _SNAPSHOT_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _nonneg_int(value):
+    return value if type(value) is int and value >= 0 else None
+
+
+def _safe_workspace_path(value):
+    """A workspace-relative path from the CLI, or None if it could escape
+    the workspace (absolute, drive or UNC prefix, `..`, empty components,
+    control characters, or NTFS stream syntax)."""
+    if not isinstance(value, str) or not value or len(value) > 1024:
+        return None
+    if any(ord(c) < 32 for c in value) or ":" in value:
+        return None
+    norm = value.replace("\\", "/")
+    if norm.startswith("/"):
+        return None
+    if any(part in ("", ".", "..") for part in norm.split("/")):
+        return None
+    return norm
+
+
+def _unsupported_cli(feature_name, what):
+    _command, flags, since = binary._OPTIONAL_CLI_CAPABILITIES[feature_name]
+    return {
+        "success": False,
+        "error_code": "cli_unsupported",
+        "error": (
+            f"The resolved CipherVault CLI cannot provide {what}: its "
+            f"`{_command[0]}` command lacks {' '.join(flags)} (needs {since})."
+        ),
+        "next": binary._COMPATIBLE_CLI_HINT,
+    }
+
+
+def _parse_history_limit(params):
+    """(limit|None, error|None). Omitted means no history in the response."""
+    raw = (params or {}).get("history_limit")
+    if raw is None:
+        return None, None
+    if isinstance(raw, str) and raw.strip().isdigit():
+        raw = int(raw.strip())
+    if type(raw) is not int or not 1 <= raw <= _HISTORY_LIMIT_MAX:
+        return None, f"history_limit must be an integer from 1 to {_HISTORY_LIMIT_MAX}"
+    return raw, None
+
+
+def _clean_history(data, limit):
+    """Keep only typed metadata from `history --json`; anything malformed is
+    an error, never passed through."""
+    invalid = {
+        "success": False,
+        "error_code": "invalid_cli_response",
+        "error": "ciphervault history --json returned an unexpected shape",
+    }
+    if not isinstance(data, dict):
+        return invalid
+    if data.get("vault") is False:
+        return {
+            "success": True, "vault": False, "order": "newest_first", "limit": limit,
+            "total": 0, "returned": 0, "truncated": False, "snapshots": [],
+            "note": "No vault at or above cwd, so there is no snapshot history.",
+        }
+    rows = data.get("snapshots")
+    if not isinstance(rows, list):
+        return invalid
+    snapshots = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict) or not _hex_id(row.get("snapshot_id")):
+            return invalid
+        recorded = _nonneg_int(row.get("recorded_at_utc")) or None
+        snapshots.append({
+            "snapshot_id": row["snapshot_id"],
+            "logical_id": _hex_id(row.get("logical_id")),
+            "recorded_at_utc": recorded,
+            "recorded_at": _utc_iso(recorded),
+            "epoch": _nonneg_int(row.get("epoch")),
+            "is_active_head": row.get("is_active_head") is True,
+        })
+    total = _nonneg_int(data.get("total"))
+    total = len(snapshots) if total is None or total < len(snapshots) else total
+    out = {
+        "success": True,
+        "vault": True,
+        "order": "newest_first",
+        "limit": limit,
+        "total": total,
+        "returned": len(snapshots),
+        "truncated": total > len(snapshots),
+        "active_head_id": _hex_id(data.get("active_head_id")),
+        "snapshots": snapshots,
+        "about": (
+            "recorded_at is the advisory time the capturing device signed into each "
+            "snapshot record. Pass snapshot_id to ciphervault_diff or "
+            "ciphervault_restore_preview; logical_id is the ID `ciphervault push` prints."
+        ),
+    }
+    if total == 0:
+        out["note"] = "This vault has no snapshots yet. Create one with ciphervault_push."
+    return out
+
+
+def _status_history(limit, cwd, status_data):
+    if isinstance(status_data, dict) and status_data.get("vault") is False:
+        return _clean_history({"vault": False}, limit)
+    vault_cwd = _runtime.resolve(bridge, "_vault_cwd")(cwd)
+    if not _runtime.resolve(binary, "_cli_supports_history_json")(vault_cwd):
+        return _unsupported_cli("history json", "snapshot history")
+    res = _runtime.resolve(bridge, "_run_cli_json")(
+        ["history", "--json", "--limit", str(limit)], vault_cwd, timeout=30
+    )
+    if not res.get("success"):
+        return {
+            "success": False,
+            "error_code": "history_unavailable",
+            "error": binary.scrub(str(res.get("error") or "ciphervault history failed"))[:500],
+        }
+    return _clean_history(res.get("data"), limit)
+
+
+_WATCHER_STATES = ("running", "stopped", "unknown")
+_WATCHER_EVIDENCE = (
+    "heartbeat", "stop_record", "stale_heartbeat", "clock_skew",
+    "foreign_record", "unreadable_record", "no_record",
+)
+_SYNC_OUTCOMES = ("verified", "failed", "timeout")
+_EVIDENCE_SOURCES = ("watcher_status", "activity_log")
+
+
+def _scrubbed_text(value, limit=300):
+    """Untrusted CLI text (operator errors, reasons): shape-scrubbed, bounded."""
+    if not isinstance(value, str) or not value:
+        return None
+    return binary.scrub(value.replace("\r", " ").replace("\n", " "))[:limit]
+
+
+def _clean_snapshot_ref(value):
+    if not isinstance(value, dict) or not _hex_id(value.get("snapshot_id")):
+        return None
+    recorded = _nonneg_int(value.get("recorded_at_utc")) or None
+    return {
+        "snapshot_id": value["snapshot_id"],
+        "logical_id": _hex_id(value.get("logical_id")),
+        "recorded_at_utc": recorded,
+        "recorded_at": _utc_iso(recorded),
+    }
+
+
+def _clean_event(value, *, outcome=False):
+    """A dated piece of watcher evidence, typed field by field."""
+    if not isinstance(value, dict):
+        return None
+    at = _nonneg_int(value.get("at_utc")) or None
+    if at is None:
+        return None
+    event = {"at_utc": at, "at": _utc_iso(at)}
+    if "snapshot_id" in value:
+        event["snapshot_id"] = _hex_id(value.get("snapshot_id"))
+    if "logical_id" in value:
+        event["logical_id"] = _hex_id(value.get("logical_id"))
+    if outcome:
+        event["outcome"] = value.get("outcome") if value.get("outcome") in _SYNC_OUTCOMES else "unknown"
+    if "error" in value:
+        event["error"] = _scrubbed_text(value.get("error"))
+    source = value.get("source")
+    event["source"] = source if source in _EVIDENCE_SOURCES else None
+    return event
+
+
+def _watcher_summary(health):
+    """Plain sentences that keep the three events apart: a save detected,
+    a snapshot captured, and a remote backup verified (as recorded)."""
+    lines = []
+    watcher = health["watcher"]
+    if watcher["state"] == "running":
+        sync = {True: "on", False: "off"}.get(watcher["sync_enabled"], "unknown")
+        lines.append(
+            f"Watcher running: heartbeat {watcher['heartbeat_age_secs']}s ago "
+            f"(pid {watcher['pid']}, remote sync {sync})."
+        )
+    elif watcher["state"] == "stopped":
+        lines.append(f"Watcher stopped cleanly at {watcher['stopped_at'] or 'an unrecorded time'}.")
+    else:
+        lines.append(watcher["reason"] or "Watcher state unknown.")
+    capture = health["last_capture"]
+    changed = health["last_change_detected_at_utc"]
+    if capture:
+        lines.append(
+            f"Last capture: snapshot {(capture.get('snapshot_id') or '?')[:12]} at {capture['at']}."
+        )
+    else:
+        lines.append("No watcher capture is recorded for this vault.")
+    if changed and (not capture or changed > capture["at_utc"]):
+        lines.append(
+            f"A tracked-file change detected at {health['last_change_detected_at']} is newer "
+            "than the last capture, so it is not in a snapshot yet."
+        )
+    if health["last_error"]:
+        lines.append(f"Last watcher error at {health['last_error']['at']}: {health['last_error']['error']}")
+    remote = health["remote_verification"]
+    verified = remote["verified_snapshot"]
+    if verified:
+        lines.append(
+            f"Remote backup verified for snapshot {verified['snapshot_id'][:12]}, recorded at "
+            f"{remote['checked_at'] or 'an unrecorded time'} (recorded evidence, not a live check)."
+        )
+    else:
+        lines.append(
+            f"No recorded remote verification for the {remote['scanned_snapshots']} most recent snapshot(s)."
+        )
+    head = remote["head"]
+    if head and not remote["head_verified"]:
+        lines.append(
+            f"The current head {head['snapshot_id'][:12]} has no recorded remote verification"
+            + (
+                f"; {remote['newer_unverified_snapshots']} snapshot(s) are newer than the last verified one."
+                if verified else "."
+            )
+        )
+    sync = health["sync"]
+    if sync["pending"] or sync["failed"]:
+        lines.append(f"Upload queue: {sync['pending']} pending, {sync['failed']} failed.")
+    attempt = sync["last_watcher_attempt"]
+    if attempt:
+        lines.append(f"Last watcher sync attempt: {attempt['outcome']} at {attempt['at']}.")
+    return lines
+
+
+def _clean_watcher_health(raw):
+    if not isinstance(raw, dict) or not isinstance(raw.get("watcher"), dict):
+        error = raw.get("error") if isinstance(raw, dict) else None
+        return {
+            "success": False,
+            "error_code": "watcher_health_unavailable",
+            "error": _scrubbed_text(error) or "the CLI returned no watcher_health section",
+        }
+    w = raw["watcher"]
+    state = w.get("state") if w.get("state") in _WATCHER_STATES else "unknown"
+    heartbeat = _nonneg_int(w.get("heartbeat_at_utc")) or None
+    stopped = _nonneg_int(w.get("stopped_at_utc")) or None
+    watcher = {
+        "state": state,
+        "evidence": w.get("evidence") if w.get("evidence") in _WATCHER_EVIDENCE else "unknown",
+        "reason": _scrubbed_text(w.get("reason")),
+        "heartbeat_at_utc": heartbeat,
+        "heartbeat_at": _utc_iso(heartbeat),
+        "heartbeat_age_secs": _nonneg_int(w.get("heartbeat_age_secs")),
+        "stale_after_secs": _nonneg_int(w.get("stale_after_secs")),
+        "started_at_utc": _nonneg_int(w.get("started_at_utc")) or None,
+        "stopped_at_utc": stopped,
+        "stopped_at": _utc_iso(stopped),
+        "pid": _nonneg_int(w.get("pid")),
+        "sync_enabled": w.get("sync_enabled") if isinstance(w.get("sync_enabled"), bool) else None,
+        "operator_count": _nonneg_int(w.get("operator_count")),
+    }
+    sync_raw = raw.get("sync") if isinstance(raw.get("sync"), dict) else {}
+    remote_raw = raw.get("remote_verification") if isinstance(raw.get("remote_verification"), dict) else {}
+    changed = _nonneg_int(raw.get("last_change_detected_at_utc")) or None
+    checked = _nonneg_int(remote_raw.get("checked_at_utc")) or None
+    health_checked = _nonneg_int(raw.get("checked_at_utc")) or None
+    health = {
+        "success": True,
+        "checked_at_utc": health_checked,
+        "checked_at": _utc_iso(health_checked),
+        "live_check_performed": raw.get("live_check_performed") is True,
+        "watcher": watcher,
+        "last_change_detected_at_utc": changed,
+        "last_change_detected_at": _utc_iso(changed),
+        "last_capture": _clean_event(raw.get("last_capture")),
+        "last_error": _clean_event(raw.get("last_error")),
+        "sync": {
+            "pending": _nonneg_int(sync_raw.get("pending")) or 0,
+            "failed": _nonneg_int(sync_raw.get("failed")) or 0,
+            "oldest_pending_at_utc": _nonneg_int(sync_raw.get("oldest_pending_at_utc")) or None,
+            "last_error": _scrubbed_text(sync_raw.get("last_error")),
+            "last_watcher_attempt": _clean_event(sync_raw.get("last_watcher_attempt"), outcome=True),
+        },
+        "remote_verification": {
+            "evidence": "recorded",
+            "live_check_performed": remote_raw.get("live_check_performed") is True,
+            "verified_snapshot": _clean_snapshot_ref(remote_raw.get("verified_snapshot")),
+            "checked_at_utc": checked,
+            "checked_at": _utc_iso(checked),
+            "head": _clean_snapshot_ref(remote_raw.get("head")),
+            "head_verified": remote_raw.get("head_verified") is True,
+            "newer_unverified_snapshots": _nonneg_int(remote_raw.get("newer_unverified_snapshots")) or 0,
+            "scanned_snapshots": _nonneg_int(remote_raw.get("scanned_snapshots")) or 0,
+            "total_snapshots": _nonneg_int(remote_raw.get("total_snapshots")) or 0,
+        },
+    }
+    health["summary"] = _watcher_summary(health)
+    return health
+
+
+def _parse_flag(params, name):
+    raw = (params or {}).get(name)
+    if raw is None:
+        return False, None
+    if isinstance(raw, bool):
+        return raw, None
+    return False, f"{name} must be true or false"
+
+
 def _tool_status(params, **kwargs):
-    cwd = (params or {}).get("cwd")
-    res = _runtime.resolve(bridge, "_run_cli_json")(["status", "--json"], cwd)
+    params = params or {}
+    cwd = params.get("cwd")
+    limit, limit_err = _parse_history_limit(params)
+    want_watcher, flag_err = _parse_flag(params, "watcher_health")
+    if limit_err or flag_err:
+        return json.dumps({
+            "success": False, "error_code": "invalid_argument", "error": limit_err or flag_err,
+        })
+    args = ["status", "--json"]
+    watcher_supported = False
+    if want_watcher:
+        watcher_supported = _runtime.resolve(binary, "_cli_supports_watcher_health")(
+            _runtime.resolve(bridge, "_vault_cwd")(cwd)
+        )
+        if watcher_supported:
+            args.append("--watcher")
+    res = _runtime.resolve(bridge, "_run_cli_json")(args, cwd)
+    data = res.get("data") if res.get("success") else None
+    if want_watcher and res.get("success"):
+        if isinstance(data, dict) and data.get("vault") is False:
+            health = {
+                "success": True, "vault": False,
+                "note": "No vault at or above cwd, so there is no watcher or backup evidence.",
+            }
+        elif not watcher_supported:
+            health = _unsupported_cli("watcher health", "watcher and backup health")
+        else:
+            raw = data.pop("watcher_health", None) if isinstance(data, dict) else None
+            health = _clean_watcher_health(raw)
+        res = dict(res, watcher_health=health)
+    if limit is not None and res.get("success"):
+        res = dict(res, history=_status_history(limit, cwd, data))
     return json.dumps(_attach_posture(res, cwd))
+
+
+def _preview_error(code, message, **extra):
+    out = {"success": False, "read_only": True, "error_code": code, "error": message}
+    hint = _PREVIEW_ERROR_HINTS.get(code)
+    if hint:
+        out["next"] = hint
+    out.update(extra)
+    return json.dumps(out)
+
+
+def _preview_refusal(payload):
+    """A refused preview (`restore --dry-run --json`, exit 3) as a typed error."""
+    code = payload.get("error_code")
+    if not isinstance(code, str) or not re.fullmatch(r"[a-z_]{1,48}", code):
+        code = "preview_refused"
+    check = payload.get("failed_check")
+    return _preview_error(
+        code,
+        binary.scrub(str(payload.get("error") or "restore preview refused"))[:500],
+        failed_check=check if check in _PREVIEW_CHECKS else None,
+        snapshot_ref=_hex_id(payload.get("snapshot_ref")),
+    )
+
+
+def _clean_preview(payload, requested):
+    """Re-validate the CLI's preview before it reaches the model: IDs,
+    actions, sizes and paths are typed and bounded; any path that could
+    leave the workspace rejects the whole response."""
+
+    def invalid(why):
+        return _preview_error("invalid_cli_response", f"restore preview rejected: {why}")
+
+    sid = _hex_id(payload.get("snapshot_id"))
+    lid = _hex_id(payload.get("logical_id"))
+    if not sid:
+        return invalid("missing snapshot_id")
+    if requested and requested not in (sid, lid):
+        return invalid("the CLI previewed a different snapshot than requested")
+    if payload.get("dry_run") is not True or payload.get("destination") != "workspace":
+        return invalid("not a dry run of the active vault workspace")
+    verification = payload.get("verification")
+    if not isinstance(verification, dict) or verification.get("status") != "passed":
+        return invalid("verification did not pass")
+    checks = verification.get("checks")
+    if not isinstance(checks, list) or set(checks) != set(_PREVIEW_CHECKS):
+        return invalid("verification checks are incomplete")
+    files = payload.get("files")
+    if not isinstance(files, list) or len(files) > _PREVIEW_MAX_FILES:
+        return invalid("file list missing or too long")
+    counts = {action: 0 for action in _PREVIEW_ACTIONS}
+    entries = []
+    for item in files:
+        if not isinstance(item, dict):
+            return invalid("malformed file entry")
+        path = _safe_workspace_path(item.get("path"))
+        if path is None:
+            return invalid("a file path is not workspace-relative")
+        action = item.get("action")
+        if action not in counts:
+            return invalid("unknown file action")
+        counts[action] += 1
+        entries.append({
+            "path": binary.scrub(path),
+            "action": action,
+            "bytes": _nonneg_int(item.get("bytes")),
+        })
+    counts["total"] = len(entries)
+    uncommitted = payload.get("uncommitted_changes")
+    if isinstance(uncommitted, list):
+        uncommitted = [binary.scrub(p) for p in map(_safe_workspace_path, uncommitted) if p]
+    else:
+        uncommitted = None
+    needs_force = payload.get("restore_requires_force") is True
+    checked_at = _nonneg_int(verification.get("checked_at_utc")) or None
+    recorded = _nonneg_int(payload.get("recorded_at_utc")) or None
+    command = f"ciphervault restore --snapshot {sid}" + (" --force" if needs_force else "")
+    result = {
+        "success": True,
+        "read_only": True,
+        "snapshot_id": sid,
+        "logical_id": lid,
+        "is_active_head": payload.get("is_active_head") is True,
+        "recorded_at_utc": recorded,
+        "recorded_at": _utc_iso(recorded),
+        "destination": "workspace",
+        "mode": "merge",
+        "verification": {
+            "status": "passed",
+            "checks": list(_PREVIEW_CHECKS),
+            "checked_at_utc": checked_at,
+            "checked_at": _utc_iso(checked_at),
+            "meaning": (
+                "The snapshot passed these checks against the local vault store at "
+                "checked_at. It says nothing about changes after that moment."
+            ),
+        },
+        "files": entries,
+        "counts": counts,
+        "uncommitted_changes": uncommitted,
+        "restore_requires_force": needs_force,
+        "interrupted_restore_pending": payload.get("interrupted_restore_pending") is True,
+        "note": (
+            "Preview only: nothing was written, restored, or staged. Merge mode: "
+            "workspace files that are not in the snapshot are left alone."
+        ),
+        "next": (
+            f"Restoring is the user's decision: they run `{command}` in the vault root."
+            + (
+                " --force is needed because the uncommitted changes listed above "
+                "would be overwritten; pushing first keeps them."
+                if needs_force else ""
+            )
+        ),
+    }
+    return json.dumps(result)
+
+
+def _tool_restore_preview(params, **kwargs):
+    params = params or {}
+    cwd = params.get("cwd")
+    raw = params.get("snapshot")
+    ref = raw.strip().lower() if isinstance(raw, str) else ""
+    if ref == "head":
+        snapshot_arg = None
+    elif _SNAPSHOT_ID_RE.fullmatch(ref):
+        snapshot_arg = ref
+    else:
+        return _preview_error(
+            "invalid_snapshot_reference",
+            "snapshot must be a full 64-character snapshot ID or 'head'",
+            next="List recent snapshots with ciphervault_status history_limit=10.",
+        )
+    try:
+        root = _runtime.resolve(bridge, "_vault_root")(cwd)
+    except Exception:
+        root = None
+    if root is None:
+        return _preview_error("no_vault", "no CipherVault vault at or above cwd")
+    vault_cwd = str(root)
+    bin_path, _source = _runtime.resolve(binary, "find_binary")()
+    if not bin_path:
+        return _preview_error(
+            "binary_missing", "ciphervault binary not found",
+            binary="missing", next=binary._COMPATIBLE_CLI_HINT,
+        )
+    if not _runtime.resolve(binary, "_cli_supports_restore_preview")(vault_cwd):
+        unsupported = _unsupported_cli("restore preview", "a restore preview")
+        return _preview_error(
+            "cli_unsupported", unsupported["error"], next=unsupported["next"]
+        )
+    args = ["restore", "--dry-run", "--json"]
+    if snapshot_arg:
+        args += ["--snapshot", snapshot_arg]
+    res = _runtime.resolve(bridge, "_run_cli")(
+        args, vault_cwd, timeout=120, keep_stdout_on_error=True
+    )
+    text = res.get("output") if res.get("success") else res.get("stdout")
+    try:
+        payload = json.loads(text or "")
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        if res.get("success"):
+            return _preview_error("invalid_cli_response", "ciphervault returned non-JSON preview output")
+        return _preview_error(
+            "preview_failed",
+            binary.scrub(str(res.get("error") or "ciphervault restore --dry-run failed"))[:500],
+        )
+    if payload.get("success") is False or not res.get("success"):
+        return _preview_refusal(payload)
+    return _clean_preview(payload, snapshot_arg)
 
 
 def _tool_scan(params, **kwargs):
@@ -1266,8 +1814,21 @@ _TOOLS = [
     (
         "ciphervault_status",
         _tool_status,
-        "Show CipherVault vault status for a workspace: tracked file PATHS (never contents), snapshot head, operator count, CLI version. Keys only.",
-        {"cwd": {"type": "string", "description": "Workspace directory (default: session cwd)"}},
+        "Show CipherVault vault status for a workspace: tracked file PATHS (never contents), snapshot head, operator count, CLI version. Keys only. With history_limit, also lists recent snapshots newest first (IDs and recorded times only) whose snapshot_id works with ciphervault_diff and ciphervault_restore_preview. With watcher_health, also reports whether the file watcher is running (from its own heartbeat, else unknown), the last change it detected, its last capture, the upload queue, and the newest snapshot with a recorded remote verification; all recorded evidence, no live operator check.",
+        {
+            "history_limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Optional: include up to N recent snapshots, newest first (metadata only). Omit for the plain status.",
+            },
+            "watcher_health": {
+                "type": "boolean",
+                "default": False,
+                "description": "Optional: include watcher and backup health (read-only). Omit for the plain status.",
+            },
+            "cwd": {"type": "string", "description": "Workspace directory (default: session cwd)"},
+        },
     ),
     (
         "ciphervault_scan",
@@ -1386,6 +1947,18 @@ _TOOLS = [
             "snapshot_b": {"type": "string", "description": "New snapshot ID or 'head'/'working'"},
             "file": {"type": "string", "description": "Limit diff to a specific relative file path"},
             "cwd": {"type": "string"},
+        },
+    ),
+    (
+        "ciphervault_restore_preview",
+        _tool_restore_preview,
+        "Preview restoring one snapshot into the active vault workspace without changing anything. The CLI verifies the snapshot (record signature, epoch key, manifest, chunks, file integrity, destination paths) and reports, per file, whether a restore would create, replace, or leave it unchanged. Returns workspace-relative paths, sizes, and counts; never secret values. Read-only: restoring stays a separate user action.",
+        {
+            "snapshot": {
+                "type": "string",
+                "description": "Full 64-character snapshot_id from ciphervault_status (history_limit), or 'head'",
+            },
+            "cwd": {"type": "string", "description": "Directory inside the vault workspace (default: session cwd)"},
         },
     ),
     (

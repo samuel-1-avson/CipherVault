@@ -185,7 +185,11 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             allow_planned,
         } => cmd_track(paths, from_gitignore, no_gitignore, allow_planned),
         crate::Commands::Untrack { paths } => cmd_untrack(paths),
-        crate::Commands::Status { json, overview } => cmd_status(json, overview),
+        crate::Commands::Status {
+            json,
+            overview,
+            watcher,
+        } => cmd_status(json, overview, watcher),
         crate::Commands::EnvDoctor {
             env_file,
             sync_env_example,
@@ -215,7 +219,13 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             )
             .await
         }
-        crate::Commands::History => cmd_history(),
+        crate::Commands::History { json, limit } => {
+            if json {
+                cmd_history_json(limit.map(usize::from))
+            } else {
+                cmd_history()
+            }
+        }
         crate::Commands::Prune {
             keep_last,
             keep_days,
@@ -230,7 +240,14 @@ pub(crate) async fn run_command(command: crate::Commands) -> anyhow::Result<()> 
             reader,
             pin,
             force,
-        } => cmd_restore(snapshot, to, hardware_token, reader, pin, dry_run, force),
+            json,
+        } => {
+            if json {
+                cmd_restore_preview_json(snapshot, to, hardware_token, reader, pin)
+            } else {
+                cmd_restore(snapshot, to, hardware_token, reader, pin, dry_run, force)
+            }
+        }
         crate::Commands::Recover {
             kit,
             shares,

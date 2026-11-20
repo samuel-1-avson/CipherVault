@@ -438,9 +438,69 @@ _CLI_CAPABILITIES = (
     (("agent-log", "anchor"), ()),
 )
 
+# Newer, optional CLI features. A CLI without them stays compatible (doctor
+# still passes); only the tool option that needs one reports it unsupported.
+# name -> (command, required flags, CLI that ships it). Neither is in a
+# published release yet; the release that ships them updates this text.
+_OPTIONAL_CLI_CAPABILITIES = {
+    "history json": (("history",), ("--json", "--limit"), "a CLI newer than v1.0.38"),
+    "restore preview": (("restore",), ("--dry-run", "--json"), "a CLI newer than v1.0.38"),
+    "watcher health": (("status",), ("--json", "--watcher"), "a CLI newer than v1.0.38"),
+}
+
 _CLI_PROFILE_SUPPORT: dict[str, bool] = {}
 _ENV_DOCTOR_SUPPORT_CACHE: dict[str, bool] = {}
 _VAULT_SECRET_SUPPORT_CACHE: dict[str, bool] = {}
+_CLI_FEATURE_CACHE: dict[tuple, bool] = {}
+
+
+def _help_has_flags(help_text: str, flags) -> list[str]:
+    """Flags missing from a `--help` listing (whole-flag matches only)."""
+    return [
+        flag
+        for flag in flags
+        if not re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)
+    ]
+
+
+def _cli_supports_feature(name: str, cwd=None) -> bool:
+    """True when the resolved CLI's `--help` lists every flag an optional
+    feature needs. Cached per binary path, size and mtime, so an in-place
+    upgrade is noticed without a restart."""
+    from . import bridge
+
+    command, flags, _since = _OPTIONAL_CLI_CAPABILITIES[name]
+    binary, _src = _runtime.resolve(_self, "find_binary")()
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+        stamp = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        stamp = None
+    key = (binary, stamp, name)
+    cached = _CLI_FEATURE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    probe = _runtime.resolve(bridge, "_run_cli")([*command, "--help"], cwd, timeout=10)
+    ok = bool(probe.get("success")) and not _help_has_flags(probe.get("output") or "", flags)
+    _CLI_FEATURE_CACHE[key] = ok
+    return ok
+
+
+def _cli_supports_history_json(cwd=None) -> bool:
+    """`ciphervault history --json --limit N` (newest-first snapshot IDs)."""
+    return _cli_supports_feature("history json", cwd)
+
+
+def _cli_supports_restore_preview(cwd=None) -> bool:
+    """`ciphervault restore --dry-run --json` (verified, read-only preview)."""
+    return _cli_supports_feature("restore preview", cwd)
+
+
+def _cli_supports_watcher_health(cwd=None) -> bool:
+    """`ciphervault status --json --watcher` (recorded watcher/backup evidence)."""
+    return _cli_supports_feature("watcher health", cwd)
 
 
 def _cli_supports_run_profile() -> bool:
@@ -590,6 +650,18 @@ def binary_diagnostics(cwd=None):
     }
     if not complete:
         out["missing_capabilities"].append("redact completeness")
+    # Optional features never change `success`; they only say which tool
+    # options this CLI can serve.
+    optional = {}
+    for name, (command, flags, since) in _OPTIONAL_CLI_CAPABILITIES.items():
+        probe = run_cli_fn([*command, "--help"], cwd, timeout=20)
+        missing = _help_has_flags(probe.get("output", ""), flags)
+        optional[name] = {
+            "supported": bool(probe.get("success") and not missing),
+            "missing_flags": missing,
+            "since_cli": since,
+        }
+    out["optional_capabilities"] = optional
     out["success"] = bool(out["installed_version"] and not out["missing_capabilities"])
     if not out["version_matches_target"]:
         out["warning"] = (

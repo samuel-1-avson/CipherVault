@@ -211,7 +211,8 @@ def _slash_ciphervault(raw_args, **kwargs):
         "Tools: ciphervault_status, ciphervault_scan, ciphervault_run, "
         "ciphervault_push, ciphervault_recovery_drill, ciphervault_redact, "
         "ciphervault_env_doctor, ciphervault_secret_generate, ciphervault_secret_prompt, "
-        "ciphervault_diff, ciphervault_proxy_doctor, ciphervault_audit."
+        "ciphervault_diff, ciphervault_proxy_doctor, ciphervault_audit, "
+        "ciphervault_restore_preview."
     )
 
 

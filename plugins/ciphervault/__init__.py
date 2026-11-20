@@ -7,7 +7,7 @@ and test monkeypatches on the top-level plugin module all continue working.
 Surfaces registered (see plugin.yaml):
   tools        ciphervault_status / scan / run / push / recovery_drill / redact /
                audit / env_doctor / secret_generate / diff / proxy_doctor /
-               secret_prompt
+               secret_prompt / restore_preview
   hooks        on_session_start        (reset posture cache, track session_id)
                pre_llm_call            (inject cached 1-line workspace posture)
                pre_tool_call           (leak guard: blocks secret reads/exfil)
@@ -59,7 +59,9 @@ from .binary import (  # noqa: E402
     RELEASE_SUPPORTS_GUARD,
     RELEASE_VERSION,
     _CLI_CAPABILITIES,
+    _CLI_FEATURE_CACHE,
     _CLI_PROFILE_SUPPORT,
+    _OPTIONAL_CLI_CAPABILITIES,
     _COMPATIBLE_CLI_HINT,
     _DOWNLOAD_ATTEMPTS,
     _DOWNLOAD_MAX_BYTES,
@@ -69,8 +71,12 @@ from .binary import (  # noqa: E402
     _PLATFORM_LABELS,
     _VAULT_SECRET_SUPPORT_CACHE,
     _cli_supports_env_doctor,
+    _cli_supports_feature,
+    _cli_supports_history_json,
+    _cli_supports_restore_preview,
     _cli_supports_run_profile,
     _cli_supports_vault_secret,
+    _cli_supports_watcher_health,
     _content_range_start,
     _data_bin_dir,
     _download_resumable,
@@ -217,6 +223,7 @@ from .tools import (  # noqa: E402
     _tool_proxy_doctor,
     _tool_push,
     _tool_redact,
+    _tool_restore_preview,
     _tool_run,
     _tool_scan,
     _tool_secret_generate,
@@ -235,6 +242,7 @@ def register(ctx):
             else ["text"] if name == "ciphervault_redact"
             else ["name"] if name == "ciphervault_secret_generate"
             else ["keys"] if name == "ciphervault_secret_prompt"
+            else ["snapshot"] if name == "ciphervault_restore_preview"
             else []
         )
         ctx.register_tool(

@@ -131,7 +131,10 @@ ciphervault doctor                        # self-check when something feels off
 
 - `ciphervault watch --sync` (or the `ciphervault-agent` service) snapshots
   after debounced saves; a three-second fallback scan covers missed events and failed captures stay dirty for retry.
-- `ciphervault restore --snapshot <id> --to ./preview --dry-run` verifies data and previews file actions without writing a target or staging files. Actual restore uses a rollback journal and merge semantics. Historical restore, diff and snapshot run use each snapshot's recorded epoch after rekeying.
+  A running watcher keeps `.ciphervault/watcher-status.json` (heartbeat every 10 s, last detected change, last capture, last sync outcome; never file contents; `--dry-run` writes none).
+  `ciphervault status --json --watcher` reads it with the upload queue and the activity log. It reports the watcher as `running` only on a heartbeat from this vault less than 120 s old. A clean stop shows as `stopped`, and anything else as `unknown`. It also names the newest snapshot with a recorded remote verification, and says when a newer local snapshot has none. That is recorded evidence; no operator is contacted.
+- `ciphervault history --json --limit 10` lists snapshots newest first with `snapshot_id` (record CID, the ID `status` shows as the head) and `logical_id` (the ID `push` prints); `restore` and `diff` accept either.
+- `ciphervault restore --snapshot <id> --to ./preview --dry-run` verifies data and previews file actions without writing a target or staging files. Add `--json` for a machine-readable preview: the checks that passed, a per-file `create`/`replace`/`unchanged` action, and any uncommitted changes that would need `--force`. A refused preview exits with status 3 and an `error_code`. Actual restore uses a rollback journal and merge semantics. Historical restore, diff and snapshot run use each snapshot's recorded epoch after rekeying.
 - Scoped execution uses one authorized revision-bound materialization batch; use `run --project <project> --env <environment> --revision <64hex> -- <command>` when an exact revision is required. Dry-run reads metadata only; malformed/partial batches never start the child.
 - `ciphervault recovery split` + `recover` cover clean-machine disaster
   recovery; rehearse with `cv recovery test --kit <your saved kit> --to ./restore-drill`.

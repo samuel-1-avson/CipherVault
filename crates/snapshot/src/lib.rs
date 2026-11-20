@@ -8,7 +8,9 @@ pub mod engine;
 pub mod error;
 pub mod fastcdc;
 mod restore;
-pub use restore::recover_interrupted_restore;
+pub use restore::{
+    preflight_restore_destinations, recover_interrupted_restore, restore_transaction_pending,
+};
 
 pub use chunker::{
     chunk_and_encrypt_file, chunk_and_encrypt_file_v2, ChunkedFile, AVG_CHUNK_SIZE, CHUNK_SIZE,

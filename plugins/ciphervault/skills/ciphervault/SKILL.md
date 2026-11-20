@@ -53,6 +53,17 @@ zero-knowledge: encrypted on the client, operators store ciphertext.
      or the Hermes home). Outside a vault they are blocked;
    - `ciphervault_diff` to inspect masked key-level diffs between snapshots
      or against the working tree (never passes `--reveal`);
+   - `ciphervault_status` with `history_limit` to list recent snapshots
+     (newest first, IDs and recorded times only), then
+     `ciphervault_restore_preview` with one `snapshot_id` to see what a
+     restore would create, replace, or leave unchanged. The preview is
+     read-only; never restore on the user's behalf — give them the
+     `ciphervault restore` command it returns;
+   - `ciphervault_status` with `watcher_health: true` when the user asks
+     whether an edit was backed up. Keep "change detected", "snapshot
+     captured", and "remote backup verified" apart, quote recorded times as
+     recorded (not live checks), and say "unknown" when the evidence is
+     missing or stale — never "running" without a fresh heartbeat;
    - `ciphervault_redact` to mask text you must quote;
    - `ciphervault_status` for names/paths and sealed status;
    - `ciphervault_scan` before any git operation;

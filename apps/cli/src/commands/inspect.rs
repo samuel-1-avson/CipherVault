@@ -112,6 +112,246 @@ struct StatusReport {
     active_epoch_age_days: Option<u64>,
     active_epoch_stale: bool,
     leases: Vec<LeaseStatusJson>,
+    /// Only with `--watcher`; absent otherwise so the plain report is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watcher_health: Option<serde_json::Value>,
+}
+
+/// How many snapshots, newest first, are checked for a recorded remote
+/// verification, and how many recent activity entries are searched for
+/// watcher events from older watchers without a status record.
+const VERIFICATION_SCAN_LIMIT: usize = 200;
+const WATCHER_ACTIVITY_SCAN: usize = 500;
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SnapshotRefJson {
+    snapshot_id: String,
+    logical_id: String,
+    recorded_at_utc: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WatcherCaptureJson {
+    at_utc: u64,
+    snapshot_id: Option<String>,
+    logical_id: Option<String>,
+    /// `watcher_status` (the watcher's own record) or `activity_log`.
+    source: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WatcherErrorJson {
+    at_utc: u64,
+    error: String,
+    source: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WatcherSyncAttemptJson {
+    at_utc: u64,
+    /// `verified`, `failed`, or `timeout`.
+    outcome: String,
+    snapshot_id: Option<String>,
+    error: Option<String>,
+    source: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WatcherSyncJson {
+    /// Snapshots saved locally and still queued for replication.
+    pending: u64,
+    /// Queued snapshots whose last replication attempt failed.
+    failed: u64,
+    oldest_pending_at_utc: Option<i64>,
+    last_error: Option<String>,
+    last_watcher_attempt: Option<WatcherSyncAttemptJson>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RemoteVerificationJson {
+    /// Always `recorded`: read from the local activity log, not a live check.
+    evidence: &'static str,
+    live_check_performed: bool,
+    /// Newest snapshot with a recorded quorum replication (push or watcher).
+    verified_snapshot: Option<SnapshotRefJson>,
+    checked_at_utc: Option<i64>,
+    head: Option<SnapshotRefJson>,
+    head_verified: bool,
+    /// Snapshots newer than `verified_snapshot` with no recorded verification.
+    newer_unverified_snapshots: usize,
+    scanned_snapshots: usize,
+    total_snapshots: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WatcherHealthJson {
+    checked_at_utc: u64,
+    /// No operator is contacted: every field is recorded local evidence.
+    live_check_performed: bool,
+    watcher: ciphervault_agent::WatcherLiveness,
+    /// When the watcher last found tracked content differing from its last capture.
+    last_change_detected_at_utc: Option<u64>,
+    last_capture: Option<WatcherCaptureJson>,
+    last_error: Option<WatcherErrorJson>,
+    sync: WatcherSyncJson,
+    remote_verification: RemoteVerificationJson,
+}
+
+fn activity_detail(entry: &ciphervault_local_store::ActivityEntry, key: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(&entry.details_json)
+        .ok()?
+        .get(key)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Watcher and backup evidence for this vault only: the watcher's own status
+/// record in `.ciphervault/`, the store's upload queue, and the activity log.
+/// Read-only; anything missing or untrusted is reported as unknown.
+fn build_watcher_health(
+    store: &ciphervault_local_store::LocalVaultStore,
+    root: &std::path::Path,
+    vault_id: &[u8; 32],
+    head: Option<[u8; 32]>,
+    sync_health: &SyncHealthJson,
+    now_utc: u64,
+) -> Result<WatcherHealthJson> {
+    let record = ciphervault_agent::read_watcher_status(root);
+    let liveness = ciphervault_agent::assess_liveness(
+        record.as_ref().map(Option::as_ref).map_err(String::as_str),
+        &hex::encode(vault_id),
+        now_utc,
+    );
+    // Only a record bound to this vault contributes evidence.
+    let trusted = match &record {
+        Ok(Some(found)) if found.vault_id.eq_ignore_ascii_case(&hex::encode(vault_id)) => {
+            Some(found.clone())
+        }
+        _ => None,
+    };
+
+    let snapshots = store.list_snapshots()?;
+    let (rows, _) = super::retention::snapshots_newest_first(&snapshots);
+    let describe = |cid: &[u8; 32], record: &ciphervault_format::SnapshotRecord| SnapshotRefJson {
+        snapshot_id: hex::encode(cid),
+        logical_id: hex::encode(&record.snapshot_id),
+        recorded_at_utc: Some(record.advisory_timestamp_utc).filter(|at| *at > 0),
+    };
+    let cid_for_logical = |logical: &str| {
+        rows.iter()
+            .find(|(_, record)| hex::encode(&record.snapshot_id) == logical)
+            .map(|(cid, _)| hex::encode(cid))
+    };
+    let activity = store.list_activity(WATCHER_ACTIVITY_SCAN)?;
+    let latest = |kinds: &[&str]| {
+        activity
+            .iter()
+            .find(|entry| kinds.contains(&entry.event_type.as_str()))
+    };
+
+    let last_capture = match trusted.as_ref().and_then(|r| r.last_capture.clone()) {
+        Some(capture) => Some(WatcherCaptureJson {
+            at_utc: capture.at_utc,
+            snapshot_id: Some(capture.snapshot_id),
+            logical_id: Some(capture.logical_id),
+            source: "watcher_status",
+        }),
+        None => latest(&["WATCH_SNAPSHOT"]).map(|entry| {
+            let logical = activity_detail(entry, "snapshot_id");
+            WatcherCaptureJson {
+                at_utc: entry.created_at_utc.max(0) as u64,
+                snapshot_id: activity_detail(entry, "record_cid")
+                    .or_else(|| logical.as_deref().and_then(cid_for_logical)),
+                logical_id: logical,
+                source: "activity_log",
+            }
+        }),
+    };
+    let last_error = match trusted.as_ref().and_then(|r| r.last_error.clone()) {
+        Some(error) => Some(WatcherErrorJson {
+            at_utc: error.at_utc,
+            error: error.error,
+            source: "watcher_status",
+        }),
+        None => latest(&["WATCH_CAPTURE_FAILED"]).map(|entry| WatcherErrorJson {
+            at_utc: entry.created_at_utc.max(0) as u64,
+            error: activity_detail(entry, "error").unwrap_or_else(|| entry.summary.clone()),
+            source: "activity_log",
+        }),
+    };
+    let last_watcher_attempt = match trusted.as_ref().and_then(|r| r.last_sync.clone()) {
+        Some(sync) => Some(WatcherSyncAttemptJson {
+            at_utc: sync.at_utc,
+            outcome: sync.outcome,
+            snapshot_id: sync.snapshot_id,
+            error: sync.error,
+            source: "watcher_status",
+        }),
+        None => {
+            latest(&["WATCH_SYNC_OK", "WATCH_SYNC_FAILED", "WATCH_SYNC_TIMEOUT"]).map(|entry| {
+                WatcherSyncAttemptJson {
+                    at_utc: entry.created_at_utc.max(0) as u64,
+                    outcome: match entry.event_type.as_str() {
+                        "WATCH_SYNC_OK" => "verified",
+                        "WATCH_SYNC_FAILED" => "failed",
+                        _ => "timeout",
+                    }
+                    .to_string(),
+                    snapshot_id: activity_detail(entry, "snapshot_id")
+                        .as_deref()
+                        .and_then(cid_for_logical),
+                    error: activity_detail(entry, "error"),
+                    source: "activity_log",
+                }
+            })
+        }
+    };
+
+    let mut verified = None;
+    let mut scanned = 0usize;
+    for (index, (cid, record)) in rows.iter().take(VERIFICATION_SCAN_LIMIT).enumerate() {
+        scanned = index + 1;
+        if let Some(at) = store.snapshot_replicated_at(&record.snapshot_id)? {
+            verified = Some((index, *cid, describe(cid, record), at));
+            break;
+        }
+    }
+    let head_ref = head.and_then(|head_cid| {
+        rows.iter()
+            .find(|(cid, _)| *cid == head_cid)
+            .map(|(cid, record)| describe(cid, record))
+    });
+    let remote_verification = RemoteVerificationJson {
+        evidence: "recorded",
+        live_check_performed: false,
+        head_verified: matches!((&verified, head), (Some((_, cid, _, _)), Some(h)) if *cid == h),
+        newer_unverified_snapshots: verified
+            .as_ref()
+            .map(|(index, ..)| *index)
+            .unwrap_or(scanned),
+        checked_at_utc: verified.as_ref().map(|(.., at)| *at),
+        verified_snapshot: verified.map(|(_, _, snapshot, _)| snapshot),
+        head: head_ref,
+        scanned_snapshots: scanned,
+        total_snapshots: rows.len(),
+    };
+
+    Ok(WatcherHealthJson {
+        checked_at_utc: now_utc,
+        live_check_performed: false,
+        watcher: liveness,
+        last_change_detected_at_utc: trusted.as_ref().and_then(|r| r.last_change_detected_at_utc),
+        last_capture,
+        last_error,
+        sync: WatcherSyncJson {
+            pending: sync_health.pending,
+            failed: sync_health.failed,
+            oldest_pending_at_utc: sync_health.oldest_pending_at_utc,
+            last_error: sync_health.last_error.clone(),
+            last_watcher_attempt,
+        },
+        remote_verification,
+    })
 }
 
 impl StatusReport {
@@ -164,6 +404,7 @@ impl StatusReport {
             active_epoch_age_days: age_days,
             active_epoch_stale: stale,
             leases,
+            watcher_health: None,
         }
     }
 }
@@ -355,7 +596,7 @@ fn print_overview_report(report: &OverviewReport, now_utc: u64) {
     }
 }
 
-pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
+pub(crate) fn cmd_status(json: bool, overview: bool, watcher: bool) -> Result<()> {
     let store = match get_vault_store() {
         Ok(store) => store,
         Err(err) if json && !overview => {
@@ -424,6 +665,22 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
     let working_tree_sealed =
         head_cid.is_some() && !tracked.is_empty() && plaintext_on_disk_count == 0;
     if json {
+        // Built before `sync_health` moves into the report. A failure here
+        // degrades this one section instead of the whole status.
+        let watcher_health = watcher.then(|| {
+            match build_watcher_health(
+                &store,
+                &root_dir,
+                &vault_id,
+                head_cid,
+                &sync_health,
+                now_utc,
+            ) {
+                Ok(health) => serde_json::to_value(health)
+                    .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() })),
+                Err(error) => serde_json::json!({ "error": error.to_string() }),
+            }
+        });
         let mut report = StatusReport::new(
             &vault_id,
             &device_id,
@@ -446,6 +703,7 @@ pub(crate) fn cmd_status(json: bool, overview: bool) -> Result<()> {
         );
         report.working_tree_plaintext_files = plaintext_on_disk_count;
         report.working_tree_sealed = working_tree_sealed;
+        report.watcher_health = watcher_health;
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }

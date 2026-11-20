@@ -117,7 +117,22 @@ def test_all_tools_registered(ctx):
         "ciphervault_audit", "ciphervault_env_doctor",
         "ciphervault_secret_generate", "ciphervault_diff",
         "ciphervault_proxy_doctor", "ciphervault_secret_prompt",
+        "ciphervault_restore_preview",
     }
+
+
+def test_manifest_and_registry_list_the_same_tools(ctx):
+    manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+    block = manifest.split("provides_tools:", 1)[1].split("provides_hooks:", 1)[0]
+    listed = [line.strip()[2:] for line in block.splitlines() if line.strip().startswith("- ")]
+    registered = [name for name, *_ in cv._TOOLS]
+    assert sorted(listed) == sorted(registered) and len(set(listed)) == len(listed)
+    assert len(listed) == 13
+    readme = (PLUGIN_DIR / "README.md").read_text(encoding="utf-8")
+    for name in listed:
+        assert f"`{name}`" in readme, f"{name} missing from the plugin README"
+    schema = ctx.tools["ciphervault_restore_preview"][0]
+    assert schema["parameters"]["required"] == ["snapshot"]
 
 
 def test_hooks_middleware_source_commands_registered(ctx):
@@ -2756,10 +2771,12 @@ def test_real_cli_env_doctor_works_on_sealed_shredded_vault(real_vault):
 
 def test_plugin_yaml_declares_version_and_lifecycle_hooks():
     yaml_text = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-    assert 'version: "0.7.3"' in yaml_text
+    assert 'version: "0.8.0"' in yaml_text
     for hook in ("on_session_start", "pre_llm_call", "pre_tool_call", "transform_tool_result", "post_tool_call"):
         assert f"- {hook}" in yaml_text
-    assert cv.PLUGIN_VERSION == "0.7.3"
+    assert cv.PLUGIN_VERSION == "0.8.0"
+    manifest = json.loads((PLUGIN_DIR / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == cv.PLUGIN_VERSION
 
 
 def test_dashboard_manifest_version_matches_plugin_version():

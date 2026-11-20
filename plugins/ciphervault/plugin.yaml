@@ -1,5 +1,5 @@
 name: ciphervault
-version: "0.7.3"
+version: "0.8.0"
 description: "Prove the model never saw it: zero-knowledge secret backup for AI coding agents — masked scan, policy-scoped RAM-only run, zero-knowledge env doctor & sealed-vault-safe secret generation, out-of-band secret prompt, ambient posture hooks, leak-guard hooks, and a hash-chained, fleet-anchored audit log."
 manifest_version: 2
 api_version: 1
@@ -20,6 +20,7 @@ provides_tools:
   - ciphervault_diff
   - ciphervault_proxy_doctor
   - ciphervault_secret_prompt
+  - ciphervault_restore_preview
 provides_hooks:
   - on_session_start
   - pre_llm_call
