@@ -143,7 +143,7 @@ hermes ciphervault doctor
 ```
 
 The catalog installs the version it pins, which can lag this repository (it was
-v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.8.0 and all 13
+v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.8.1 and all 13
 tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
 (default `~/.hermes`), then run `hermes plugins enable ciphervault`.
 
@@ -182,10 +182,23 @@ events apart:
   was recorded. `head_verified: false` plus `newer_unverified_snapshots` says
   a newer local snapshot has none yet.
 
-The watcher counts as `running` only on a heartbeat less than 120 s old from
-this vault's own `.ciphervault/watcher-status.json`. A clean stop is
-`stopped`. A missing, foreign, unreadable, or stale record is `unknown`, as
-are watchers from releases before this record existed. Everything here is
+A watcher holds an exclusive OS lock on `.ciphervault/watcher.lock` for its
+whole life, so each vault runs at most one watcher; a second one refuses to
+start. It also writes `.ciphervault/watcher-status.json`, which records a
+main-loop heartbeat and a separate capture-worker beat. The states are:
+
+- **`running`:** the process is alive (the OS reports the lock held, or the
+  heartbeat is fresh where the lock can't be checked), the heartbeat is less
+  than 60 s old, and the capture worker reported within 150 s.
+- **`stalled`:** the process is alive, but its capture worker or main loop
+  has gone quiet, so new changes may not be captured until it recovers or
+  restarts.
+- **`stopped`:** a clean stop was recorded, or the OS released the lock with
+  no heartbeat since. The second case means the watcher crashed or was
+  killed.
+- **`unknown`:** the record is missing, foreign, unreadable or stale, or the
+  evidence contradicts itself. This also covers watchers from releases before
+  the record existed. Everything here is
 recorded evidence (`live_check_performed: false`); the status call contacts
 no operator, and starting or stopping the watcher stays with
 `ciphervault watch` and the `ciphervault-agent` service.

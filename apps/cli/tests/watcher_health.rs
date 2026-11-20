@@ -30,6 +30,37 @@ fn cli(root: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Runs the CLI with the same isolated environment, killing it if it is
+/// still running after `secs`. `None` means it did not exit in time.
+fn exits_within(root: &Path, args: &[&str], secs: u64) -> Option<std::process::ExitStatus> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ciphervault"))
+        .args(args)
+        .current_dir(root)
+        .env("CIPHERVAULT_ACCOUNT_DIR", root.join("isolated-account"))
+        .env(
+            "CIPHERVAULT_KEYSTORE_PATH",
+            root.join("isolated-master.key"),
+        )
+        .env("CIPHERVAULT_MASTER_KEY", "77".repeat(32))
+        .env("CIPHERVAULT_OPERATORS", "http://127.0.0.1:1")
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Some(status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 fn succeeds(output: Output) -> String {
     assert!(
         output.status.success(),
@@ -74,6 +105,7 @@ fn record(vault_id: &str, heartbeat_at_utc: u64) -> WatcherStatusRecord {
         started_at_utc: heartbeat_at_utc.saturating_sub(60),
         heartbeat_at_utc,
         heartbeat_interval_secs: HEARTBEAT_INTERVAL_SECS,
+        capture_worker_beat_at_utc: Some(heartbeat_at_utc),
         stopped_at_utc: None,
         last_change_detected_at_utc: None,
         last_capture: None,
@@ -234,6 +266,45 @@ fn watcher_health_separates_detection_capture_and_recorded_remote_verification()
     stopped.stopped_at_utc = Some(now() - 7_200);
     write_record(&root, &stopped);
     assert_eq!(health(&root)["watcher"]["state"], "stopped");
+
+    // A live main loop over a hung capture worker is stalled, not running.
+    let mut hung = record(&vault_id, now());
+    hung.capture_worker_beat_at_utc = Some(now() - 3_600);
+    write_record(&root, &hung);
+    let stalled = health(&root);
+    assert_eq!(stalled["watcher"]["state"], "stalled");
+    assert_eq!(stalled["watcher"]["evidence"], "worker_stalled");
+    assert!(
+        stalled["watcher"]["capture_worker_age_secs"]
+            .as_u64()
+            .unwrap()
+            >= 3_600
+    );
+
+    // The OS lock outranks the heartbeat clock. Held: the process is alive,
+    // so a silent loop is stalled. Released with no clean stop: it exited.
+    let lock = ciphervault_agent::WatcherInstanceLock::acquire(&root).unwrap();
+    write_record(&root, &record(&vault_id, now() - 3_600));
+    let held = health(&root);
+    assert_eq!(held["watcher"]["lock"], "held");
+    assert_eq!(held["watcher"]["state"], "stalled");
+    assert_eq!(held["watcher"]["evidence"], "loop_stalled");
+    let refused = exits_within(&root, &["watch", "--debounce", "1"], 20);
+    assert_eq!(
+        refused.map(|status| status.success()),
+        Some(false),
+        "a second watcher on the same vault must refuse to start, not run"
+    );
+    write_record(&root, &record(&vault_id, now()));
+    let fresh = health(&root);
+    assert_eq!(fresh["watcher"]["state"], "running");
+    assert_eq!(fresh["watcher"]["evidence"], "lock_and_heartbeat");
+    drop(lock);
+    write_record(&root, &record(&vault_id, now() - 3_600));
+    let crashed = health(&root);
+    assert_eq!(crashed["watcher"]["lock"], "free");
+    assert_eq!(crashed["watcher"]["state"], "stopped");
+    assert_eq!(crashed["watcher"]["evidence"], "lock_released");
 
     fs::remove_dir_all(root).unwrap();
 }

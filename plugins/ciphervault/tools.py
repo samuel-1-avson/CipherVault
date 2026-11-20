@@ -199,11 +199,14 @@ def _status_history(limit, cwd, status_data):
     return _clean_history(res.get("data"), limit)
 
 
-_WATCHER_STATES = ("running", "stopped", "unknown")
+_WATCHER_STATES = ("running", "stalled", "stopped", "unknown")
 _WATCHER_EVIDENCE = (
-    "heartbeat", "stop_record", "stale_heartbeat", "clock_skew",
-    "foreign_record", "unreadable_record", "no_record",
+    "lock_and_heartbeat", "heartbeat", "worker_stalled", "loop_stalled",
+    "no_worker_beat", "stop_record", "lock_released", "stale_heartbeat",
+    "lock_without_record", "restarting", "clock_skew", "foreign_record",
+    "unreadable_record", "no_record",
 )
+_WATCHER_LOCK_STATES = ("held", "free", "absent", "unavailable")
 _SYNC_OUTCOMES = ("verified", "failed", "timeout")
 _EVIDENCE_SOURCES = ("watcher_status", "activity_log")
 
@@ -255,11 +258,17 @@ def _watcher_summary(health):
     watcher = health["watcher"]
     if watcher["state"] == "running":
         sync = {True: "on", False: "off"}.get(watcher["sync_enabled"], "unknown")
+        lock = " the OS confirms the process holds its lock;" if watcher["lock"] == "held" else ""
         lines.append(
-            f"Watcher running: heartbeat {watcher['heartbeat_age_secs']}s ago "
-            f"(pid {watcher['pid']}, remote sync {sync})."
+            f"Watcher running:{lock} heartbeat {watcher['heartbeat_age_secs']}s ago, capture "
+            f"worker {watcher['capture_worker_age_secs']}s ago (pid {watcher['pid']}, remote sync {sync})."
         )
-    elif watcher["state"] == "stopped":
+    elif watcher["state"] == "stalled":
+        lines.append(
+            (watcher["reason"] or "Watcher stalled.")
+            + " Restart it with `ciphervault watch` or the ciphervault-agent service."
+        )
+    elif watcher["state"] == "stopped" and watcher["evidence"] == "stop_record":
         lines.append(f"Watcher stopped cleanly at {watcher['stopped_at'] or 'an unrecorded time'}.")
     else:
         lines.append(watcher["reason"] or "Watcher state unknown.")
@@ -318,15 +327,21 @@ def _clean_watcher_health(raw):
     w = raw["watcher"]
     state = w.get("state") if w.get("state") in _WATCHER_STATES else "unknown"
     heartbeat = _nonneg_int(w.get("heartbeat_at_utc")) or None
+    worker_beat = _nonneg_int(w.get("capture_worker_beat_at_utc")) or None
     stopped = _nonneg_int(w.get("stopped_at_utc")) or None
     watcher = {
         "state": state,
         "evidence": w.get("evidence") if w.get("evidence") in _WATCHER_EVIDENCE else "unknown",
         "reason": _scrubbed_text(w.get("reason")),
+        "lock": w.get("lock") if w.get("lock") in _WATCHER_LOCK_STATES else "unavailable",
         "heartbeat_at_utc": heartbeat,
         "heartbeat_at": _utc_iso(heartbeat),
         "heartbeat_age_secs": _nonneg_int(w.get("heartbeat_age_secs")),
         "stale_after_secs": _nonneg_int(w.get("stale_after_secs")),
+        "capture_worker_beat_at_utc": worker_beat,
+        "capture_worker_beat_at": _utc_iso(worker_beat),
+        "capture_worker_age_secs": _nonneg_int(w.get("capture_worker_age_secs")),
+        "capture_worker_stale_after_secs": _nonneg_int(w.get("capture_worker_stale_after_secs")),
         "started_at_utc": _nonneg_int(w.get("started_at_utc")) or None,
         "stopped_at_utc": stopped,
         "stopped_at": _utc_iso(stopped),
@@ -1814,7 +1829,7 @@ _TOOLS = [
     (
         "ciphervault_status",
         _tool_status,
-        "Show CipherVault vault status for a workspace: tracked file PATHS (never contents), snapshot head, operator count, CLI version. Keys only. With history_limit, also lists recent snapshots newest first (IDs and recorded times only) whose snapshot_id works with ciphervault_diff and ciphervault_restore_preview. With watcher_health, also reports whether the file watcher is running (from its own heartbeat, else unknown), the last change it detected, its last capture, the upload queue, and the newest snapshot with a recorded remote verification; all recorded evidence, no live operator check.",
+        "Show CipherVault vault status for a workspace: tracked file PATHS (never contents), snapshot head, operator count, CLI version. Keys only. With history_limit, also lists recent snapshots newest first (IDs and recorded times only) whose snapshot_id works with ciphervault_diff and ciphervault_restore_preview. With watcher_health, also reports whether the file watcher is running, stalled, stopped or unknown (from its OS lock, heartbeat and capture-worker beat), the last change it detected, its last capture, the upload queue, and the newest snapshot with a recorded remote verification; recorded evidence, no live operator check.",
         {
             "history_limit": {
                 "type": "integer",

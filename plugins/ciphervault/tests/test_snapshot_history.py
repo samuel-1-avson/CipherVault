@@ -365,8 +365,11 @@ def _watcher_payload(**overrides):
         "checked_at_utc": NOW,
         "live_check_performed": False,
         "watcher": {
-            "state": "running", "evidence": "heartbeat", "reason": "Watcher heartbeat 4s ago (pid 77).",
-            "heartbeat_at_utc": NOW - 4, "heartbeat_age_secs": 4, "stale_after_secs": 120,
+            "state": "running", "evidence": "lock_and_heartbeat", "lock": "held",
+            "reason": "Watcher running: heartbeat 4s ago, capture worker 2s ago (pid 77, process lock held).",
+            "heartbeat_at_utc": NOW - 4, "heartbeat_age_secs": 4, "stale_after_secs": 60,
+            "capture_worker_beat_at_utc": NOW - 2, "capture_worker_age_secs": 2,
+            "capture_worker_stale_after_secs": 150,
             "started_at_utc": NOW - 600, "stopped_at_utc": None, "pid": 77,
             "sync_enabled": True, "operator_count": 3,
         },
@@ -413,8 +416,11 @@ def test_watcher_health_older_verified_backup_then_newer_local_capture(tmp_path,
     assert remote["verified_snapshot"]["snapshot_id"] == ID_A
     assert remote["head"]["snapshot_id"] == ID_B and remote["head_verified"] is False
     assert remote["evidence"] == "recorded" and remote["live_check_performed"] is False
+    assert health["watcher"]["lock"] == "held"
+    assert health["watcher"]["capture_worker_age_secs"] == 2
     summary = " ".join(health["summary"])
-    assert "Watcher running" in summary
+    assert "Watcher running: the OS confirms the process holds its lock" in summary
+    assert "capture worker 2s ago" in summary
     assert f"Last capture: snapshot {ID_B[:12]}" in summary
     assert f"Remote backup verified for snapshot {ID_A[:12]}" in summary
     assert "not a live check" in summary
@@ -442,6 +448,38 @@ def test_watcher_health_stale_and_missing_evidence_is_unknown(tmp_path, monkeypa
     assert "is newer than the last capture, so it is not in a snapshot yet" in summary
 
 
+def test_watcher_health_stalled_worker_is_never_reported_as_running(tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path / "v")
+    hung = _watcher_payload(watcher={
+        "state": "stalled", "evidence": "worker_stalled", "lock": "held", "pid": 77,
+        "reason": "The watcher process is alive, but its capture worker last reported 900s ago (limit 150s).",
+        "heartbeat_at_utc": NOW - 3, "heartbeat_age_secs": 3,
+        "capture_worker_beat_at_utc": NOW - 900, "capture_worker_age_secs": 900,
+    })
+    ScriptedCli(monkeypatch, watcher=hung)
+    health = _status({"cwd": str(vault), "watcher_health": True})["watcher_health"]
+    assert (health["watcher"]["state"], health["watcher"]["evidence"]) == ("stalled", "worker_stalled")
+    summary = " ".join(health["summary"])
+    assert "Watcher running" not in summary
+    assert "capture worker last reported 900s ago" in summary
+    assert "Restart it with `ciphervault watch`" in summary
+
+
+def test_watcher_health_released_lock_explains_an_unclean_exit(tmp_path, monkeypatch):
+    vault = _marker_vault(tmp_path / "v")
+    crashed = _watcher_payload(watcher={
+        "state": "stopped", "evidence": "lock_released", "lock": "free", "pid": 77,
+        "reason": "The watcher is not running: no process holds its lock and no clean stop was recorded.",
+        "heartbeat_at_utc": NOW - 900, "heartbeat_age_secs": 900,
+    })
+    ScriptedCli(monkeypatch, watcher=crashed)
+    health = _status({"cwd": str(vault), "watcher_health": True})["watcher_health"]
+    summary = " ".join(health["summary"])
+    assert health["watcher"]["lock"] == "free"
+    assert "no clean stop was recorded" in summary
+    assert "stopped cleanly" not in summary
+
+
 @pytest.mark.parametrize("raw,code", [
     (None, "watcher_health_unavailable"),
     ({"error": f"database is locked; password={SECRET}"}, "watcher_health_unavailable"),
@@ -463,12 +501,14 @@ def test_watcher_health_untyped_fields_never_pass_through(tmp_path, monkeypatch)
     odd = _watcher_payload()
     odd["watcher"]["state"] = "definitely-running"
     odd["watcher"]["evidence"] = "trust me"
+    odd["watcher"]["lock"] = "probably"
     odd["last_capture"]["snapshot_id"] = "not-an-id"
     odd["last_capture"]["plaintext"] = SECRET
     odd["remote_verification"]["live_check_performed"] = "yes"
     ScriptedCli(monkeypatch, watcher=odd)
     health = _status({"cwd": str(vault), "watcher_health": True})["watcher_health"]
     assert health["watcher"]["state"] == "unknown" and health["watcher"]["evidence"] == "unknown"
+    assert health["watcher"]["lock"] == "unavailable"
     assert health["last_capture"]["snapshot_id"] is None
     assert "plaintext" not in health["last_capture"]
     assert health["remote_verification"]["live_check_performed"] is False

@@ -364,7 +364,7 @@ async fn polling_only_change_is_committed_by_the_real_loop() {
 
 #[tokio::test]
 async fn real_loop_keeps_a_vault_scoped_status_record_and_records_a_clean_stop() {
-    use ciphervault_agent::{assess_liveness, read_watcher_status};
+    use ciphervault_agent::{assess_liveness, probe_watcher_lock, read_watcher_status, LockProbe};
     let fixture = LoopFixture::new(".env");
     fixture.baseline().await;
     assert!(
@@ -400,12 +400,38 @@ async fn real_loop_keeps_a_vault_scoped_status_record_and_records_a_clean_stop()
         .unwrap();
     assert_eq!(hex::encode(&stored.snapshot_id), capture.logical_id);
     let now = ciphervault_agent::status::now_utc();
-    let live = assess_liveness(Ok(Some(&record)), &record.vault_id, now);
-    assert_eq!((live.state, live.evidence), ("running", "heartbeat"));
+    let lock = probe_watcher_lock(&fixture.root);
     assert_eq!(
-        assess_liveness(Ok(Some(&record)), &hex::encode([9u8; 32]), now).state,
+        lock,
+        LockProbe::Held,
+        "the running loop holds the vault lock"
+    );
+    assert!(record.capture_worker_beat_at_utc.is_some());
+    let live = assess_liveness(Ok(Some(&record)), &lock, &record.vault_id, now);
+    assert_eq!(
+        (live.state, live.evidence),
+        ("running", "lock_and_heartbeat")
+    );
+    assert_eq!(
+        assess_liveness(Ok(Some(&record)), &lock, &hex::encode([9u8; 32]), now).state,
         "unknown",
         "another vault's record is not evidence for this one"
+    );
+    // A second watcher on the same vault refuses instead of racing the first.
+    let (_second_tx, second_rx) = tokio::sync::broadcast::channel(1);
+    let second = VaultWatcher::new(fixture.config())
+        .unwrap()
+        .run_loop(second_rx)
+        .await
+        .unwrap_err();
+    assert!(second.to_string().contains("already running"), "{second}");
+    assert_eq!(
+        read_watcher_status(&fixture.root)
+            .unwrap()
+            .unwrap()
+            .instance_id,
+        record.instance_id,
+        "the refused watcher did not overwrite the record"
     );
     let activity = fixture.store.list_activity(20).unwrap();
     let event = activity
@@ -417,7 +443,14 @@ async fn real_loop_keeps_a_vault_scoped_status_record_and_records_a_clean_stop()
     running.stop();
     let stopped = read_watcher_status(&fixture.root).unwrap().unwrap();
     assert!(stopped.stopped_at_utc.is_some());
-    let after = assess_liveness(Ok(Some(&stopped)), &stopped.vault_id, now + 10_000);
+    let released = probe_watcher_lock(&fixture.root);
+    assert_eq!(released, LockProbe::Free, "a clean stop releases the lock");
+    let after = assess_liveness(
+        Ok(Some(&stopped)),
+        &released,
+        &stopped.vault_id,
+        now + 10_000,
+    );
     assert_eq!((after.state, after.evidence), ("stopped", "stop_record"));
     drop(fixture.store);
     fs::remove_dir_all(fixture.root).unwrap();
