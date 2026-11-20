@@ -143,9 +143,14 @@ hermes ciphervault doctor
 ```
 
 The catalog installs the version it pins, which can lag this repository (it was
-v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.8.1 and all 13
+v0.6.5 with 7 tools when last checked, 20 November 2026). For v0.8.2 and all 13
 tools, copy `plugins/ciphervault/` into `$HERMES_HOME/plugins/ciphervault/`
 (default `~/.hermes`), then run `hermes plugins enable ciphervault`.
+
+In Hermes Desktop, open **CipherVault: vault status** from the command
+palette, then **Add secret**. The **Destination file** picker follows the
+app's theme, supports keyboard navigation, and shows the exact file path
+before you save. The save and seal behavior is unchanged in v0.8.2.
 
 ### Snapshot history, restore preview, and watcher health (new in v0.8.0)
 

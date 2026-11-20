@@ -1,6 +1,6 @@
 # 🛡️ CipherVault: Master Documentation Hub
 
-**Release track:** `v1.0.38` (Hermes plugin `v0.8.1`); the [release notes](../dist/RELEASE_NOTES.md) list what each release changed. The [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) records the earlier 1.0.26 production deployment.
+**Release track:** `v1.0.38` (Hermes plugin `v0.8.2`); the [release notes](../dist/RELEASE_NOTES.md) list what each release changed. The [deployment ledger](../report/DEPLOYMENT_2026-09-30.md) records the earlier 1.0.26 production deployment.
 **Classification:** Enterprise System Architecture, Protocol Specification & Reference Manual  
 **Repository:** [github.com/samuel-1-avson/CipherVault](https://github.com/samuel-1-avson/CipherVault)  
 
@@ -66,7 +66,7 @@ flowchart TB
 
         subgraph TrackF ["6. AI Agents & Hermes Plugin"]
             direction TB
-            PluginDoc["plugins/ciphervault/README.md\n(Hermes Plugin v0.8.1)"]
+            PluginDoc["plugins/ciphervault/README.md\n(Hermes Plugin v0.8.2)"]
             Skill["SKILL.md\n(Agent Rules)"]
             Mcp["services/mcp/README.md\n(MCP Server)"]
             AgentRoadmap["SECURITY_AND_HERMES_PLUGIN_ROADMAP.md\n(Agent Security Review)"]
@@ -108,7 +108,7 @@ Guardrails that let AI coding agents scan, run, diff and back up secrets without
 
 | Document | Audience | Scope & Key Topics Covered |
 |---|---|---|
-| [**`plugins/ciphervault/README.md`**](../plugins/ciphervault/README.md) | **Hermes users & reviewers** | **Hermes plugin v0.8.1**: all 13 tools, hooks and middleware, desktop pane, secret source, binary resolution, MFA notes, validation commands, and the full process/network/audit disclosure. |
+| [**`plugins/ciphervault/README.md`**](../plugins/ciphervault/README.md) | **Hermes users & reviewers** | **Hermes plugin v0.8.2**: all 13 tools, hooks and middleware, desktop pane, secret source, binary resolution, MFA notes, validation commands, and the full process/network/audit disclosure. |
 | [**`SKILL.md`**](../plugins/ciphervault/skills/ciphervault/SKILL.md) | **Agents & plugin authors** | The hard rules an agent follows around secrets: paths not contents, never wrap `init`, the guard hooks are load-bearing, and the preferred tool order. |
 | [**`DEMO.md`**](../plugins/ciphervault/DEMO.md) | **Presenters** | Rehearsed 90-second demo script against a throwaway vault. |
 | [**`services/mcp/README.md`**](../services/mcp/README.md) | **Claude Code, Codex & Cursor users** | The native `ciphervault mcp` server (7 tools) and the older Python server. |

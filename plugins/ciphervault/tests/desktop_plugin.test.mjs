@@ -95,6 +95,12 @@ export async function load(url, context, nextLoad) {
         export const haptic = (...a) => m.haptic(...a);
         export const host = m.host;
         export const Tip = (props) => m.Tip(props);
+        export const Button = (props) => m.jsx('button', props);
+        export const Select = (props) => m.jsx('sdk-select', props);
+        export const SelectTrigger = (props) => m.jsx('sdk-select-trigger', props);
+        export const SelectValue = (props) => m.jsx('sdk-select-value', props);
+        export const SelectContent = (props) => m.jsx('sdk-select-content', props);
+        export const SelectItem = (props) => m.jsx('sdk-select-item', props);
         export const usePluginI18n = (...a) => m.usePluginI18n(...a);
         export const useQuery = (...a) => m.useQuery(...a);
         export const useValue = (...a) => m.useValue(...a);
@@ -691,6 +697,52 @@ test('Env Health missing rows offer Fill (pre-populates drawer) and Generate (PO
   assert.deepEqual(mockState.clipboardCalls, ['Configured JWT_SECRET in CipherVault — you can continue.'])
 })
 
+test('sidebar keeps the workspace path readable when the drawer is tall', async () => {
+  const cwd = '/workspace/a-long-project-directory'
+  const h = createHarness({ cwd, handlers: defaultHandlers() })
+  const tree = await h.renderSurface('pane')
+  const path = findAll(tree, n => n.props?.title === `workspace: ${cwd}`)[0]
+  assert.ok(path, 'keep the full workspace path available on hover')
+  assert.equal(collectText(path).join(''), `workspace: ${cwd}`)
+  assert.match(path.props.className, /\bshrink-0\b/, 'the header must not collapse when content needs to scroll')
+})
+
+test('destination picker uses the themed control and submits the selected file only on save', async () => {
+  const customPath = 'deploy/.env.preview'
+  const h = createHarness({ handlers: defaultHandlers({
+    'GET /pending-prompts': () => ({
+      success: true,
+      keys: [{ name: 'DEMO_KEY', env_file: customPath, seal: true }]
+    })
+  }) })
+  let tree = await h.renderSurface('pane')
+  findButton(tree, 'DEMO_KEY').props.onClick()
+  tree = h.rerenderSurface('pane')
+
+  const picker = findAll(tree, n => n.type === 'sdk-select')[0]
+  assert.ok(picker, 'use the Hermes-themed picker rather than a native OS menu')
+  assert.equal(findAll(tree, n => n.type === 'select').length, 0)
+  assert.equal(picker.props.value, customPath)
+  const trigger = findAll(tree, n => n.type === 'sdk-select-trigger')[0]
+  assert.equal(trigger.props['aria-label'], 'Destination file')
+  const menu = findAll(tree, n => n.type === 'sdk-select-content')[0]
+  assert.deepEqual(findAll(menu, n => n.type === 'sdk-select-item').map(n => n.props.value), [
+    '.env', '.env.local', '.env.development', '.env.production', customPath
+  ])
+
+  picker.props.onValueChange('.env.development')
+  tree = h.rerenderSurface('pane')
+  assert.equal(findAll(tree, n => n.type === 'sdk-select')[0].props.value, '.env.development')
+  assert.ok(collectText(trigger).includes(customPath), 'show the exact path, not just an environment name')
+  assert.equal(h.restCalls.some(c => c.method === 'POST'), false, 'picking a file must not write anything')
+  findAll(tree, n => n.type === 'input' && n.props.type === 'password')[0].props.onChange({ target: { value: 'demo-value' } })
+  tree = h.rerenderSurface('pane')
+  await findAll(tree, n => n.type === 'form')[0].props.onSubmit({ preventDefault() {} })
+  const saved = h.restCalls.find(c => c.method === 'POST' && c.endpoint.startsWith('/set?'))
+  assert.equal(saved.body.env_file, '.env.development')
+  assert.equal(saved.body.seal, true, 'the sealing default must not change')
+})
+
 test('Secret Entry Drawer handles pending prompts, POST /set, clears secret value, and offers non-secret Copy ready note', async () => {
   const SECRET_VAL = 'sk-test-super-secret-value-never-leak'
   const h = createHarness({
@@ -722,7 +774,7 @@ test('Secret Entry Drawer handles pending prompts, POST /set, clears secret valu
 
   const keyInput = findAll(tree, n => n.type === 'input' && n.props.type === 'text')[0]
   const valInput = findAll(tree, n => n.type === 'input' && n.props.type === 'password')[0]
-  const selectEl = findAll(tree, n => n.type === 'select')[0]
+  const selectEl = findAll(tree, n => n.type === 'sdk-select')[0]
   assert.equal(keyInput.props.value, 'OPENAI_API_KEY')
   assert.equal(selectEl.props.value, '.env.local')
 

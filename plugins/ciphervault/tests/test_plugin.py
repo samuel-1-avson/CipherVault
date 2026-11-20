@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -2771,10 +2772,10 @@ def test_real_cli_env_doctor_works_on_sealed_shredded_vault(real_vault):
 
 def test_plugin_yaml_declares_version_and_lifecycle_hooks():
     yaml_text = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-    assert 'version: "0.8.1"' in yaml_text
+    assert re.search(r'(?m)^version: "\d+\.\d+\.\d+"$', yaml_text)
     for hook in ("on_session_start", "pre_llm_call", "pre_tool_call", "transform_tool_result", "post_tool_call"):
         assert f"- {hook}" in yaml_text
-    assert cv.PLUGIN_VERSION == "0.8.1"
+    assert f'version: "{cv.PLUGIN_VERSION}"' in yaml_text
     manifest = json.loads((PLUGIN_DIR / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"] == cv.PLUGIN_VERSION
 
