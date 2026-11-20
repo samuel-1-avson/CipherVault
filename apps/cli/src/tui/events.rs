@@ -1,7 +1,15 @@
 use super::app::{StatusLevel, TuiApp, TuiTab, TuiTable};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 pub async fn handle_key_event(app: &mut TuiApp, key: KeyEvent) {
+    // Windows consoles report every physical key twice: a Press and then a
+    // Release (crossterm forwards both; Unix terminals send Press only).
+    // Acting on the Release made toggles fire twice — [b] opened Local
+    // CipherChain on press and its own release closed it again. Only
+    // presses (and auto-repeats while held) are commands.
+    if key.kind == KeyEventKind::Release {
+        return;
+    }
     // If Help modal is open, Esc / ? / Enter closes it (other keys ignored).
     if app.show_help {
         if let KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter = key.code {

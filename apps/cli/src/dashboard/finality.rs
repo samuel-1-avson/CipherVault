@@ -799,9 +799,21 @@ mod tests {
         // endpoint serves it: no operator contact, fully deterministic.
         let cid = rand::random::<[u8; 32]>();
         let marker = format!("test-cache-marker-{}", hex::encode(cid));
+        // The cache is keyed by CID plus the normalized endpoint set the
+        // handler will probe (sorted, deduplicated).
+        let mut endpoints = get_configured_operators();
+        assert!(
+            !endpoints.is_empty(),
+            "the explorer needs configured or default operators"
+        );
+        endpoints.sort_unstable();
+        endpoints.dedup();
         explorer_probe_cache().lock().await.insert(
-            cid,
-            vec![serde_json::json!({"status": "present", "operator_id": marker})],
+            (cid, endpoints),
+            ExplorerProbeObservation {
+                checked_at_utc: "2026-11-20T00:00:00Z".to_string(),
+                replicas: vec![serde_json::json!({"status": "present", "operator_id": marker})],
+            },
         );
         let response = api_explorer_object_handler(axum::extract::Path(hex::encode(cid))).await;
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)

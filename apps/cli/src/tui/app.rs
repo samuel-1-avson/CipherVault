@@ -3318,6 +3318,47 @@ mod tests {
         assert!(!app.show_snapshot_modal);
     }
 
+    /// Windows regression: a physical [b] arrives as Press then Release.
+    /// The Release must not toggle Local CipherChain shut again.
+    #[tokio::test]
+    async fn windows_press_release_pair_keeps_local_cipherchain_open() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let key = |kind| {
+            KeyEvent::new_with_kind_and_state(
+                KeyCode::Char('b'),
+                KeyModifiers::empty(),
+                kind,
+                KeyEventState::NONE,
+            )
+        };
+        let mut app = TuiApp::new(std::time::Duration::from_secs(30));
+        app.switch_tab(TuiTab::Explorer);
+        super::super::events::handle_key_event(&mut app, key(KeyEventKind::Press)).await;
+        assert!(app.show_chain_explorer, "[b] press opens Local CipherChain");
+        super::super::events::handle_key_event(&mut app, key(KeyEventKind::Release)).await;
+        assert!(
+            app.show_chain_explorer,
+            "the release of the same [b] must not close it"
+        );
+        // A second, deliberate [b] press still closes it.
+        super::super::events::handle_key_event(&mut app, key(KeyEventKind::Press)).await;
+        super::super::events::handle_key_event(&mut app, key(KeyEventKind::Release)).await;
+        assert!(!app.show_chain_explorer);
+        // The same holds for the help toggle.
+        let help = |kind| {
+            KeyEvent::new_with_kind_and_state(
+                KeyCode::Char('?'),
+                KeyModifiers::empty(),
+                kind,
+                KeyEventState::NONE,
+            )
+        };
+        super::super::events::handle_key_event(&mut app, help(KeyEventKind::Press)).await;
+        super::super::events::handle_key_event(&mut app, help(KeyEventKind::Release)).await;
+        assert!(app.show_help);
+    }
+
     #[tokio::test]
     async fn enter_on_files_jumps_to_chunk_inspector() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
