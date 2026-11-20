@@ -1,3 +1,31 @@
+# CipherVault 1.0.38 (in preparation)
+
+Network Explorer and recovery release, plus a fix that keeps the operator
+mesh alive.
+
+- **Operator mesh no longer decays.** A routing entry used to expire 24 h
+  after its announce no matter what, so every mesh silently fell apart a
+  day later and heartbeats dropped as `unknown_sender` (the public fleet
+  sat at `peers_live 0` on 1.0.28). Verified heartbeats, signed by the
+  routed key, now count as proof of life: they keep the route alive in
+  memory, are persisted at most hourly, and keep it across restarts. A
+  silent peer still expires after 24 h. `scripts/gcp/mesh-node.sh` meshes
+  a node target-local with its own service token, which the per-node
+  tokens on the public fleet require.
+- **Network Explorer and local CipherChain.** The public explorer, the
+  TUI Explorer tab (`[b]` opens Local CipherChain), and Hermes Desktop show
+  verified local CipherChain history; recovery drills bind to saved
+  checkpoints; `backup status` reports backup health.
+- **Windows TUI keys.** Windows consoles report every key as a press and
+  a release, and the TUI acted on both, so toggles fired twice: `[b]`
+  opened Local CipherChain and its own release closed it again. Releases
+  are now ignored.
+- **Windows sandbox.** `run --no-net` startup is repaired on Windows.
+- **Verified locally** (hosted CI is still billing-locked); see the
+  release PR for the recorded test counts.
+
+---
+
 # CipherVault 1.0.37
 
 Release-signing key rotation release. Functional content is the merged

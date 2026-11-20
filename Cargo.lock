@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-account"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "axum",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-agent"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "chrono",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-chain"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "chrono",
  "ciphervault-crypto",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-cli"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "axum",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-crypto"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "argon2",
  "blake2",
@@ -716,14 +716,14 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-file-lock"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "ciphervault-format"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "ciborium",
  "ciphervault-crypto",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-local-store"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "ciphervault-crypto",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-maintenance"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "axum",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-operator"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "axum",
  "chrono",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-recovery"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "chrono",
@@ -840,11 +840,11 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-redact"
-version = "1.0.37"
+version = "1.0.38"
 
 [[package]]
 name = "ciphervault-snapshot"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "chrono",
  "ciphervault-crypto",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-storage"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "chrono",
  "ciborium",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "ciphervault-translog"
-version = "1.0.37"
+version = "1.0.38"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",

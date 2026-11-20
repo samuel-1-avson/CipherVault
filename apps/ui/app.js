@@ -5150,14 +5150,14 @@ function handleTerminalCommand(cmd) {
       break;
     case 'version':
     case 'cv':
-      appendTerminalLog('CLI', 'CipherVault v1.0.37 (cv / ciphervault) · Sovereign CipherChain PoA (777777)', 'var(--ok)');
+      appendTerminalLog('CLI', 'CipherVault v1.0.38 (cv / ciphervault) · Sovereign CipherChain PoA (777777)', 'var(--ok)');
       break;
     case 'download':
     case 'downloads':
     case 'install': {
       const dlBtn = document.getElementById('btn-open-cli-downloads');
       if (dlBtn) dlBtn.click();
-      appendTerminalLog('CLI', 'Opened CLI & Binary Downloads modal (v1.0.37)', 'var(--signal)');
+      appendTerminalLog('CLI', 'Opened CLI & Binary Downloads modal (v1.0.38)', 'var(--signal)');
       break;
     }
     case 'status':
@@ -5713,7 +5713,7 @@ function buildPaletteItems(query) {
       fetchAllData();
       showToast('Cluster telemetry refreshed', 'info');
     }},
-    { title: 'Download CLI & Pre-Compiled Binaries (v1.0.37)...', category: 'Actions', badge: 'v1.0.37', action: () => {
+    { title: 'Download CLI & Pre-Compiled Binaries (v1.0.38)...', category: 'Actions', badge: 'v1.0.38', action: () => {
       const modal = document.getElementById('modal-cli-downloads');
       if (modal) openModal(modal);
     }},
