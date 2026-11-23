@@ -583,7 +583,7 @@ version = "1.0.38"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "ciborium",
  "ciphervault-crypto",
@@ -659,7 +659,7 @@ version = "1.0.38"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "ciphervault-agent",
  "ciphervault-chain",
@@ -886,7 +886,7 @@ dependencies = [
 name = "ciphervault-translog"
 version = "1.0.38"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "ed25519-dalek",
  "hex",
  "ml-dsa",
